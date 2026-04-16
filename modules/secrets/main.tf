@@ -1,33 +1,33 @@
 # ============================================================
 # Secrets Module — AA-CIS
-# Reference existing secrets, không tạo mới
-# (secrets đã tạo manually via CLI)
+# Reference existing secrets tạo bằng CLI
+# Naming: aa-cis/dev/<service>
 # ============================================================
 
 locals {
-  name_prefix = "${var.project}-${var.environment}"
+  secret_prefix = "${var.project}/${var.environment}"
 }
 
 data "aws_secretsmanager_secret" "openai" {
-  name = "${local.name_prefix}/openai"
+  name = "${local.secret_prefix}/openai"
 }
 
 data "aws_secretsmanager_secret" "anthropic" {
-  name = "${local.name_prefix}/anthropic"
+  name = "${local.secret_prefix}/anthropic"
 }
 
 data "aws_secretsmanager_secret" "dataforseo" {
-  name = "${local.name_prefix}/dataforseo"
+  name = "${local.secret_prefix}/dataforseo"
 }
 
 data "aws_secretsmanager_secret" "langfuse" {
-  name = "${local.name_prefix}/langfuse"
+  name = "${local.secret_prefix}/langfuse"
 }
 
 data "aws_secretsmanager_secret" "rds" {
-  name = "${local.name_prefix}/rds"
+  name = "${local.secret_prefix}/rds"
 }
 
 data "aws_secretsmanager_secret" "bedrock" {
-  name = "${local.name_prefix}/bedrock"
+  name = "${local.secret_prefix}/bedrock"
 }
