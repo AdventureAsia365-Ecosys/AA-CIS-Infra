@@ -30,3 +30,9 @@ variable "db_password" {
   type        = string
   sensitive   = true
 }
+
+variable "account_id" {
+  description = "AWS Account ID"
+  type        = string
+  default     = "867490540162"
+}

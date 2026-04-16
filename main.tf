@@ -20,3 +20,16 @@ module "rds" {
 
   depends_on = [module.vpc]
 }
+
+module "ecs" {
+  source      = "./modules/ecs"
+  project     = var.project
+  environment = var.environment
+}
+
+module "s3" {
+  source      = "./modules/s3"
+  project     = var.project
+  environment = var.environment
+  account_id  = var.account_id
+}
