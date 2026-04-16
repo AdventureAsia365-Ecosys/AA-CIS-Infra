@@ -1,2 +1,1 @@
-# AA-CIS-Infra
-Infrastructure as Code for CIS system
+# AA-CIS Infrastructure — Terraform
