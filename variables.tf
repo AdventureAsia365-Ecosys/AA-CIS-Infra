@@ -18,3 +18,15 @@ variable "project" {
   type        = string
   default     = "aa-cis"
 }
+
+variable "db_username" {
+  description = "RDS master username"
+  type        = string
+  default     = "aa_cis_admin"
+}
+
+variable "db_password" {
+  description = "RDS master password"
+  type        = string
+  sensitive   = true
+}
