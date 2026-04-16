@@ -45,3 +45,25 @@ module "secrets" {
   project     = var.project
   environment = var.environment
 }
+
+module "elasticache" {
+  source             = "./modules/elasticache"
+  project            = var.project
+  environment        = var.environment
+  vpc_id             = module.vpc.vpc_id
+  private_subnet_ids = module.vpc.private_subnet_ids
+  sg_app_id          = module.vpc.sg_app_id
+
+  depends_on = [module.vpc]
+}
+
+module "efs" {
+  source             = "./modules/efs"
+  project            = var.project
+  environment        = var.environment
+  vpc_id             = module.vpc.vpc_id
+  private_subnet_ids = module.vpc.private_subnet_ids
+  sg_app_id          = module.vpc.sg_app_id
+
+  depends_on = [module.vpc]
+}
