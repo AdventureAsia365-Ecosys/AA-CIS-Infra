@@ -33,3 +33,15 @@ module "s3" {
   environment = var.environment
   account_id  = var.account_id
 }
+
+module "sqs" {
+  source      = "./modules/sqs_sns"
+  project     = var.project
+  environment = var.environment
+}
+
+module "secrets" {
+  source      = "./modules/secrets"
+  project     = var.project
+  environment = var.environment
+}
