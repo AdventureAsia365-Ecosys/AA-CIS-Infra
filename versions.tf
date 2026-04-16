@@ -9,15 +9,16 @@ terraform {
   }
 
   backend "s3" {
-    # Populated per environment via -backend-config
-    # bucket = "aa-cis-tfstate"
-    # key    = "dev/terraform.tfstate"
-    # region = "us-west-1"
+    bucket  = "aa-cis-tfstate-867490540162"
+    key     = "dev/terraform.tfstate"
+    region  = "us-west-1"
+    profile = "pqnghiep-admin"
   }
 }
 
 provider "aws" {
-  region = var.aws_region
+  region  = var.aws_region
+  profile = "pqnghiep-admin"
 
   default_tags {
     tags = {
