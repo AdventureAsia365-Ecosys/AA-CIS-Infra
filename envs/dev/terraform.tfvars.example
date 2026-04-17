@@ -1,0 +1,28 @@
+aws_region  = "us-west-1"
+environment = "dev"
+project     = "aa-cis"
+account_id  = "YOUR_ACCOUNT_ID"
+
+vpc_id             = "vpc-xxxxxxxxxxxxxxxxx"
+private_subnet_ids = ["subnet-xxxxxxxxxxxxxxxxx", "subnet-xxxxxxxxxxxxxxxxx"]
+public_subnet_ids  = ["subnet-xxxxxxxxxxxxxxxxx", "subnet-xxxxxxxxxxxxxxxxx"]
+db_subnet_ids      = ["subnet-xxxxxxxxxxxxxxxxx", "subnet-xxxxxxxxxxxxxxxxx"]
+sg_rds_id          = "sg-xxxxxxxxxxxxxxxxx"
+sg_app_id          = "sg-xxxxxxxxxxxxxxxxx"
+sg_alb_id          = "sg-xxxxxxxxxxxxxxxxx"
+
+db_name     = "aa_cis_dev"
+db_username = "aa_cis_admin"
+# db_password — KHÔNG đặt ở đây. Trước khi apply chạy:
+# export TF_VAR_db_password=$(aws secretsmanager get-secret-value \
+#   --secret-id aa-cis/dev/rds --query SecretString \
+#   --output text | jq -r '.password')
+
+uploads_bucket = "aa-cis-dev-uploads-ACCOUNT_ID"
+outputs_bucket = "aa-cis-dev-outputs-ACCOUNT_ID"
+
+tags = {
+  Project     = "aa-cis"
+  Environment = "dev"
+  ManagedBy   = "terraform"
+}
