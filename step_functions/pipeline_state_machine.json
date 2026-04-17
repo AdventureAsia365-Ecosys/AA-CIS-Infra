@@ -1,0 +1,237 @@
+{
+  "Comment": "AA-CIS Content Pipeline — S3 Upload → Ingestion → SEO → Content Gen → Validation → Export/HITL",
+  "StartAt": "IngestTours",
+  "States": {
+
+    "IngestTours": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${IngestionLambdaArn}",
+        "Payload.$": "$"
+      },
+      "ResultPath": "$.ingestion_result",
+      "Retry": [{
+        "ErrorEquals": ["Lambda.ServiceException", "Lambda.TooManyRequestsException"],
+        "IntervalSeconds": 5,
+        "MaxAttempts": 3,
+        "BackoffRate": 2
+      }],
+      "Catch": [{
+        "ErrorEquals": ["States.ALL"],
+        "Next": "IngestionFailed",
+        "ResultPath": "$.error"
+      }],
+      "Next": "ProcessToursMap"
+    },
+
+    "ProcessToursMap": {
+      "Type": "Map",
+      "Comment": "Process each tour in parallel — max 10 concurrent to control cost",
+      "ItemsPath": "$.ingestion_result.Payload.results",
+      "MaxConcurrency": 10,
+      "Iterator": {
+        "StartAt": "FetchSEO",
+        "States": {
+
+          "FetchSEO": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+              "FunctionName": "${SEOLambdaArn}",
+              "Payload.$": "$"
+            },
+            "ResultPath": "$.seo_result",
+            "Retry": [{
+              "ErrorEquals": ["Lambda.ServiceException"],
+              "IntervalSeconds": 3,
+              "MaxAttempts": 2,
+              "BackoffRate": 1.5
+            }],
+            "Catch": [{
+              "ErrorEquals": ["States.ALL"],
+              "Next": "SEOFailed",
+              "ResultPath": "$.error"
+            }],
+            "Next": "GenerateContent"
+          },
+
+          "GenerateContent": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::ecs:runTask.sync",
+            "Parameters": {
+              "Cluster": "${ECSClusterArn}",
+              "TaskDefinition": "${ContentGenTaskDefArn}",
+              "LaunchType": "FARGATE",
+              "NetworkConfiguration": {
+                "AwsvpcConfiguration": {
+                  "Subnets": "${PrivateSubnetIds}",
+                  "SecurityGroups": "${AppSGIds}",
+                  "AssignPublicIp": "DISABLED"
+                }
+              },
+              "Overrides": {
+                "ContainerOverrides": [{
+                  "Name": "content-gen",
+                  "Environment": [
+                    {"Name": "RAW_TOUR_ID", "Value.$": "$.raw_tour_id"},
+                    {"Name": "SEO_ID",      "Value.$": "$.seo_result.Payload.id"}
+                  ]
+                }]
+              }
+            },
+            "ResultPath": "$.content_result",
+            "Retry": [{
+              "ErrorEquals": ["ECS.AmazonECSException"],
+              "IntervalSeconds": 10,
+              "MaxAttempts": 2,
+              "BackoffRate": 2
+            }],
+            "Catch": [{
+              "ErrorEquals": ["States.ALL"],
+              "Next": "ContentGenFailed",
+              "ResultPath": "$.error"
+            }],
+            "Next": "ValidateContent"
+          },
+
+          "ValidateContent": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+              "FunctionName": "${ValidationLambdaArn}",
+              "Payload.$": "$"
+            },
+            "ResultPath": "$.validation_result",
+            "Next": "RouteByScore"
+          },
+
+          "RouteByScore": {
+            "Type": "Choice",
+            "Choices": [
+              {
+                "Variable": "$.validation_result.Payload.route",
+                "StringEquals": "export",
+                "Next": "ExportContent"
+              },
+              {
+                "Variable": "$.validation_result.Payload.route",
+                "StringEquals": "regenerate",
+                "Next": "GenerateContent"
+              },
+              {
+                "Variable": "$.validation_result.Payload.route",
+                "StringEquals": "hitl",
+                "Next": "WaitForHumanReview"
+              }
+            ],
+            "Default": "RoutingFailed"
+          },
+
+          "ExportContent": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+              "FunctionName": "${ExportLambdaArn}",
+              "Payload.$": "$"
+            },
+            "ResultPath": "$.export_result",
+            "End": true
+          },
+
+          "WaitForHumanReview": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
+            "Parameters": {
+              "QueueUrl": "${HITLQueueUrl}",
+              "MessageBody": {
+                "task_token.$": "$$.Task.Token",
+                "version_id.$":  "$.content_result.version_id",
+                "score.$":       "$.validation_result.Payload.score",
+                "issues.$":      "$.validation_result.Payload.issues"
+              }
+            },
+            "HeartbeatSeconds": 86400,
+            "ResultPath": "$.hitl_result",
+            "Next": "RouteHITLDecision"
+          },
+
+          "RouteHITLDecision": {
+            "Type": "Choice",
+            "Choices": [
+              {
+                "Variable": "$.hitl_result.decision",
+                "StringEquals": "approved",
+                "Next": "ExportContent"
+              },
+              {
+                "Variable": "$.hitl_result.decision",
+                "StringEquals": "revision_requested",
+                "Next": "GenerateContent"
+              }
+            ],
+            "Default": "HITLRejected"
+          },
+
+          "SEOFailed": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::sqs:sendMessage",
+            "Parameters": {
+              "QueueUrl": "${SEODLQUrl}",
+              "MessageBody.$": "$"
+            },
+            "End": true
+          },
+
+          "ContentGenFailed": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::sqs:sendMessage",
+            "Parameters": {
+              "QueueUrl": "${ContentGenDLQUrl}",
+              "MessageBody.$": "$"
+            },
+            "End": true
+          },
+
+          "RoutingFailed": {
+            "Type": "Fail",
+            "Error": "RoutingError",
+            "Cause": "Unknown route from validation"
+          },
+
+          "HITLRejected": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::sqs:sendMessage",
+            "Parameters": {
+              "QueueUrl": "${HITLDLQUrl}",
+              "MessageBody.$": "$"
+            },
+            "End": true
+          }
+        }
+      },
+      "ResultPath": "$.map_results",
+      "Next": "PipelineComplete"
+    },
+
+    "PipelineComplete": {
+      "Type": "Succeed"
+    },
+
+    "IngestionFailed": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sqs:sendMessage",
+      "Parameters": {
+        "QueueUrl": "${IngestionDLQUrl}",
+        "MessageBody.$": "$"
+      },
+      "Next": "PipelineFailed"
+    },
+
+    "PipelineFailed": {
+      "Type": "Fail",
+      "Error": "PipelineError",
+      "Cause": "Pipeline failed — check DLQ"
+    }
+  }
+}
