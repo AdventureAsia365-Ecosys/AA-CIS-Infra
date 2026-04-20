@@ -9,9 +9,9 @@ terraform {
   }
 
   backend "s3" {
-    bucket  = "aa-cis-tfstate-867490540162"
-    key     = "dev/terraform.tfstate"
-    region  = "us-west-1"
+    bucket = "aa-cis-tfstate-867490540162"
+    key    = "dev/terraform.tfstate"
+    region = "us-west-1"
     # profile không dùng trong CI/CD - dùng OIDC credentials
   }
 }

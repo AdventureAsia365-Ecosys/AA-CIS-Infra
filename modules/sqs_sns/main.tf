@@ -21,8 +21,8 @@ resource "aws_sqs_queue" "dlq" {
   for_each = toset(local.queues)
 
   name                      = "${local.name_prefix}-${each.key}-dlq"
-  message_retention_seconds = 1209600  # 14 days
-  
+  message_retention_seconds = 1209600 # 14 days
+
   tags = {
     Name    = "${local.name_prefix}-${each.key}-dlq"
     Service = each.key
@@ -35,8 +35,8 @@ resource "aws_sqs_queue" "main" {
 
   name                       = "${local.name_prefix}-${each.key}"
   visibility_timeout_seconds = 300
-  message_retention_seconds  = 86400   # 1 day
-  receive_wait_time_seconds  = 20      # Long polling
+  message_retention_seconds  = 86400 # 1 day
+  receive_wait_time_seconds  = 20    # Long polling
 
   redrive_policy = jsonencode({
     deadLetterTargetArn = aws_sqs_queue.dlq[each.key].arn
