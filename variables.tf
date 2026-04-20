@@ -38,7 +38,45 @@ variable "account_id" {
 }
 
 variable "s3_allowed_role_arns" {
-  description = "IAM Role ARNs allowed to access CIS S3 buckets (Lambda + ECS task roles)"
+  description = "IAM Role ARNs allowed to access CIS S3 buckets"
   type        = list(string)
   default     = []
+}
+
+variable "acm_certificate_arn" {
+  description = "ACM certificate ARN for HTTPS on ALB"
+  type        = string
+}
+
+variable "task_cpu" {
+  description = "ECS task CPU units"
+  type        = number
+  default     = 512
+}
+
+variable "task_memory" {
+  description = "ECS task memory (MB)"
+  type        = number
+  default     = 1024
+}
+
+variable "service_desired_count" {
+  description = "Initial number of ECS tasks"
+  type        = number
+  default     = 1
+}
+
+variable "secret_rds_arn" {
+  description = "Secrets Manager ARN for DATABASE_URL"
+  type        = string
+}
+
+variable "secret_openai_arn" {
+  description = "Secrets Manager ARN for OPENAI_API_KEY"
+  type        = string
+}
+
+variable "secret_langfuse_arn" {
+  description = "Secrets Manager ARN for LANGFUSE_SECRET_KEY"
+  type        = string
 }
