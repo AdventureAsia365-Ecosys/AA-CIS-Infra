@@ -1,6 +1,14 @@
 # ============================================================
 # AA-CIS Root Module
 # ============================================================
+locals {
+  common_tags = {
+    Project     = var.project
+    Environment = var.environment
+    ManagedBy   = "terraform"
+  }
+}
+
 
 module "vpc" {
   source      = "./modules/vpc"
@@ -28,10 +36,11 @@ module "ecs" {
 }
 
 module "s3" {
-  source      = "./modules/s3"
-  project     = var.project
-  environment = var.environment
-  account_id  = var.account_id
+  source            = "./modules/s3"
+  project           = var.project
+  environment       = var.environment
+  allowed_role_arns = var.s3_allowed_role_arns
+  tags              = local.common_tags
 }
 
 module "sqs" {

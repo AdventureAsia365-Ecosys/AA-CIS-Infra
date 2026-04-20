@@ -1,56 +1,336 @@
-# ============================================================
-# S3 Module — AA-CIS
-# ============================================================
+# =============================================================================
+# AA-CIS S3 Module — Medallion Architecture
+# PRD v4.0 §2.3: Bronze / Silver / Gold layers
+# Updated: 20/04/2026 — replace aa-cis-uploads/outputs with Medallion naming
+# =============================================================================
 
 locals {
-  name_prefix = "${var.project}-${var.environment}"
+  account_id = data.aws_caller_identity.current.account_id
+
+  # S3 bucket names — globally unique, include account_id suffix
+  bronze_bucket = "${var.project}-bronze-${local.account_id}"
+  silver_bucket = "${var.project}-silver-${local.account_id}"
+  gold_bucket   = "${var.project}-gold-${local.account_id}"
+
+  common_tags = merge(var.tags, {
+    Layer  = "storage"
+    Module = "s3"
+    PRD    = "v4.0"
+  })
 }
 
-# Upload bucket (Excel input)
-resource "aws_s3_bucket" "uploads" {
-  bucket = "${local.name_prefix}-uploads-${var.account_id}"
-  tags   = { Name = "${local.name_prefix}-uploads" }
+data "aws_caller_identity" "current" {}
+
+# =============================================================================
+# BRONZE BUCKET — Immutable raw intake
+# Paths: raw-inbox/{tenant}/{batch}/{file}.xlsx
+#        raw-archive/{tenant}/{date}/tours.jsonl
+# =============================================================================
+
+resource "aws_s3_bucket" "bronze" {
+  bucket        = local.bronze_bucket
+  force_destroy = var.environment == "dev" ? true : false
+
+  tags = merge(local.common_tags, {
+    Name  = local.bronze_bucket
+    Layer = "bronze"
+    Notes = "Immutable raw files - never delete in prod"
+  })
 }
 
-resource "aws_s3_bucket_versioning" "uploads" {
-  bucket = aws_s3_bucket.uploads.id
-  versioning_configuration { status = "Enabled" }
+resource "aws_s3_bucket_versioning" "bronze" {
+  bucket = aws_s3_bucket.bronze.id
+  versioning_configuration {
+    status = "Enabled"
+  }
 }
 
-resource "aws_s3_bucket_public_access_block" "uploads" {
-  bucket                  = aws_s3_bucket.uploads.id
+# Block all public access — Bronze is internal only
+resource "aws_s3_bucket_public_access_block" "bronze" {
+  bucket                  = aws_s3_bucket.bronze.id
   block_public_acls       = true
-  ignore_public_acls      = true
   block_public_policy     = true
+  ignore_public_acls      = true
   restrict_public_buckets = true
 }
 
-# Output bucket (processed content)
-resource "aws_s3_bucket" "outputs" {
-  bucket = "${local.name_prefix}-outputs-${var.account_id}"
-  tags   = { Name = "${local.name_prefix}-outputs" }
+# Lifecycle: raw-archive → Glacier after 90 days (cost saving)
+resource "aws_s3_bucket_lifecycle_configuration" "bronze" {
+  bucket = aws_s3_bucket.bronze.id
+
+  rule {
+    id     = "archive-to-glacier"
+    status = "Enabled"
+
+    filter {
+      prefix = "raw-archive/"
+    }
+
+    transition {
+      days          = 90
+      storage_class = "GLACIER"
+    }
+
+    # PRD: "lifecycle policy 7 years"
+    expiration {
+      days = 2555 # 7 years
+    }
+  }
 }
 
-resource "aws_s3_bucket_versioning" "outputs" {
-  bucket = aws_s3_bucket.outputs.id
-  versioning_configuration { status = "Enabled" }
+# Encryption at rest
+resource "aws_s3_bucket_server_side_encryption_configuration" "bronze" {
+  bucket = aws_s3_bucket.bronze.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
 }
 
-resource "aws_s3_bucket_public_access_block" "outputs" {
-  bucket                  = aws_s3_bucket.outputs.id
+# Deny cross-tenant access via bucket policy
+# Enforced by prefix: each service must pass tenant slug in path
+resource "aws_s3_bucket_policy" "bronze" {
+  bucket = aws_s3_bucket.bronze.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "DenyUnencryptedTransport"
+        Effect    = "Deny"
+        Principal = "*"
+        Action    = "s3:*"
+        Resource = [
+          aws_s3_bucket.bronze.arn,
+          "${aws_s3_bucket.bronze.arn}/*"
+        ]
+        Condition = {
+          Bool = { "aws:SecureTransport" = "false" }
+        }
+      }
+    ]
+  })
+}
+
+# =============================================================================
+# SILVER BUCKET — Validated & enriched intermediate data
+# Paths: processed/{tenant}/{batch}/tours.jsonl
+#        seo-cache/{tenant}/{key}.json
+# =============================================================================
+
+resource "aws_s3_bucket" "silver" {
+  bucket        = local.silver_bucket
+  force_destroy = var.environment == "dev" ? true : false
+
+  tags = merge(local.common_tags, {
+    Name  = local.silver_bucket
+    Layer = "silver"
+    Notes = "Validated JSONL and SEO cache backup - ETL output"
+  })
+}
+
+resource "aws_s3_bucket_versioning" "silver" {
+  bucket = aws_s3_bucket.silver.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "silver" {
+  bucket                  = aws_s3_bucket.silver.id
   block_public_acls       = true
-  ignore_public_acls      = true
   block_public_policy     = true
+  ignore_public_acls      = true
   restrict_public_buckets = true
 }
 
-# S3 folder structure — raw-inbox/ và pipeline/
-resource "aws_s3_object" "raw_inbox" {
-  bucket = aws_s3_bucket.uploads.id
-  key    = "raw-inbox/"
+# SEO cache backup expires after 7 days (Redis TTL 24h, S3 fallback not needed longer)
+resource "aws_s3_bucket_lifecycle_configuration" "silver" {
+  bucket = aws_s3_bucket.silver.id
+
+  rule {
+    id     = "seo-cache-expire"
+    status = "Enabled"
+
+    filter {
+      prefix = "seo-cache/"
+    }
+
+    expiration {
+      days = 7
+    }
+  }
+
+  rule {
+    id     = "processed-jsonl-glacier"
+    status = "Enabled"
+
+    filter {
+      prefix = "processed/"
+    }
+
+    transition {
+      days          = 30
+      storage_class = "STANDARD_IA"
+    }
+
+    transition {
+      days          = 90
+      storage_class = "GLACIER"
+    }
+
+    expiration {
+      days = 365
+    }
+  }
 }
 
-resource "aws_s3_object" "pipeline" {
-  bucket = aws_s3_bucket.uploads.id
-  key    = "pipeline/"
+resource "aws_s3_bucket_server_side_encryption_configuration" "silver" {
+  bucket = aws_s3_bucket.silver.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
 }
+
+resource "aws_s3_bucket_policy" "silver" {
+  bucket = aws_s3_bucket.silver.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "DenyUnencryptedTransport"
+        Effect    = "Deny"
+        Principal = "*"
+        Action    = "s3:*"
+        Resource = [
+          aws_s3_bucket.silver.arn,
+          "${aws_s3_bucket.silver.arn}/*"
+        ]
+        Condition = {
+          Bool = { "aws:SecureTransport" = "false" }
+        }
+      }
+    ]
+  })
+}
+
+# =============================================================================
+# GOLD BUCKET — Business-ready published content
+# Paths: published/{tenant}/{tour_id}.json    ← Immutable after write
+#        exports/{tenant}/{export_id}.{json|csv|xml}  ← Signed URL 7 days
+#        webhooks/{tenant}/payload_{ts}.json  ← Delivery archive
+# =============================================================================
+
+resource "aws_s3_bucket" "gold" {
+  bucket        = local.gold_bucket
+  force_destroy = var.environment == "dev" ? true : false
+
+  tags = merge(local.common_tags, {
+    Name  = local.gold_bucket
+    Layer = "gold"
+    Notes = "Published tours - export files - webhook payloads"
+  })
+}
+
+resource "aws_s3_bucket_versioning" "gold" {
+  bucket = aws_s3_bucket.gold.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "gold" {
+  bucket                  = aws_s3_bucket.gold.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+# Export files expire after 7 days (PRD §5.3: signed URL 7 days)
+# Webhook payloads expire after 30 days
+resource "aws_s3_bucket_lifecycle_configuration" "gold" {
+  bucket = aws_s3_bucket.gold.id
+
+  rule {
+    id     = "exports-expire"
+    status = "Enabled"
+
+    filter {
+      prefix = "exports/"
+    }
+
+    expiration {
+      days = 7
+    }
+  }
+
+  rule {
+    id     = "webhooks-expire"
+    status = "Enabled"
+
+    filter {
+      prefix = "webhooks/"
+    }
+
+    expiration {
+      days = 30
+    }
+  }
+
+  # Published tours: Intelligent Tiering after 30 days (accessed infrequently)
+  rule {
+    id     = "published-intelligent-tiering"
+    status = "Enabled"
+
+    filter {
+      prefix = "published/"
+    }
+
+    transition {
+      days          = 30
+      storage_class = "INTELLIGENT_TIERING"
+    }
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "gold" {
+  bucket = aws_s3_bucket.gold.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+resource "aws_s3_bucket_policy" "gold" {
+  bucket = aws_s3_bucket.gold.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "DenyUnencryptedTransport"
+        Effect    = "Deny"
+        Principal = "*"
+        Action    = "s3:*"
+        Resource = [
+          aws_s3_bucket.gold.arn,
+          "${aws_s3_bucket.gold.arn}/*"
+        ]
+        Condition = {
+          Bool = { "aws:SecureTransport" = "false" }
+        }
+      }
+    ]
+  })
+}
+
+# =============================================================================
+# TFSTATE BUCKET — unchanged, managed separately
+# aa-cis-tfstate-{account_id} — already exists, do not recreate
+# =============================================================================

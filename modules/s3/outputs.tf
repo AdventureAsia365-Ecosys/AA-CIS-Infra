@@ -1,15 +1,40 @@
-output "uploads_bucket_name" {
-  value = aws_s3_bucket.uploads.bucket
+output "bronze_bucket_name" {
+  description = "Bronze S3 bucket name (raw intake — immutable)"
+  value       = aws_s3_bucket.bronze.id
 }
 
-output "uploads_bucket_arn" {
-  value = aws_s3_bucket.uploads.arn
+output "bronze_bucket_arn" {
+  value = aws_s3_bucket.bronze.arn
 }
 
-output "outputs_bucket_name" {
-  value = aws_s3_bucket.outputs.bucket
+output "silver_bucket_name" {
+  description = "Silver S3 bucket name (validated JSONL + SEO cache backup)"
+  value       = aws_s3_bucket.silver.id
 }
 
-output "outputs_bucket_arn" {
-  value = aws_s3_bucket.outputs.arn
+output "silver_bucket_arn" {
+  value = aws_s3_bucket.silver.arn
+}
+
+output "gold_bucket_name" {
+  description = "Gold S3 bucket name (published tours + exports + webhooks)"
+  value       = aws_s3_bucket.gold.id
+}
+
+output "gold_bucket_arn" {
+  value = aws_s3_bucket.gold.arn
+}
+
+# Convenience: full S3 URIs for use in application env vars
+output "s3_paths" {
+  description = "Base S3 path URIs for each Medallion layer"
+  value = {
+    bronze_raw_inbox = "s3://${aws_s3_bucket.bronze.id}/raw-inbox"
+    bronze_archive   = "s3://${aws_s3_bucket.bronze.id}/raw-archive"
+    silver_processed = "s3://${aws_s3_bucket.silver.id}/processed"
+    silver_seo_cache = "s3://${aws_s3_bucket.silver.id}/seo-cache"
+    gold_published   = "s3://${aws_s3_bucket.gold.id}/published"
+    gold_exports     = "s3://${aws_s3_bucket.gold.id}/exports"
+    gold_webhooks    = "s3://${aws_s3_bucket.gold.id}/webhooks"
+  }
 }

@@ -36,3 +36,9 @@ variable "account_id" {
   type        = string
   default     = "867490540162"
 }
+
+variable "s3_allowed_role_arns" {
+  description = "IAM Role ARNs allowed to access CIS S3 buckets (Lambda + ECS task roles)"
+  type        = list(string)
+  default     = []
+}
