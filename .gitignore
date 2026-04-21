@@ -23,5 +23,6 @@ crash.*.log
 Thumbs.db
 # Terraform variable files (chứa secrets)
 *.tfvars
+!envs/dev/terraform.tfvars
 *.tfvars.json
 !*.tfvars.example
