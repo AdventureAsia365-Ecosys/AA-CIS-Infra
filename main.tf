@@ -1,3 +1,4 @@
+
 # ============================================================
 # AA-CIS Root Module — updated with ALB + ECS Service
 # ============================================================
@@ -104,4 +105,77 @@ module "ecs" {
   secret_langfuse_arn = var.secret_langfuse_arn
 
   depends_on = [module.vpc, module.alb]
+}
+
+# =============================================================================
+# S11 Phase 4 — Lambda + Step Functions
+# =============================================================================
+
+
+
+
+module "step_functions" {
+  source = "./modules/step_functions"
+
+  project     = var.project
+  environment = var.environment
+  aws_region  = var.aws_region
+  account_id  = var.account_id
+
+  seo_lambda_arn        = module.lambda.seo_lambda_arn
+  validation_lambda_arn = module.lambda.validation_lambda_arn
+  export_lambda_arn     = module.lambda.export_lambda_arn
+
+  ecs_cluster_arn         = module.ecs.cluster_arn
+  ecs_task_definition_arn = local.api_task_def_arn
+  ecs_container_name      = "api"
+  private_subnet_ids      = module.vpc.private_subnet_ids
+  sg_app_id               = module.vpc.sg_app_id
+
+  tags = local.common_tags
+}
+
+module "lambda" {
+  source = "./modules/lambda"
+
+  project     = var.project
+  environment = var.environment
+  aws_region  = var.aws_region
+  account_id  = var.account_id
+
+  private_subnet_ids = module.vpc.private_subnet_ids
+  sg_app_id          = module.vpc.sg_app_id
+
+  bronze_bucket_arn  = local.bronze_bucket_arn
+  bronze_bucket_name = local.bronze_bucket_name
+  gold_bucket_arn    = local.gold_bucket_arn
+  gold_bucket_name   = local.gold_bucket_name
+
+  secret_rds_arn      = var.secret_rds_arn
+  secret_openai_arn   = var.secret_openai_arn
+  secret_langfuse_arn = var.secret_langfuse_arn
+
+  step_functions_arn      = module.step_functions.state_machine_arn
+  ecs_cluster_arn         = module.ecs.cluster_arn
+  ecs_task_definition_arn = local.api_task_def_arn
+  ecs_container_name      = "api"
+
+  database_url        = var.database_url
+  redis_url           = var.redis_url
+  dataforseo_login    = var.dataforseo_login
+  dataforseo_password = var.dataforseo_password
+  anthropic_api_key   = var.anthropic_api_key
+
+  lambda_zip_dir = "/home/nghiep/projects/aa-cis/AA-CIS-Infra/dist/lambdas"
+
+  tags = local.common_tags
+}
+
+# Phase 4 hardcoded locals (replace data sources để tránh hang khi plan)
+locals {
+  bronze_bucket_arn  = "arn:aws:s3:::aa-cis-bronze-867490540162"
+  bronze_bucket_name = "aa-cis-bronze-867490540162"
+  gold_bucket_arn    = "arn:aws:s3:::aa-cis-gold-867490540162"
+  gold_bucket_name   = "aa-cis-gold-867490540162"
+  api_task_def_arn   = "arn:aws:ecs:us-west-1:867490540162:task-definition/aa-cis-dev-api:21"
 }

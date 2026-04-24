@@ -80,3 +80,33 @@ variable "secret_langfuse_arn" {
   description = "Secrets Manager ARN for LANGFUSE_SECRET_KEY"
   type        = string
 }
+
+# Phase 4 — Lambda + Step Functions
+variable "database_url" {
+  description = "PostgreSQL connection string for Lambda functions"
+  type        = string
+  sensitive   = true
+}
+
+variable "redis_url" {
+  type    = string
+  default = ""
+}
+
+variable "dataforseo_login" {
+  type      = string
+  default   = ""
+  sensitive = true
+}
+
+variable "dataforseo_password" {
+  type      = string
+  default   = ""
+  sensitive = true
+}
+
+variable "anthropic_api_key" {
+  type      = string
+  default   = ""
+  sensitive = true
+}
