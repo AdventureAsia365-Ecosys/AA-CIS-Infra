@@ -103,6 +103,7 @@ module "ecs" {
   secret_rds_arn      = var.secret_rds_arn
   secret_openai_arn   = var.secret_openai_arn
   secret_langfuse_arn = var.secret_langfuse_arn
+  secret_admin_arn    = var.secret_admin_arn
 
   depends_on = [module.vpc, module.alb]
 }

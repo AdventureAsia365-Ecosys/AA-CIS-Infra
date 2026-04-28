@@ -38,3 +38,4 @@ redis_url           = "redis://aa-cis-dev-redis.wvp8vb.0001.usw1.cache.amazonaws
 dataforseo_login    = "thu@adventure.asia"
 dataforseo_password = "19a29acdfd0dbcd8"
 anthropic_api_key   = "REPLACE_WITH_NEW_KEY"
+secret_admin_arn      = "arn:aws:secretsmanager:us-west-1:867490540162:secret:aa-cis/dev/admin-secret-PSs7yN"

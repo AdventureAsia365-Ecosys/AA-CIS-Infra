@@ -60,3 +60,8 @@ variable "secret_langfuse_arn" {
   type        = string
   description = "Secrets Manager ARN for LANGFUSE_SECRET_KEY"
 }
+
+variable "secret_admin_arn" {
+  description = "ARN of Secrets Manager secret for ADMIN_SECRET"
+  type        = string
+}
