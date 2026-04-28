@@ -1,5 +1,5 @@
 {
-  "Comment": "AA-CIS Tour Content Pipeline — S11 Phase 4",
+  "Comment": "AA-CIS Tour Content Pipeline — S13 (Validation restored)",
   "StartAt": "ProcessTours",
   "States": {
     "ProcessTours": {
@@ -14,7 +14,7 @@
             "Resource": "arn:aws:states:::lambda:invoke",
             "Parameters": {
               "FunctionName": "${seo_lambda_arn}",
-              "Payload.$": "$$"
+              "Payload.$": "$"
             },
             "ResultPath": "$.seo_result",
             "Retry": [{
@@ -41,35 +41,14 @@
 
           "ContentGeneration": {
             "Type": "Task",
-            "Resource": "arn:aws:states:::ecs:runTask.sync",
+            "Resource": "arn:aws:states:::lambda:invoke",
             "Parameters": {
-              "Cluster": "${ecs_cluster_arn}",
-              "TaskDefinition": "${ecs_task_definition_arn}",
-              "LaunchType": "FARGATE",
-              "NetworkConfiguration": {
-                "AwsvpcConfiguration": {
-                  "Subnets": ${subnets_json},
-                  "SecurityGroups": ["${sg_app_id}"],
-                  "AssignPublicIp": "DISABLED"
-                }
-              },
-              "Overrides": {
-                "ContainerOverrides": [{
-                  "Name": "${ecs_container_name}",
-                  "Environment": [
-                    {"Name": "PIPELINE_MODE",       "Value": "step_functions"},
-                    {"Name": "TOUR_ID",              "Value.$": "$.tour_id"},
-                    {"Name": "BATCH_ID",             "Value.$": "$.batch_id"},
-                    {"Name": "TENANT_ID",            "Value.$": "$.tenant_id"},
-                    {"Name": "RETRY_COUNT",          "Value.$": "States.JsonToString($.retry_count)"},
-                    {"Name": "VALIDATION_FEEDBACK",  "Value.$": "States.JsonToString($.validation_feedback)"}
-                  ]
-                }]
-              }
+              "FunctionName": "arn:aws:lambda:us-west-1:867490540162:function:aa-cis-dev-content",
+              "Payload.$": "$"
             },
             "ResultPath": "$.content_result",
             "Retry": [{
-              "ErrorEquals": ["States.TaskFailed"],
+              "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.TooManyRequestsException"],
               "IntervalSeconds": 30,
               "MaxAttempts": 2,
               "BackoffRate": 2.0
@@ -85,7 +64,7 @@
           "ContentGenFailed": {
             "Type": "Fail",
             "Error": "ContentGenerationFailed",
-            "Cause": "ECS task failed after retries"
+            "Cause": "Content Lambda failed after retries"
           },
 
           "Validation": {
@@ -93,7 +72,7 @@
             "Resource": "arn:aws:states:::lambda:invoke",
             "Parameters": {
               "FunctionName": "${validation_lambda_arn}",
-              "Payload.$": "$$"
+              "Payload.$": "$"
             },
             "ResultPath": "$.validation_result",
             "Retry": [{
@@ -120,20 +99,14 @@
             "Type": "Choice",
             "Choices": [
               {
-                "Variable": "$.validation_result.Payload.score_overall",
+                "Variable": "$.validation_result.Payload.score",
                 "NumericGreaterThanEquals": 7.0,
                 "Next": "Export"
               },
               {
                 "And": [
-                  {
-                    "Variable": "$.validation_result.Payload.score_overall",
-                    "NumericLessThan": 7.0
-                  },
-                  {
-                    "Variable": "$.retry_count",
-                    "NumericLessThan": 3
-                  }
+                  {"Variable": "$.validation_result.Payload.score", "NumericLessThan": 7.0},
+                  {"Variable": "$.retry_count", "NumericLessThan": 3}
                 ],
                 "Next": "PrepareRetry"
               }
@@ -164,7 +137,7 @@
                 "task_token.$": "$$.Task.Token",
                 "tour_id.$":    "$.tour_id",
                 "tenant_id.$":  "$.tenant_id",
-                "score.$":      "$.validation_result.Payload.score_overall",
+                "score.$":      "$.validation_result.Payload.score",
                 "failed_rules.$": "$.validation_result.Payload.failed_rules"
               }
             },
@@ -188,16 +161,8 @@
           "HITLDecision": {
             "Type": "Choice",
             "Choices": [
-              {
-                "Variable": "$.hitl_result.decision",
-                "StringEquals": "approved",
-                "Next": "Export"
-              },
-              {
-                "Variable": "$.hitl_result.decision",
-                "StringEquals": "regenerate",
-                "Next": "PrepareRetry"
-              }
+              {"Variable": "$.hitl_result.decision", "StringEquals": "approved", "Next": "Export"},
+              {"Variable": "$.hitl_result.decision", "StringEquals": "regenerate", "Next": "PrepareRetry"}
             ],
             "Default": "TourRejected"
           },
@@ -213,7 +178,7 @@
             "Resource": "arn:aws:states:::lambda:invoke",
             "Parameters": {
               "FunctionName": "${export_lambda_arn}",
-              "Payload.$": "$$"
+              "Payload.$": "$"
             },
             "ResultPath": "$.export_result",
             "Retry": [{

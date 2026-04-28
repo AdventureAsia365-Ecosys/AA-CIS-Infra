@@ -177,8 +177,10 @@ resource "aws_ecs_service" "api" {
     container_port   = 8000
   }
 
+  enable_execute_command = true
+
   lifecycle {
-    ignore_changes = [desired_count]
+    ignore_changes = [desired_count, task_definition]
   }
 
   depends_on = [aws_iam_role_policy_attachment.ecs_execution]

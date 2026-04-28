@@ -42,3 +42,13 @@ output "lambda_exec_role_arn" {
   description = "ARN of shared Lambda execution role"
   value       = aws_iam_role.lambda_exec.arn
 }
+
+output "content_lambda_arn" {
+  description = "ARN of Content Generation Lambda"
+  value       = aws_lambda_function.content.arn
+}
+
+output "content_lambda_name" {
+  description = "Name of Content Generation Lambda"
+  value       = aws_lambda_function.content.function_name
+}
