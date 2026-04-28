@@ -110,3 +110,8 @@ variable "anthropic_api_key" {
   default   = ""
   sensitive = true
 }
+
+variable "secret_admin_arn" {
+  description = "ARN of Secrets Manager secret for ADMIN_SECRET"
+  type        = string
+}
