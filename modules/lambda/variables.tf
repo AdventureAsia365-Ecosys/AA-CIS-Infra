@@ -136,3 +136,9 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "api_base_url" {
+  description = "Base URL of the ECS API for content Lambda to call"
+  type        = string
+  default     = ""
+}

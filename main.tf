@@ -125,6 +125,7 @@ module "step_functions" {
   seo_lambda_arn        = module.lambda.seo_lambda_arn
   validation_lambda_arn = module.lambda.validation_lambda_arn
   export_lambda_arn     = module.lambda.export_lambda_arn
+  content_lambda_arn    = module.lambda.content_lambda_arn
 
   ecs_cluster_arn         = module.ecs.cluster_arn
   ecs_task_definition_arn = local.api_task_def_arn
@@ -167,6 +168,7 @@ module "lambda" {
   anthropic_api_key   = var.anthropic_api_key
 
   lambda_zip_dir = "/home/nghiep/projects/aa-cis/AA-CIS-Infra/dist/lambdas"
+  api_base_url   = "https://api-cis.lumiguides.it.com"
 
   tags = local.common_tags
 }
@@ -177,7 +179,7 @@ locals {
   bronze_bucket_name = "aa-cis-bronze-867490540162"
   gold_bucket_arn    = "arn:aws:s3:::aa-cis-gold-867490540162"
   gold_bucket_name   = "aa-cis-gold-867490540162"
-  api_task_def_arn   = "arn:aws:ecs:us-west-1:867490540162:task-definition/aa-cis-dev-api:21"
+  api_task_def_arn   = "arn:aws:ecs:us-west-1:867490540162:task-definition/aa-cis-dev-api:30"
 }
 
 module "monitoring" {

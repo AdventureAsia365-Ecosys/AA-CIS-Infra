@@ -37,7 +37,8 @@ resource "aws_iam_role_policy" "sfn_permissions" {
         Resource = [
           var.seo_lambda_arn, "${var.seo_lambda_arn}:*",
           var.validation_lambda_arn, "${var.validation_lambda_arn}:*",
-          var.export_lambda_arn, "${var.export_lambda_arn}:*"
+          var.export_lambda_arn, "${var.export_lambda_arn}:*",
+          var.content_lambda_arn, "${var.content_lambda_arn}:*"
         ]
       },
       {

@@ -334,3 +334,36 @@ resource "aws_lambda_function" "export" {
 
   tags = merge(local.common_tags, { Function = "export" })
 }
+
+# =============================================================================
+# LAMBDA 5 — Content Generation
+# Trigger: Step Functions Task (per-tour)
+# Input:   {tour_id, batch_id, tenant_id, retry_count, validation_feedback}
+# Output:  {tour_id, batch_id, version_id, status, quality_score}
+# =============================================================================
+resource "aws_cloudwatch_log_group" "content" {
+  name              = "/aws/lambda/${local.name_prefix}-content"
+  retention_in_days = 14
+  tags              = local.common_tags
+}
+
+resource "aws_lambda_function" "content" {
+  function_name = "${local.name_prefix}-content"
+  role          = aws_iam_role.lambda_exec.arn
+  handler       = "handler.lambda_handler"
+  runtime       = "python3.12"
+  timeout       = 840
+  memory_size   = 256
+  filename         = "${var.lambda_zip_dir}/content.zip"
+  source_code_hash = filebase64sha256("${var.lambda_zip_dir}/content.zip")
+  environment {
+    variables = merge(local.common_env, {
+      API_BASE_URL = var.api_base_url
+    })
+  }
+  depends_on = [
+    aws_cloudwatch_log_group.content,
+    aws_iam_role_policy_attachment.lambda_vpc,
+  ]
+  tags = merge(local.common_tags, { Function = "content" })
+}

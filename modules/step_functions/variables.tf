@@ -53,3 +53,8 @@ variable "tags" {
   type    = map(string)
   default = {}
 }
+
+variable "content_lambda_arn" {
+  description = "ARN of the content generation Lambda"
+  type        = string
+}
