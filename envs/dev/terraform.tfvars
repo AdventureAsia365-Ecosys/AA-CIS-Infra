@@ -29,7 +29,7 @@ task_cpu              = 512
 task_memory           = 1024
 service_desired_count = 1
 secret_rds_arn        = "arn:aws:secretsmanager:us-west-1:867490540162:secret:aa-cis/dev/rds-9dlb81"
-secret_openai_arn     = "arn:aws:secretsmanager:us-west-1:867490540162:secret:aa-cis/dev/openai-nlOYzI"
+secret_openai_arn     = "arn:aws:secretsmanager:us-west-1:867490540162:secret:aa-cis/dev/openai-key-1XRdRv"
 secret_langfuse_arn   = "arn:aws:secretsmanager:us-west-1:867490540162:secret:aa-cis/dev/langfuse-f2nGMJ"
 
 # Phase 4 — Lambda + Step Functions
