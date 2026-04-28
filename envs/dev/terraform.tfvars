@@ -33,7 +33,7 @@ secret_openai_arn     = "arn:aws:secretsmanager:us-west-1:867490540162:secret:aa
 secret_langfuse_arn   = "arn:aws:secretsmanager:us-west-1:867490540162:secret:aa-cis/dev/langfuse-f2nGMJ"
 
 # Phase 4 — Lambda + Step Functions
-database_url        = "postgresql://aa_cis_admin:AaCisxCClZPjaO8pNdHvDev26@aa-cis-dev-db.cr2y6824szn3.us-west-1.rds.amazonaws.com:5432/aa_cis_dev"
+database_url        = "postgresql://aa_cis_admin:zvnRUZerCZT4Wkwjk8pb73CEXbl1eXkZ@aa-cis-dev-db.cr2y6824szn3.us-west-1.rds.amazonaws.com:5432/aa_cis_dev?sslmode=require"
 redis_url           = "redis://aa-cis-dev-redis.wvp8vb.0001.usw1.cache.amazonaws.com:6379"
 dataforseo_login    = "thu@adventure.asia"
 dataforseo_password = "19a29acdfd0dbcd8"
