@@ -179,3 +179,12 @@ locals {
   gold_bucket_name   = "aa-cis-gold-867490540162"
   api_task_def_arn   = "arn:aws:ecs:us-west-1:867490540162:task-definition/aa-cis-dev-api:21"
 }
+
+module "monitoring" {
+  source      = "./modules/monitoring"
+  project     = var.project
+  environment = var.environment
+  aws_region  = var.aws_region
+  account_id  = var.account_id
+  tags        = local.common_tags
+}
