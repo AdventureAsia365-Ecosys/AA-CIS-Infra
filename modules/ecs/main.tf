@@ -133,7 +133,10 @@ resource "aws_ecs_task_definition" "api" {
       { name = "DATABASE_URL",       valueFrom = var.secret_rds_arn },
       { name = "OPENAI_API_KEY",     valueFrom = var.secret_openai_arn },
       { name = "LANGFUSE_SECRET_KEY", valueFrom = var.secret_langfuse_arn },
-      { name = "ADMIN_SECRET",       valueFrom = var.secret_admin_arn },
+      { name = "ADMIN_SECRET",        valueFrom = var.secret_admin_arn },
+      { name = "LANGFUSE_PUBLIC_KEY", valueFrom = var.secret_langfuse_public_key_arn },
+      { name = "LANGFUSE_HOST",       valueFrom = var.secret_langfuse_host_arn },
+      { name = "ANTHROPIC_API_KEY",   valueFrom = var.secret_anthropic_arn },
     ]
     logConfiguration = {
       logDriver = "awslogs"
