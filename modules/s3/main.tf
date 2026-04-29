@@ -334,3 +334,21 @@ resource "aws_s3_bucket_policy" "gold" {
 # TFSTATE BUCKET — unchanged, managed separately
 # aa-cis-tfstate-{account_id} — already exists, do not recreate
 # =============================================================================
+
+# =============================================================================
+# S3 CORS — Bronze bucket (added TD-1 sync 29/04/2026)
+# =============================================================================
+resource "aws_s3_bucket_cors_configuration" "bronze" {
+  bucket = aws_s3_bucket.bronze.id
+
+  cors_rule {
+    allowed_headers = ["*"]
+    allowed_methods = ["GET", "PUT", "POST", "DELETE", "HEAD"]
+    allowed_origins = [
+      "https://aa-cis.lumiguides.it.com",
+      "http://localhost:3000",
+    ]
+    expose_headers  = ["ETag"]
+    max_age_seconds = 3000
+  }
+}
