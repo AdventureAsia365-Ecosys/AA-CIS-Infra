@@ -350,7 +350,7 @@ resource "aws_cloudwatch_log_group" "content" {
 resource "aws_lambda_function" "content" {
   function_name = "${local.name_prefix}-content"
   role          = aws_iam_role.lambda_exec.arn
-  handler       = "handler.lambda_handler"
+  handler       = "services.content_generation.handler.lambda_handler"
   runtime       = "python3.12"
   timeout       = 840
   memory_size   = 256
