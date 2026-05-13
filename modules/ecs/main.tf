@@ -137,6 +137,8 @@ resource "aws_ecs_task_definition" "api" {
       { name = "LANGFUSE_PUBLIC_KEY", valueFrom = var.secret_langfuse_public_key_arn },
       { name = "LANGFUSE_HOST",       valueFrom = var.secret_langfuse_host_arn },
       { name = "ANTHROPIC_API_KEY",   valueFrom = var.secret_anthropic_arn },
+      { name = "DATAFORSEO_LOGIN",    valueFrom = "${var.secret_dataforseo_arn}:login::" },
+      { name = "DATAFORSEO_PASSWORD", valueFrom = "${var.secret_dataforseo_arn}:password::" },
     ]
     logConfiguration = {
       logDriver = "awslogs"
