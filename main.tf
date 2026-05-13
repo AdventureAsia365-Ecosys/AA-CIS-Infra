@@ -107,6 +107,7 @@ module "ecs" {
   secret_langfuse_public_key_arn = var.secret_langfuse_public_key_arn
   secret_langfuse_host_arn       = var.secret_langfuse_host_arn
   secret_anthropic_arn           = var.secret_anthropic_arn
+  secret_dataforseo_arn          = "arn:aws:secretsmanager:us-west-1:867490540162:secret:aa-cis/dev/dataforseo-lECabM"
 
   depends_on = [module.vpc, module.alb]
 }
@@ -188,6 +189,20 @@ locals {
 
 module "monitoring" {
   source      = "./modules/monitoring"
+  project     = var.project
+  environment = var.environment
+  aws_region  = var.aws_region
+  account_id  = var.account_id
+  tags        = local.common_tags
+}
+
+# =============================================================================
+# AA-40 — ACP Pipeline Core Infrastructure
+# EventBridge bus + Scheduler rules for Adventure Asia Content Pipeline
+# =============================================================================
+
+module "eventbridge" {
+  source      = "./modules/eventbridge"
   project     = var.project
   environment = var.environment
   aws_region  = var.aws_region

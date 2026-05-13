@@ -331,6 +331,214 @@ resource "aws_s3_bucket_policy" "gold" {
 }
 
 # =============================================================================
+# ACP BUCKETS — Adventure Asia Content Pipeline medallion layers
+# Separate from CIS buckets; prefixed with -acp-
+# AA-40
+# =============================================================================
+
+locals {
+  acp_bronze_bucket = "${var.project}-acp-bronze-${local.account_id}"
+  acp_silver_bucket = "${var.project}-acp-silver-${local.account_id}"
+  acp_gold_bucket   = "${var.project}-acp-gold-${local.account_id}"
+}
+
+resource "aws_s3_bucket" "acp_bronze" {
+  bucket        = local.acp_bronze_bucket
+  force_destroy = var.environment == "dev" ? true : false
+
+  tags = merge(local.common_tags, {
+    Name     = local.acp_bronze_bucket
+    Layer    = "bronze"
+    Pipeline = "acp"
+    Notes    = "ACP raw content intake - immutable"
+  })
+}
+
+resource "aws_s3_bucket_versioning" "acp_bronze" {
+  bucket = aws_s3_bucket.acp_bronze.id
+  versioning_configuration { status = "Enabled" }
+}
+
+resource "aws_s3_bucket_public_access_block" "acp_bronze" {
+  bucket                  = aws_s3_bucket.acp_bronze.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "acp_bronze" {
+  bucket = aws_s3_bucket.acp_bronze.id
+  rule {
+    apply_server_side_encryption_by_default { sse_algorithm = "AES256" }
+  }
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "acp_bronze" {
+  bucket = aws_s3_bucket.acp_bronze.id
+
+  rule {
+    id     = "acp-raw-archive-glacier"
+    status = "Enabled"
+    filter { prefix = "raw-archive/" }
+    transition {
+      days          = 90
+      storage_class = "GLACIER"
+    }
+    expiration { days = 2555 }
+  }
+}
+
+resource "aws_s3_bucket_policy" "acp_bronze" {
+  bucket = aws_s3_bucket.acp_bronze.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid       = "DenyUnencryptedTransport"
+      Effect    = "Deny"
+      Principal = "*"
+      Action    = "s3:*"
+      Resource  = [aws_s3_bucket.acp_bronze.arn, "${aws_s3_bucket.acp_bronze.arn}/*"]
+      Condition = { Bool = { "aws:SecureTransport" = "false" } }
+    }]
+  })
+}
+
+resource "aws_s3_bucket" "acp_silver" {
+  bucket        = local.acp_silver_bucket
+  force_destroy = var.environment == "dev" ? true : false
+
+  tags = merge(local.common_tags, {
+    Name     = local.acp_silver_bucket
+    Layer    = "silver"
+    Pipeline = "acp"
+    Notes    = "ACP validated and enriched content"
+  })
+}
+
+resource "aws_s3_bucket_versioning" "acp_silver" {
+  bucket = aws_s3_bucket.acp_silver.id
+  versioning_configuration { status = "Enabled" }
+}
+
+resource "aws_s3_bucket_public_access_block" "acp_silver" {
+  bucket                  = aws_s3_bucket.acp_silver.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "acp_silver" {
+  bucket = aws_s3_bucket.acp_silver.id
+  rule {
+    apply_server_side_encryption_by_default { sse_algorithm = "AES256" }
+  }
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "acp_silver" {
+  bucket = aws_s3_bucket.acp_silver.id
+
+  rule {
+    id     = "acp-processed-tiering"
+    status = "Enabled"
+    filter { prefix = "processed/" }
+    transition {
+      days          = 30
+      storage_class = "STANDARD_IA"
+    }
+    transition {
+      days          = 90
+      storage_class = "GLACIER"
+    }
+    expiration { days = 365 }
+  }
+}
+
+resource "aws_s3_bucket_policy" "acp_silver" {
+  bucket = aws_s3_bucket.acp_silver.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid       = "DenyUnencryptedTransport"
+      Effect    = "Deny"
+      Principal = "*"
+      Action    = "s3:*"
+      Resource  = [aws_s3_bucket.acp_silver.arn, "${aws_s3_bucket.acp_silver.arn}/*"]
+      Condition = { Bool = { "aws:SecureTransport" = "false" } }
+    }]
+  })
+}
+
+resource "aws_s3_bucket" "acp_gold" {
+  bucket        = local.acp_gold_bucket
+  force_destroy = var.environment == "dev" ? true : false
+
+  tags = merge(local.common_tags, {
+    Name     = local.acp_gold_bucket
+    Layer    = "gold"
+    Pipeline = "acp"
+    Notes    = "ACP published content ready for delivery"
+  })
+}
+
+resource "aws_s3_bucket_versioning" "acp_gold" {
+  bucket = aws_s3_bucket.acp_gold.id
+  versioning_configuration { status = "Enabled" }
+}
+
+resource "aws_s3_bucket_public_access_block" "acp_gold" {
+  bucket                  = aws_s3_bucket.acp_gold.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "acp_gold" {
+  bucket = aws_s3_bucket.acp_gold.id
+  rule {
+    apply_server_side_encryption_by_default { sse_algorithm = "AES256" }
+  }
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "acp_gold" {
+  bucket = aws_s3_bucket.acp_gold.id
+
+  rule {
+    id     = "acp-exports-expire"
+    status = "Enabled"
+    filter { prefix = "exports/" }
+    expiration { days = 7 }
+  }
+
+  rule {
+    id     = "acp-published-tiering"
+    status = "Enabled"
+    filter { prefix = "published/" }
+    transition {
+      days          = 30
+      storage_class = "INTELLIGENT_TIERING"
+    }
+  }
+}
+
+resource "aws_s3_bucket_policy" "acp_gold" {
+  bucket = aws_s3_bucket.acp_gold.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid       = "DenyUnencryptedTransport"
+      Effect    = "Deny"
+      Principal = "*"
+      Action    = "s3:*"
+      Resource  = [aws_s3_bucket.acp_gold.arn, "${aws_s3_bucket.acp_gold.arn}/*"]
+      Condition = { Bool = { "aws:SecureTransport" = "false" } }
+    }]
+  })
+}
+
+# =============================================================================
 # TFSTATE BUCKET — unchanged, managed separately
 # aa-cis-tfstate-{account_id} — already exists, do not recreate
 # =============================================================================
