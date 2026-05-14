@@ -79,7 +79,7 @@ resource "aws_iam_role_policy" "lambda_permissions" {
         Resource = [
           var.secret_rds_arn,
           var.secret_openai_arn,
-          var.secret_langfuse_arn
+          # var.secret_langfuse_arn  # AA-23: removed
         ]
       },
       # Step Functions — Ingestion triggers SF execution

@@ -53,9 +53,10 @@ resource "aws_secretsmanager_secret_version" "acp_partner_api" {
   }
 }
 
-data "aws_secretsmanager_secret" "langfuse" {
-  name = "${local.secret_prefix}/langfuse"
-}
+# AA-23: removed
+# data "aws_secretsmanager_secret" "langfuse" {
+#   name = "${local.secret_prefix}/langfuse"
+# }
 
 data "aws_secretsmanager_secret" "rds" {
   name = "${local.secret_prefix}/rds"

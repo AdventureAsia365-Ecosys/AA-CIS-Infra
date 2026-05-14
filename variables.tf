@@ -76,10 +76,11 @@ variable "secret_openai_arn" {
   type        = string
 }
 
-variable "secret_langfuse_arn" {
-  description = "Secrets Manager ARN for LANGFUSE_SECRET_KEY"
-  type        = string
-}
+# AA-23: removed
+# variable "secret_langfuse_arn" {
+#   description = "Secrets Manager ARN for LANGFUSE_SECRET_KEY"
+#   type        = string
+# }
 
 # Phase 4 — Lambda + Step Functions
 variable "database_url" {
@@ -116,15 +117,17 @@ variable "secret_admin_arn" {
   type        = string
 }
 
-variable "secret_langfuse_public_key_arn" {
-  description = "ARN of Langfuse public key secret"
-  type        = string
-}
+# AA-23: removed
+# variable "secret_langfuse_public_key_arn" {
+#   description = "ARN of Langfuse public key secret"
+#   type        = string
+# }
 
-variable "secret_langfuse_host_arn" {
-  description = "ARN of Langfuse host secret"
-  type        = string
-}
+# AA-23: removed
+# variable "secret_langfuse_host_arn" {
+#   description = "ARN of Langfuse host secret"
+#   type        = string
+# }
 
 variable "secret_anthropic_arn" {
   description = "ARN of Anthropic API key secret"

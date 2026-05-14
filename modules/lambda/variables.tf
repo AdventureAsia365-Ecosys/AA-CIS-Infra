@@ -61,10 +61,11 @@ variable "secret_openai_arn" {
   type        = string
 }
 
-variable "secret_langfuse_arn" {
-  description = "ARN of Langfuse credentials secret"
-  type        = string
-}
+# AA-23: removed
+# variable "secret_langfuse_arn" {
+#   description = "ARN of Langfuse credentials secret"
+#   type        = string
+# }
 
 # Step Functions
 variable "step_functions_arn" {
