@@ -47,19 +47,19 @@ resource "aws_lb_target_group" "api" {
   }
 }
 
-# ── HTTP Listener (redirect to HTTPS) ────────────────────────
+# ── HTTP Listener (forward — API Gateway HTTP_PROXY backend) ──
+# API Gateway HTTP_PROXY cannot follow 301 redirects, and TLS verification
+# would fail on HTTPS because the ALB cert only covers the custom domain, not
+# the ELB hostname. Forwarding on HTTP allows API Gateway to reach the backend.
+# Auth is enforced by the Lambda Authorizer before any request reaches the ALB.
 resource "aws_lb_listener" "http" {
   load_balancer_arn = aws_lb.main.arn
   port              = 80
   protocol          = "HTTP"
 
   default_action {
-    type = "redirect"
-    redirect {
-      port        = "443"
-      protocol    = "HTTPS"
-      status_code = "HTTP_301"
-    }
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.api.arn
   }
 }
 
