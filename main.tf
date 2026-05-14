@@ -229,7 +229,7 @@ module "api_gateway" {
   authorizer_lambda_invoke_arn = module.lambda.authorizer_lambda_invoke_arn
   authorizer_lambda_name       = module.lambda.authorizer_lambda_name
   alb_dns_name                 = "aa-cis-dev-alb-1114303360.us-west-1.elb.amazonaws.com"
-  acm_cert_arn_us_east1        = "arn:aws:acm:us-east-1:867490540162:certificate/7de7837f-a849-4188-a814-ed494b6e65fd"
+  acm_cert_arn_us_east1        = "arn:aws:acm:us-west-1:867490540162:certificate/260ab2f0-06f6-456b-b5d7-a4d0af96d405"
 
   depends_on = [module.lambda]
 }
