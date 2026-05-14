@@ -74,17 +74,85 @@ resource "aws_api_gateway_integration" "root" {
   uri                     = "http://${var.alb_dns_name}"
 }
 
+# =============================================================================
+# Public resources — NONE authorization (bypass Lambda Authorizer)
+# =============================================================================
+
+# /health — unauthenticated health check
+resource "aws_api_gateway_resource" "health" {
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  parent_id   = aws_api_gateway_rest_api.this.root_resource_id
+  path_part   = "health"
+}
+
+resource "aws_api_gateway_method" "health" {
+  rest_api_id   = aws_api_gateway_rest_api.this.id
+  resource_id   = aws_api_gateway_resource.health.id
+  http_method   = "GET"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "health" {
+  rest_api_id             = aws_api_gateway_rest_api.this.id
+  resource_id             = aws_api_gateway_resource.health.id
+  http_method             = aws_api_gateway_method.health.http_method
+  type                    = "HTTP_PROXY"
+  integration_http_method = "GET"
+  uri                     = "http://${var.alb_dns_name}/health"
+}
+
+# /auth/{auth_proxy+} — login, refresh, verify (no API key required)
+resource "aws_api_gateway_resource" "auth" {
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  parent_id   = aws_api_gateway_rest_api.this.root_resource_id
+  path_part   = "auth"
+}
+
+resource "aws_api_gateway_resource" "auth_proxy" {
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  parent_id   = aws_api_gateway_resource.auth.id
+  path_part   = "{auth_proxy+}"
+}
+
+resource "aws_api_gateway_method" "auth_any" {
+  rest_api_id   = aws_api_gateway_rest_api.this.id
+  resource_id   = aws_api_gateway_resource.auth_proxy.id
+  http_method   = "ANY"
+  authorization = "NONE"
+
+  request_parameters = {
+    "method.request.path.auth_proxy" = true
+  }
+}
+
+resource "aws_api_gateway_integration" "auth" {
+  rest_api_id             = aws_api_gateway_rest_api.this.id
+  resource_id             = aws_api_gateway_resource.auth_proxy.id
+  http_method             = aws_api_gateway_method.auth_any.http_method
+  type                    = "HTTP_PROXY"
+  integration_http_method = "ANY"
+  uri                     = "http://${var.alb_dns_name}/auth/{auth_proxy}"
+
+  request_parameters = {
+    "integration.request.path.auth_proxy" = "method.request.path.auth_proxy"
+  }
+}
+
 # Deployment
 resource "aws_api_gateway_deployment" "this" {
   rest_api_id = aws_api_gateway_rest_api.this.id
   depends_on = [
     aws_api_gateway_integration.proxy,
     aws_api_gateway_integration.root,
+    aws_api_gateway_integration.health,
+    aws_api_gateway_integration.auth,
   ]
   triggers = {
     redeployment = sha1(join(",", [
       aws_api_gateway_integration.proxy.uri,
       aws_api_gateway_integration.root.uri,
+      aws_api_gateway_integration.health.uri,
+      aws_api_gateway_integration.auth.uri,
       aws_api_gateway_authorizer.tenant_key.id,
     ]))
   }
