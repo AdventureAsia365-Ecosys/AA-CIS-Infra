@@ -102,10 +102,10 @@ module "ecs" {
   # Secrets
   secret_rds_arn      = var.secret_rds_arn
   secret_openai_arn   = var.secret_openai_arn
-  secret_langfuse_arn = var.secret_langfuse_arn
+  # secret_langfuse_arn            = var.secret_langfuse_arn            # AA-23: removed
   secret_admin_arn               = var.secret_admin_arn
-  secret_langfuse_public_key_arn = var.secret_langfuse_public_key_arn
-  secret_langfuse_host_arn       = var.secret_langfuse_host_arn
+  # secret_langfuse_public_key_arn = var.secret_langfuse_public_key_arn  # AA-23: removed
+  # secret_langfuse_host_arn       = var.secret_langfuse_host_arn        # AA-23: removed
   secret_anthropic_arn           = var.secret_anthropic_arn
   secret_dataforseo_arn          = "arn:aws:secretsmanager:us-west-1:867490540162:secret:aa-cis/dev/dataforseo-lECabM"
 
@@ -159,7 +159,7 @@ module "lambda" {
 
   secret_rds_arn      = var.secret_rds_arn
   secret_openai_arn   = var.secret_openai_arn
-  secret_langfuse_arn = var.secret_langfuse_arn
+  # secret_langfuse_arn = var.secret_langfuse_arn  # AA-23: removed
 
   step_functions_arn      = module.step_functions.state_machine_arn
   ecs_cluster_arn         = module.ecs.cluster_arn

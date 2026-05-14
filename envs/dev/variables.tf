@@ -101,9 +101,10 @@ variable "secret_openai_arn" {
   type = string
 }
 
-variable "secret_langfuse_arn" {
-  type = string
-}
+# AA-23: removed
+# variable "secret_langfuse_arn" {
+#   type = string
+# }
 
 # =============================================================================
 # Phase 4 additions — Lambda + Step Functions

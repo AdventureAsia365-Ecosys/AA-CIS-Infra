@@ -56,25 +56,28 @@ variable "secret_openai_arn" {
   description = "Secrets Manager ARN for OPENAI_API_KEY"
 }
 
-variable "secret_langfuse_arn" {
-  type        = string
-  description = "Secrets Manager ARN for LANGFUSE_SECRET_KEY"
-}
+# AA-23: removed
+# variable "secret_langfuse_arn" {
+#   type        = string
+#   description = "Secrets Manager ARN for LANGFUSE_SECRET_KEY"
+# }
 
 variable "secret_admin_arn" {
   description = "ARN of Secrets Manager secret for ADMIN_SECRET"
   type        = string
 }
 
-variable "secret_langfuse_public_key_arn" {
-  description = "ARN of Langfuse public key secret"
-  type        = string
-}
+# AA-23: removed
+# variable "secret_langfuse_public_key_arn" {
+#   description = "ARN of Langfuse public key secret"
+#   type        = string
+# }
 
-variable "secret_langfuse_host_arn" {
-  description = "ARN of Langfuse host secret"
-  type        = string
-}
+# AA-23: removed
+# variable "secret_langfuse_host_arn" {
+#   description = "ARN of Langfuse host secret"
+#   type        = string
+# }
 
 variable "secret_anthropic_arn" {
   description = "ARN of Anthropic API key secret"
