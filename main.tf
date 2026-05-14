@@ -233,3 +233,40 @@ module "api_gateway" {
 
   depends_on = [module.lambda]
 }
+
+# =============================================================================
+# AA-13 — GitHub Actions role: API Gateway permissions
+# aa-cis-dev-role exists in AWS (created manually, not TF-managed).
+# Adding a separate inline policy so Terraform can own just this statement.
+# =============================================================================
+
+resource "aws_iam_role_policy" "github_actions_apigateway" {
+  name = "APIGatewayPolicy"
+  role = "aa-cis-dev-role"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "apigateway:GET",
+          "apigateway:POST",
+          "apigateway:PUT",
+          "apigateway:DELETE",
+          "apigateway:PATCH",
+          "apigateway:HEAD",
+          "apigateway:OPTIONS",
+        ]
+        Resource = [
+          "arn:aws:apigateway:${var.aws_region}::/restapis",
+          "arn:aws:apigateway:${var.aws_region}::/restapis/*",
+          "arn:aws:apigateway:${var.aws_region}::/domainnames",
+          "arn:aws:apigateway:${var.aws_region}::/domainnames/*",
+          "arn:aws:apigateway:${var.aws_region}::/usageplans",
+          "arn:aws:apigateway:${var.aws_region}::/usageplans/*",
+        ]
+      }
+    ]
+  })
+}
