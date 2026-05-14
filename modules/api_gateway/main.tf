@@ -18,7 +18,7 @@ resource "aws_api_gateway_authorizer" "tenant_key" {
   rest_api_id                      = aws_api_gateway_rest_api.this.id
   type                             = "TOKEN"
   identity_source                  = "method.request.header.X-API-Key"
-  authorizer_uri                   = "arn:aws:apigateway:${var.aws_region}:lambda:path/2015-03-31/functions/${var.authorizer_lambda_invoke_arn}/invocations"
+  authorizer_uri                   = var.authorizer_lambda_invoke_arn
   authorizer_result_ttl_in_seconds = 300
 }
 

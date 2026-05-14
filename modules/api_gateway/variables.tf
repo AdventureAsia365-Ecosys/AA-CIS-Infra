@@ -41,7 +41,7 @@ variable "alb_dns_name" {
 }
 
 variable "acm_cert_arn_us_east1" {
-  description = "ACM certificate ARN (us-east-1) for custom domain"
+  description = "ACM certificate ARN (must be in same region as API — us-west-1 for REGIONAL endpoint)"
   type        = string
-  default     = "arn:aws:acm:us-east-1:867490540162:certificate/7de7837f-a849-4188-a814-ed494b6e65fd"
+  default     = "arn:aws:acm:us-west-1:867490540162:certificate/260ab2f0-06f6-456b-b5d7-a4d0af96d405"
 }
