@@ -1,6 +1,7 @@
 # =============================================================================
 # AA-CIS API Gateway Module — AA-13
-# REST API + TOKEN authorizer + HTTP_PROXY to ALB + usage plans + custom domain
+# REST API + TOKEN authorizer scoped to /v1/* only
+# All other routes (admin, content, docs, auth, health) use NONE — FastAPI JWT.
 # =============================================================================
 
 # REST API
@@ -22,47 +23,12 @@ resource "aws_api_gateway_authorizer" "tenant_key" {
   authorizer_result_ttl_in_seconds = 300
 }
 
-# {proxy+} resource — catches all paths
-resource "aws_api_gateway_resource" "proxy" {
-  rest_api_id = aws_api_gateway_rest_api.this.id
-  parent_id   = aws_api_gateway_rest_api.this.root_resource_id
-  path_part   = "{proxy+}"
-}
-
-# ANY method on {proxy+} with tenant authorizer
-resource "aws_api_gateway_method" "proxy_any" {
-  rest_api_id   = aws_api_gateway_rest_api.this.id
-  resource_id   = aws_api_gateway_resource.proxy.id
-  http_method   = "ANY"
-  authorization = "CUSTOM"
-  authorizer_id = aws_api_gateway_authorizer.tenant_key.id
-
-  request_parameters = {
-    "method.request.path.proxy" = true
-  }
-}
-
-# HTTP_PROXY integration → ALB (internet-facing, no NLB needed)
-resource "aws_api_gateway_integration" "proxy" {
-  rest_api_id             = aws_api_gateway_rest_api.this.id
-  resource_id             = aws_api_gateway_resource.proxy.id
-  http_method             = aws_api_gateway_method.proxy_any.http_method
-  type                    = "HTTP_PROXY"
-  integration_http_method = "ANY"
-  uri                     = "http://${var.alb_dns_name}/{proxy}"
-
-  request_parameters = {
-    "integration.request.path.proxy" = "method.request.path.proxy"
-  }
-}
-
-# Root (/) method — required for health checks and base path calls
+# Root (/) — NONE auth, passes through to ALB root
 resource "aws_api_gateway_method" "root" {
   rest_api_id   = aws_api_gateway_rest_api.this.id
   resource_id   = aws_api_gateway_rest_api.this.root_resource_id
   http_method   = "ANY"
-  authorization = "CUSTOM"
-  authorizer_id = aws_api_gateway_authorizer.tenant_key.id
+  authorization = "NONE"
 }
 
 resource "aws_api_gateway_integration" "root" {
@@ -75,7 +41,7 @@ resource "aws_api_gateway_integration" "root" {
 }
 
 # =============================================================================
-# Public resources — NONE authorization (bypass Lambda Authorizer)
+# Public resources — NONE authorization (protected by FastAPI JWT middleware)
 # =============================================================================
 
 # /health — unauthenticated health check
@@ -138,21 +104,193 @@ resource "aws_api_gateway_integration" "auth" {
   }
 }
 
-# Deployment
+# /admin/{admin_proxy+} — internal admin routes, protected by FastAPI JWT
+resource "aws_api_gateway_resource" "admin" {
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  parent_id   = aws_api_gateway_rest_api.this.root_resource_id
+  path_part   = "admin"
+}
+
+resource "aws_api_gateway_resource" "admin_proxy" {
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  parent_id   = aws_api_gateway_resource.admin.id
+  path_part   = "{admin_proxy+}"
+}
+
+resource "aws_api_gateway_method" "admin_any" {
+  rest_api_id   = aws_api_gateway_rest_api.this.id
+  resource_id   = aws_api_gateway_resource.admin_proxy.id
+  http_method   = "ANY"
+  authorization = "NONE"
+
+  request_parameters = {
+    "method.request.path.admin_proxy" = true
+  }
+}
+
+resource "aws_api_gateway_integration" "admin" {
+  rest_api_id             = aws_api_gateway_rest_api.this.id
+  resource_id             = aws_api_gateway_resource.admin_proxy.id
+  http_method             = aws_api_gateway_method.admin_any.http_method
+  type                    = "HTTP_PROXY"
+  integration_http_method = "ANY"
+  uri                     = "http://${var.alb_dns_name}/admin/{admin_proxy}"
+
+  request_parameters = {
+    "integration.request.path.admin_proxy" = "method.request.path.admin_proxy"
+  }
+}
+
+# /content/{content_proxy+} — content team routes, protected by FastAPI JWT
+resource "aws_api_gateway_resource" "content" {
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  parent_id   = aws_api_gateway_rest_api.this.root_resource_id
+  path_part   = "content"
+}
+
+resource "aws_api_gateway_resource" "content_proxy" {
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  parent_id   = aws_api_gateway_resource.content.id
+  path_part   = "{content_proxy+}"
+}
+
+resource "aws_api_gateway_method" "content_any" {
+  rest_api_id   = aws_api_gateway_rest_api.this.id
+  resource_id   = aws_api_gateway_resource.content_proxy.id
+  http_method   = "ANY"
+  authorization = "NONE"
+
+  request_parameters = {
+    "method.request.path.content_proxy" = true
+  }
+}
+
+resource "aws_api_gateway_integration" "content" {
+  rest_api_id             = aws_api_gateway_rest_api.this.id
+  resource_id             = aws_api_gateway_resource.content_proxy.id
+  http_method             = aws_api_gateway_method.content_any.http_method
+  type                    = "HTTP_PROXY"
+  integration_http_method = "ANY"
+  uri                     = "http://${var.alb_dns_name}/content/{content_proxy}"
+
+  request_parameters = {
+    "integration.request.path.content_proxy" = "method.request.path.content_proxy"
+  }
+}
+
+# /docs — FastAPI Swagger UI (no auth)
+resource "aws_api_gateway_resource" "docs" {
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  parent_id   = aws_api_gateway_rest_api.this.root_resource_id
+  path_part   = "docs"
+}
+
+resource "aws_api_gateway_method" "docs" {
+  rest_api_id   = aws_api_gateway_rest_api.this.id
+  resource_id   = aws_api_gateway_resource.docs.id
+  http_method   = "GET"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "docs" {
+  rest_api_id             = aws_api_gateway_rest_api.this.id
+  resource_id             = aws_api_gateway_resource.docs.id
+  http_method             = aws_api_gateway_method.docs.http_method
+  type                    = "HTTP_PROXY"
+  integration_http_method = "GET"
+  uri                     = "http://${var.alb_dns_name}/docs"
+}
+
+# /openapi.json — FastAPI OpenAPI schema (no auth)
+resource "aws_api_gateway_resource" "openapi" {
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  parent_id   = aws_api_gateway_rest_api.this.root_resource_id
+  path_part   = "openapi.json"
+}
+
+resource "aws_api_gateway_method" "openapi" {
+  rest_api_id   = aws_api_gateway_rest_api.this.id
+  resource_id   = aws_api_gateway_resource.openapi.id
+  http_method   = "GET"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "openapi" {
+  rest_api_id             = aws_api_gateway_rest_api.this.id
+  resource_id             = aws_api_gateway_resource.openapi.id
+  http_method             = aws_api_gateway_method.openapi.http_method
+  type                    = "HTTP_PROXY"
+  integration_http_method = "GET"
+  uri                     = "http://${var.alb_dns_name}/openapi.json"
+}
+
+# =============================================================================
+# /v1/{v1_proxy+} — B2B tenant routes, gated by Lambda Authorizer (X-API-Key)
+# =============================================================================
+
+resource "aws_api_gateway_resource" "v1" {
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  parent_id   = aws_api_gateway_rest_api.this.root_resource_id
+  path_part   = "v1"
+}
+
+resource "aws_api_gateway_resource" "v1_proxy" {
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  parent_id   = aws_api_gateway_resource.v1.id
+  path_part   = "{v1_proxy+}"
+}
+
+resource "aws_api_gateway_method" "v1_any" {
+  rest_api_id   = aws_api_gateway_rest_api.this.id
+  resource_id   = aws_api_gateway_resource.v1_proxy.id
+  http_method   = "ANY"
+  authorization = "CUSTOM"
+  authorizer_id = aws_api_gateway_authorizer.tenant_key.id
+
+  request_parameters = {
+    "method.request.path.v1_proxy" = true
+  }
+}
+
+resource "aws_api_gateway_integration" "v1" {
+  rest_api_id             = aws_api_gateway_rest_api.this.id
+  resource_id             = aws_api_gateway_resource.v1_proxy.id
+  http_method             = aws_api_gateway_method.v1_any.http_method
+  type                    = "HTTP_PROXY"
+  integration_http_method = "ANY"
+  uri                     = "http://${var.alb_dns_name}/v1/{v1_proxy}"
+
+  request_parameters = {
+    "integration.request.path.v1_proxy" = "method.request.path.v1_proxy"
+  }
+}
+
+# =============================================================================
+# Deployment — force redeploy whenever any integration URI or authorizer changes
+# =============================================================================
+
 resource "aws_api_gateway_deployment" "this" {
   rest_api_id = aws_api_gateway_rest_api.this.id
   depends_on = [
-    aws_api_gateway_integration.proxy,
     aws_api_gateway_integration.root,
     aws_api_gateway_integration.health,
     aws_api_gateway_integration.auth,
+    aws_api_gateway_integration.admin,
+    aws_api_gateway_integration.content,
+    aws_api_gateway_integration.docs,
+    aws_api_gateway_integration.openapi,
+    aws_api_gateway_integration.v1,
   ]
   triggers = {
     redeployment = sha1(join(",", [
-      aws_api_gateway_integration.proxy.uri,
       aws_api_gateway_integration.root.uri,
       aws_api_gateway_integration.health.uri,
       aws_api_gateway_integration.auth.uri,
+      aws_api_gateway_integration.admin.uri,
+      aws_api_gateway_integration.content.uri,
+      aws_api_gateway_integration.docs.uri,
+      aws_api_gateway_integration.openapi.uri,
+      aws_api_gateway_integration.v1.uri,
       aws_api_gateway_authorizer.tenant_key.id,
     ]))
   }
