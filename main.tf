@@ -184,7 +184,7 @@ locals {
   bronze_bucket_name = "aa-cis-bronze-867490540162"
   gold_bucket_arn    = "arn:aws:s3:::aa-cis-gold-867490540162"
   gold_bucket_name   = "aa-cis-gold-867490540162"
-  api_task_def_arn   = "arn:aws:ecs:us-west-1:867490540162:task-definition/aa-cis-dev-api:30"
+  api_task_def_arn   = "arn:aws:ecs:us-west-1:867490540162:task-definition/aa-cis-dev-api"
 }
 
 module "monitoring" {
