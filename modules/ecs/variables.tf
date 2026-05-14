@@ -89,3 +89,15 @@ variable "secret_dataforseo_arn" {
   type        = string
   default     = ""
 }
+
+variable "step_functions_arn" {
+  description = "ARN of the pipeline Step Functions state machine"
+  type        = string
+  default     = ""
+}
+
+variable "sf_batch_threshold" {
+  description = "Tour count above which ingest-s3 routes to Step Functions instead of direct background tasks"
+  type        = number
+  default     = 15
+}

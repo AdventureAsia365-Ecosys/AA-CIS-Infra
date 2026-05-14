@@ -124,10 +124,12 @@ resource "aws_ecs_task_definition" "api" {
     essential = true
     portMappings = [{ containerPort = 8000, protocol = "tcp" }]
     environment = [
-      { name = "PORT",        value = "8000" },
-      { name = "ENVIRONMENT", value = var.environment },
-      { name = "PROJECT",     value = var.project },
-      { name = "AWS_REGION",  value = var.aws_region },
+      { name = "PORT",                 value = "8000" },
+      { name = "ENVIRONMENT",          value = var.environment },
+      { name = "PROJECT",              value = var.project },
+      { name = "AWS_REGION",           value = var.aws_region },
+      { name = "STEP_FUNCTIONS_ARN",   value = var.step_functions_arn },
+      { name = "SF_BATCH_THRESHOLD",   value = tostring(var.sf_batch_threshold) },
     ]
     secrets = [
       { name = "DATABASE_URL",       valueFrom = var.secret_rds_arn },

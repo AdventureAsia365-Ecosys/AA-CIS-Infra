@@ -82,11 +82,15 @@ resource "aws_iam_role_policy" "lambda_permissions" {
           # var.secret_langfuse_arn  # AA-23: removed
         ]
       },
-      # Step Functions — Ingestion triggers SF execution
+      # Step Functions — Ingestion triggers SF execution + HITL callback
       {
-        Sid      = "StepFunctionsStart"
-        Effect   = "Allow"
-        Action   = ["states:StartExecution"]
+        Sid    = "StepFunctionsStart"
+        Effect = "Allow"
+        Action = [
+          "states:StartExecution",
+          "states:SendTaskSuccess",
+          "states:SendTaskFailure",
+        ]
         Resource = ["*"]
       },
       # ECS — Step Functions calls RunTask via Lambda (or direct SF integration)
