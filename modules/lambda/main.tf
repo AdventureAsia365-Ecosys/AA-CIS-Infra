@@ -371,3 +371,46 @@ resource "aws_lambda_function" "content" {
   ]
   tags = merge(local.common_tags, { Function = "content" })
 }
+
+# =============================================================================
+# LAMBDA 6 — API Gateway Tenant Key Authorizer
+# Trigger: API Gateway TOKEN authorizer
+# Input:   X-API-Key header → sha256 hash → shared.tenants lookup
+# Output:  Allow/Deny policy + tenant context
+# =============================================================================
+
+resource "aws_cloudwatch_log_group" "authorizer" {
+  name              = "/aws/lambda/${local.name_prefix}-authorizer"
+  retention_in_days = 14
+  tags              = local.common_tags
+}
+
+resource "aws_lambda_function" "authorizer" {
+  function_name = "${local.name_prefix}-authorizer"
+  role          = aws_iam_role.lambda_exec.arn
+  handler       = "handler.lambda_handler"
+  runtime       = "python3.12"
+  timeout       = 10
+  memory_size   = 128
+
+  filename         = "${var.lambda_zip_dir}/authorizer.zip"
+  source_code_hash = filebase64sha256("${var.lambda_zip_dir}/authorizer.zip")
+
+  vpc_config {
+    subnet_ids         = var.private_subnet_ids
+    security_group_ids = [var.sg_app_id]
+  }
+
+  environment {
+    variables = {
+      DATABASE_URL = var.database_url
+    }
+  }
+
+  depends_on = [
+    aws_cloudwatch_log_group.authorizer,
+    aws_iam_role_policy_attachment.lambda_vpc,
+  ]
+
+  tags = merge(local.common_tags, { Function = "authorizer" })
+}

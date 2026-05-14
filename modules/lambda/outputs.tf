@@ -52,3 +52,18 @@ output "content_lambda_name" {
   description = "Name of Content Generation Lambda"
   value       = aws_lambda_function.content.function_name
 }
+
+output "authorizer_lambda_arn" {
+  description = "ARN of the API Gateway tenant key authorizer Lambda"
+  value       = aws_lambda_function.authorizer.arn
+}
+
+output "authorizer_lambda_invoke_arn" {
+  description = "Invoke ARN of the API Gateway tenant key authorizer Lambda"
+  value       = aws_lambda_function.authorizer.invoke_arn
+}
+
+output "authorizer_lambda_name" {
+  description = "Function name of the API Gateway tenant key authorizer Lambda"
+  value       = aws_lambda_function.authorizer.function_name
+}

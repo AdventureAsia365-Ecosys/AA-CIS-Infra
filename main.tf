@@ -213,3 +213,23 @@ module "eventbridge" {
   account_id  = var.account_id
   tags        = local.common_tags
 }
+
+# =============================================================================
+# AA-13 — API Gateway REST + usage plans + tenant key authorizer
+# =============================================================================
+
+module "api_gateway" {
+  source      = "./modules/api_gateway"
+  project     = var.project
+  environment = var.environment
+  aws_region  = var.aws_region
+  account_id  = var.account_id
+  tags        = local.common_tags
+
+  authorizer_lambda_invoke_arn = module.lambda.authorizer_lambda_invoke_arn
+  authorizer_lambda_name       = module.lambda.authorizer_lambda_name
+  alb_dns_name                 = "aa-cis-dev-alb-1114303360.us-west-1.elb.amazonaws.com"
+  acm_cert_arn_us_east1        = "arn:aws:acm:us-east-1:867490540162:certificate/7de7837f-a849-4188-a814-ed494b6e65fd"
+
+  depends_on = [module.lambda]
+}
