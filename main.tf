@@ -109,7 +109,10 @@ module "ecs" {
   secret_anthropic_arn           = var.secret_anthropic_arn
   secret_dataforseo_arn          = "arn:aws:secretsmanager:us-west-1:867490540162:secret:aa-cis/dev/dataforseo-lECabM"
 
-  depends_on = [module.vpc, module.alb]
+  step_functions_arn = module.step_functions.state_machine_arn
+  sf_batch_threshold = 15
+
+  depends_on = [module.vpc, module.alb, module.step_functions]
 }
 
 # =============================================================================
