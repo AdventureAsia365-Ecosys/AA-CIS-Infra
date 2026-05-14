@@ -36,10 +36,6 @@ resource "aws_api_gateway_method" "proxy_any" {
   http_method   = "ANY"
   authorization = "CUSTOM"
   authorizer_id = aws_api_gateway_authorizer.tenant_key.id
-
-  request_parameters = {
-    "method.request.path.proxy" = true
-  }
 }
 
 # HTTP_PROXY integration → ALB (internet-facing, no NLB needed)
@@ -50,10 +46,6 @@ resource "aws_api_gateway_integration" "proxy" {
   type                    = "HTTP_PROXY"
   integration_http_method = "ANY"
   uri                     = "http://${var.alb_dns_name}/{proxy}"
-
-  request_parameters = {
-    "integration.request.path.proxy" = "method.request.path.proxy"
-  }
 }
 
 # Root (/) method — required for health checks and base path calls
@@ -82,11 +74,7 @@ resource "aws_api_gateway_deployment" "this" {
     aws_api_gateway_integration.root,
   ]
   triggers = {
-    redeployment = sha1(join(",", [
-      aws_api_gateway_integration.proxy.uri,
-      aws_api_gateway_integration.root.uri,
-      aws_api_gateway_authorizer.tenant_key.id,
-    ]))
+    redeployment = sha1(jsonencode(aws_api_gateway_rest_api.this.body))
   }
   lifecycle {
     create_before_destroy = true
