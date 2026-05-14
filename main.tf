@@ -109,10 +109,10 @@ module "ecs" {
   secret_anthropic_arn           = var.secret_anthropic_arn
   secret_dataforseo_arn          = "arn:aws:secretsmanager:us-west-1:867490540162:secret:aa-cis/dev/dataforseo-lECabM"
 
-  step_functions_arn = module.step_functions.state_machine_arn
+  step_functions_arn = local.step_functions_arn
   sf_batch_threshold = 15
 
-  depends_on = [module.vpc, module.alb, module.step_functions]
+  depends_on = [module.vpc, module.alb]
 }
 
 # =============================================================================
@@ -188,6 +188,7 @@ locals {
   gold_bucket_arn    = "arn:aws:s3:::aa-cis-gold-867490540162"
   gold_bucket_name   = "aa-cis-gold-867490540162"
   api_task_def_arn   = "arn:aws:ecs:us-west-1:867490540162:task-definition/aa-cis-dev-api"
+  step_functions_arn = "arn:aws:states:us-west-1:867490540162:stateMachine:aa-cis-dev-pipeline"
 }
 
 module "monitoring" {
