@@ -133,3 +133,89 @@ resource "aws_scheduler_schedule" "acp_weekly_export" {
 
   state = "ENABLED"
 }
+
+# ============================================================
+# AA-61 — ACP Events FIFO DLQ + Monitoring
+# FIFO queue captures failed EventBridge rule deliveries.
+# Note: EventBridge Scheduler DLQ requires standard SQS (not FIFO).
+# Attach this queue via dead_letter_config when rule targets are provisioned.
+# ============================================================
+
+resource "aws_sqs_queue" "acp_events_dlq" {
+  name                        = "${local.bus_name}-dlq.fifo"
+  fifo_queue                  = true
+  content_based_deduplication = true
+  message_retention_seconds   = 1209600 # 14 days
+
+  tags = merge(var.tags, {
+    Name    = "${local.bus_name}-dlq"
+    Module  = "eventbridge"
+    Feature = "acp-pipeline-dlq"
+  })
+}
+
+data "aws_iam_policy_document" "acp_dlq_policy" {
+  statement {
+    sid    = "AllowEventBridgeSend"
+    effect = "Allow"
+
+    principals {
+      type        = "Service"
+      identifiers = ["events.amazonaws.com", "scheduler.amazonaws.com"]
+    }
+
+    actions   = ["sqs:SendMessage"]
+    resources = [aws_sqs_queue.acp_events_dlq.arn]
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceAccount"
+      values   = [var.account_id]
+    }
+  }
+}
+
+resource "aws_sqs_queue_policy" "acp_events_dlq" {
+  queue_url = aws_sqs_queue.acp_events_dlq.id
+  policy    = data.aws_iam_policy_document.acp_dlq_policy.json
+}
+
+# ── SNS Alert Topic ───────────────────────────────────────────
+
+resource "aws_sns_topic" "acp_alerts" {
+  name = "${local.name_prefix}-acp-alerts"
+
+  tags = merge(var.tags, {
+    Name    = "${local.name_prefix}-acp-alerts"
+    Module  = "eventbridge"
+    Feature = "acp-pipeline-monitoring"
+  })
+}
+
+# ── CloudWatch Alarm: DLQ Depth ───────────────────────────────
+
+resource "aws_cloudwatch_metric_alarm" "acp_dlq_depth" {
+  alarm_name          = "${local.name_prefix}-acp-dlq-depth"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "ApproximateNumberOfMessagesVisible"
+  namespace           = "AWS/SQS"
+  period              = 300
+  statistic           = "Sum"
+  threshold           = 0
+  alarm_description   = "ACP Events DLQ has messages — investigate failed EventBridge deliveries"
+  treat_missing_data  = "notBreaching"
+
+  dimensions = {
+    QueueName = aws_sqs_queue.acp_events_dlq.name
+  }
+
+  alarm_actions = [aws_sns_topic.acp_alerts.arn]
+  ok_actions    = [aws_sns_topic.acp_alerts.arn]
+
+  tags = merge(var.tags, {
+    Name    = "${local.name_prefix}-acp-dlq-depth"
+    Module  = "eventbridge"
+    Feature = "acp-pipeline-monitoring"
+  })
+}

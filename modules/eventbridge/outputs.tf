@@ -22,3 +22,23 @@ output "schedule_group_arn" {
   description = "Scheduler schedule group ARN"
   value       = aws_scheduler_schedule_group.acp.arn
 }
+
+output "acp_dlq_arn" {
+  description = "ACP events FIFO DLQ ARN"
+  value       = aws_sqs_queue.acp_events_dlq.arn
+}
+
+output "acp_dlq_url" {
+  description = "ACP events FIFO DLQ URL"
+  value       = aws_sqs_queue.acp_events_dlq.id
+}
+
+output "acp_dlq_name" {
+  description = "ACP events FIFO DLQ name"
+  value       = aws_sqs_queue.acp_events_dlq.name
+}
+
+output "acp_alerts_topic_arn" {
+  description = "SNS topic ARN for ACP pipeline alerts"
+  value       = aws_sns_topic.acp_alerts.arn
+}
