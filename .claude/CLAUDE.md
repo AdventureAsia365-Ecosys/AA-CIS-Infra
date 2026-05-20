@@ -1,5 +1,5 @@
 # AA-CIS-Infra — Claude Code Context
-# Updated: 11/05/2026
+# Updated: 21/05/2026 | CI Infra #37
 
 ## LIVE STATE
 - Account: 867490540162 | Region: us-west-1 | Profile: pqnghiep-admin
@@ -7,6 +7,7 @@
 - RDS: aa-cis-dev-db.cr2y6824szn3.us-west-1.rds.amazonaws.com (PostgreSQL 15)
 - ECR: 867490540162.dkr.ecr.us-west-1.amazonaws.com/aa-cis-dev-api
 - ALB: aa-cis-dev-alb-1114303360.us-west-1.elb.amazonaws.com
+- CI Infra last green: #37 (develop, commit 761836d)
 
 ## ⚠️ CRITICAL — DO NOT CHANGE
 api_task_def_arn is hardcoded to revision :21 in main.tf.
@@ -34,9 +35,22 @@ aa-cis/dev/admin-secret → Admin panel secret
 
 ## COST TARGETS
 Phase 1: ~$73-100/month
-ECS: stop desired=0 after session
-RDS: stop instance after session
+ECS: REMIND user to stop desired=0 after session — do NOT auto-execute
+RDS: REMIND user to stop instance after session — do NOT auto-execute
 Lambda: on-demand (no cost when idle)
+
+## WAF IAM — CHICKEN-AND-EGG PATTERN
+WAFReadPolicy must be granted manually via CLI BEFORE running Terraform on first deploy.
+`aws_iam_role_policy.github_actions_waf` added to main.tf — do not remove.
+Pattern: grant WAF read manually → terraform apply → policy self-manages thereafter.
+
+## LAMBDA — PENDING (Session 23)
+Lambda `aa-cis-dev-acp-s3-campaign-planner` NOT YET in Terraform.
+Needs module in `modules/lambda/` before deployment.
+Do NOT deploy manually — must go through Terraform.
+
+## KNOWN WARNINGS (non-blocking)
+14 undeclared variable warnings in terraform.tfvars — tech debt, do not fix mid-sprint.
 
 ## SSM ONLY
 Never use SSH. All container access via:
