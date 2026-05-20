@@ -143,3 +143,8 @@ variable "api_base_url" {
   type        = string
   default     = ""
 }
+
+variable "brand_brief_parser_zip" {
+  description = "Path to brand brief parser Lambda ZIP file"
+  type        = string
+}
