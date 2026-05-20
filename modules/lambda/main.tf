@@ -414,3 +414,61 @@ resource "aws_lambda_function" "authorizer" {
 
   tags = merge(local.common_tags, { Function = "authorizer" })
 }
+
+# =============================================================================
+# AA-78 — Brand Brief Parser Lambda
+# Parses .docx brand brief → UPSERT shared.tenant_brand_rules
+# Triggered by: ECS API (boto3 invoke, RequestResponse)
+# =============================================================================
+resource "aws_lambda_function" "brand_brief_parser" {
+  function_name = "${local.name_prefix}-brand-brief-parser"
+  description   = "AA-78: Parse DOCX brand brief → tenant_brand_rules"
+
+  filename         = var.brand_brief_parser_zip
+  source_code_hash = filebase64sha256(var.brand_brief_parser_zip)
+  handler          = "handler.handler"
+  runtime          = "python3.12"
+  memory_size      = 512
+  timeout          = 30
+
+  role = aws_iam_role.lambda_exec.arn
+
+  vpc_config {
+    subnet_ids         = var.private_subnet_ids
+    security_group_ids = [var.sg_app_id]
+  }
+
+  environment {
+    variables = merge(local.common_env, {
+      S3_BRONZE_BUCKET = var.bronze_bucket_name
+    })
+  }
+
+  tags = merge(local.common_tags, {
+    Function = "brand-brief-parser"
+    Issue    = "AA-78"
+  })
+}
+
+# IAM — InvokeFunction permission for ECS task role
+# ECS API container calls brand-brief-parser via boto3
+resource "aws_iam_role_policy" "ecs_invoke_brand_brief_parser" {
+  name = "${local.name_prefix}-ecs-invoke-brand-brief-parser"
+  role = "${local.name_prefix}-ecs-task-role"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid    = "InvokeBrandBriefParser"
+      Effect = "Allow"
+      Action = ["lambda:InvokeFunction"]
+      Resource = [aws_lambda_function.brand_brief_parser.arn]
+    }]
+  })
+}
+
+resource "aws_cloudwatch_log_group" "brand_brief_parser" {
+  name              = "/aws/lambda/${aws_lambda_function.brand_brief_parser.function_name}"
+  retention_in_days = 14
+  tags              = local.common_tags
+}

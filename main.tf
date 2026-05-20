@@ -175,8 +175,9 @@ module "lambda" {
   dataforseo_password = var.dataforseo_password
   anthropic_api_key   = var.anthropic_api_key
 
-  lambda_zip_dir = "${path.module}/dist/lambdas"
-  api_base_url   = "https://api-cis.lumiguides.it.com"
+  lambda_zip_dir         = "${path.module}/dist/lambdas"
+  api_base_url           = "https://api-cis.lumiguides.it.com"
+  brand_brief_parser_zip = "${path.module}/dist/lambdas/brand_brief_parser.zip"
 
   tags = local.common_tags
 }

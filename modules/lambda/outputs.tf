@@ -67,3 +67,13 @@ output "authorizer_lambda_name" {
   description = "Function name of the API Gateway tenant key authorizer Lambda"
   value       = aws_lambda_function.authorizer.function_name
 }
+
+output "brand_brief_parser_lambda_arn" {
+  description = "ARN of the brand brief parser Lambda"
+  value       = aws_lambda_function.brand_brief_parser.arn
+}
+
+output "brand_brief_parser_lambda_name" {
+  description = "Name of the brand brief parser Lambda"
+  value       = aws_lambda_function.brand_brief_parser.function_name
+}
