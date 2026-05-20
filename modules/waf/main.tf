@@ -1,0 +1,121 @@
+# =============================================================================
+# AA-59 — WAF Module
+# Rules: RateLimit + GeoBlock + AWSManagedRulesCommonRuleSet
+# Imported from existing manually-created WAF: aa-cis-dev-waf
+# Priority order and country list match AWS state at import time.
+# =============================================================================
+
+locals {
+  name_prefix = "${var.project}-${var.environment}"
+}
+
+resource "aws_wafv2_web_acl" "main" {
+  name  = "${local.name_prefix}-waf"
+  scope = "REGIONAL"
+
+  default_action {
+    allow {}
+  }
+
+  # Rule 1 — Rate limit
+  rule {
+    name     = "RateLimit1000"
+    priority = 1
+
+    action {
+      block {}
+    }
+
+    statement {
+      rate_based_statement {
+        limit              = var.rate_limit
+        aggregate_key_type = "IP"
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "RateLimit1000"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  # Rule 2 — Geo Block (allow major markets only)
+  # Country list matches AWS state at import — do not change without checking console
+  rule {
+    name     = "GeoBlockNonAllowed"
+    priority = 2
+
+    action {
+      block {}
+    }
+
+    statement {
+      not_statement {
+        statement {
+          geo_match_statement {
+            country_codes = var.geo_allowed_countries
+          }
+        }
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "GeoBlockNonAllowed"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  # Rule 3 — AWS Managed Common Rule Set
+  rule {
+    name     = "AWSManagedRulesCommonRuleSet"
+    priority = 3
+
+    override_action {
+      none {}
+    }
+
+    statement {
+      managed_rule_group_statement {
+        name        = "AWSManagedRulesCommonRuleSet"
+        vendor_name = "AWS"
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "AWSManagedRulesCommonRuleSet"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  visibility_config {
+    cloudwatch_metrics_enabled = true
+    metric_name                = "${local.name_prefix}-waf"
+    sampled_requests_enabled   = true
+  }
+
+  tags = merge(var.tags, {
+    Module = "waf"
+    Issue  = "AA-59"
+  })
+}
+
+# Associate WAF with ALB
+resource "aws_wafv2_web_acl_association" "alb" {
+  resource_arn = var.alb_arn
+  web_acl_arn  = aws_wafv2_web_acl.main.arn
+}
+
+# CloudWatch Log Group for WAF
+resource "aws_cloudwatch_log_group" "waf" {
+  name              = "aws-waf-logs-${local.name_prefix}"
+  retention_in_days = 30
+  tags              = var.tags
+}
+
+resource "aws_wafv2_web_acl_logging_configuration" "main" {
+  log_destination_configs = [aws_cloudwatch_log_group.waf.arn]
+  resource_arn            = aws_wafv2_web_acl.main.arn
+}

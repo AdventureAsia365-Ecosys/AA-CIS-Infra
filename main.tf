@@ -202,6 +202,19 @@ module "monitoring" {
 }
 
 # =============================================================================
+# AA-59 — WAF (imported from manually-created aa-cis-dev-waf)
+# =============================================================================
+
+module "waf" {
+  source      = "./modules/waf"
+  project     = var.project
+  environment = var.environment
+  alb_arn     = "arn:aws:elasticloadbalancing:us-west-1:867490540162:loadbalancer/app/aa-cis-dev-alb/a45250d62d507ec2"
+  rate_limit  = 1000
+  tags        = local.common_tags
+}
+
+# =============================================================================
 # AA-40 — ACP Pipeline Core Infrastructure
 # EventBridge bus + Scheduler rules for Adventure Asia Content Pipeline
 # =============================================================================
