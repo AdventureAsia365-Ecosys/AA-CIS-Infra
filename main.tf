@@ -284,3 +284,34 @@ resource "aws_iam_role_policy" "github_actions_apigateway" {
     ]
   })
 }
+
+# =============================================================================
+# AA-59 — GitHub Actions role: WAF read permissions
+# Required for Terraform plan to refresh wafv2_web_acl state.
+# Pattern: same as github_actions_apigateway above.
+# =============================================================================
+
+resource "aws_iam_role_policy" "github_actions_waf" {
+  name = "WAFReadPolicy"
+  role = "aa-cis-dev-role"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "WAFReadAccess"
+        Effect = "Allow"
+        Action = [
+          "wafv2:GetWebACL",
+          "wafv2:ListWebACLs",
+          "wafv2:GetWebACLForResource",
+          "wafv2:ListTagsForResource",
+          "wafv2:GetLoggingConfiguration",
+        ]
+        Resource = [
+          "arn:aws:wafv2:us-west-1:867490540162:regional/webacl/*",
+        ]
+      }
+    ]
+  })
+}
