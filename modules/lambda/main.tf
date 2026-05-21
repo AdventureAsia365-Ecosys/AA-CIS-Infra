@@ -472,3 +472,88 @@ resource "aws_cloudwatch_log_group" "brand_brief_parser" {
   retention_in_days = 14
   tags              = local.common_tags
 }
+
+# =============================================================================
+# AA-45 — ACP S3 Campaign Planner Lambda
+# Trigger: ECS API (boto3 invoke, RequestResponse)
+# Input:   {run_id, tenant_id}
+# Output:  content_calendars + ads_plan + Gate 2 HITL request
+# =============================================================================
+
+resource "aws_cloudwatch_log_group" "acp_s3_campaign_planner" {
+  name              = "/aws/lambda/${local.name_prefix}-acp-s3-campaign-planner"
+  retention_in_days = 14
+  tags              = local.common_tags
+}
+
+resource "aws_lambda_function" "acp_s3_campaign_planner" {
+  function_name = "${local.name_prefix}-acp-s3-campaign-planner"
+  description   = "AA-45: S3 Campaign Planner — content_calendars + ads_plan + Gate 2 HITL"
+
+  filename         = var.acp_s3_campaign_planner_zip
+  source_code_hash = filebase64sha256(var.acp_s3_campaign_planner_zip)
+  handler          = "handler.handler"
+  runtime          = "python3.12"
+  memory_size      = 1024
+  timeout          = 600  # 10 min — Sonnet skeleton + expand + Haiku ads
+
+  role = aws_iam_role.lambda_exec.arn
+
+  vpc_config {
+    subnet_ids         = var.private_subnet_ids
+    security_group_ids = [var.sg_app_id]
+  }
+
+  environment {
+    variables = merge(local.common_env, {
+      S3_BRONZE_BUCKET = var.bronze_bucket_name
+    })
+  }
+
+  depends_on = [
+    aws_cloudwatch_log_group.acp_s3_campaign_planner,
+    aws_iam_role_policy_attachment.lambda_vpc,
+  ]
+
+  tags = merge(local.common_tags, {
+    Function = "acp-s3-campaign-planner"
+    Issue    = "AA-45"
+  })
+}
+
+# Bedrock InvokeModel permission for campaign planner (Sonnet + Haiku)
+resource "aws_iam_role_policy" "lambda_bedrock_acp_s3" {
+  name = "${local.name_prefix}-lambda-bedrock-acp-s3"
+  role = aws_iam_role.lambda_exec.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid    = "BedrockInvokeAcpS3"
+      Effect = "Allow"
+      Action = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"]
+      Resource = [
+        "arn:aws:bedrock:us-west-1::foundation-model/anthropic.claude-haiku-4-5*",
+        "arn:aws:bedrock:us-west-1::foundation-model/anthropic.claude-sonnet-4-5*",
+        "arn:aws:bedrock:us-west-1:867490540162:inference-profile/us.anthropic.claude-haiku-4-5*",
+        "arn:aws:bedrock:us-west-1:867490540162:inference-profile/us.anthropic.claude-sonnet-4-5*",
+      ]
+    }]
+  })
+}
+
+# IAM — ECS task role can invoke campaign planner
+resource "aws_iam_role_policy" "ecs_invoke_acp_s3_campaign_planner" {
+  name = "${local.name_prefix}-ecs-invoke-acp-s3-campaign-planner"
+  role = "${local.name_prefix}-ecs-task-role"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid    = "InvokeAcpS3CampaignPlanner"
+      Effect = "Allow"
+      Action = ["lambda:InvokeFunction"]
+      Resource = [aws_lambda_function.acp_s3_campaign_planner.arn]
+    }]
+  })
+}

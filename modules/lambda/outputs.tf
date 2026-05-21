@@ -77,3 +77,13 @@ output "brand_brief_parser_lambda_name" {
   description = "Name of the brand brief parser Lambda"
   value       = aws_lambda_function.brand_brief_parser.function_name
 }
+
+output "acp_s3_campaign_planner_lambda_arn" {
+  description = "ARN of the ACP S3 Campaign Planner Lambda"
+  value       = aws_lambda_function.acp_s3_campaign_planner.arn
+}
+
+output "acp_s3_campaign_planner_lambda_name" {
+  description = "Name of the ACP S3 Campaign Planner Lambda"
+  value       = aws_lambda_function.acp_s3_campaign_planner.function_name
+}
