@@ -179,6 +179,7 @@ module "lambda" {
   api_base_url                = "https://api-cis.lumiguides.it.com"
   brand_brief_parser_zip      = "${path.module}/dist/lambdas/brand_brief_parser.zip"
   acp_s3_campaign_planner_zip = "${path.module}/dist/lambdas/acp_s3_campaign_planner.zip"
+  acp_s4_evaluate_zip         = "${path.module}/dist/lambdas/acp-s4-evaluate.zip"
 
   tags = local.common_tags
 }

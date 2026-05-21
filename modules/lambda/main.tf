@@ -557,3 +557,78 @@ resource "aws_iam_role_policy" "ecs_invoke_acp_s3_campaign_planner" {
     }]
   })
 }
+
+# =============================================================================
+# AA-49 H-1 — ACP S4 Isolated Evaluator Lambda
+# Trigger: ECS API (boto3 invoke, RequestResponse)
+# Input:   {text: str}  — ONLY blog content, no brand context, no DB
+# Output:  {evaluator_score, dimension_scores, issues, evaluator_input_hash}
+# No VPC: Lambda only calls Bedrock (public endpoint) — avoids cold start penalty
+# =============================================================================
+
+resource "aws_cloudwatch_log_group" "acp_s4_evaluate" {
+  name              = "/aws/lambda/${local.name_prefix}-acp-s4-evaluate"
+  retention_in_days = 14
+  tags              = local.common_tags
+}
+
+resource "aws_lambda_function" "acp_s4_evaluate" {
+  function_name = "${local.name_prefix}-acp-s4-evaluate"
+  description   = "AA-49 H-1: Isolated S4 blog draft evaluator — Bedrock only, no DB access"
+
+  filename         = var.acp_s4_evaluate_zip
+  source_code_hash = filebase64sha256(var.acp_s4_evaluate_zip)
+  handler          = "handler.lambda_handler"
+  runtime          = "python3.12"
+  memory_size      = 1024
+  timeout          = 60
+
+  role = aws_iam_role.lambda_exec.arn
+
+  # No VPC config — this Lambda only calls Bedrock (public endpoint)
+  # Adding VPC would add ~500ms cold start with no benefit
+  # Note: AWS_REGION is provided automatically by the Lambda runtime
+
+  depends_on = [aws_cloudwatch_log_group.acp_s4_evaluate]
+
+  tags = merge(local.common_tags, {
+    Function = "acp-s4-evaluate"
+    Issue    = "AA-49"
+  })
+}
+
+# Bedrock InvokeModel permission for S4 evaluator (Haiku only)
+resource "aws_iam_role_policy" "lambda_bedrock_acp_s4_evaluate" {
+  name = "${local.name_prefix}-lambda-bedrock-acp-s4-evaluate"
+  role = aws_iam_role.lambda_exec.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid    = "BedrockInvokeAcpS4Evaluate"
+      Effect = "Allow"
+      Action = ["bedrock:InvokeModel"]
+      # Cross-region inference profile (us.*) routes via us-east-1 for IAM auth
+      Resource = [
+        "arn:aws:bedrock:*::foundation-model/anthropic.claude-haiku-4-5*",
+        "arn:aws:bedrock:*:${var.account_id}:inference-profile/us.anthropic.claude-haiku-4-5*",
+      ]
+    }]
+  })
+}
+
+# IAM — ECS task role can invoke S4 evaluator
+resource "aws_iam_role_policy" "ecs_invoke_acp_s4_evaluate" {
+  name = "${local.name_prefix}-ecs-invoke-acp-s4-evaluate"
+  role = "${local.name_prefix}-ecs-task-role"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid    = "InvokeAcpS4Evaluate"
+      Effect = "Allow"
+      Action = ["lambda:InvokeFunction"]
+      Resource = [aws_lambda_function.acp_s4_evaluate.arn]
+    }]
+  })
+}
