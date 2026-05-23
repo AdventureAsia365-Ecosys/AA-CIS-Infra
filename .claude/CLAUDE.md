@@ -44,10 +44,11 @@ WAFReadPolicy must be granted manually via CLI BEFORE running Terraform on first
 `aws_iam_role_policy.github_actions_waf` added to main.tf — do not remove.
 Pattern: grant WAF read manually → terraform apply → policy self-manages thereafter.
 
-## LAMBDA — PENDING (Session 23)
-Lambda `aa-cis-dev-acp-s3-campaign-planner` NOT YET in Terraform.
-Needs module in `modules/lambda/` before deployment.
-Do NOT deploy manually — must go through Terraform.
+## LAMBDA STATE (23/05/2026)
+- aa-cis-dev-acp-s3-campaign-planner: DEPLOYED ✅ (AA-45)
+- aa-cis-dev-acp-s4-evaluate: DEPLOYED ✅ (AA-49)
+- aa-cis-dev-acp-s4-trigger: DEPLOYED ✅ | ALB_INTERNAL_URL = http://aa-cis-dev-alb-1114303360.us-west-1.elb.amazonaws.com ✅
+- NOTE: Lambda aa-cis-dev-acp-s3-campaign-planner NOT yet in Terraform — deployed manually. Add to modules/lambda/ before next Infra run.
 
 ## KNOWN WARNINGS (non-blocking)
 14 undeclared variable warnings in terraform.tfvars — tech debt, do not fix mid-sprint.
