@@ -56,7 +56,48 @@ variable "secret_openai_arn" {
   description = "Secrets Manager ARN for OPENAI_API_KEY"
 }
 
-variable "secret_langfuse_arn" {
+# AA-23: removed
+# variable "secret_langfuse_arn" {
+#   type        = string
+#   description = "Secrets Manager ARN for LANGFUSE_SECRET_KEY"
+# }
+
+variable "secret_admin_arn" {
+  description = "ARN of Secrets Manager secret for ADMIN_SECRET"
   type        = string
-  description = "Secrets Manager ARN for LANGFUSE_SECRET_KEY"
+}
+
+# AA-23: removed
+# variable "secret_langfuse_public_key_arn" {
+#   description = "ARN of Langfuse public key secret"
+#   type        = string
+# }
+
+# AA-23: removed
+# variable "secret_langfuse_host_arn" {
+#   description = "ARN of Langfuse host secret"
+#   type        = string
+# }
+
+variable "secret_anthropic_arn" {
+  description = "ARN of Anthropic API key secret"
+  type        = string
+}
+
+variable "secret_dataforseo_arn" {
+  description = "ARN of Secrets Manager secret for DataForSEO credentials"
+  type        = string
+  default     = ""
+}
+
+variable "step_functions_arn" {
+  description = "ARN of the pipeline Step Functions state machine"
+  type        = string
+  default     = ""
+}
+
+variable "sf_batch_threshold" {
+  description = "Tour count above which ingest-s3 routes to Step Functions instead of direct background tasks"
+  type        = number
+  default     = 15
 }

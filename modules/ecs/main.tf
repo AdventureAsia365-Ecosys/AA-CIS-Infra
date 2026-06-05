@@ -124,15 +124,23 @@ resource "aws_ecs_task_definition" "api" {
     essential = true
     portMappings = [{ containerPort = 8000, protocol = "tcp" }]
     environment = [
-      { name = "PORT",        value = "8000" },
-      { name = "ENVIRONMENT", value = var.environment },
-      { name = "PROJECT",     value = var.project },
-      { name = "AWS_REGION",  value = var.aws_region },
+      { name = "PORT",                 value = "8000" },
+      { name = "ENVIRONMENT",          value = var.environment },
+      { name = "PROJECT",              value = var.project },
+      { name = "AWS_REGION",           value = var.aws_region },
+      { name = "STEP_FUNCTIONS_ARN",   value = var.step_functions_arn },
+      { name = "SF_BATCH_THRESHOLD",   value = tostring(var.sf_batch_threshold) },
     ]
     secrets = [
       { name = "DATABASE_URL",       valueFrom = var.secret_rds_arn },
       { name = "OPENAI_API_KEY",     valueFrom = var.secret_openai_arn },
-      { name = "LANGFUSE_SECRET_KEY", valueFrom = var.secret_langfuse_arn },
+      # { name = "LANGFUSE_SECRET_KEY", valueFrom = var.secret_langfuse_arn },            # AA-23: removed
+      { name = "ADMIN_SECRET",        valueFrom = var.secret_admin_arn },
+      # { name = "LANGFUSE_PUBLIC_KEY", valueFrom = var.secret_langfuse_public_key_arn }, # AA-23: removed
+      # { name = "LANGFUSE_HOST",       valueFrom = var.secret_langfuse_host_arn },        # AA-23: removed
+      { name = "ANTHROPIC_API_KEY",   valueFrom = var.secret_anthropic_arn },
+      { name = "DATAFORSEO_LOGIN",    valueFrom = "${var.secret_dataforseo_arn}:login::" },
+      { name = "DATAFORSEO_PASSWORD", valueFrom = "${var.secret_dataforseo_arn}:password::" },
     ]
     logConfiguration = {
       logDriver = "awslogs"
@@ -160,7 +168,17 @@ resource "aws_ecs_service" "api" {
   cluster         = aws_ecs_cluster.main.id
   task_definition = aws_ecs_task_definition.api.arn
   desired_count   = var.service_desired_count
-  launch_type     = "FARGATE"
+
+  capacity_provider_strategy {
+    capacity_provider = "FARGATE"
+    weight            = 1
+    base              = 1
+  }
+  capacity_provider_strategy {
+    capacity_provider = "FARGATE_SPOT"
+    weight            = 3
+    base              = 0
+  }
 
   deployment_minimum_healthy_percent = 50
   deployment_maximum_percent         = 200
@@ -177,8 +195,10 @@ resource "aws_ecs_service" "api" {
     container_port   = 8000
   }
 
+  enable_execute_command = true
+
   lifecycle {
-    ignore_changes = [desired_count]
+    ignore_changes = [desired_count, task_definition]
   }
 
   depends_on = [aws_iam_role_policy_attachment.ecs_execution]
