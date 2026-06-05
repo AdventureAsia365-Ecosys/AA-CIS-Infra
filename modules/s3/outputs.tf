@@ -25,6 +25,34 @@ output "gold_bucket_arn" {
   value = aws_s3_bucket.gold.arn
 }
 
+# ACP bucket outputs — AA-40
+output "acp_bronze_bucket_name" {
+  description = "ACP Bronze S3 bucket name"
+  value       = aws_s3_bucket.acp_bronze.id
+}
+
+output "acp_bronze_bucket_arn" {
+  value = aws_s3_bucket.acp_bronze.arn
+}
+
+output "acp_silver_bucket_name" {
+  description = "ACP Silver S3 bucket name"
+  value       = aws_s3_bucket.acp_silver.id
+}
+
+output "acp_silver_bucket_arn" {
+  value = aws_s3_bucket.acp_silver.arn
+}
+
+output "acp_gold_bucket_name" {
+  description = "ACP Gold S3 bucket name"
+  value       = aws_s3_bucket.acp_gold.id
+}
+
+output "acp_gold_bucket_arn" {
+  value = aws_s3_bucket.acp_gold.arn
+}
+
 # Convenience: full S3 URIs for use in application env vars
 output "s3_paths" {
   description = "Base S3 path URIs for each Medallion layer"

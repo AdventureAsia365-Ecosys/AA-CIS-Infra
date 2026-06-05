@@ -1,5 +1,6 @@
 # Terraform
 .terraform/
+scripts/
 
 *.tfstate
 *.tfstate.backup
@@ -21,7 +22,11 @@ crash.*.log
 # OS
 .DS_Store
 Thumbs.db
+
+# Claude Code local settings
+.claude/settings.local.json
 # Terraform variable files (chứa secrets)
 *.tfvars
+!envs/dev/terraform.tfvars
 *.tfvars.json
 !*.tfvars.example

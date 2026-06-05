@@ -1,0 +1,82 @@
+name: Terraform Apply Dev
+
+on:
+  push:
+    branches: [develop]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  terraform-apply:
+    name: Terraform Apply (dev)
+    runs-on: ubuntu-latest
+    environment: dev
+
+    defaults:
+      run:
+        working-directory: .
+
+    env:
+      TF_VAR_db_password: ${{ secrets.TF_VAR_DB_PASSWORD }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Verify AWS identity
+        run: aws sts get-caller-identity
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7.5"
+
+      - name: Terraform Init
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="key=dev/terraform.tfstate" \
+            -backend-config="region=${{ secrets.AWS_REGION }}"
+
+      - name: Terraform Validate
+        run: terraform validate
+
+      - name: Terraform Plan
+        id: plan
+        run: |
+          terraform plan \
+            -var-file="envs/dev/terraform.tfvars" \
+            -out=tfplan \
+            -detailed-exitcode
+        continue-on-error: true
+
+      - name: Check plan exit code
+        run: |
+          EXIT_CODE=${{ steps.plan.outputs.exitcode }}
+          if [ "$EXIT_CODE" == "1" ]; then
+            echo "Terraform plan failed"
+            exit 1
+          elif [ "$EXIT_CODE" == "0" ]; then
+            echo "No changes to apply"
+          elif [ "$EXIT_CODE" == "2" ]; then
+            echo "Changes detected, applying..."
+          fi
+
+      - name: Terraform Apply
+        if: steps.plan.outputs.exitcode == '2'
+        run: |
+          terraform apply \
+            -auto-approve \
+            tfplan
+
+      - name: Print outputs
+        if: steps.plan.outputs.exitcode == '2'
+        run: terraform output
