@@ -131,7 +131,7 @@ resource "aws_instance" "nat" {
     sysctl -w net.ipv4.ip_forward=1
     echo "net.ipv4.ip_forward = 1" >> /etc/sysctl.conf
     dnf install -y iptables-services
-    iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+    iptables -t nat -A POSTROUTING -o ens5 -j MASQUERADE
     iptables -F FORWARD
     service iptables save
     systemctl enable iptables
