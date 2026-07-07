@@ -67,23 +67,85 @@ resource "aws_subnet" "db" {
   }
 }
 
-# ── NAT Gateway ──────────────────────────────────────────────
-resource "aws_eip" "nat" {
-  domain = "vpc"
-  tags = {
-    Name = "${local.name_prefix}-nat-eip"
+# ── NAT Instance (t4g.nano) ──────────────────────────────────
+data "aws_ami" "nat_al2023" {
+  most_recent = true
+  owners      = ["amazon"]
+  filter {
+    name   = "name"
+    values = ["al2023-ami-*-arm64"]
+  }
+  filter {
+    name   = "virtualization-type"
+    values = ["hvm"]
   }
 }
 
-resource "aws_nat_gateway" "main" {
-  allocation_id = aws_eip.nat.id
-  subnet_id     = aws_subnet.public[0].id
-
+resource "aws_eip" "nat_instance" {
+  domain = "vpc"
   tags = {
-    Name = "${local.name_prefix}-nat"
+    Name = "${local.name_prefix}-nat-instance-eip"
+  }
+}
+
+resource "aws_eip_association" "nat_instance" {
+  instance_id   = aws_instance.nat.id
+  allocation_id = aws_eip.nat_instance.id
+}
+
+resource "aws_security_group" "nat" {
+  name        = "${local.name_prefix}-sg-nat"
+  description = "NAT Instance security group"
+  vpc_id      = aws_vpc.main.id
+
+  ingress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = [var.vpc_cidr]
+    description = "Allow all from VPC private subnets"
   }
 
-  depends_on = [aws_internet_gateway.main]
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "${local.name_prefix}-sg-nat"
+  }
+}
+
+resource "aws_instance" "nat" {
+  ami                    = data.aws_ami.nat_al2023.id
+  instance_type          = "t4g.nano"
+  subnet_id              = aws_subnet.public[0].id
+  vpc_security_group_ids = [aws_security_group.nat.id]
+  source_dest_check      = false
+  iam_instance_profile   = "aa-cis-nat-instance-profile"
+
+  user_data = <<-EOT
+    #!/bin/bash
+    sysctl -w net.ipv4.ip_forward=1
+    echo "net.ipv4.ip_forward = 1" >> /etc/sysctl.conf
+    dnf install -y iptables-services
+    iptables -t nat -A POSTROUTING -o ens5 -j MASQUERADE
+    iptables -F FORWARD
+    service iptables save
+    systemctl enable iptables
+  EOT
+
+  tags = {
+    Name    = "${local.name_prefix}-nat-instance"
+    Project = "AA-CIS"
+    Role    = "nat"
+  }
+
+  lifecycle {
+    ignore_changes = [ami]
+  }
 }
 
 # ── Route Tables ─────────────────────────────────────────────
@@ -112,8 +174,8 @@ resource "aws_route_table" "private" {
   vpc_id = aws_vpc.main.id
 
   route {
-    cidr_block     = "0.0.0.0/0"
-    nat_gateway_id = aws_nat_gateway.main.id
+    cidr_block           = "0.0.0.0/0"
+    network_interface_id = aws_instance.nat.primary_network_interface_id
   }
 
   tags = {
