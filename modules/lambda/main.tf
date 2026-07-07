@@ -535,8 +535,8 @@ resource "aws_iam_role_policy" "lambda_bedrock_acp_s3" {
       Resource = [
         "arn:aws:bedrock:us-west-1::foundation-model/anthropic.claude-haiku-4-5*",
         "arn:aws:bedrock:us-west-1::foundation-model/anthropic.claude-sonnet-4-5*",
-        "arn:aws:bedrock:us-west-1:867490540162:inference-profile/us.anthropic.claude-haiku-4-5*",
-        "arn:aws:bedrock:us-west-1:867490540162:inference-profile/us.anthropic.claude-sonnet-4-5*",
+        "arn:aws:bedrock:us-west-1:${var.account_id}:inference-profile/us.anthropic.claude-haiku-4-5*",
+        "arn:aws:bedrock:us-west-1:${var.account_id}:inference-profile/us.anthropic.claude-sonnet-4-5*",
       ]
     }]
   })

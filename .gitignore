@@ -28,5 +28,6 @@ Thumbs.db
 # Terraform variable files (chứa secrets)
 *.tfvars
 !envs/dev/terraform.tfvars
+!accounts/aa365/terraform.tfvars
 *.tfvars.json
 !*.tfvars.example
