@@ -29,3 +29,13 @@ output "sg_app_id" {
 output "sg_rds_id" {
   value = aws_security_group.rds.id
 }
+
+output "nat_instance_id" {
+  value       = aws_instance.nat.id
+  description = "NAT Instance ID (t4g.nano) — stop/start per session"
+}
+
+output "nat_instance_eip" {
+  value       = aws_eip.nat_instance.public_ip
+  description = "NAT Instance public IP (EIP)"
+}

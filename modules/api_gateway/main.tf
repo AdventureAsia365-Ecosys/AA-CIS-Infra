@@ -375,7 +375,7 @@ resource "aws_api_gateway_usage_plan" "internal" {
 # =============================================================================
 
 resource "aws_api_gateway_domain_name" "api_cis" {
-  domain_name              = "api-cis.lumiguides.it.com"
+  domain_name              = var.domain_name
   regional_certificate_arn = var.acm_cert_arn_us_east1
   endpoint_configuration {
     types = ["REGIONAL"]
