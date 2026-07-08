@@ -101,3 +101,9 @@ variable "sf_batch_threshold" {
   type        = number
   default     = 15
 }
+
+variable "execution_role_secrets_arn_pattern" {
+  description = "ARN pattern granting the ECS execution role secretsmanager:GetSecretValue, needed to inject task-def secrets. Optional — leave null when the execution role already has this permission out-of-band."
+  type        = string
+  default     = null
+}

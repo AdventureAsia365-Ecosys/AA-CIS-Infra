@@ -139,6 +139,10 @@ module "ecs" {
   step_functions_arn = local.sfn_pipeline_arn
   sf_batch_threshold = 15
 
+  # AmazonECSTaskExecutionRolePolicy alone doesn't grant secretsmanager:GetSecretValue —
+  # account 1's execution role has this attached out-of-band; account 2 needs it explicit.
+  execution_role_secrets_arn_pattern = "arn:aws:secretsmanager:${var.aws_region}:${var.account_id}:secret:${var.project}/${var.environment}/*"
+
   depends_on = [module.vpc, module.alb]
 }
 

@@ -91,6 +91,12 @@ variable "ecs_container_name" {
   default     = "aa-cis-api"
 }
 
+variable "ecs_task_role_name" {
+  description = "Name of the ECS task IAM role (aws_iam_role_policy.role only accepts a name, not an ARN) — pass module.ecs.task_role_name explicitly when project/environment differ from the default"
+  type        = string
+  default     = "aa-cis-dev-ecs-task-role"
+}
+
 # Lambda zip paths (built by package_lambdas.sh)
 variable "lambda_zip_dir" {
   description = "Directory containing Lambda zip files"
