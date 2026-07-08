@@ -34,9 +34,9 @@ service_desired_count = 1
 # (secret_rds_arn / secret_dataforseo_arn are wired via module.secrets outputs
 # instead — those two secrets MUST exist under names "aa-cis/dev/rds" and
 # "aa-cis/dev/dataforseo" before `terraform plan` will succeed at all.)
-secret_openai_arn    = "REPLACE_ME_OPENAI_SECRET_ARN"
-secret_admin_arn     = "REPLACE_ME_ADMIN_SECRET_ARN"
-secret_anthropic_arn = "REPLACE_ME_ANTHROPIC_SECRET_ARN"
+secret_openai_arn    = "arn:aws:secretsmanager:us-west-1:005097885195:secret:aa-cis/dev/openai-key-Wcxuae"
+secret_admin_arn     = "arn:aws:secretsmanager:us-west-1:005097885195:secret:aa-cis/dev/admin-secret-gudNmP"
+secret_anthropic_arn = "arn:aws:secretsmanager:us-west-1:005097885195:secret:aa-cis/dev/anthropic-key-jML2d7"
 
 # Lambda plaintext runtime config — placeholders, enter real values by hand
 # (do NOT copy account-1 values across).
@@ -47,5 +47,5 @@ dataforseo_password = "REPLACE_ME"
 anthropic_api_key   = "REPLACE_ME"
 
 # Not Terraform-managed at all (read at runtime via boto3, see
-# api/main.py — secret name "aa-cis/dev/api-keys"). Create manually in
-# account 005097885195 with an APIFY_API_TOKEN key before relying on S2.
+# api/main.py — secret name "aa-cis/dev/api-keys"). Created manually
+# (placeholder) — update with a real APIFY_API_TOKEN key before relying on S2.

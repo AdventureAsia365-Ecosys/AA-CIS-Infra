@@ -118,13 +118,41 @@ resource "aws_security_group" "nat" {
   }
 }
 
+# IAM role + instance profile for NAT Instance SSM management.
+# Account 1 has these pre-existing out-of-band (created 05/06/2026, not in prior
+# Terraform state) — same class of drift as ecs_execution_secrets / ecs_task_ssm above.
+# Literal names (not name_prefix-based) intentionally match the existing account-1
+# resources so `terraform import` works cleanly; account 2 creates fresh with the
+# same literal names in its own account namespace (no cross-account collision).
+resource "aws_iam_role" "nat_instance" {
+  name = "aa-cis-nat-instance-role"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "ec2.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "nat_instance_ssm" {
+  role       = aws_iam_role.nat_instance.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
+resource "aws_iam_instance_profile" "nat_instance" {
+  name = "aa-cis-nat-instance-profile"
+  role = aws_iam_role.nat_instance.name
+}
+
 resource "aws_instance" "nat" {
   ami                    = data.aws_ami.nat_al2023.id
   instance_type          = "t4g.nano"
   subnet_id              = aws_subnet.public[0].id
   vpc_security_group_ids = [aws_security_group.nat.id]
   source_dest_check      = false
-  iam_instance_profile   = "aa-cis-nat-instance-profile"
+  iam_instance_profile   = aws_iam_instance_profile.nat_instance.name
 
   user_data = <<-EOT
     #!/bin/bash

@@ -45,6 +45,25 @@ resource "aws_iam_role_policy_attachment" "ecs_execution" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
+# AmazonECSTaskExecutionRolePolicy does not include secretsmanager:GetSecretValue,
+# which the execution role needs to inject the task definition's `secrets` block.
+# Optional — only created when execution_role_secrets_arn_pattern is set.
+resource "aws_iam_role_policy" "ecs_execution_secrets" {
+  count = var.execution_role_secrets_arn_pattern != null ? 1 : 0
+
+  name = "${local.name_prefix}-ecs-execution-secrets"
+  role = aws_iam_role.ecs_execution.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["secretsmanager:GetSecretValue"]
+      Resource = [var.execution_role_secrets_arn_pattern]
+    }]
+  })
+}
+
 resource "aws_iam_role" "ecs_task" {
   name = "${local.name_prefix}-ecs-task-role"
   assume_role_policy = jsonencode({
@@ -55,6 +74,15 @@ resource "aws_iam_role" "ecs_task" {
       Action    = "sts:AssumeRole"
     }]
   })
+}
+# AWS managed policy required for ECS Exec (execute-command) — grants ssmmessages:
+# CreateControlChannel/CreateDataChannel/OpenControlChannel/OpenDataChannel on the task role.
+# Account 1 already has this attached out-of-band (not in prior Terraform state) — same
+# class of drift as ecs_execution_secrets above. AttachRolePolicy is idempotent, so applying
+# this where it already exists in AWS is safe (no EntityAlreadyExists on this resource type).
+resource "aws_iam_role_policy_attachment" "ecs_task_ssm" {
+  role       = aws_iam_role.ecs_task.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
 resource "aws_iam_role_policy" "ecs_task_policy" {
