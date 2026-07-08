@@ -39,4 +39,12 @@ resource "aws_db_instance" "main" {
   tags = {
     Name = "${local.name_prefix}-db"
   }
+
+  # AA-267: RDS password rotated outside Terraform in the past (proven via
+  # direct connect + Secrets Manager cross-check, S93 07/07/2026). TF_VAR
+  # value is correct; state itself is stale. Ignore drift instead of
+  # re-applying a password value on every plan.
+  lifecycle {
+    ignore_changes = [password]
+  }
 }
