@@ -454,7 +454,7 @@ resource "aws_lambda_function" "brand_brief_parser" {
 # ECS API container calls brand-brief-parser via boto3
 resource "aws_iam_role_policy" "ecs_invoke_brand_brief_parser" {
   name = "${local.name_prefix}-ecs-invoke-brand-brief-parser"
-  role = "${local.name_prefix}-ecs-task-role"
+  role = var.ecs_task_role_name
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -535,8 +535,8 @@ resource "aws_iam_role_policy" "lambda_bedrock_acp_s3" {
       Resource = [
         "arn:aws:bedrock:us-west-1::foundation-model/anthropic.claude-haiku-4-5*",
         "arn:aws:bedrock:us-west-1::foundation-model/anthropic.claude-sonnet-4-5*",
-        "arn:aws:bedrock:us-west-1:867490540162:inference-profile/us.anthropic.claude-haiku-4-5*",
-        "arn:aws:bedrock:us-west-1:867490540162:inference-profile/us.anthropic.claude-sonnet-4-5*",
+        "arn:aws:bedrock:us-west-1:${var.account_id}:inference-profile/us.anthropic.claude-haiku-4-5*",
+        "arn:aws:bedrock:us-west-1:${var.account_id}:inference-profile/us.anthropic.claude-sonnet-4-5*",
       ]
     }]
   })
@@ -545,7 +545,7 @@ resource "aws_iam_role_policy" "lambda_bedrock_acp_s3" {
 # IAM — ECS task role can invoke campaign planner
 resource "aws_iam_role_policy" "ecs_invoke_acp_s3_campaign_planner" {
   name = "${local.name_prefix}-ecs-invoke-acp-s3-campaign-planner"
-  role = "${local.name_prefix}-ecs-task-role"
+  role = var.ecs_task_role_name
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -620,7 +620,7 @@ resource "aws_iam_role_policy" "lambda_bedrock_acp_s4_evaluate" {
 # IAM — ECS task role can invoke S4 evaluator
 resource "aws_iam_role_policy" "ecs_invoke_acp_s4_evaluate" {
   name = "${local.name_prefix}-ecs-invoke-acp-s4-evaluate"
-  role = "${local.name_prefix}-ecs-task-role"
+  role = var.ecs_task_role_name
 
   policy = jsonencode({
     Version = "2012-10-17"

@@ -45,3 +45,9 @@ variable "acm_cert_arn_us_east1" {
   type        = string
   default     = "arn:aws:acm:us-west-1:867490540162:certificate/260ab2f0-06f6-456b-b5d7-a4d0af96d405"
 }
+
+variable "domain_name" {
+  description = "Custom domain name for the API Gateway regional custom domain mapping"
+  type        = string
+  default     = "api-cis.lumiguides.it.com"
+}
