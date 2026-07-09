@@ -64,23 +64,25 @@ resource "aws_iam_role_policy" "cicd_inline" {
           "ecr:GetAuthorizationToken",
           "ecr:BatchCheckLayerAvailability",
           "ecr:GetDownloadUrlForLayer",
-          "ecr:GetRepositoryPolicy",
-          "ecr:DescribeRepositories",
-          "ecr:ListImages",
-          "ecr:DescribeImages",
           "ecr:BatchGetImage",
           "ecr:InitiateLayerUpload",
           "ecr:UploadLayerPart",
           "ecr:CompleteLayerUpload",
           "ecr:PutImage",
-          "ecr:TagResource",
+          "ecr:DescribeRepositories",
+          "ecr:ListImages",
+          "ecr:ListTagsForResource",
+          "ecr:DescribeImages",
+          "ecr:GetLifecyclePolicy",
+          "ecr:GetLifecyclePolicyPreview",
+          "ecr:GetRepositoryPolicy",
         ]
         Resource = "*"
       },
       {
         Sid      = "ELBDescribe"
         Effect   = "Allow"
-        Action   = "elasticloadbalancing:Describe*"
+        Action   = ["elasticloadbalancing:Describe*", "elasticloadbalancing:Get*"]
         Resource = "*"
       },
       {
@@ -102,7 +104,51 @@ resource "aws_iam_role_policy" "cicd_inline" {
           "iam:CreateRole", "iam:DeleteRole", "iam:AttachRolePolicy",
           "iam:DetachRolePolicy", "iam:PutRolePolicy", "iam:DeleteRolePolicy",
           "iam:PassRole", "iam:GetRole", "iam:GetRolePolicy",
-          "iam:ListRolePolicies", "iam:ListAttachedRolePolicies", "iam:TagRole",
+          "iam:ListRolePolicies", "iam:ListAttachedRolePolicies",
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "OIDCProviderManage"
+        Effect = "Allow"
+        Action = [
+          "iam:GetOpenIDConnectProvider",
+          "iam:CreateOpenIDConnectProvider",
+          "iam:DeleteOpenIDConnectProvider",
+          "iam:UpdateOpenIDConnectProviderThumbprint",
+          "iam:TagOpenIDConnectProvider",
+          "iam:UntagOpenIDConnectProvider",
+          "iam:ListOpenIDConnectProviderTags",
+          "iam:ListOpenIDConnectProviders",
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "APIGatewayManage"
+        Effect = "Allow"
+        Action = [
+          "apigateway:GET",
+          "apigateway:POST",
+          "apigateway:PUT",
+          "apigateway:PATCH",
+          "apigateway:DELETE",
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "WAFv2Manage"
+        Effect = "Allow"
+        Action = [
+          "wafv2:GetWebACL",
+          "wafv2:ListWebACLs",
+          "wafv2:GetWebACLForResource",
+          "wafv2:AssociateWebACL",
+          "wafv2:DisassociateWebACL",
+          "wafv2:GetLoggingConfiguration",
+          "wafv2:PutLoggingConfiguration",
+          "wafv2:DeleteLoggingConfiguration",
+          "wafv2:ListTagsForResource",
+          "wafv2:TagResource",
         ]
         Resource = "*"
       },
