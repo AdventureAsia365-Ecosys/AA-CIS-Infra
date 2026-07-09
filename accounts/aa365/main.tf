@@ -21,22 +21,22 @@ locals {
   # instead of module outputs — avoids a real dependency cycle without
   # hardcoding an account-specific literal (unlike the account-1 root, which
   # hardcodes the account-1 ARNs directly).
-  name_prefix             = "${var.project}-${var.environment}"
-  ecs_cluster_arn         = "arn:aws:ecs:${var.aws_region}:${var.account_id}:cluster/${local.name_prefix}-cluster"
-  ecs_api_task_def_arn    = "arn:aws:ecs:${var.aws_region}:${var.account_id}:task-definition/${local.name_prefix}-api"
-  sfn_pipeline_arn        = "arn:aws:states:${var.aws_region}:${var.account_id}:stateMachine:${local.name_prefix}-pipeline"
+  name_prefix          = "${var.project}-${var.environment}"
+  ecs_cluster_arn      = "arn:aws:ecs:${var.aws_region}:${var.account_id}:cluster/${local.name_prefix}-cluster"
+  ecs_api_task_def_arn = "arn:aws:ecs:${var.aws_region}:${var.account_id}:task-definition/${local.name_prefix}-api"
+  sfn_pipeline_arn     = "arn:aws:states:${var.aws_region}:${var.account_id}:stateMachine:${local.name_prefix}-pipeline"
 }
 
 module "vpc" {
   source = "../../modules/vpc"
 
-  project             = var.project
-  environment         = var.environment
-  vpc_cidr            = var.vpc_cidr
-  availability_zones  = var.availability_zones
-  public_subnet_cidrs = var.public_subnet_cidrs
+  project              = var.project
+  environment          = var.environment
+  vpc_cidr             = var.vpc_cidr
+  availability_zones   = var.availability_zones
+  public_subnet_cidrs  = var.public_subnet_cidrs
   private_subnet_cidrs = var.private_subnet_cidrs
-  db_subnet_cidrs     = var.db_subnet_cidrs
+  db_subnet_cidrs      = var.db_subnet_cidrs
 }
 
 module "rds" {
@@ -108,6 +108,8 @@ module "alb" {
   public_subnet_ids   = module.vpc.public_subnet_ids
   sg_alb_id           = module.vpc.sg_alb_id
   acm_certificate_arn = var.acm_certificate_arn
+  private_subnet_ids  = module.vpc.private_subnet_ids
+  vpc_cidr_block      = var.vpc_cidr
 
   depends_on = [module.vpc]
 }
@@ -243,6 +245,8 @@ module "api_gateway" {
   authorizer_lambda_invoke_arn = module.lambda.authorizer_lambda_invoke_arn
   authorizer_lambda_name       = module.lambda.authorizer_lambda_name
   alb_dns_name                 = module.alb.alb_dns_name
+  nlb_dns_name                 = module.alb.nlb_dns_name
+  vpc_link_id                  = module.alb.vpc_link_id
   acm_cert_arn_us_east1        = var.acm_certificate_arn
   domain_name                  = var.domain_name
 
