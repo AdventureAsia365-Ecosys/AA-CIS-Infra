@@ -86,6 +86,27 @@ resource "aws_iam_role_policy" "cicd_inline" {
         Resource = "*"
       },
       {
+        Sid    = "ELBManageVpcLinkNLB"
+        Effect = "Allow"
+        Action = [
+          "elasticloadbalancing:CreateLoadBalancer",
+          "elasticloadbalancing:DeleteLoadBalancer",
+          "elasticloadbalancing:ModifyLoadBalancerAttributes",
+          "elasticloadbalancing:CreateTargetGroup",
+          "elasticloadbalancing:DeleteTargetGroup",
+          "elasticloadbalancing:ModifyTargetGroup",
+          "elasticloadbalancing:ModifyTargetGroupAttributes",
+          "elasticloadbalancing:RegisterTargets",
+          "elasticloadbalancing:DeregisterTargets",
+          "elasticloadbalancing:CreateListener",
+          "elasticloadbalancing:DeleteListener",
+          "elasticloadbalancing:ModifyListener",
+          "elasticloadbalancing:AddTags",
+          "elasticloadbalancing:RemoveTags",
+        ]
+        Resource = "*"
+      },
+      {
         Sid      = "EFSDescribeList"
         Effect   = "Allow"
         Action   = ["elasticfilesystem:Describe*", "elasticfilesystem:List*"]
