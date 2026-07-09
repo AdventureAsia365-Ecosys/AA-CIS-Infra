@@ -53,7 +53,8 @@ resource "aws_lb_target_group" "vpc_link_nlb" {
   target_type = "alb"
 
   health_check {
-    protocol = "TCP"
+    protocol = "HTTP"
+    path     = "/health"
     port     = "traffic-port"
   }
 
