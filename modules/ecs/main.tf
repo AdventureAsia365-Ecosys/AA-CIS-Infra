@@ -151,14 +151,16 @@ resource "aws_ecs_task_definition" "api" {
     image     = "${aws_ecr_repository.api.repository_url}:latest"
     essential = true
     portMappings = [{ containerPort = 8000, protocol = "tcp" }]
-    environment = [
+    environment = concat([
       { name = "PORT",                 value = "8000" },
       { name = "ENVIRONMENT",          value = var.environment },
       { name = "PROJECT",              value = var.project },
       { name = "AWS_REGION",           value = var.aws_region },
       { name = "STEP_FUNCTIONS_ARN",   value = var.step_functions_arn },
       { name = "SF_BATCH_THRESHOLD",   value = tostring(var.sf_batch_threshold) },
-    ]
+      ],
+      var.redis_host != null ? [{ name = "REDIS_HOST", value = var.redis_host }] : []
+    )
     secrets = [
       { name = "DATABASE_URL",       valueFrom = var.secret_rds_arn },
       { name = "OPENAI_API_KEY",     valueFrom = var.secret_openai_arn },
