@@ -28,7 +28,7 @@ resource "aws_lb_target_group" "api" {
   port        = 8000
   protocol    = "HTTP"
   vpc_id      = var.vpc_id
-  target_type = "ip"   # Fargate requires ip, not instance
+  target_type = "ip" # Fargate requires ip, not instance
 
   health_check {
     enabled             = true
