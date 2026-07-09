@@ -11,19 +11,24 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 5.40"
     }
+    tls = {
+      source  = "hashicorp/tls"
+      version = "~> 4.0"
+    }
   }
 
   backend "s3" {
     bucket  = "aa-cis-tfstate-005097885195"
     key     = "dev/terraform.tfstate"
     region  = "us-west-1"
-    profile = "aa365-admin"
+    # Không hardcode profile — CI (GitHub Actions OIDC) dùng ambient credentials
+    # qua env var, không có ~/.aws/config. Local: export AWS_PROFILE=aa365-admin
+    # trước khi chạy terraform.
   }
 }
 
 provider "aws" {
-  region  = var.aws_region
-  profile = "aa365-admin"
+  region = var.aws_region
 
   default_tags {
     tags = {

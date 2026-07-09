@@ -107,3 +107,9 @@ variable "execution_role_secrets_arn_pattern" {
   type        = string
   default     = null
 }
+
+variable "redis_host" {
+  description = "Redis endpoint injected into container env as REDIS_HOST. Optional — omit to preserve existing behavior."
+  type        = string
+  default     = null
+}

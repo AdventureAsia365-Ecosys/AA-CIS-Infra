@@ -13,6 +13,10 @@ jobs:
     name: Terraform Plan (dev)
     runs-on: ubuntu-latest
 
+    defaults:
+      run:
+        working-directory: accounts/aa365
+
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -20,7 +24,7 @@ jobs:
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::867490540162:role/aa-cis-dev-role
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: us-west-1
 
       - name: Verify AWS identity
@@ -34,7 +38,7 @@ jobs:
       - name: Terraform Init
         run: |
           terraform init \
-            -backend-config="bucket=aa-cis-tfstate-867490540162" \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
             -backend-config="key=dev/terraform.tfstate" \
             -backend-config="region=us-west-1"
 
@@ -44,4 +48,4 @@ jobs:
       - name: Terraform Plan
         env:
           TF_VAR_db_password: ${{ secrets.TF_VAR_DB_PASSWORD }}
-        run: terraform plan -var-file="envs/dev/terraform.tfvars"
+        run: terraform plan
