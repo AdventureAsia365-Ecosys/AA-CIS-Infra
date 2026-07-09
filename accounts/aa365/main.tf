@@ -124,6 +124,8 @@ module "ecs" {
 
   target_group_arn = module.alb.target_group_arn
 
+  redis_host = module.elasticache.redis_endpoint
+
   task_cpu              = var.task_cpu
   task_memory           = var.task_memory
   service_desired_count = var.service_desired_count
