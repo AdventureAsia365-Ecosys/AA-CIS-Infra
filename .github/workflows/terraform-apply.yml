@@ -1,8 +1,6 @@
-name: Terraform Apply Dev
+name: Terraform Apply Prod
 
 on:
-  push:
-    branches: [develop]
   workflow_dispatch:
 
 permissions:
@@ -11,9 +9,9 @@ permissions:
 
 jobs:
   terraform-apply:
-    name: Terraform Apply (dev)
+    name: Terraform Apply (prod)
     runs-on: ubuntu-latest
-    environment: dev
+    environment: prod
 
     defaults:
       run:
