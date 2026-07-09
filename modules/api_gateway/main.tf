@@ -37,7 +37,9 @@ resource "aws_api_gateway_integration" "root" {
   http_method             = aws_api_gateway_method.root.http_method
   type                    = "HTTP_PROXY"
   integration_http_method = "ANY"
-  uri                     = "http://${var.alb_dns_name}"
+  connection_type         = "VPC_LINK"
+  connection_id           = var.vpc_link_id
+  uri                     = "http://${var.nlb_dns_name}"
 }
 
 # =============================================================================
@@ -64,7 +66,9 @@ resource "aws_api_gateway_integration" "health" {
   http_method             = aws_api_gateway_method.health.http_method
   type                    = "HTTP_PROXY"
   integration_http_method = "GET"
-  uri                     = "http://${var.alb_dns_name}/health"
+  connection_type         = "VPC_LINK"
+  connection_id           = var.vpc_link_id
+  uri                     = "http://${var.nlb_dns_name}/health"
 }
 
 # /auth/{auth_proxy+} — login, refresh, verify (no API key required)
@@ -97,7 +101,9 @@ resource "aws_api_gateway_integration" "auth" {
   http_method             = aws_api_gateway_method.auth_any.http_method
   type                    = "HTTP_PROXY"
   integration_http_method = "ANY"
-  uri                     = "http://${var.alb_dns_name}/auth/{auth_proxy}"
+  connection_type         = "VPC_LINK"
+  connection_id           = var.vpc_link_id
+  uri                     = "http://${var.nlb_dns_name}/auth/{auth_proxy}"
 
   request_parameters = {
     "integration.request.path.auth_proxy" = "method.request.path.auth_proxy"
@@ -134,7 +140,9 @@ resource "aws_api_gateway_integration" "admin" {
   http_method             = aws_api_gateway_method.admin_any.http_method
   type                    = "HTTP_PROXY"
   integration_http_method = "ANY"
-  uri                     = "http://${var.alb_dns_name}/admin/{admin_proxy}"
+  connection_type         = "VPC_LINK"
+  connection_id           = var.vpc_link_id
+  uri                     = "http://${var.nlb_dns_name}/admin/{admin_proxy}"
 
   request_parameters = {
     "integration.request.path.admin_proxy" = "method.request.path.admin_proxy"
@@ -171,7 +179,9 @@ resource "aws_api_gateway_integration" "content" {
   http_method             = aws_api_gateway_method.content_any.http_method
   type                    = "HTTP_PROXY"
   integration_http_method = "ANY"
-  uri                     = "http://${var.alb_dns_name}/content/{content_proxy}"
+  connection_type         = "VPC_LINK"
+  connection_id           = var.vpc_link_id
+  uri                     = "http://${var.nlb_dns_name}/content/{content_proxy}"
 
   request_parameters = {
     "integration.request.path.content_proxy" = "method.request.path.content_proxy"
@@ -198,7 +208,9 @@ resource "aws_api_gateway_integration" "docs" {
   http_method             = aws_api_gateway_method.docs.http_method
   type                    = "HTTP_PROXY"
   integration_http_method = "GET"
-  uri                     = "http://${var.alb_dns_name}/docs"
+  connection_type         = "VPC_LINK"
+  connection_id           = var.vpc_link_id
+  uri                     = "http://${var.nlb_dns_name}/docs"
 }
 
 # /openapi.json — FastAPI OpenAPI schema (no auth)
@@ -221,7 +233,9 @@ resource "aws_api_gateway_integration" "openapi" {
   http_method             = aws_api_gateway_method.openapi.http_method
   type                    = "HTTP_PROXY"
   integration_http_method = "GET"
-  uri                     = "http://${var.alb_dns_name}/openapi.json"
+  connection_type         = "VPC_LINK"
+  connection_id           = var.vpc_link_id
+  uri                     = "http://${var.nlb_dns_name}/openapi.json"
 }
 
 # =============================================================================
@@ -258,7 +272,9 @@ resource "aws_api_gateway_integration" "v1" {
   http_method             = aws_api_gateway_method.v1_any.http_method
   type                    = "HTTP_PROXY"
   integration_http_method = "ANY"
-  uri                     = "http://${var.alb_dns_name}/v1/{v1_proxy}"
+  connection_type         = "VPC_LINK"
+  connection_id           = var.vpc_link_id
+  uri                     = "http://${var.nlb_dns_name}/v1/{v1_proxy}"
 
   request_parameters = {
     "integration.request.path.v1_proxy" = "method.request.path.v1_proxy"

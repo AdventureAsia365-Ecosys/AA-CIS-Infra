@@ -40,6 +40,16 @@ variable "alb_dns_name" {
   default     = "aa-cis-dev-alb-1114303360.us-west-1.elb.amazonaws.com"
 }
 
+variable "nlb_dns_name" {
+  description = "DNS name of the internal NLB fronting the ALB, reached via VPC Link (AA-272)"
+  type        = string
+}
+
+variable "vpc_link_id" {
+  description = "ID of the API Gateway VPC Link (V1) wrapping the NLB (AA-272)"
+  type        = string
+}
+
 variable "acm_cert_arn_us_east1" {
   description = "ACM certificate ARN (must be in same region as API — us-west-1 for REGIONAL endpoint)"
   type        = string
