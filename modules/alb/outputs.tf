@@ -6,6 +6,11 @@ output "alb_arn" {
   value = aws_lb.main.arn
 }
 
+output "alb_subnet_ids" {
+  description = "Subnets the ALB is deployed in (AA-272 diagnostic flow logs)"
+  value       = aws_lb.main.subnets
+}
+
 output "target_group_arn" {
   value = aws_lb_target_group.api.arn
 }

@@ -61,3 +61,9 @@ variable "domain_name" {
   type        = string
   default     = "api-cis.lumiguides.it.com"
 }
+
+variable "enable_execution_logging" {
+  description = "Enable INFO-level CloudWatch execution logging on the dev stage — AA-272 diagnostic only, requires aws_api_gateway_account.cloudwatch_role_arn to be set first"
+  type        = bool
+  default     = false
+}

@@ -306,6 +306,23 @@ resource "aws_api_gateway_stage" "dev" {
   stage_name    = var.environment
 }
 
+# AA-272 diagnostic only — INFO-level execution logging, gated so account-1's
+# root (which doesn't set this var) never enables it. Requires the account's
+# aws_api_gateway_account.cloudwatch_role_arn to already be set.
+resource "aws_api_gateway_method_settings" "diagnostic_logging" {
+  count = var.enable_execution_logging ? 1 : 0
+
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  stage_name  = aws_api_gateway_stage.dev.stage_name
+  method_path = "*/*"
+
+  settings {
+    logging_level      = "INFO"
+    data_trace_enabled = false
+    metrics_enabled    = true
+  }
+}
+
 # =============================================================================
 # Usage Plans — mapped to plan_tier values in shared.tenants
 # =============================================================================
