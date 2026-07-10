@@ -40,6 +40,18 @@ resource "aws_lb" "vpc_link_nlb" {
 
   enable_deletion_protection = false
 
+  # AA-272 cutover attempt #3: the SG's ingress rule below only allows
+  # 10.2.0.0/16 (this VPC's own CIDR, correct for the NLB's own health
+  # checks to the ALB). Real client traffic from the API Gateway VPC Link
+  # arrives via AWS PrivateLink, not from this VPC — AWS docs confirm that
+  # source range is intentionally undocumented/unstable ("you do not know
+  # the IP address range... making traditional IP-based security group
+  # rules impractical"), so it can never be safely allow-listed by CIDR.
+  # This flag is AWS's purpose-built alternative: skip SG evaluation only
+  # for PrivateLink-sourced traffic, leaving the 10.2.0.0/16 rule fully
+  # enforced for everything else.
+  enforce_security_group_inbound_rules_on_private_link_traffic = "off"
+
   tags = {
     Name = "${local.name_prefix}-nlb"
   }
