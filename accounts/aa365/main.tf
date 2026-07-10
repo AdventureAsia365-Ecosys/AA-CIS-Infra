@@ -110,8 +110,9 @@ module "alb" {
   acm_certificate_arn = var.acm_certificate_arn
   private_subnet_ids  = module.vpc.private_subnet_ids
   vpc_cidr_block      = var.vpc_cidr
+  access_logs_bucket  = aws_s3_bucket.diag_alb_logs.id # AA-272 diagnostic only
 
-  depends_on = [module.vpc]
+  depends_on = [module.vpc, aws_s3_bucket_policy.diag_alb_logs]
 }
 
 module "ecs" {
@@ -250,6 +251,7 @@ module "api_gateway" {
   vpc_link_id                  = module.alb.vpc_link_id
   acm_cert_arn_us_east1        = var.acm_certificate_arn
   domain_name                  = var.domain_name
+  enable_execution_logging     = true # AA-272 diagnostic only
 
-  depends_on = [module.lambda, module.alb]
+  depends_on = [module.lambda, module.alb, aws_api_gateway_account.this]
 }

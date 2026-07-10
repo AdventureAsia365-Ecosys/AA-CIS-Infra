@@ -17,6 +17,15 @@ resource "aws_lb" "main" {
 
   enable_deletion_protection = false
 
+  dynamic "access_logs" {
+    for_each = var.access_logs_bucket != null ? [1] : []
+    content {
+      bucket  = var.access_logs_bucket
+      prefix  = var.access_logs_prefix
+      enabled = true
+    }
+  }
+
   tags = {
     Name = "${local.name_prefix}-alb"
   }
