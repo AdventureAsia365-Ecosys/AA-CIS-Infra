@@ -9,12 +9,58 @@ locals {
   name_prefix = "${var.project}-${var.environment}"
 }
 
+# Optional ip_set for internal VPC Link traffic (AA-272) — only created when
+# var.vpc_allow_cidr is set. Left null on the account-1 root, which still
+# references this shared module post-decommission, so no ip_set/rule is
+# created there.
+resource "aws_wafv2_ip_set" "vpc_allow" {
+  count = var.vpc_allow_cidr != null ? 1 : 0
+
+  name               = "${local.name_prefix}-vpc-allow"
+  scope              = "REGIONAL"
+  ip_address_version = "IPV4"
+  addresses          = [var.vpc_allow_cidr]
+
+  tags = merge(var.tags, {
+    Module = "waf"
+    Issue  = "AA-272"
+  })
+}
+
 resource "aws_wafv2_web_acl" "main" {
   name  = "${local.name_prefix}-waf"
   scope = "REGIONAL"
 
   default_action {
     allow {}
+  }
+
+  # Rule 0 — Allow internal VPC Link traffic (health checks + proxied
+  # requests) to bypass GeoBlock/RateLimit. Optional, count-gated via
+  # var.vpc_allow_cidr (AA-272).
+  dynamic "rule" {
+    for_each = var.vpc_allow_cidr != null ? [1] : []
+
+    content {
+      name     = "VpcLinkInternalAllow"
+      priority = 0
+
+      action {
+        allow {}
+      }
+
+      statement {
+        ip_set_reference_statement {
+          arn = aws_wafv2_ip_set.vpc_allow[0].arn
+        }
+      }
+
+      visibility_config {
+        cloudwatch_metrics_enabled = true
+        metric_name                = "VpcLinkInternalAllow"
+        sampled_requests_enabled   = true
+      }
+    }
   }
 
   # Rule 1 — Rate limit

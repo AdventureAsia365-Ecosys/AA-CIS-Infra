@@ -23,3 +23,9 @@ variable "geo_allowed_countries" {
   # Matches AWS console state at import time (AA-59). Update via PR after verifying with stakeholders.
   default = ["US", "GB", "AU", "SG", "VN", "IN", "JP", "TH", "NZ", "CA"]
 }
+
+variable "vpc_allow_cidr" {
+  type        = string
+  default     = null
+  description = "Optional CIDR to bypass GeoBlock/RateLimit for internal VPC Link traffic health checks — leave null to skip this rule entirely"
+}
