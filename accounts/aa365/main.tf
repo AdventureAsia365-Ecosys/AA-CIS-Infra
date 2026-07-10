@@ -224,11 +224,12 @@ module "monitoring" {
 module "waf" {
   source = "../../modules/waf"
 
-  project     = var.project
-  environment = var.environment
-  alb_arn     = module.alb.alb_arn
-  rate_limit  = 1000
-  tags        = local.common_tags
+  project        = var.project
+  environment    = var.environment
+  alb_arn        = module.alb.alb_arn
+  rate_limit     = 1000
+  vpc_allow_cidr = var.vpc_cidr
+  tags           = local.common_tags
 
   depends_on = [module.alb]
 }

@@ -163,6 +163,7 @@ resource "aws_iam_role_policy" "cicd_inline" {
           "wafv2:GetWebACL",
           "wafv2:ListWebACLs",
           "wafv2:GetWebACLForResource",
+          "wafv2:UpdateWebACL",
           "wafv2:AssociateWebACL",
           "wafv2:DisassociateWebACL",
           "wafv2:GetLoggingConfiguration",
@@ -170,6 +171,8 @@ resource "aws_iam_role_policy" "cicd_inline" {
           "wafv2:DeleteLoggingConfiguration",
           "wafv2:ListTagsForResource",
           "wafv2:TagResource",
+          "wafv2:GetIPSet",
+          "wafv2:ListIPSets",
         ]
         Resource = "*"
       },
