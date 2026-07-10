@@ -182,6 +182,17 @@ resource "aws_iam_role_policy" "cicd_inline" {
         ]
         Resource = "*"
       },
+      {
+        Sid    = "DynamoDBStateLock"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:DeleteItem",
+          "dynamodb:DescribeTable",
+        ]
+        Resource = "arn:aws:dynamodb:us-west-1:005097885195:table/aa-cis-tfstate-lock-005097885195"
+      },
     ]
   })
 }
