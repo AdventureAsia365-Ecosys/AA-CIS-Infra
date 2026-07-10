@@ -18,9 +18,10 @@ terraform {
   }
 
   backend "s3" {
-    bucket  = "aa-cis-tfstate-005097885195"
-    key     = "dev/terraform.tfstate"
-    region  = "us-west-1"
+    bucket         = "aa-cis-tfstate-005097885195"
+    key            = "dev/terraform.tfstate"
+    region         = "us-west-1"
+    dynamodb_table = "aa-cis-tfstate-lock-005097885195"
     # Không hardcode profile — CI (GitHub Actions OIDC) dùng ambient credentials
     # qua env var, không có ~/.aws/config. Local: export AWS_PROFILE=aa365-admin
     # trước khi chạy terraform.
