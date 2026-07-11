@@ -147,3 +147,10 @@ variable "anthropic_api_key" {
   default   = ""
   sensitive = true
 }
+
+# ── Observability (AA-284/286/287) ──
+variable "alert_email" {
+  description = "Email address for SNS alert subscription + AWS Budgets notifications"
+  type        = string
+  default     = "pqnghiep1354@gmail.com"
+}
