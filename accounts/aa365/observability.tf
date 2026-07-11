@@ -9,6 +9,23 @@
 # =============================================================================
 
 # -----------------------------------------------------------------------------
+# AA-287 — IAM propagation race (run #61). aa-cis-dev-role's inline policy
+# (accounts/aa365/cicd.tf, aws_iam_role_policy.cicd_inline) picked up the
+# Budgets/CloudTrail Sids correctly, but Terraform started creating
+# aws_budgets_budget.total_monthly ~130ms after the policy update API call
+# returned success — before AWS's IAM/STS authorization propagation caught
+# up for the already-active assumed-role session. Result: AccessDenied on an
+# action that WAS present in the (by-then-correct) policy. Standard,
+# documented mitigation for AWS IAM's eventual consistency — not a
+# permissions bug, a sequencing one.
+# -----------------------------------------------------------------------------
+
+resource "time_sleep" "wait_for_iam_propagation" {
+  depends_on      = [aws_iam_role_policy.cicd_inline]
+  create_duration = "15s"
+}
+
+# -----------------------------------------------------------------------------
 # AA-284 — SNS alert topic + CloudWatch alarms
 # -----------------------------------------------------------------------------
 
@@ -138,6 +155,8 @@ resource "aws_budgets_budget" "total_monthly" {
     notification_type          = "ACTUAL"
     subscriber_email_addresses = [var.alert_email]
   }
+
+  depends_on = [time_sleep.wait_for_iam_propagation]
 }
 
 # -----------------------------------------------------------------------------
@@ -257,5 +276,5 @@ resource "aws_cloudtrail" "main" {
 
   tags = merge(local.common_tags, { Issue = "AA-286" })
 
-  depends_on = [aws_s3_bucket_policy.cloudtrail_logs]
+  depends_on = [aws_s3_bucket_policy.cloudtrail_logs, time_sleep.wait_for_iam_propagation]
 }
