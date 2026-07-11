@@ -206,11 +206,26 @@ resource "aws_iam_role_policy" "cicd_inline" {
         # actions don't support resource-level ARN scoping (confirmed via
         # AWS Cost Management's own IAM policy examples, which use
         # Resource: "*" throughout).
+        # Tagging is a SEPARATE API surface, not covered by ViewBudget/
+        # ModifyBudget — missed on the first pass (AA-286/287 IAM PR),
+        # which caused an AccessDeniedException on budgets:TagResource at
+        # apply time (default_tags applies to every taggable resource,
+        # including this one, even with no explicit `tags` block on the
+        # resource itself). TagResource/UntagResource/ListTagsForResource
+        # confirmed via the official Budgets API reference
+        # (docs.aws.amazon.com/aws-cost-management/latest/APIReference/
+        # API_budgets_{Tag,Untag,ListTagsFor}Resource.html), not assumed
+        # from the CloudTrail Sid's AddTags/RemoveTags/ListTags pattern —
+        # Budgets uses the generic resource-tagging API shape, CloudTrail
+        # uses its own older service-specific one.
         Sid    = "BudgetsManage"
         Effect = "Allow"
         Action = [
           "budgets:ViewBudget",
           "budgets:ModifyBudget",
+          "budgets:TagResource",
+          "budgets:UntagResource",
+          "budgets:ListTagsForResource",
         ]
         Resource = "*"
       },
