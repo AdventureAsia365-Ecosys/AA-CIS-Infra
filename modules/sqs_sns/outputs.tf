@@ -9,3 +9,7 @@ output "queue_arns" {
 output "dlq_arns" {
   value = { for k, v in aws_sqs_queue.dlq : k => v.arn }
 }
+
+output "dlq_names" {
+  value = { for k, v in aws_sqs_queue.dlq : k => v.name }
+}
