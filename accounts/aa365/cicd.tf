@@ -196,6 +196,55 @@ resource "aws_iam_role_policy" "cicd_inline" {
         ]
         Resource = "arn:aws:dynamodb:us-west-1:005097885195:table/aa-cis-tfstate-lock-005097885195"
       },
+      {
+        # AA-287 — aws_budgets_budget. ViewBudget/ModifyBudget are AWS's
+        # consolidated fine-grained actions (in effect for any account/org
+        # created on or after 2023-03-06) that gate all Budgets read and
+        # write API calls respectively — the old granular Create/Describe/
+        # Update/DeleteBudget actions are superseded by these two, not used
+        # alongside them. Resource is "*" because Budgets' console-level
+        # actions don't support resource-level ARN scoping (confirmed via
+        # AWS Cost Management's own IAM policy examples, which use
+        # Resource: "*" throughout).
+        Sid    = "BudgetsManage"
+        Effect = "Allow"
+        Action = [
+          "budgets:ViewBudget",
+          "budgets:ModifyBudget",
+        ]
+        Resource = "*"
+      },
+      {
+        # AA-286 — aws_cloudtrail.main. Exact action list confirmed against
+        # the terraform-provider-aws source (internal/service/cloudtrail/
+        # trail.go) so plan/refresh (Describe/Get*) and full apply lifecycle
+        # (Create/Update/Delete/StartLogging/StopLogging/PutEventSelectors/
+        # PutInsightSelectors) all work — not just the create path. Tagging
+        # uses CloudTrail's own AddTags/RemoveTags/ListTags API (not the
+        # generic TagResource/UntagResource some newer services use).
+        # Resource "*" matches AWS's own CloudTrail IAM policy examples,
+        # which state the Resource element is always "*" for these actions.
+        Sid    = "CloudTrailManage"
+        Effect = "Allow"
+        Action = [
+          "cloudtrail:CreateTrail",
+          "cloudtrail:UpdateTrail",
+          "cloudtrail:DeleteTrail",
+          "cloudtrail:DescribeTrails",
+          "cloudtrail:ListTrails",
+          "cloudtrail:GetTrailStatus",
+          "cloudtrail:StartLogging",
+          "cloudtrail:StopLogging",
+          "cloudtrail:GetEventSelectors",
+          "cloudtrail:PutEventSelectors",
+          "cloudtrail:GetInsightSelectors",
+          "cloudtrail:PutInsightSelectors",
+          "cloudtrail:AddTags",
+          "cloudtrail:RemoveTags",
+          "cloudtrail:ListTags",
+        ]
+        Resource = "*"
+      },
     ]
   })
 }
