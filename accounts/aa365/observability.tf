@@ -4,8 +4,13 @@
 # AA-284 (alerting) + AA-287 (budgets) + AA-286 (CloudTrail).
 #
 # AA-61 originally created aa-cis-dev-acp-alerts + a DLQ-depth alarm on
-# account 1 (867490540162, decommissioned). That resource is gone with the
-# account — this is a fresh build on account 2, not an import/fix.
+# account 1 (867490540162). That resource is gone — account 1's old
+# compute/network root was torn down 2026-07-09 (acc1-destroy-v3.tfplan,
+# AA-271) — but the account itself is still ACTIVE and intentionally kept
+# (ADR-2026-022, amended) to run the Bedrock cross-account satellite pattern
+# (role AA-Bedrock-Invoker, used by AA-296; see
+# shared/llm_client/bedrock_satellite.py in AA-CIS-App). This is a fresh
+# build on account 2, not an import/fix of the AA-61 alarm.
 # =============================================================================
 
 # -----------------------------------------------------------------------------

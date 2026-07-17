@@ -11,8 +11,8 @@ locals {
 
 # Optional ip_set for internal VPC Link traffic (AA-272) — only created when
 # var.vpc_allow_cidr is set. Left null on the account-1 root, which still
-# references this shared module post-decommission, so no ip_set/rule is
-# created there.
+# references this shared module since account-1's compute/network root was
+# torn down (2026-07-09, AA-271) — so no ip_set/rule is created there.
 resource "aws_wafv2_ip_set" "vpc_allow" {
   count = var.vpc_allow_cidr != null ? 1 : 0
 
