@@ -158,6 +158,7 @@ resource "aws_ecs_task_definition" "api" {
       { name = "AWS_REGION",           value = var.aws_region },
       { name = "STEP_FUNCTIONS_ARN",   value = var.step_functions_arn },
       { name = "SF_BATCH_THRESHOLD",   value = tostring(var.sf_batch_threshold) },
+      { name = "BRONZE_BUCKET",        value = var.bronze_bucket_name },
       ],
       var.redis_host != null ? [{ name = "REDIS_HOST", value = var.redis_host }] : []
     )

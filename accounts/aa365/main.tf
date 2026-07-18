@@ -140,6 +140,7 @@ module "ecs" {
   secret_admin_arn      = var.secret_admin_arn
   secret_anthropic_arn  = var.secret_anthropic_arn
   secret_dataforseo_arn = module.secrets.dataforseo_secret_arn
+  bronze_bucket_name    = module.s3.bronze_bucket_name
 
   step_functions_arn = local.sfn_pipeline_arn
   sf_batch_threshold = 15
