@@ -108,6 +108,29 @@ resource "aws_s3_bucket_policy" "bronze" {
         Condition = {
           Bool = { "aws:SecureTransport" = "false" }
         }
+      },
+      # AA-302 — cross-account access for the Bedrock Batch inference service
+      # role (account 1, accounts/acc1-bedrock). Scoped to the two batch
+      # prefixes only, not the whole bucket.
+      {
+        Sid       = "AllowBedrockBatchCrossAccountAccess"
+        Effect    = "Allow"
+        Principal = { AWS = "arn:aws:iam::867490540162:role/aa-bedrock-batch-inference-role" }
+        Action    = ["s3:GetObject", "s3:PutObject"]
+        Resource = [
+          "${aws_s3_bucket.bronze.arn}/batch-input/atom-decompose/*",
+          "${aws_s3_bucket.bronze.arn}/batch-output/atom-decompose/*"
+        ]
+      },
+      {
+        Sid       = "AllowBedrockBatchListBucket"
+        Effect    = "Allow"
+        Principal = { AWS = "arn:aws:iam::867490540162:role/aa-bedrock-batch-inference-role" }
+        Action    = ["s3:ListBucket"]
+        Resource  = aws_s3_bucket.bronze.arn
+        Condition = {
+          StringLike = { "s3:prefix" = ["batch-input/atom-decompose/*", "batch-output/atom-decompose/*"] }
+        }
       }
     ]
   })
