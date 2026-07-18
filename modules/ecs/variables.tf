@@ -113,3 +113,8 @@ variable "redis_host" {
   type        = string
   default     = null
 }
+
+variable "bronze_bucket_name" {
+  description = "S3 bronze bucket name for presigned upload URLs (admin_pipeline.py BRONZE_BUCKET env var)"
+  type        = string
+}
