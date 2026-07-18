@@ -379,6 +379,13 @@ resource "aws_lambda_function" "content" {
 # Output:  Allow/Deny policy + tenant context
 # =============================================================================
 
+# AA-303: Lambda env vars have no ECS-style valueFrom — resolve the secret at
+# apply-time instead of shipping the REPLACE_ME literal. Scoped to authorizer
+# only; lambda_exec already has secretsmanager:GetSecretValue on this ARN.
+data "aws_secretsmanager_secret_version" "authorizer_rds" {
+  secret_id = var.secret_rds_arn
+}
+
 resource "aws_cloudwatch_log_group" "authorizer" {
   name              = "/aws/lambda/${local.name_prefix}-authorizer"
   retention_in_days = 14
@@ -403,7 +410,7 @@ resource "aws_lambda_function" "authorizer" {
 
   environment {
     variables = {
-      DATABASE_URL = var.database_url
+      DATABASE_URL = data.aws_secretsmanager_secret_version.authorizer_rds.secret_string
     }
   }
 
