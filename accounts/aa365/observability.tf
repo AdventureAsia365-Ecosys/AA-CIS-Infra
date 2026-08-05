@@ -121,6 +121,134 @@ resource "aws_cloudwatch_metric_alarm" "ecs_task_count_low" {
 }
 
 # -----------------------------------------------------------------------------
+# AA-362 [N8-2] — N7 Produce piece alarms (held_rate, grounding_score floor,
+# repair_count). STEP 0 (05/08/2026) confirmed 5/6 alarms the issue wants were
+# missing; this covers 3 of the 5 gap. Metrics emitted by
+# AA-CIS-App:services/acp_produce/metrics.py::emit_piece_metrics() —
+# namespace "acp" (the one real custom-metric convention already in the repo,
+# api/routers/acp_health.py/AA-141 — no "ACP/Pipeline"/"ACP/Produce"
+# namespace exists anywhere, confirmed by grep before choosing this).
+#
+# NOT included here (see AA-362 chat report / PR for full reasoning):
+#   - Bedrock daily cost — blocked by 2 live-verified findings: (a) AWS/Billing
+#     CloudWatch metrics require a manual, non-Terraform-able account setting
+#     ("Receive Billing Alerts") that is NOT enabled on this account (verified
+#     `aws cloudwatch list-metrics --namespace AWS/Billing --region us-east-1`
+#     → empty), and (b) Cost Explorer shows Bedrock spend split across 4
+#     separate SERVICE line items (`Amazon Bedrock`, `Cohere Embed 4 Model
+#     (Amazon Bedrock Edition)`, `Palmyra X4 (Amazon Bedrock Edition)`,
+#     `Palmyra X5 (Amazon Bedrock Edition)` — verified via
+#     `aws ce get-dimension-values --dimension SERVICE`), so a correct alarm
+#     needs a new Cost-Explorer-rollup Lambda, not just an alarm resource —
+#     real new cost-measurement infrastructure that overlaps AA-360's
+#     explicitly-reserved "unified cost tracking (infra + LLM)" scope
+#     (AA-360 confirmed still Backlog/undesigned, but building this now risks
+#     throwaway work AA-360 would replace). Left for Nghiep to decide: build
+#     as a one-off now, or fold into AA-360.
+#   - week_run Tuesday deadline — BLOCKED on AA-364 (Weekly Packet). No
+#     "week_run" runtime concept exists anywhere in either repo yet (grepped
+#     both, 0 hits) — there is nothing to alarm on. See TODO placeholder below.
+# -----------------------------------------------------------------------------
+
+# held_rate — computed via CloudWatch metric math (ratio), not in Python:
+# emit_piece_metrics() only emits raw per-piece counts (piece_held/
+# piece_passed); this alarm sums each over a 1h window and divides.
+# Threshold (20%) is an UNVERIFIED PLACEHOLDER — no real N7 traffic exists yet
+# to tune against (same acknowledged gap as AA-298's SWEEPER_SLA_HOURS
+# placeholder). Tune once real held/passed volume exists.
+resource "aws_cloudwatch_metric_alarm" "acp_piece_held_rate_high" {
+  alarm_name          = "${local.name_prefix}-acp-piece-held-rate-high"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  threshold           = 20
+  alarm_description   = "N7 piece held-rate above 20% over 1h (UNVERIFIED placeholder threshold) — possible prompt/gate drift or brief quality regression"
+  treat_missing_data  = "notBreaching"
+
+  metric_query {
+    id          = "held_rate"
+    expression  = "(held_sum / (held_sum + passed_sum)) * 100"
+    label       = "N7 piece held rate (%)"
+    return_data = true
+  }
+
+  metric_query {
+    id = "held_sum"
+    metric {
+      metric_name = "piece_held"
+      namespace   = "acp"
+      period      = 3600
+      stat        = "Sum"
+    }
+  }
+
+  metric_query {
+    id = "passed_sum"
+    metric {
+      metric_name = "piece_passed"
+      namespace   = "acp"
+      period      = 3600
+      stat        = "Sum"
+    }
+  }
+
+  alarm_actions = [aws_sns_topic.alerts.arn]
+  ok_actions    = [aws_sns_topic.alerts.arn]
+
+  tags = merge(local.common_tags, { Issue = "AA-362" })
+}
+
+# grounding_score HARD FLOOR = 1.0 — not a soft/tunable threshold per issue
+# spec. gate_grounding() (F1) is binary pass/fail in the real code (no
+# numeric score exists — see AA-362 implementation notes), mapped by
+# emit_piece_metrics() to 1.0 (passed) / 0.0 (failed). Minimum statistic over
+# a 5-minute period + 1 evaluation period means ANY single F1 failure drags
+# the period's Minimum to 0.0 and fires within one period — "floor" is
+# enforced as "alarm the instant it happens," not averaged/smoothed away.
+resource "aws_cloudwatch_metric_alarm" "acp_grounding_score_floor" {
+  alarm_name          = "${local.name_prefix}-acp-grounding-score-floor"
+  comparison_operator = "LessThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "grounding_score"
+  namespace           = "acp"
+  period              = 300
+  statistic           = "Minimum"
+  threshold           = 1.0
+  alarm_description   = "N7 F1 grounding gate failed on at least 1 piece (HARD FLOOR = 1.0) — fabrication risk, investigate immediately"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
+
+  tags = merge(local.common_tags, { Issue = "AA-362" })
+}
+
+# repair_count — average per piece rising is the prompt/gate-drift signal the
+# issue names. Threshold (1.0) and evaluation window (3x 1h) are UNVERIFIED
+# PLACEHOLDERS, same caveat as held_rate above — no real repair_count
+# distribution exists yet to set a real number against.
+resource "aws_cloudwatch_metric_alarm" "acp_repair_count_high" {
+  alarm_name          = "${local.name_prefix}-acp-repair-count-high"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 3
+  metric_name         = "repair_count"
+  namespace           = "acp"
+  period              = 3600
+  statistic           = "Average"
+  threshold           = 1.0
+  alarm_description   = "N7 average repair_count per piece above 1.0 for 3 consecutive hours (UNVERIFIED placeholder threshold) — possible prompt/gate drift"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
+
+  tags = merge(local.common_tags, { Issue = "AA-362" })
+}
+
+# TODO(AA-364): week_run Tuesday-deadline alarm. Do not build ahead of AA-364
+# (Weekly Packet) — no "week_run" runtime concept exists yet anywhere in
+# either repo (grep confirmed 0 hits), so there is nothing real to alarm on.
+# Add here once AA-364 emits a real completion timestamp/metric to check
+# against a Tuesday deadline.
+
+# -----------------------------------------------------------------------------
 # AA-287 — AWS Budgets
 # Single $250/mo total-account budget (Execute Plan program-level number,
 # locked already — not re-litigated here). A tag-based split into ACP $180 +
