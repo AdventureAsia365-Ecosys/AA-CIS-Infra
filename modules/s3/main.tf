@@ -131,6 +131,29 @@ resource "aws_s3_bucket_policy" "bronze" {
         Condition = {
           StringLike = { "s3:prefix" = ["batch-input/atom-decompose/*", "batch-output/atom-decompose/*"] }
         }
+      },
+      # AA-399 — same grant, parallel, for the acc3 Batch inference service
+      # role (account 786888028788, accounts/acc3-bedrock/batch.tf). acc1's
+      # statements above are UNCHANGED — acc3 is added alongside, not instead.
+      {
+        Sid       = "AllowBedrockBatchCrossAccountAccessAcc3"
+        Effect    = "Allow"
+        Principal = { AWS = "arn:aws:iam::786888028788:role/aa3-bedrock-batch-inference-role" }
+        Action    = ["s3:GetObject", "s3:PutObject"]
+        Resource = [
+          "${aws_s3_bucket.bronze.arn}/batch-input/atom-decompose/*",
+          "${aws_s3_bucket.bronze.arn}/batch-output/atom-decompose/*"
+        ]
+      },
+      {
+        Sid       = "AllowBedrockBatchListBucketAcc3"
+        Effect    = "Allow"
+        Principal = { AWS = "arn:aws:iam::786888028788:role/aa3-bedrock-batch-inference-role" }
+        Action    = ["s3:ListBucket"]
+        Resource  = aws_s3_bucket.bronze.arn
+        Condition = {
+          StringLike = { "s3:prefix" = ["batch-input/atom-decompose/*", "batch-output/atom-decompose/*"] }
+        }
       }
     ]
   })
