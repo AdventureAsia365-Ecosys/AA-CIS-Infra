@@ -90,17 +90,34 @@ resource "aws_iam_role_policy" "ecs_task_policy" {
   role = aws_iam_role.ecs_task.id
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      Action = [
-        "s3:GetObject", "s3:PutObject", "s3:ListBucket",
-        "secretsmanager:GetSecretValue",
-        "sqs:SendMessage", "sqs:ReceiveMessage", "sqs:DeleteMessage",
-        "logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents",
-        "bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"
-      ]
-      Resource = "*"
-    }]
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject", "s3:PutObject", "s3:ListBucket",
+          "secretsmanager:GetSecretValue",
+          "sqs:SendMessage", "sqs:ReceiveMessage", "sqs:DeleteMessage",
+          "logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents",
+          "bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"
+        ]
+        Resource = "*"
+      },
+      # AA-380 — cloudwatch:PutMetricData has no ARN-scoped Resource (always "*"
+      # per AWS IAM); the cloudwatch:namespace condition key is the only way to
+      # restrict which namespace this role can write to. Scoped to "acp" — the
+      # sole custom-metric namespace in use (AA-141 api/routers/acp_health.py,
+      # AA-362 services/acp_produce/metrics.py) — not a wildcard grant.
+      {
+        Effect   = "Allow"
+        Action   = ["cloudwatch:PutMetricData"]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "cloudwatch:namespace" = "acp"
+          }
+        }
+      }
+    ]
   })
 }
 
