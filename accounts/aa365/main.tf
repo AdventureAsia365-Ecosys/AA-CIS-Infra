@@ -3,8 +3,10 @@
 # Mirrors the architecture of the account-1 root module (../../main.tf) but
 # wires ARNs through module outputs instead of literal account-1 ARNs.
 # Scope (confirmed): VPC, RDS, ECS, ALB, S3, Secrets, API Gateway, Step
-# Functions, WAF, Lambda (5 CIS + 3 ACP). EventBridge/orchestration (AA-180)
-# explicitly deferred — not built here.
+# Functions, WAF, Lambda (5 CIS + 3 ACP), EventBridge (AA-402, 2026-08-14).
+# AA-180 (ACPv1 orchestration epic) stays separate and deferred/dead — the
+# eventbridge module below is ACPv2's own schedules (daily ingest, weekly
+# export, Gate C veto window), not an AA-180 revival.
 # =============================================================================
 
 locals {
@@ -211,6 +213,16 @@ module "step_functions" {
   sg_app_id               = module.vpc.sg_app_id
 
   tags = local.common_tags
+}
+
+module "eventbridge" {
+  source = "../../modules/eventbridge"
+
+  project     = var.project
+  environment = var.environment
+  aws_region  = var.aws_region
+  account_id  = var.account_id
+  tags        = local.common_tags
 }
 
 module "monitoring" {
