@@ -37,8 +37,3 @@ output "acp_dlq_name" {
   description = "ACP events FIFO DLQ name"
   value       = aws_sqs_queue.acp_events_dlq.name
 }
-
-output "acp_alerts_topic_arn" {
-  description = "SNS topic ARN for ACP pipeline alerts"
-  value       = aws_sns_topic.acp_alerts.arn
-}

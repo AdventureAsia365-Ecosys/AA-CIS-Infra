@@ -260,6 +260,71 @@ resource "aws_iam_role_policy" "cicd_inline" {
         ]
         Resource = "*"
       },
+      {
+        # AA-402 — module.eventbridge's scheduler IAM role
+        # (aa-cis-dev-acp-scheduler-role). TagRole/UntagRole were missing
+        # from IAMRoleManage above (which otherwise already grants Create/
+        # Get/PutRolePolicy/PassRole etc with Resource "*") — confirmed via
+        # a live partial-apply AccessDenied on iam:TagRole. Scoped to this
+        # one role ARN rather than folded into IAMRoleManage's wildcard,
+        # since this is prod and the module only ever creates this one role.
+        Sid      = "EventBridgeSchedulerRoleTagging"
+        Effect   = "Allow"
+        Action   = ["iam:TagRole", "iam:UntagRole"]
+        Resource = "arn:aws:iam::${var.account_id}:role/${local.name_prefix}-acp-scheduler-role"
+      },
+      {
+        # AA-402 — module.eventbridge's custom EventBridge bus
+        # (aa-cis-dev-acp-events). No events:* action existed anywhere on
+        # this role before (confirmed via live AccessDenied on
+        # events:CreateEventBus/events:TagResource) — CloudWatchFullAccess
+        # does not cover the "events" namespace, only cloudwatch/logs/sns.
+        Sid    = "EventBridgeAcpBusManage"
+        Effect = "Allow"
+        Action = [
+          "events:CreateEventBus",
+          "events:DeleteEventBus",
+          "events:DescribeEventBus",
+          "events:TagResource",
+          "events:UntagResource",
+          "events:ListTagsForResource",
+        ]
+        Resource = "arn:aws:events:${var.aws_region}:${var.account_id}:event-bus/${local.name_prefix}-acp-events"
+      },
+      {
+        # AA-402 — module.eventbridge's schedule group (aa-cis-dev-acp).
+        # No scheduler:* action existed anywhere on this role before
+        # (confirmed via live AccessDenied on scheduler:CreateScheduleGroup).
+        Sid    = "EventBridgeSchedulerGroupManage"
+        Effect = "Allow"
+        Action = [
+          "scheduler:CreateScheduleGroup",
+          "scheduler:GetScheduleGroup",
+          "scheduler:DeleteScheduleGroup",
+          "scheduler:TagResource",
+          "scheduler:UntagResource",
+          "scheduler:ListTagsForResource",
+        ]
+        Resource = "arn:aws:scheduler:${var.aws_region}:${var.account_id}:schedule-group/${local.name_prefix}-acp"
+      },
+      {
+        # AA-402 — module.eventbridge's 3 named schedules (acp_daily_ingest,
+        # acp_weekly_export, acp_veto_window_close), all created under the
+        # aa-cis-dev-acp schedule group above. Scheduler schedule ARNs are
+        # always schedule/{group-name}/{schedule-name} (confirmed against
+        # AWS's own botocore service model regex for the scheduler service,
+        # not assumed) — the /* here covers only schedule names under this
+        # one group, not schedules in any other group.
+        Sid    = "EventBridgeSchedulerScheduleManage"
+        Effect = "Allow"
+        Action = [
+          "scheduler:CreateSchedule",
+          "scheduler:GetSchedule",
+          "scheduler:UpdateSchedule",
+          "scheduler:DeleteSchedule",
+        ]
+        Resource = "arn:aws:scheduler:${var.aws_region}:${var.account_id}:schedule/${local.name_prefix}-acp/*"
+      },
     ]
   })
 }
