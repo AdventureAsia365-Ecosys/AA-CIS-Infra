@@ -18,11 +18,24 @@
 # action that WAS present in the (by-then-correct) policy. Standard,
 # documented mitigation for AWS IAM's eventual consistency — not a
 # permissions bug, a sequencing one.
+#
+# AA-402 (2026-08-15): same race recurred for cicd_inline's new EventBridge/
+# Scheduler statements (run #70/#71) — module.eventbridge's resources started
+# before the policy update had propagated. Added `triggers` keyed to the
+# policy's own content hash (not aws_iam_role_policy.cicd_inline.id, which is
+# just "role_name:policy_name" and never changes on a content-only update) so
+# this resource re-creates — and re-sleeps — on every future policy change,
+# not just its original creation. Makes this a general fix for any consumer
+# that depends_on it, not a one-off tied to AA-287's original resources.
 # -----------------------------------------------------------------------------
 
 resource "time_sleep" "wait_for_iam_propagation" {
   depends_on      = [aws_iam_role_policy.cicd_inline]
   create_duration = "15s"
+
+  triggers = {
+    policy_hash = md5(aws_iam_role_policy.cicd_inline.policy)
+  }
 }
 
 # -----------------------------------------------------------------------------
