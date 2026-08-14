@@ -134,6 +134,42 @@ resource "aws_scheduler_schedule" "acp_weekly_export" {
   state = "ENABLED"
 }
 
+# ── Schedule: Veto Window Close — Wed 18:00 UTC ──────────────
+# AA-365 [N8-5]: puts ACP.VetoWindowClose event on the bus. Mirrors
+# acp_daily_ingest/acp_weekly_export exactly -- no aws_cloudwatch_event_rule
+# consumes this event yet (same as those two schedules today; a rule gets
+# added when the veto-window-close handler is provisioned), so this
+# resource alone has no runtime effect on its own until that follow-up.
+
+resource "aws_scheduler_schedule" "acp_veto_window_close" {
+  name       = "${local.name_prefix}-acp-veto-window-close"
+  group_name = aws_scheduler_schedule_group.acp.name
+
+  schedule_expression          = "cron(0 18 ? * WED *)"
+  schedule_expression_timezone = "UTC"
+
+  flexible_time_window {
+    mode = "OFF"
+  }
+
+  target {
+    arn      = aws_cloudwatch_event_bus.acp_events.arn
+    role_arn = aws_iam_role.scheduler.arn
+
+    eventbridge_parameters {
+      detail_type = "ACP.VetoWindowClose"
+      source      = "acp.scheduler"
+    }
+
+    retry_policy {
+      maximum_retry_attempts       = 2
+      maximum_event_age_in_seconds = 1800
+    }
+  }
+
+  state = "ENABLED"
+}
+
 # ============================================================
 # AA-61 — ACP Events FIFO DLQ + Monitoring
 # FIFO queue captures failed EventBridge rule deliveries.

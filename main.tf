@@ -217,20 +217,6 @@ module "waf" {
 }
 
 # =============================================================================
-# AA-40 — ACP Pipeline Core Infrastructure
-# EventBridge bus + Scheduler rules for Adventure Asia Content Pipeline
-# =============================================================================
-
-module "eventbridge" {
-  source      = "./modules/eventbridge"
-  project     = var.project
-  environment = var.environment
-  aws_region  = var.aws_region
-  account_id  = var.account_id
-  tags        = local.common_tags
-}
-
-# =============================================================================
 # AA-13 — API Gateway REST + usage plans + tenant key authorizer
 # =============================================================================
 
