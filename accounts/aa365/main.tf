@@ -218,11 +218,12 @@ module "step_functions" {
 module "eventbridge" {
   source = "../../modules/eventbridge"
 
-  project     = var.project
-  environment = var.environment
-  aws_region  = var.aws_region
-  account_id  = var.account_id
-  tags        = local.common_tags
+  project          = var.project
+  environment      = var.environment
+  aws_region       = var.aws_region
+  account_id       = var.account_id
+  tags             = local.common_tags
+  alerts_topic_arn = aws_sns_topic.alerts.arn
 }
 
 module "monitoring" {

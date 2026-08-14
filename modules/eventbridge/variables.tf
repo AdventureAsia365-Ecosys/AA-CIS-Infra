@@ -30,3 +30,8 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "alerts_topic_arn" {
+  description = "ARN of an existing SNS topic to notify on DLQ-depth alarms. This module does not create its own SNS topic — pass the account's existing alerts topic (e.g. the AA-284 aws_sns_topic.alerts in accounts/aa365/observability.tf)."
+  type        = string
+}
