@@ -5,7 +5,7 @@
 # ============================================================
 
 locals {
-  bus_name   = "${var.project}-${var.environment}-acp-events"
+  bus_name    = "${var.project}-${var.environment}-acp-events"
   name_prefix = "${var.project}-${var.environment}"
 }
 
@@ -216,19 +216,13 @@ resource "aws_sqs_queue_policy" "acp_events_dlq" {
   policy    = data.aws_iam_policy_document.acp_dlq_policy.json
 }
 
-# ── SNS Alert Topic ───────────────────────────────────────────
-
-resource "aws_sns_topic" "acp_alerts" {
-  name = "${local.name_prefix}-acp-alerts"
-
-  tags = merge(var.tags, {
-    Name    = "${local.name_prefix}-acp-alerts"
-    Module  = "eventbridge"
-    Feature = "acp-pipeline-monitoring"
-  })
-}
-
 # ── CloudWatch Alarm: DLQ Depth ───────────────────────────────
+# Alerts route to var.alerts_topic_arn (the existing AA-284 alerts topic,
+# accounts/aa365/observability.tf) — this module does not create its own SNS
+# topic. It originally did, but that duplicated AA-284's aa-cis-dev-acp-alerts
+# topic (identical computed name, same account/region) and collided at apply
+# time; reusing the existing topic avoids the duplicate and keeps the one
+# already-confirmed email subscription as the single source of alerting.
 
 resource "aws_cloudwatch_metric_alarm" "acp_dlq_depth" {
   alarm_name          = "${local.name_prefix}-acp-dlq-depth"
@@ -246,8 +240,8 @@ resource "aws_cloudwatch_metric_alarm" "acp_dlq_depth" {
     QueueName = aws_sqs_queue.acp_events_dlq.name
   }
 
-  alarm_actions = [aws_sns_topic.acp_alerts.arn]
-  ok_actions    = [aws_sns_topic.acp_alerts.arn]
+  alarm_actions = [var.alerts_topic_arn]
+  ok_actions    = [var.alerts_topic_arn]
 
   tags = merge(var.tags, {
     Name    = "${local.name_prefix}-acp-dlq-depth"
