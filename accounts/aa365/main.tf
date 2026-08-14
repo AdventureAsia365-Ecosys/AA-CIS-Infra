@@ -224,6 +224,17 @@ module "eventbridge" {
   account_id       = var.account_id
   tags             = local.common_tags
   alerts_topic_arn = aws_sns_topic.alerts.arn
+
+  # AA-402: same IAM propagation race as AA-287 — this module's event bus,
+  # scheduler role, and schedule group need aa-cis-dev-role's newly-added
+  # events:*/scheduler:*/iam:TagRole statements to actually be authorized
+  # before they're created. A module-level depends_on was tried first but
+  # cascaded to every resource/data-source inside the module (including the
+  # DLQ policy, unrelated to these statements), producing a false diff on
+  # an already-applied resource — this narrower, variable-gated dependency
+  # only touches the 3 resources that actually need it (see
+  # modules/eventbridge/variables.tf's iam_propagation_gate).
+  iam_propagation_gate = time_sleep.wait_for_iam_propagation.id
 }
 
 module "monitoring" {
