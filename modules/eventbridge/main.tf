@@ -14,10 +14,13 @@ locals {
 resource "aws_cloudwatch_event_bus" "acp_events" {
   name = local.bus_name
 
+  # _iam_gate is a no-op tag whose only purpose is to force this resource to
+  # wait on var.iam_propagation_gate's upstream time_sleep — see variables.tf.
   tags = merge(var.tags, {
-    Name    = local.bus_name
-    Module  = "eventbridge"
-    Feature = "acp-pipeline"
+    Name      = local.bus_name
+    Module    = "eventbridge"
+    Feature   = "acp-pipeline"
+    _iam_gate = var.iam_propagation_gate
   })
 }
 
@@ -41,7 +44,12 @@ data "aws_iam_policy_document" "scheduler_assume" {
 resource "aws_iam_role" "scheduler" {
   name               = "${local.name_prefix}-acp-scheduler-role"
   assume_role_policy = data.aws_iam_policy_document.scheduler_assume.json
-  tags               = var.tags
+
+  # _iam_gate is a no-op tag whose only purpose is to force this resource to
+  # wait on var.iam_propagation_gate's upstream time_sleep — see variables.tf.
+  tags = merge(var.tags, {
+    _iam_gate = var.iam_propagation_gate
+  })
 }
 
 data "aws_iam_policy_document" "scheduler_permissions" {
@@ -63,9 +71,12 @@ resource "aws_iam_role_policy" "scheduler" {
 resource "aws_scheduler_schedule_group" "acp" {
   name = "${local.name_prefix}-acp"
 
+  # _iam_gate is a no-op tag whose only purpose is to force this resource to
+  # wait on var.iam_propagation_gate's upstream time_sleep — see variables.tf.
   tags = merge(var.tags, {
-    Module  = "eventbridge"
-    Feature = "acp-pipeline"
+    Module    = "eventbridge"
+    Feature   = "acp-pipeline"
+    _iam_gate = var.iam_propagation_gate
   })
 }
 
