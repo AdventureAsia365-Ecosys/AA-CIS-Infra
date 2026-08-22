@@ -18,10 +18,16 @@ BEGIN;
 -- ---------------------------------------------------------------------------
 -- Tenant A: "WanderLux Travel" — Growth plan
 -- Tenant B: "ExploreAsia Co." — Starter plan
--- api_key_hash = SHA256 of the raw key (raw keys stored only in Secrets Manager)
--- Raw keys (for testing only, rotate before prod):
---   Tenant A: wl_live_sk_test_wanderlux_2026
---   Tenant B: ea_live_sk_test_exploreasia_2026
+-- api_key_hash = SHA256 of the raw key
+--
+-- AA-433 (22/08/2026): this file is a static, never-applied copy (nothing in this repo's
+-- Terraform reads modules/rds/migrations/ — confirmed, no .tf reference) of
+-- AA-CIS-App/api/migrations/007_seed_test_tenants.sql, last synced 21/04/2026 (stops at
+-- migration 008; the real repo is far past that). The two raw keys originally seeded here
+-- were committed to git in cleartext in BOTH repos — real security exposure, since fixed in
+-- both. Replaced with inert placeholders here too, matching the App repo's fix, even though
+-- this specific copy is never executed. See
+-- AA-CIS-App/docs/implementation-notes/AA-433-rotate-wanderlux-key.md.
 -- ---------------------------------------------------------------------------
 
 INSERT INTO shared.tenants (
@@ -37,7 +43,7 @@ INSERT INTO shared.tenants (
     'a1b2c3d4-0001-4000-8000-000000000001'::uuid,
     'WanderLux Travel',
     'growth',
-    encode(sha256('wl_live_sk_test_wanderlux_2026'::bytea), 'hex'),
+    encode(sha256('ROTATED-SEE-AA433-DO-NOT-USE-wanderlux-travel'::bytea), 'hex'),
     300,
     true,
     NOW()
@@ -46,7 +52,7 @@ INSERT INTO shared.tenants (
     'a1b2c3d4-0002-4000-8000-000000000002'::uuid,
     'ExploreAsia Co.',
     'starter',
-    encode(sha256('ea_live_sk_test_exploreasia_2026'::bytea), 'hex'),
+    encode(sha256('ROTATED-SEE-AA433-DO-NOT-USE-exploreasia-co'::bytea), 'hex'),
     60,
     true,
     NOW()
