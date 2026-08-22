@@ -239,7 +239,23 @@ resource "aws_api_gateway_integration" "openapi" {
 }
 
 # =============================================================================
-# /v1/{v1_proxy+} — B2B tenant routes, gated by Lambda Authorizer (X-API-Key)
+# /v1/{v1_proxy+} — B2B tenant routes.
+#
+# AA-432: was CUSTOM (tenant_key TOKEN authorizer, X-API-Key gate) — removed
+# 22/08/2026. STEP0 (docs/claude_audit/AA-432-api-gateway-401-step0.md, AA-CIS-App
+# repo) confirmed the FE tenant-portal BFF proxy never sent X-API-Key (only
+# `Authorization: Bearer <JWT>`), so every /v1/* call 401'd at the gateway edge
+# before FastAPI ever ran. Confirmed separately (same report, §5) that
+# api/routers/v1_tours.py's get_tenant() decodes the JWT itself and never reads
+# any tenant context the authorizer would have attached — so the gateway's
+# X-API-Key check was a redundant coarse edge gate, not the real source of
+# per-tenant auth. JWT (verified in FastAPI) is now the only auth boundary for
+# /v1/*, matching NONE at the gateway for /admin, /auth, /content already.
+# Per-tenant rate-limit/revoke moves to the app layer (Redis, api/main.py) —
+# see get_tenant() in v1_tours.py. The `tenant_key` authorizer resource above is
+# deliberately left declared (not deleted) — nothing else references it, but
+# removing the Lambda/authorizer itself is a separate cleanup task, out of
+# scope here (task instruction: don't delete the Lambda in this change).
 # =============================================================================
 
 resource "aws_api_gateway_resource" "v1" {
@@ -258,8 +274,7 @@ resource "aws_api_gateway_method" "v1_any" {
   rest_api_id   = aws_api_gateway_rest_api.this.id
   resource_id   = aws_api_gateway_resource.v1_proxy.id
   http_method   = "ANY"
-  authorization = "CUSTOM"
-  authorizer_id = aws_api_gateway_authorizer.tenant_key.id
+  authorization = "NONE"
 
   request_parameters = {
     "method.request.path.v1_proxy" = true
@@ -282,7 +297,22 @@ resource "aws_api_gateway_integration" "v1" {
 }
 
 # =============================================================================
-# Deployment — force redeploy whenever any integration URI or authorizer changes
+# Deployment — force redeploy whenever any integration URI, authorizer, or
+# method authorization setting changes.
+#
+# AA-432: the hash previously only covered integration URIs + the authorizer
+# resource's own id — never any method's `authorization`/`authorizer_id`
+# attribute. A stage always serves a frozen deployment snapshot; changing a
+# method (e.g. v1_any CUSTOM -> NONE) edits the live REST API definition but
+# does NOT retarget the stage unless this trigger hash actually changes too.
+# Caught this live: the AA-432 plan showed a clean 1-attribute method update
+# with nothing here changing, which would have applied "successfully" while
+# leaving the dev stage pinned to the OLD deployment — the 401 bug this
+# change exists to fix would NOT have actually gone away. Added the 4 gated
+# methods' authorization + authorizer_id (coalesced, since NONE leaves
+# authorizer_id null and join() can't take a null) so any future change to
+# either forces a fresh deployment the same way an integration/authorizer
+# change already does.
 # =============================================================================
 
 resource "aws_api_gateway_deployment" "this" {
@@ -308,6 +338,11 @@ resource "aws_api_gateway_deployment" "this" {
       aws_api_gateway_integration.openapi.uri,
       aws_api_gateway_integration.v1.uri,
       aws_api_gateway_authorizer.tenant_key.id,
+      aws_api_gateway_method.v1_any.authorization,
+      coalesce(aws_api_gateway_method.v1_any.authorizer_id, "none"),
+      aws_api_gateway_method.admin_any.authorization,
+      aws_api_gateway_method.auth_any.authorization,
+      aws_api_gateway_method.content_any.authorization,
     ]))
   }
   lifecycle {
