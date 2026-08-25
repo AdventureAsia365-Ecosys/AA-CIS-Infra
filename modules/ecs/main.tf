@@ -116,6 +116,30 @@ resource "aws_iam_role_policy" "ecs_task_policy" {
             "cloudwatch:namespace" = "acp"
           }
         }
+      },
+      # AA-459 — the first runtime-WRITE Secrets Manager use in this codebase (every prior
+      # use, incl. the GetSecretValue statement above, is read-only against secrets an
+      # admin/Terraform already pre-created). AA-CIS-App's api/routers/v1_integrations.py
+      # (AA-457) writes one Secrets Manager secret per tenant at
+      # acp/cms/{tenant_id} (create-or-update: create_secret, falling back to
+      # put_secret_value on ResourceExistsException) — confirmed live 25/08/2026 via
+      # CloudWatch that the task role lacked this, 502ing POST /v1/integrations/wordpress
+      # for every real tenant. Deliberately a SEPARATE statement from the GetSecretValue
+      # one above (that one is Resource="*", bundled with unrelated s3/sqs/logs/bedrock
+      # actions) rather than widening that grant — this is scoped ONLY to the acp/cms/
+      # namespace the Python code actually writes to, least-privilege, not
+      # secretsmanager:* and not an unscoped Resource. secretsmanager:TagResource is
+      # deliberately NOT included — confirmed by reading the real call site
+      # (v1_integrations.py's create_secret(Name=secret_key, SecretString=payload) passes
+      # no Tags argument), so AWS never invokes TagResource for this code path; add it
+      # later only if a real future caller starts tagging secrets on create.
+      {
+        Effect = "Allow"
+        Action = [
+          "secretsmanager:CreateSecret",
+          "secretsmanager:PutSecretValue"
+        ]
+        Resource = "arn:aws:secretsmanager:${var.aws_region}:005097885195:secret:acp/cms/*"
       }
     ]
   })
