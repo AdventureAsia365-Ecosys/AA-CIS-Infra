@@ -17,6 +17,16 @@ resource "aws_lb" "main" {
 
   enable_deletion_protection = false
 
+  # AA-465 (26/08/2026): the request path is API Gateway -> VPC Link -> NLB -> this ALB -> ECS.
+  # AA-465 raised the API Gateway integration timeout 29000ms -> 90000ms, but this ALB's
+  # idle_timeout was never set explicitly and sat at the AWS default (60s) the whole time --
+  # live-confirmed as the ACTUAL blocker post-apply: a real /write worst-case request still 504'd,
+  # now at ~60.7s instead of ~29s, because this ALB cut the connection before API Gateway's new
+  # 90s ceiling ever mattered. 100 (seconds) keeps this >= the API Gateway integration timeout so
+  # the ALB is never the tighter constraint again -- same margin logic as AA-465's own 90000ms
+  # choice, not a coincidence.
+  idle_timeout = 100
+
   dynamic "access_logs" {
     for_each = var.access_logs_bucket != null ? [1] : []
     content {
