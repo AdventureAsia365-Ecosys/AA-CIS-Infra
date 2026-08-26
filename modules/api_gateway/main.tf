@@ -291,6 +291,18 @@ resource "aws_api_gateway_integration" "v1" {
   connection_id           = var.vpc_link_id
   uri                     = "http://${var.nlb_dns_name}/v1/{v1_proxy}"
 
+  # AA-465 — TEMPORARY patch, parallel to AA-466 (real fix: move /goal + /write to async).
+  # Raised from the AWS default 29000 after real measurement (AA-453 STEP0 + AA-465):
+  # /goal 30.29s, /write worst-case (2-attempt retry, CloudWatch-confirmed) 57.16s,
+  # /s1-from-atom/.../generate 48.13s all real-exceed or approach 29s. 90000 = ~58% margin
+  # over the highest real measurement (57.16s), deliberately not maxed to the ~300000
+  # ceiling — this single integration is a catch-all for ALL of /v1/*, including
+  # latency-sensitive polling routes (execution/{id}, slot-grid, requests/{id}) that
+  # should still fail fast on a real backend hang, not just LLM-writing routes.
+  # Requires Service Quota L-E5AE38E3 raised first (requested 26/08/2026, PENDING as of
+  # this commit) — this value has no effect above 29000 until that quota is approved.
+  timeout_milliseconds = 90000
+
   request_parameters = {
     "integration.request.path.v1_proxy" = "method.request.path.v1_proxy"
   }
@@ -337,6 +349,11 @@ resource "aws_api_gateway_deployment" "this" {
       aws_api_gateway_integration.docs.uri,
       aws_api_gateway_integration.openapi.uri,
       aws_api_gateway_integration.v1.uri,
+      # AA-465: same trap AA-432 already caught for authorization — this hash only covers
+      # .uri by default, so a timeout_milliseconds-only change on the v1 integration would
+      # NOT force a new deployment on its own, leaving the stage silently pinned to the old
+      # snapshot (still 29000ms) even after `terraform apply` "succeeds". Added explicitly.
+      tostring(aws_api_gateway_integration.v1.timeout_milliseconds),
       aws_api_gateway_authorizer.tenant_key.id,
       aws_api_gateway_method.v1_any.authorization,
       coalesce(aws_api_gateway_method.v1_any.authorizer_id, "none"),
