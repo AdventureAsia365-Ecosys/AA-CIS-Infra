@@ -154,13 +154,3 @@ variable "brand_brief_parser_zip" {
   description = "Path to brand brief parser Lambda ZIP file"
   type        = string
 }
-
-variable "acp_s3_campaign_planner_zip" {
-  description = "Path to ACP S3 Campaign Planner Lambda ZIP file (AA-45)"
-  type        = string
-}
-
-variable "acp_s4_evaluate_zip" {
-  description = "Path to ACP S4 Evaluate Lambda ZIP file (AA-49)"
-  type        = string
-}

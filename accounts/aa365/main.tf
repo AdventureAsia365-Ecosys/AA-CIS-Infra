@@ -3,10 +3,14 @@
 # Mirrors the architecture of the account-1 root module (../../main.tf) but
 # wires ARNs through module outputs instead of literal account-1 ARNs.
 # Scope (confirmed): VPC, RDS, ECS, ALB, S3, Secrets, API Gateway, Step
-# Functions, WAF, Lambda (5 CIS + 3 ACP), EventBridge (AA-402, 2026-08-14).
+# Functions, WAF, Lambda (5 CIS + 1 ACP), EventBridge (AA-402, 2026-08-14).
 # AA-180 (ACPv1 orchestration epic) stays separate and deferred/dead — the
 # eventbridge module below is ACPv2's own schedules (daily ingest, weekly
 # export, Gate C veto window), not an AA-180 revival.
+# AA-477 (2026-08-27): removed the other 2 ACP Lambdas (acp-s3-campaign-planner,
+# acp-s4-evaluate) — 0 EventBridge rule, 0 resource policy, 0 invocation ever
+# recorded, dead ACPv1 stage-chain source (services/acp_s3/, services/
+# acp_s4_evaluate/ in AA-CIS-App). Only brand_brief_parser remains as "1 ACP".
 # =============================================================================
 
 locals {
@@ -184,11 +188,9 @@ module "lambda" {
   dataforseo_password = var.dataforseo_password
   anthropic_api_key   = var.anthropic_api_key
 
-  lambda_zip_dir              = "${path.module}/../../dist/lambdas"
-  api_base_url                = "https://${var.domain_name}"
-  brand_brief_parser_zip      = "${path.module}/../../dist/lambdas/brand_brief_parser.zip"
-  acp_s3_campaign_planner_zip = "${path.module}/../../dist/lambdas/acp_s3_campaign_planner.zip"
-  acp_s4_evaluate_zip         = "${path.module}/../../dist/lambdas/acp-s4-evaluate.zip"
+  lambda_zip_dir         = "${path.module}/../../dist/lambdas"
+  api_base_url           = "https://${var.domain_name}"
+  brand_brief_parser_zip = "${path.module}/../../dist/lambdas/brand_brief_parser.zip"
 
   tags = local.common_tags
 }
