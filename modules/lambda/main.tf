@@ -207,27 +207,15 @@ resource "aws_lambda_function" "ingestion" {
   tags = merge(local.common_tags, { Function = "ingestion" })
 }
 
-# S3 → Lambda trigger
-resource "aws_lambda_permission" "s3_invoke_ingestion" {
-  statement_id  = "AllowS3Invoke"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.ingestion.function_name
-  principal     = "s3.amazonaws.com"
-  source_arn    = var.bronze_bucket_arn
-}
-
-resource "aws_s3_bucket_notification" "bronze_trigger" {
-  bucket = var.bronze_bucket_name
-
-  lambda_function {
-    lambda_function_arn = aws_lambda_function.ingestion.arn
-    events              = ["s3:ObjectCreated:*"]
-    filter_prefix       = "raw-inbox/"
-    filter_suffix       = ".xlsx"
-  }
-
-  depends_on = [aws_lambda_permission.s3_invoke_ingestion]
-}
+# AA-476 (28/08/2026): S3 PutObject trigger REMOVED — was double-firing ingestion alongside
+# the admin Commit endpoint (POST /admin/ingest-s3 → process_file(), api/routers/
+# admin_pipeline.py in AA-CIS-App). STEP0 audit confirmed the Commit endpoint's dedup +
+# tour-versioning path (file_hash, upload_staging/source_group_id) is clean enough to be the
+# sole ingest path (Hướng 1). aws_lambda_function.ingestion below is now UNREACHABLE (no other
+# invoker) — deliberately KEPT, not deleted, pending a separate decision (explicitly NOT
+# folded into the AA-182 SFN-bypass cleanup — see that ticket's 28/08 comment). Do not re-add
+# an S3 notification here without re-reading AA-476's STEP0 findings first (double-fire was
+# the whole reason for this task).
 
 # =============================================================================
 # LAMBDA 2 — SEO Intelligence
