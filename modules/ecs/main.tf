@@ -208,6 +208,7 @@ resource "aws_ecs_task_definition" "api" {
       { name = "OPENAI_API_KEY",     valueFrom = var.secret_openai_arn },
       # { name = "LANGFUSE_SECRET_KEY", valueFrom = var.secret_langfuse_arn },            # AA-23: removed
       { name = "ADMIN_SECRET",        valueFrom = var.secret_admin_arn },
+      { name = "JWT_SECRET",          valueFrom = var.secret_jwt_arn },
       # { name = "LANGFUSE_PUBLIC_KEY", valueFrom = var.secret_langfuse_public_key_arn }, # AA-23: removed
       # { name = "LANGFUSE_HOST",       valueFrom = var.secret_langfuse_host_arn },        # AA-23: removed
       { name = "ANTHROPIC_API_KEY",   valueFrom = var.secret_anthropic_arn },
