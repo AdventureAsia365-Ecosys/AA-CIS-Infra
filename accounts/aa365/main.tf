@@ -144,6 +144,7 @@ module "ecs" {
   secret_rds_arn        = module.secrets.rds_secret_arn
   secret_openai_arn     = var.secret_openai_arn
   secret_admin_arn      = var.secret_admin_arn
+  secret_jwt_arn        = var.secret_jwt_arn
   secret_anthropic_arn  = var.secret_anthropic_arn
   secret_dataforseo_arn = module.secrets.dataforseo_secret_arn
   bronze_bucket_name    = module.s3.bronze_bucket_name
