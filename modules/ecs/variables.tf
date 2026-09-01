@@ -67,6 +67,11 @@ variable "secret_admin_arn" {
   type        = string
 }
 
+variable "secret_jwt_arn" {
+  description = "ARN of Secrets Manager secret for JWT_SECRET (AA-506 — no plaintext fallback allowed)"
+  type        = string
+}
+
 # AA-23: removed
 # variable "secret_langfuse_public_key_arn" {
 #   description = "ARN of Langfuse public key secret"

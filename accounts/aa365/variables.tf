@@ -118,6 +118,11 @@ variable "secret_anthropic_arn" {
   type        = string
 }
 
+variable "secret_jwt_arn" {
+  description = "Secrets Manager ARN for JWT_SECRET (aa365 — create manually first, AA-506)"
+  type        = string
+}
+
 # ── Lambda runtime config (plaintext vars, same pattern as existing root module) ──
 variable "database_url" {
   description = "PostgreSQL connection string for Lambda functions — placeholder until real RDS provisioned"
