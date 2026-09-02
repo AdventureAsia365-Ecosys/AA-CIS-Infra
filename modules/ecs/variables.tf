@@ -84,11 +84,6 @@ variable "secret_jwt_arn" {
 #   type        = string
 # }
 
-variable "secret_anthropic_arn" {
-  description = "ARN of Anthropic API key secret"
-  type        = string
-}
-
 variable "secret_dataforseo_arn" {
   description = "ARN of Secrets Manager secret for DataForSEO credentials"
   type        = string
@@ -122,4 +117,10 @@ variable "redis_host" {
 variable "bronze_bucket_name" {
   description = "S3 bronze bucket name for presigned upload URLs (admin_pipeline.py BRONZE_BUCKET env var)"
   type        = string
+}
+
+variable "judge_model" {
+  description = "AA-518 — explicit JUDGE_MODEL env var for services/acp_produce/judge_client.py::invoke_judge(). \"gpt41\" | \"nova_pro\" | \"gpt56\" (gpt56 currently AccessDenied on all 3 accounts, see AA-351). Explicit here so the live task def shows the pin directly, not just the code default."
+  type        = string
+  default     = "gpt41"
 }
