@@ -37,7 +37,10 @@ service_desired_count = 1
 secret_openai_arn    = "arn:aws:secretsmanager:us-west-1:005097885195:secret:aa-cis/dev/openai-key-Wcxuae"
 secret_admin_arn     = "arn:aws:secretsmanager:us-west-1:005097885195:secret:aa-cis/dev/admin-secret-gudNmP"
 secret_jwt_arn       = "arn:aws:secretsmanager:us-west-1:005097885195:secret:aa-cis/dev/jwt-secret-KOjq6l"
-secret_anthropic_arn = "arn:aws:secretsmanager:us-west-1:005097885195:secret:aa-cis/dev/anthropic-key-jML2d7"
+
+# AA-518 (02/09/2026) — N7 F8/F9 judge, deliberate temporary pin pending GPT-5.6 (AA-351)
+# unblocking. Change to "nova_pro" to revert, or "gpt56" once AA-351's access gate clears.
+judge_model = "gpt41"
 
 # Lambda plaintext runtime config — placeholders, enter real values by hand
 # (do NOT copy account-1 values across).
@@ -45,7 +48,6 @@ database_url        = "postgresql://REPLACE_ME:REPLACE_ME@REPLACE_ME:5432/aa_cis
 redis_url           = ""
 dataforseo_login    = "REPLACE_ME"
 dataforseo_password = "REPLACE_ME"
-anthropic_api_key   = "REPLACE_ME"
 
 # Not Terraform-managed at all (read at runtime via boto3, see
 # api/main.py — secret name "aa-cis/dev/api-keys"). Created manually

@@ -113,14 +113,15 @@ variable "secret_admin_arn" {
   type        = string
 }
 
-variable "secret_anthropic_arn" {
-  description = "Secrets Manager ARN for ANTHROPIC_API_KEY (aa365 — create manually first)"
-  type        = string
-}
-
 variable "secret_jwt_arn" {
   description = "Secrets Manager ARN for JWT_SECRET (aa365 — create manually first, AA-506)"
   type        = string
+}
+
+variable "judge_model" {
+  description = "AA-518 — explicit JUDGE_MODEL for the N7 F8/F9 judge (services/acp_produce/judge_client.py). \"gpt41\" is a deliberate temporary pin pending GPT-5.6 (AA-351) unblocking."
+  type        = string
+  default     = "gpt41"
 }
 
 # ── Lambda runtime config (plaintext vars, same pattern as existing root module) ──
@@ -142,12 +143,6 @@ variable "dataforseo_login" {
 }
 
 variable "dataforseo_password" {
-  type      = string
-  default   = ""
-  sensitive = true
-}
-
-variable "anthropic_api_key" {
   type      = string
   default   = ""
   sensitive = true
