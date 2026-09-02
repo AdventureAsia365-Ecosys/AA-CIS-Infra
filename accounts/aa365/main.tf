@@ -145,7 +145,6 @@ module "ecs" {
   secret_openai_arn     = var.secret_openai_arn
   secret_admin_arn      = var.secret_admin_arn
   secret_jwt_arn        = var.secret_jwt_arn
-  secret_anthropic_arn  = var.secret_anthropic_arn
   secret_dataforseo_arn = module.secrets.dataforseo_secret_arn
   bronze_bucket_name    = module.s3.bronze_bucket_name
 
@@ -187,7 +186,6 @@ module "lambda" {
   redis_url           = var.redis_url
   dataforseo_login    = var.dataforseo_login
   dataforseo_password = var.dataforseo_password
-  anthropic_api_key   = var.anthropic_api_key
 
   lambda_zip_dir         = "${path.module}/../../dist/lambdas"
   api_base_url           = "https://${var.domain_name}"

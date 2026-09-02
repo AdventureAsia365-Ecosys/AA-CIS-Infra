@@ -84,11 +84,6 @@ variable "secret_jwt_arn" {
 #   type        = string
 # }
 
-variable "secret_anthropic_arn" {
-  description = "ARN of Anthropic API key secret"
-  type        = string
-}
-
 variable "secret_dataforseo_arn" {
   description = "ARN of Secrets Manager secret for DataForSEO credentials"
   type        = string

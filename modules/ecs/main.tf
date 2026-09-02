@@ -211,7 +211,9 @@ resource "aws_ecs_task_definition" "api" {
       { name = "JWT_SECRET",          valueFrom = var.secret_jwt_arn },
       # { name = "LANGFUSE_PUBLIC_KEY", valueFrom = var.secret_langfuse_public_key_arn }, # AA-23: removed
       # { name = "LANGFUSE_HOST",       valueFrom = var.secret_langfuse_host_arn },        # AA-23: removed
-      { name = "ANTHROPIC_API_KEY",   valueFrom = var.secret_anthropic_arn },
+      # ANTHROPIC_API_KEY: removed AA-518 — provisioned but 0 callers in app code (direct-Anthropic
+      # calls never shipped; the app only ever calls Claude via the Bedrock satellite pattern,
+      # AA-296/397). Secret aa-cis/dev/anthropic-key itself deleted from Secrets Manager same PR.
       { name = "DATAFORSEO_LOGIN",    valueFrom = "${var.secret_dataforseo_arn}:login::" },
       { name = "DATAFORSEO_PASSWORD", valueFrom = "${var.secret_dataforseo_arn}:password::" },
     ]

@@ -131,13 +131,6 @@ variable "dataforseo_password" {
   sensitive   = true
 }
 
-variable "anthropic_api_key" {
-  description = "Anthropic API key for content generation"
-  type        = string
-  default     = ""
-  sensitive   = true
-}
-
 variable "tags" {
   description = "Resource tags"
   type        = map(string)

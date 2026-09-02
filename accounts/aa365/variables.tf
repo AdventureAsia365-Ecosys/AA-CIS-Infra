@@ -113,11 +113,6 @@ variable "secret_admin_arn" {
   type        = string
 }
 
-variable "secret_anthropic_arn" {
-  description = "Secrets Manager ARN for ANTHROPIC_API_KEY (aa365 — create manually first)"
-  type        = string
-}
-
 variable "secret_jwt_arn" {
   description = "Secrets Manager ARN for JWT_SECRET (aa365 — create manually first, AA-506)"
   type        = string
@@ -142,12 +137,6 @@ variable "dataforseo_login" {
 }
 
 variable "dataforseo_password" {
-  type      = string
-  default   = ""
-  sensitive = true
-}
-
-variable "anthropic_api_key" {
   type      = string
   default   = ""
   sensitive = true
