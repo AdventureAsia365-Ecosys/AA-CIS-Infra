@@ -140,6 +140,24 @@ resource "aws_iam_role_policy" "ecs_task_policy" {
           "secretsmanager:PutSecretValue"
         ]
         Resource = "arn:aws:secretsmanager:${var.aws_region}:005097885195:secret:acp/cms/*"
+      },
+      # AA-462 — same gap as AA-459 (comment above), same fix, different prefix. T11's new
+      # Facebook integration (api/routers/v1_integrations.py::save_facebook()) writes to
+      # acp/social/{tenant_id} — deliberately NOT acp/cms/{tenant_id} (a Page Access Token
+      # isn't a CMS credential, and a tenant connecting both needs two independent secrets,
+      # see that file's own header comment) — so the acp/cms/* grant above doesn't cover it.
+      # Confirmed live before this PR: POST /v1/integrations/facebook 502'd "Could not save
+      # credentials — try again" for a real tenant, identical shape to the AA-459 bug this
+      # mirrors. Kept as its own statement (not widened into acp/cms/* or acp/*) for the same
+      # least-privilege reasoning AA-459 already established — scoped only to the namespace
+      # the Python code actually writes to.
+      {
+        Effect = "Allow"
+        Action = [
+          "secretsmanager:CreateSecret",
+          "secretsmanager:PutSecretValue"
+        ]
+        Resource = "arn:aws:secretsmanager:${var.aws_region}:005097885195:secret:acp/social/*"
       }
     ]
   })
