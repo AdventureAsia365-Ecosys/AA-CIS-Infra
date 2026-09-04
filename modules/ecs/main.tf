@@ -145,6 +145,46 @@ resource "aws_iam_role_policy" "ecs_task_policy" {
   })
 }
 
+# AA-257 — GET /admin/infra/status (live ECS/RDS/NAT/ElastiCache health, aa-cis-dev-api's
+# admin_pipeline.py) and the pre-existing GET /admin/metrics/spot-workers (built earlier,
+# never actually granted this) both need read-only describe/list access this role has never
+# had. Confirmed live before this PR: /admin/metrics/spot-workers has been returning
+# AccessDeniedException on ecs:ListTasks in prod this whole time (degrades to zeros — no
+# outage, but silently non-functional since it shipped).
+#
+# All Resource="*" — none of ecs:Describe*/List*, rds:DescribeDBInstances,
+# ec2:DescribeInstances, elasticache:DescribeCacheClusters, or ecr:DescribeImages support
+# resource-level ARN scoping in IAM (same constraint documented on the cloudwatch:PutMetricData
+# statement above); every action here is describe/list/read-only, no write/delete verb in
+# this statement, scoped to exactly the AWS API surface both endpoints' code actually calls.
+#
+# Deliberately opened as its own PR, NOT auto-merged — per the repo-wide "no self-added IAM
+# via Terraform auto-merge" convention (same one AA-256's Cost Explorer ask hit), IAM changes
+# get a manual look regardless of CI outcome.
+resource "aws_iam_role_policy" "ecs_task_infra_status_readonly" {
+  name = "${local.name_prefix}-ecs-task-infra-status-readonly"
+  role = aws_iam_role.ecs_task.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "ecs:DescribeServices",
+          "ecs:DescribeTasks",
+          "ecs:ListTasks",
+          "ecs:DescribeTaskDefinition",
+          "ecr:DescribeImages",
+          "rds:DescribeDBInstances",
+          "ec2:DescribeInstances",
+          "elasticache:DescribeCacheClusters"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
 # ── CloudWatch Log Group ──────────────────────────────────────
 resource "aws_cloudwatch_log_group" "ecs" {
   name              = "/ecs/${local.name_prefix}"
