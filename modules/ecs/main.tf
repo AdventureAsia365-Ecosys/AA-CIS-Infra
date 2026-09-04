@@ -317,6 +317,22 @@ resource "aws_ecs_service" "api" {
   deployment_minimum_healthy_percent = 50
   deployment_maximum_percent         = 200
 
+  # AA-176 (scope item 2): a failed rolling deploy (new task never reaches healthy — bad image,
+  # crashed startup, failing health check) used to just sit there consuming the deployment's
+  # maximumPercent headroom indefinitely with no automatic rollback -- required a human to
+  # notice and manually re-deploy the previous task definition revision. This does not touch
+  # image tagging strategy (still :latest per this repo's own current convention -- see
+  # AA-CIS-App CLAUDE.md "Image tag: always :latest" -- deliberately NOT changed here, that's
+  # a separate, explicitly-conflicting decision this PR does not make) -- ECS's circuit
+  # breaker triggers on deployment health regardless of tag scheme, and auto-rolls the SERVICE
+  # back to the last-known-good task definition revision when the new deployment's tasks fail
+  # to stabilize, closing the "nobody noticed, deploy just hangs broken" half of this gap on
+  # its own.
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
+  }
+
   network_configuration {
     subnets          = var.private_subnet_ids
     security_groups  = [var.sg_app_id]
