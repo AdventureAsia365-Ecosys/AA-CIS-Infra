@@ -1,23 +1,50 @@
 # AA-CIS-Infra — Claude Code Context
-# Updated: 21/05/2026 | CI Infra #37
+# Updated: 11/09/2026 (AA-587 — corrected stale account/profile, confirmed live root)
+
+## LIVE ROOT — accounts/aa365/
+The Terraform root that actually manages live infrastructure is **`accounts/aa365/`**,
+NOT the repo-root `main.tf`/`versions.tf` (that root is stale — see "STALE REPO-ROOT" below).
+CI workflows (`terraform-plan.yml`/`terraform-apply.yml`) already run with
+`working-directory: accounts/aa365` — confirmed via `.github/workflows/*.yml`.
 
 ## LIVE STATE
-- Account: 867490540162 | Region: us-west-1 | Profile: pqnghiep-admin
+- Account: **005097885195** (aa365, Acc2 — CIS DEV hạ tầng chính) | Region: us-west-1 | Profile: **aa365-admin**
 - ECS cluster: aa-cis-dev-cluster | service: aa-cis-dev-api
-- RDS: aa-cis-dev-db.cr2y6824szn3.us-west-1.rds.amazonaws.com (PostgreSQL 15)
-- ECR: 867490540162.dkr.ecr.us-west-1.amazonaws.com/aa-cis-dev-api
-- ALB: aa-cis-dev-alb-1114303360.us-west-1.elb.amazonaws.com
-- CI Infra last green: #37 (develop, commit 761836d)
+- RDS: aa-cis-dev-db (PostgreSQL 15)
+- ECR: 005097885195.dkr.ecr.us-west-1.amazonaws.com/aa-cis-dev-api
+- ALB: aa-cis-dev-alb-281090825.us-west-1.elb.amazonaws.com (**internet-facing** — confirmed AA-585,
+  11/09/2026; do not assume "internal ALB" means VPN/VPC-only)
 
-## ⚠️ CRITICAL — DO NOT CHANGE
-api_task_def_arn is hardcoded to revision :21 in main.tf.
-This is known tech debt. Do NOT update it — will break Step Functions.
-Linear: AA-22 (deferred)
+## TERRAFORM BACKEND (accounts/aa365)
+```
+backend "s3" {
+  bucket         = "aa-cis-tfstate-005097885195"
+  key            = "dev/terraform.tfstate"
+  region         = "us-west-1"
+  dynamodb_table = "aa-cis-tfstate-lock-005097885195"
+}
+```
+No hardcoded profile in the backend block — CI (GitHub Actions OIDC) uses ambient credentials.
+Local runs: `export AWS_PROFILE=aa365-admin` before `terraform` commands, always from
+`accounts/aa365/` (never the repo root).
+Always: `terraform plan` before `apply`.
 
-## TERRAFORM BACKEND
-backend "s3" { bucket = "aa-cis-tfstate-867490540162", key = "dev/terraform.tfstate" }
-Profile: pqnghiep-admin | Region: us-west-1
-Always: terraform plan before apply.
+## STALE REPO-ROOT — main.tf / versions.tf / variables.tf / outputs.tf (KHÔNG DÙNG)
+The repo-root Terraform files point at S3 state bucket `aa-cis-tfstate-867490540162`, which
+**no longer exists** (`NoSuchBucket`, confirmed via `aws s3api head-bucket`, AA-587 11/09/2026) —
+it belonged to account 1 (867490540162)'s old, since-destroyed infrastructure (AA-271 cutover).
+This root also hardcodes account-1 ARNs throughout (bronze/gold bucket names, ALB ARN, WAF ARN,
+ACM cert ARN, ECS task-def ARN, old ALB DNS `...-1114303360...`) — none of it reflects live
+infra. No CI workflow, script, or Makefile references it (confirmed via repo-wide grep, AA-587).
+Kept as historical reference only (predates the AA-246/AA-271 account-2 cutover) — **do not run
+`terraform` from the repo root, do not treat anything in it as live config**. See
+`docs/implementation-notes/AA-587.md` for the full investigation.
+
+## ⚠️ Old tech-debt note (AA-22) — DOES NOT APPLY to accounts/aa365
+The repo-root's hardcoded `api_task_def_arn` (revision `:21`) was AA-22's known tech debt.
+`accounts/aa365/main.tf` already resolves this dynamically
+(`arn:aws:ecs:${var.aws_region}:${var.account_id}:task-definition/${local.name_prefix}-api`) —
+confirmed AA-587, 11/09/2026. Not an open issue on the live root.
 
 ## RESOURCE NAMING
 Pattern: aa-cis-{env}-{resource}
@@ -41,18 +68,24 @@ Lambda: on-demand (no cost when idle)
 
 ## WAF IAM — CHICKEN-AND-EGG PATTERN
 WAFReadPolicy must be granted manually via CLI BEFORE running Terraform on first deploy.
-`aws_iam_role_policy.github_actions_waf` added to main.tf — do not remove.
+`accounts/aa365/cicd.tf`'s WAFv2Manage statement — do not remove.
 Pattern: grant WAF read manually → terraform apply → policy self-manages thereafter.
 
-## LAMBDA STATE (23/05/2026)
+## LAMBDA STATE
 - aa-cis-dev-acp-s3-campaign-planner: DEPLOYED ✅ (AA-45)
 - aa-cis-dev-acp-s4-evaluate: DEPLOYED ✅ (AA-49)
-- aa-cis-dev-acp-s4-trigger: DEPLOYED ✅ | ALB_INTERNAL_URL = http://aa-cis-dev-alb-1114303360.us-west-1.elb.amazonaws.com ✅
-- NOTE: Lambda aa-cis-dev-acp-s3-campaign-planner NOT yet in Terraform — deployed manually. Add to modules/lambda/ before next Infra run.
+- aa-cis-dev-acp-s4-trigger: DEPLOYED ✅
 
-## KNOWN WARNINGS (non-blocking)
-14 undeclared variable warnings in terraform.tfvars — tech debt, do not fix mid-sprint.
+## OTHER TERRAFORM ROOTS IN THIS REPO (separate, unrelated — do not confuse with the above)
+- `accounts/acc1-bedrock/` — account **867490540162** (Acc1), profile `pqnghiep-admin` IS
+  correct here. Deliberately kept alive for the Bedrock LLM satellite FALLBACK pattern (AA-296),
+  NOT for CIS's main app infra. State bucket `aa-cis-tfstate-acc1-bedrock-867490540162`.
+- `accounts/acc3-bedrock/` — account **786888028788** (Acc3), profile `nghiep_aa365`. Bedrock
+  satellite CHÍNH. State bucket `aa-cis-tfstate-acc3-bedrock-786888028788`.
+- `envs/dev`, `envs/prod`, `envs/staging/` — `.tf` files present but empty (0 bytes); no
+  backend config, not active roots. Not investigated further under AA-587 (out of scope), flagged
+  here so a future session doesn't mistake them for something live either.
 
 ## SSM ONLY
 Never use SSH. All container access via:
-aws ecs execute-command --cluster aa-cis-dev-cluster --task {TASK_ARN} --container api --interactive --command "/bin/bash" --profile pqnghiep-admin --region us-west-1
+aws ecs execute-command --cluster aa-cis-dev-cluster --task {TASK_ARN} --container api --interactive --command "/bin/bash" --profile aa365-admin --region us-west-1
