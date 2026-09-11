@@ -238,6 +238,56 @@ resource "aws_api_gateway_integration" "openapi" {
   uri                     = "http://${var.nlb_dns_name}/openapi.json"
 }
 
+# /redoc — FastAPI ReDoc UI (no auth)
+resource "aws_api_gateway_resource" "redoc" {
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  parent_id   = aws_api_gateway_rest_api.this.root_resource_id
+  path_part   = "redoc"
+}
+
+resource "aws_api_gateway_method" "redoc" {
+  rest_api_id   = aws_api_gateway_rest_api.this.id
+  resource_id   = aws_api_gateway_resource.redoc.id
+  http_method   = "GET"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "redoc" {
+  rest_api_id             = aws_api_gateway_rest_api.this.id
+  resource_id             = aws_api_gateway_resource.redoc.id
+  http_method             = aws_api_gateway_method.redoc.http_method
+  type                    = "HTTP_PROXY"
+  integration_http_method = "GET"
+  connection_type         = "VPC_LINK"
+  connection_id           = var.vpc_link_id
+  uri                     = "http://${var.nlb_dns_name}/redoc"
+}
+
+# /docs/oauth2-redirect — FastAPI Swagger OAuth2 redirect helper (no auth)
+resource "aws_api_gateway_resource" "docs_oauth2_redirect" {
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  parent_id   = aws_api_gateway_resource.docs.id
+  path_part   = "oauth2-redirect"
+}
+
+resource "aws_api_gateway_method" "docs_oauth2_redirect" {
+  rest_api_id   = aws_api_gateway_rest_api.this.id
+  resource_id   = aws_api_gateway_resource.docs_oauth2_redirect.id
+  http_method   = "GET"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "docs_oauth2_redirect" {
+  rest_api_id             = aws_api_gateway_rest_api.this.id
+  resource_id             = aws_api_gateway_resource.docs_oauth2_redirect.id
+  http_method             = aws_api_gateway_method.docs_oauth2_redirect.http_method
+  type                    = "HTTP_PROXY"
+  integration_http_method = "GET"
+  connection_type         = "VPC_LINK"
+  connection_id           = var.vpc_link_id
+  uri                     = "http://${var.nlb_dns_name}/docs/oauth2-redirect"
+}
+
 # =============================================================================
 # /v1/{v1_proxy+} — B2B tenant routes.
 #
@@ -337,6 +387,8 @@ resource "aws_api_gateway_deployment" "this" {
     aws_api_gateway_integration.content,
     aws_api_gateway_integration.docs,
     aws_api_gateway_integration.openapi,
+    aws_api_gateway_integration.redoc,
+    aws_api_gateway_integration.docs_oauth2_redirect,
     aws_api_gateway_integration.v1,
   ]
   triggers = {
@@ -348,6 +400,11 @@ resource "aws_api_gateway_deployment" "this" {
       aws_api_gateway_integration.content.uri,
       aws_api_gateway_integration.docs.uri,
       aws_api_gateway_integration.openapi.uri,
+      # AA-583: added when /redoc + /docs/oauth2-redirect resources were created — same
+      # AA-432/AA-465 trap otherwise recurs (new resource/integration added but stage
+      # never redeploys because the trigger hash didn't change).
+      aws_api_gateway_integration.redoc.uri,
+      aws_api_gateway_integration.docs_oauth2_redirect.uri,
       aws_api_gateway_integration.v1.uri,
       # AA-465: same trap AA-432 already caught for authorization — this hash only covers
       # .uri by default, so a timeout_milliseconds-only change on the v1 integration would
