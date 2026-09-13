@@ -371,6 +371,10 @@ resource "aws_iam_role" "tripplanner_app_deploy" {
   })
 
   tags = local.tp_tags
+
+  # Tagged role -> CreateRole calls iam:TagRole; wait for the widened CI/CD
+  # grant (cicd.tf "TripPlannerRoleTagging") to propagate first.
+  depends_on = [time_sleep.wait_for_iam_propagation]
 }
 
 resource "aws_iam_role_policy" "tripplanner_app_deploy" {

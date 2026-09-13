@@ -274,16 +274,16 @@ resource "aws_iam_role_policy" "cicd_inline" {
         Resource = "arn:aws:iam::${var.account_id}:role/${local.name_prefix}-acp-scheduler-role"
       },
       {
-        # AA-TripPlanner — the TripPlanner Lambda exec role
-        # (aa-tripplanner-dev-lambda-exec, accounts/aa365/tripplanner.tf) is
-        # tagged, so CreateRole calls iam:TagRole. Same gap/precedent as the
-        # EventBridgeSchedulerRoleTagging statement above (IAMRoleManage
-        # grants Create/Put/PassRole with Resource "*" but not TagRole).
-        # Scoped to this one role ARN, not folded into the wildcard.
-        Sid      = "TripPlannerLambdaRoleTagging"
+        # AA-TripPlanner — the TripPlanner roles (lambda-exec + app-deploy,
+        # accounts/aa365/tripplanner.tf) are tagged, so CreateRole calls
+        # iam:TagRole. Same gap/precedent as the EventBridgeSchedulerRoleTagging
+        # statement above (IAMRoleManage grants Create/Put/PassRole with
+        # Resource "*" but not TagRole). Scoped to the aa-tripplanner-* name
+        # prefix so it covers both roles without a bare "*" wildcard.
+        Sid      = "TripPlannerRoleTagging"
         Effect   = "Allow"
         Action   = ["iam:TagRole", "iam:UntagRole"]
-        Resource = "arn:aws:iam::${var.account_id}:role/aa-tripplanner-dev-lambda-exec"
+        Resource = "arn:aws:iam::${var.account_id}:role/aa-tripplanner-${var.environment}-*"
       },
       {
         # AA-402 — module.eventbridge's custom EventBridge bus
