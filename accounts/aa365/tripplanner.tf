@@ -79,18 +79,20 @@ resource "aws_secretsmanager_secret_version" "tripplanner_db" {
 }
 
 # -----------------------------------------------------------------------------
-# Lambda deployment artifacts — S3 (chosen over local `filename` because the
-# zips are built in the AA-TripPlanner-Web repo, not this Infra repo, so they
-# are not present in a fresh Infra CI checkout). The packaging step
-# (backend/package_lambdas.sh) builds dist/tripplanner/{browse,assembly}.zip;
-# Terraform uploads them here (aws_s3_object) and the Lambdas deploy from S3.
+# Lambda deployment artifacts — S3, with a clean split of responsibility:
 #
-# The zips are still not present at PLAN time in a fresh checkout, so both the
-# object `source`/`etag` and the Lambda `s3_object_version`/`source_code_hash`
-# are guarded with fileexists(): plan is a clean no-op-on-missing-artifact,
-# apply (run with the zips built locally first) uploads + deploys the real
-# artifact. Versioning is on so each upload produces a new object version the
-# Lambda redeploys from.
+#   Terraform (this file, Infra repo) OWNS the artifacts bucket and seeds a
+#   tiny PLACEHOLDER zip under each key so the Lambdas can be created on first
+#   apply without needing the real (43MB) build here. Terraform then
+#   ignore_changes the Lambda code attributes so it never fights the app.
+#
+#   The AA-TripPlanner-Web repo (App) OWNS the real code: its deploy workflow
+#   builds the zips (backend/package_lambdas.sh), uploads them to this bucket
+#   and calls lambda:UpdateFunctionCode — via a dedicated, least-privilege
+#   OIDC role defined below (tripplanner_app_deploy). This keeps the app's
+#   build artifact out of the Infra repo entirely.
+#
+# Versioning is on so each app upload is a new object version.
 # -----------------------------------------------------------------------------
 resource "aws_s3_bucket" "tripplanner_artifacts" {
   bucket = "${local.tp_name_prefix}-lambda-artifacts-${var.account_id}"
@@ -121,25 +123,38 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "tripplanner_artif
   }
 }
 
+# A tiny valid Lambda zip (a single placeholder.py returning 501), committed
+# at artifacts/placeholder.zip, used ONLY to create the functions on first
+# apply. The App deploy workflow (AA-TripPlanner-Web) replaces this with the
+# real code via lambda:UpdateFunctionCode immediately after. Committed as a
+# static file (209 bytes) rather than generated so no extra Terraform provider
+# (hashicorp/archive) is needed.
 locals {
-  tp_browse_zip   = "${var.tripplanner_lambda_zip_dir}/browse.zip"
-  tp_assembly_zip = "${var.tripplanner_lambda_zip_dir}/assembly.zip"
+  tp_placeholder_zip = "${path.module}/artifacts/placeholder.zip"
 }
 
 resource "aws_s3_object" "tripplanner_browse_zip" {
-  count  = fileexists(local.tp_browse_zip) ? 1 : 0
   bucket = aws_s3_bucket.tripplanner_artifacts.id
   key    = "browse.zip"
-  source = local.tp_browse_zip
-  etag   = filemd5(local.tp_browse_zip)
+  source = local.tp_placeholder_zip
+  etag   = filemd5(local.tp_placeholder_zip)
+
+  # The App deploy workflow overwrites this object with the real build; do not
+  # let Terraform revert it back to the placeholder on later applies.
+  lifecycle {
+    ignore_changes = [etag, source]
+  }
 }
 
 resource "aws_s3_object" "tripplanner_assembly_zip" {
-  count  = fileexists(local.tp_assembly_zip) ? 1 : 0
   bucket = aws_s3_bucket.tripplanner_artifacts.id
   key    = "assembly.zip"
-  source = local.tp_assembly_zip
-  etag   = filemd5(local.tp_assembly_zip)
+  source = local.tp_placeholder_zip
+  etag   = filemd5(local.tp_placeholder_zip)
+
+  lifecycle {
+    ignore_changes = [etag, source]
+  }
 }
 
 # -----------------------------------------------------------------------------
@@ -224,14 +239,11 @@ resource "aws_lambda_function" "tripplanner_browse" {
   timeout       = 30
   memory_size   = 512
 
-  # Deploy from S3 (see the tripplanner_artifacts bucket above). s3_key is
-  # static; s3_object_version + source_code_hash come from the uploaded object
-  # / local zip and are guarded with fileexists()/try() so plan is a clean
-  # no-op when the artifact isn't present yet.
-  s3_bucket         = aws_s3_bucket.tripplanner_artifacts.id
-  s3_key            = "browse.zip"
-  s3_object_version = try(aws_s3_object.tripplanner_browse_zip[0].version_id, null)
-  source_code_hash  = fileexists(local.tp_browse_zip) ? filebase64sha256(local.tp_browse_zip) : null
+  # Created from the S3 placeholder object; the AA-TripPlanner-Web deploy
+  # workflow replaces the actual code via lambda:UpdateFunctionCode. Terraform
+  # ignore_changes the code attributes so it never reverts the app's deploy.
+  s3_bucket = aws_s3_bucket.tripplanner_artifacts.id
+  s3_key    = "browse.zip"
 
   vpc_config {
     subnet_ids         = module.vpc.private_subnet_ids
@@ -248,6 +260,13 @@ resource "aws_lambda_function" "tripplanner_browse" {
   }
 
   tags = local.tp_tags
+
+  # The S3 object (placeholder) must exist before CreateFunction.
+  depends_on = [aws_s3_object.tripplanner_browse_zip]
+
+  lifecycle {
+    ignore_changes = [s3_object_version, source_code_hash, s3_key]
+  }
 }
 
 resource "aws_lambda_function" "tripplanner_assembly" {
@@ -258,11 +277,10 @@ resource "aws_lambda_function" "tripplanner_assembly" {
   timeout       = 60
   memory_size   = 512
 
-  # Deploy from S3 (see browse Lambda above).
-  s3_bucket         = aws_s3_bucket.tripplanner_artifacts.id
-  s3_key            = "assembly.zip"
-  s3_object_version = try(aws_s3_object.tripplanner_assembly_zip[0].version_id, null)
-  source_code_hash  = fileexists(local.tp_assembly_zip) ? filebase64sha256(local.tp_assembly_zip) : null
+  # Created from the S3 placeholder (see browse Lambda above); app deploy
+  # workflow replaces the code.
+  s3_bucket = aws_s3_bucket.tripplanner_artifacts.id
+  s3_key    = "assembly.zip"
 
   vpc_config {
     subnet_ids         = module.vpc.private_subnet_ids
@@ -289,6 +307,13 @@ resource "aws_lambda_function" "tripplanner_assembly" {
   }
 
   tags = local.tp_tags
+
+  # The S3 object (placeholder) must exist before CreateFunction.
+  depends_on = [aws_s3_object.tripplanner_assembly_zip]
+
+  lifecycle {
+    ignore_changes = [s3_object_version, source_code_hash, s3_key]
+  }
 }
 
 # Function URLs (the frontend BFF calls these; CloudFront can sit in front of
@@ -313,4 +338,71 @@ output "tripplanner_assembly_url" {
 
 output "tripplanner_lambda_exec_role_arn" {
   value = aws_iam_role.tripplanner_lambda_exec.arn
+}
+
+# -----------------------------------------------------------------------------
+# App deploy role — assumed via GitHub OIDC by the AA-TripPlanner-Web repo's
+# deploy workflow ONLY. Least-privilege: put the build zip in the artifacts
+# bucket + update the two Lambdas' code. Nothing else. Separate from the
+# aa-cis-dev-role CI/CD role (which is broad); this keeps the app repo's
+# blast radius to exactly "ship TripPlanner Lambda code".
+#
+# Trust is scoped to this one repo (any branch) via the sub claim, reusing the
+# existing GitHub OIDC provider (cicd.tf).
+# -----------------------------------------------------------------------------
+resource "aws_iam_role" "tripplanner_app_deploy" {
+  name = "${local.tp_name_prefix}-app-deploy"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Federated = aws_iam_openid_connect_provider.github_actions.arn }
+      Action    = "sts:AssumeRoleWithWebIdentity"
+      Condition = {
+        StringEquals = {
+          "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
+        }
+        StringLike = {
+          "token.actions.githubusercontent.com:sub" = "repo:AdventureAsia365-CIS/AA-TripPlanner-Web:*"
+        }
+      }
+    }]
+  })
+
+  tags = local.tp_tags
+}
+
+resource "aws_iam_role_policy" "tripplanner_app_deploy" {
+  name = "${local.tp_name_prefix}-app-deploy-policy"
+  role = aws_iam_role.tripplanner_app_deploy.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "PutArtifacts"
+        Effect   = "Allow"
+        Action   = ["s3:PutObject", "s3:GetObject"]
+        Resource = "${aws_s3_bucket.tripplanner_artifacts.arn}/*"
+      },
+      {
+        Sid    = "UpdateLambdaCode"
+        Effect = "Allow"
+        Action = ["lambda:UpdateFunctionCode", "lambda:GetFunction"]
+        Resource = [
+          aws_lambda_function.tripplanner_browse.arn,
+          aws_lambda_function.tripplanner_assembly.arn,
+        ]
+      },
+    ]
+  })
+}
+
+output "tripplanner_app_deploy_role_arn" {
+  value = aws_iam_role.tripplanner_app_deploy.arn
+}
+
+output "tripplanner_artifacts_bucket" {
+  value = aws_s3_bucket.tripplanner_artifacts.id
 }
