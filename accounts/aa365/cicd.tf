@@ -126,6 +126,10 @@ resource "aws_iam_role_policy" "cicd_inline" {
           "iam:DetachRolePolicy", "iam:PutRolePolicy", "iam:DeleteRolePolicy",
           "iam:PassRole", "iam:GetRole", "iam:GetRolePolicy",
           "iam:ListRolePolicies", "iam:ListAttachedRolePolicies",
+          # UpdateAssumeRolePolicy needed to change a role's trust policy in
+          # place (e.g. the TripPlanner app-deploy OIDC sub fix) — CreateRole
+          # only covers the initial trust, not later edits.
+          "iam:UpdateAssumeRolePolicy",
         ]
         Resource = "*"
       },
