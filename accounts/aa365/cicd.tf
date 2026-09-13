@@ -157,6 +157,12 @@ resource "aws_iam_role_policy" "cicd_inline" {
           "apigateway:PUT",
           "apigateway:PATCH",
           "apigateway:DELETE",
+          # TagResource/UntagResource are separate actions for API Gateway v2
+          # (HTTP API) tagging and are NOT covered by the HTTP verbs above. The
+          # provider's default_tags (versions.tf) tags every taggable resource,
+          # so creating the TripPlanner HTTP API stage calls TagResource.
+          "apigateway:TagResource",
+          "apigateway:UntagResource",
         ]
         Resource = "*"
       },
