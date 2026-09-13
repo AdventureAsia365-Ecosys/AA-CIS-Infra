@@ -94,6 +94,12 @@ resource "aws_iam_role" "tripplanner_lambda_exec" {
   })
 
   tags = local.tp_tags
+
+  # This role is tagged, so CreateRole calls iam:TagRole. The CI/CD role's
+  # grant for that (cicd.tf, "TripPlannerLambdaRoleTagging") is applied in
+  # this same run, so wait for IAM propagation before creating the role —
+  # same eventual-consistency mitigation the budgets/CloudTrail resources use.
+  depends_on = [time_sleep.wait_for_iam_propagation]
 }
 
 # ENI-in-VPC (reach RDS) — AWS-managed policy, same as the CIS lambda module.
