@@ -399,7 +399,13 @@ resource "aws_iam_role_policy" "tripplanner_app_deploy" {
       {
         Sid    = "UpdateLambdaCode"
         Effect = "Allow"
-        Action = ["lambda:UpdateFunctionCode", "lambda:GetFunction"]
+        # GetFunctionConfiguration is what the `aws lambda wait
+        # function-updated` waiter polls after UpdateFunctionCode.
+        Action = [
+          "lambda:UpdateFunctionCode",
+          "lambda:GetFunction",
+          "lambda:GetFunctionConfiguration",
+        ]
         Resource = [
           aws_lambda_function.tripplanner_browse.arn,
           aws_lambda_function.tripplanner_assembly.arn,
