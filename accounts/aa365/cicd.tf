@@ -287,30 +287,6 @@ resource "aws_iam_role_policy" "cicd_inline" {
       },
       {
         # AA-402 — module.eventbridge's custom EventBridge bus
-        # (aa-tripplanner-dev-lambda-exec, accounts/aa365/tripplanner.tf) is
-        # tagged, so CreateRole calls iam:TagRole. Same gap/precedent as the
-        # EventBridgeSchedulerRoleTagging statement above (IAMRoleManage
-        # grants Create/Put/PassRole with Resource "*" but not TagRole).
-        # Scoped to this one role ARN, not folded into the wildcard.
-        Sid      = "TripPlannerLambdaRoleTagging"
-        Effect   = "Allow"
-        Action   = ["iam:TagRole", "iam:UntagRole"]
-        Resource = "arn:aws:iam::${var.account_id}:role/aa-tripplanner-dev-lambda-exec"
-      },
-      {
-        # AA-402 — module.eventbridge's custom EventBridge bus
-        # (aa-tripplanner-dev-lambda-exec, accounts/aa365/tripplanner.tf) is
-        # tagged, so CreateRole calls iam:TagRole. Same gap/precedent as the
-        # EventBridgeSchedulerRoleTagging statement above (IAMRoleManage
-        # grants Create/Put/PassRole with Resource "*" but not TagRole).
-        # Scoped to this one role ARN, not folded into the wildcard.
-        Sid      = "TripPlannerLambdaRoleTagging"
-        Effect   = "Allow"
-        Action   = ["iam:TagRole", "iam:UntagRole"]
-        Resource = "arn:aws:iam::${var.account_id}:role/aa-tripplanner-dev-lambda-exec"
-      },
-      {
-        # AA-402 — module.eventbridge's custom EventBridge bus
         # (aa-cis-dev-acp-events). No events:* action existed anywhere on
         # this role before (confirmed via live AccessDenied on
         # events:CreateEventBus/events:TagResource) — CloudWatchFullAccess
