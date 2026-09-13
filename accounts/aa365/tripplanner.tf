@@ -336,7 +336,9 @@ resource "aws_lambda_function" "tripplanner_assembly" {
 resource "aws_apigatewayv2_api" "tripplanner" {
   name          = "${local.tp_name_prefix}-api"
   protocol_type = "HTTP"
-  tags          = local.tp_tags
+  # No tags: the CI/CD role's APIGatewayManage statement grants the HTTP-verb
+  # actions but not apigateway:TagResource (an HTTP-API v2 tagging call), and
+  # tags aren't needed here. Avoids widening the shared role for a nice-to-have.
 }
 
 resource "aws_apigatewayv2_integration" "tripplanner_browse" {
@@ -371,7 +373,7 @@ resource "aws_apigatewayv2_stage" "tripplanner" {
   api_id      = aws_apigatewayv2_api.tripplanner.id
   name        = "$default"
   auto_deploy = true
-  tags        = local.tp_tags
+  # No tags — see the api resource above (apigateway:TagResource not granted).
 }
 
 resource "aws_lambda_permission" "tripplanner_browse_apigw" {
