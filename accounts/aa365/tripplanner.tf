@@ -79,6 +79,70 @@ resource "aws_secretsmanager_secret_version" "tripplanner_db" {
 }
 
 # -----------------------------------------------------------------------------
+# Lambda deployment artifacts — S3 (chosen over local `filename` because the
+# zips are built in the AA-TripPlanner-Web repo, not this Infra repo, so they
+# are not present in a fresh Infra CI checkout). The packaging step
+# (backend/package_lambdas.sh) builds dist/tripplanner/{browse,assembly}.zip;
+# Terraform uploads them here (aws_s3_object) and the Lambdas deploy from S3.
+#
+# The zips are still not present at PLAN time in a fresh checkout, so both the
+# object `source`/`etag` and the Lambda `s3_object_version`/`source_code_hash`
+# are guarded with fileexists(): plan is a clean no-op-on-missing-artifact,
+# apply (run with the zips built locally first) uploads + deploys the real
+# artifact. Versioning is on so each upload produces a new object version the
+# Lambda redeploys from.
+# -----------------------------------------------------------------------------
+resource "aws_s3_bucket" "tripplanner_artifacts" {
+  bucket = "${local.tp_name_prefix}-lambda-artifacts-${var.account_id}"
+  tags   = local.tp_tags
+}
+
+resource "aws_s3_bucket_versioning" "tripplanner_artifacts" {
+  bucket = aws_s3_bucket.tripplanner_artifacts.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "tripplanner_artifacts" {
+  bucket                  = aws_s3_bucket.tripplanner_artifacts.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "tripplanner_artifacts" {
+  bucket = aws_s3_bucket.tripplanner_artifacts.id
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+locals {
+  tp_browse_zip   = "${var.tripplanner_lambda_zip_dir}/browse.zip"
+  tp_assembly_zip = "${var.tripplanner_lambda_zip_dir}/assembly.zip"
+}
+
+resource "aws_s3_object" "tripplanner_browse_zip" {
+  count  = fileexists(local.tp_browse_zip) ? 1 : 0
+  bucket = aws_s3_bucket.tripplanner_artifacts.id
+  key    = "browse.zip"
+  source = local.tp_browse_zip
+  etag   = filemd5(local.tp_browse_zip)
+}
+
+resource "aws_s3_object" "tripplanner_assembly_zip" {
+  count  = fileexists(local.tp_assembly_zip) ? 1 : 0
+  bucket = aws_s3_bucket.tripplanner_artifacts.id
+  key    = "assembly.zip"
+  source = local.tp_assembly_zip
+  etag   = filemd5(local.tp_assembly_zip)
+}
+
+# -----------------------------------------------------------------------------
 # Lambda execution role (shared by both TripPlanner Lambdas).
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "tripplanner_lambda_exec" {
@@ -160,13 +224,14 @@ resource "aws_lambda_function" "tripplanner_browse" {
   timeout       = 30
   memory_size   = 512
 
-  # The zip is built by the AA-TripPlanner-Web packaging step into
-  # var.tripplanner_lambda_zip_dir before apply. It is NOT present at plan
-  # time in a fresh CI checkout, so guard filebase64sha256 with fileexists()
-  # to keep `terraform plan` clean when the artifact isn't there yet — the
-  # apply step (which builds/uploads the zip first) will have it.
-  filename         = "${var.tripplanner_lambda_zip_dir}/browse.zip"
-  source_code_hash = fileexists("${var.tripplanner_lambda_zip_dir}/browse.zip") ? filebase64sha256("${var.tripplanner_lambda_zip_dir}/browse.zip") : null
+  # Deploy from S3 (see the tripplanner_artifacts bucket above). s3_key is
+  # static; s3_object_version + source_code_hash come from the uploaded object
+  # / local zip and are guarded with fileexists()/try() so plan is a clean
+  # no-op when the artifact isn't present yet.
+  s3_bucket         = aws_s3_bucket.tripplanner_artifacts.id
+  s3_key            = "browse.zip"
+  s3_object_version = try(aws_s3_object.tripplanner_browse_zip[0].version_id, null)
+  source_code_hash  = fileexists(local.tp_browse_zip) ? filebase64sha256(local.tp_browse_zip) : null
 
   vpc_config {
     subnet_ids         = module.vpc.private_subnet_ids
@@ -193,10 +258,11 @@ resource "aws_lambda_function" "tripplanner_assembly" {
   timeout       = 60
   memory_size   = 512
 
-  # See browse.zip note above — guard with fileexists() so plan is clean
-  # when the artifact isn't in the checkout yet.
-  filename         = "${var.tripplanner_lambda_zip_dir}/assembly.zip"
-  source_code_hash = fileexists("${var.tripplanner_lambda_zip_dir}/assembly.zip") ? filebase64sha256("${var.tripplanner_lambda_zip_dir}/assembly.zip") : null
+  # Deploy from S3 (see browse Lambda above).
+  s3_bucket         = aws_s3_bucket.tripplanner_artifacts.id
+  s3_key            = "assembly.zip"
+  s3_object_version = try(aws_s3_object.tripplanner_assembly_zip[0].version_id, null)
+  source_code_hash  = fileexists(local.tp_assembly_zip) ? filebase64sha256(local.tp_assembly_zip) : null
 
   vpc_config {
     subnet_ids         = module.vpc.private_subnet_ids
