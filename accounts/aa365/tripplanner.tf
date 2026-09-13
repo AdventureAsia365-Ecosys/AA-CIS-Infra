@@ -337,6 +337,10 @@ resource "aws_apigatewayv2_api" "tripplanner" {
   name          = "${local.tp_name_prefix}-api"
   protocol_type = "HTTP"
   tags          = local.tp_tags
+
+  # Tagging (provider default_tags -> apigateway:TagResource) — wait for the
+  # CI/CD role's TagResource grant to propagate, same as the stage below.
+  depends_on = [time_sleep.wait_for_iam_propagation]
 }
 
 resource "aws_apigatewayv2_integration" "tripplanner_browse" {
@@ -372,6 +376,11 @@ resource "aws_apigatewayv2_stage" "tripplanner" {
   name        = "$default"
   auto_deploy = true
   tags        = local.tp_tags
+
+  # Creating the stage calls apigateway:TagResource (provider default_tags).
+  # That grant was added to the CI/CD role in the same apply, so wait for IAM
+  # propagation first — same mitigation the tagged IAM roles use.
+  depends_on = [time_sleep.wait_for_iam_propagation]
 }
 
 resource "aws_lambda_permission" "tripplanner_browse_apigw" {
