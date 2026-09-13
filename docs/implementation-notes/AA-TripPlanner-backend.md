@@ -55,8 +55,15 @@ so reviewers can tell the TripPlanner surface apart from AA-CIS at a glance.
   `backend.assembly.handler.handler`. Stateful; calls Bedrock.
   Two separate Lambdas is a hard product boundary (browse = cacheable read;
   assembly = per-visitor state + LLM), not merged for convenience.
-- Function URLs for both + outputs (`tripplanner_browse_url`,
-  `tripplanner_assembly_url`, `tripplanner_lambda_exec_role_arn`).
+- **API Gateway (HTTP API v2)** `aa-tripplanner-dev-api` in front of the two
+  Lambdas (`AWS_PROXY`, payload format 2.0): `ANY /browse/{proxy+}` -> browse,
+  `ANY /trip/{proxy+}` -> assembly, `$default` auto-deploy stage, + Lambda
+  invoke permissions. Same "API Gateway in front of the compute" pattern as
+  AA-CIS (which fronts ECS via a REST API + VPC Link) — TripPlanner fronts
+  Lambda via an HTTP API. Chosen over public Lambda Function URLs because the
+  org SCP blocks unauthenticated Function URLs (verified 403 AccessDenied at
+  the org edge). Output: `tripplanner_api_base_url`,
+  `tripplanner_lambda_exec_role_arn`.
 
 Both Lambdas attach to the existing VPC via `module.vpc.private_subnet_ids` +
 `module.vpc.sg_app_id` so they can reach the shared RDS. **No new
@@ -101,5 +108,6 @@ VPC/subnet/SG/RDS is created** — those are read-only references.
   `tripplanner_app_deploy` via OIDC, builds the real zips
   (`backend/package_lambdas.sh`), uploads them to the artifacts bucket, and
   runs `lambda:UpdateFunctionCode`. No build artifact ever lives in this repo.
-- Function URL auth is `NONE` for MVP dev — tighten before real use.
+- API Gateway auth is `NONE` at the edge for MVP dev (the BFF is the only
+  caller) — add a JWT/authorizer before real use.
 - CloudFront in front of the browse read routes is a later change.

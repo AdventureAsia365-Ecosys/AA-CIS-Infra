@@ -316,24 +316,83 @@ resource "aws_lambda_function" "tripplanner_assembly" {
   }
 }
 
-# Function URLs (the frontend BFF calls these; CloudFront can sit in front of
-# browse later). AWS_IAM auth left off for MVP dev — revisit before real use.
-resource "aws_lambda_function_url" "tripplanner_browse" {
-  function_name      = aws_lambda_function.tripplanner_browse.function_name
-  authorization_type = "NONE"
+# -----------------------------------------------------------------------------
+# API Gateway (HTTP API v2) — the public entry point, same "API Gateway in
+# front of the compute" pattern AA-CIS uses (AA-CIS fronts ECS via a REST API
+# + VPC Link; TripPlanner fronts Lambda via an HTTP API + AWS_PROXY). Chosen
+# over public Lambda Function URLs because the org SCP blocks unauthenticated
+# Function URLs (verified: AuthType=NONE returned 403 AccessDenied at the org
+# edge). The frontend BFF calls this API; the Lambdas keep no public URL.
+#
+# HTTP API payload format 2.0 matches the event shape the handlers already
+# parse (requestContext.http.method/path + rawPath).
+#
+# Routes:
+#   ANY /browse/{proxy+} -> browse Lambda   (stateless, cacheable reads)
+#   ANY /trip/{proxy+}   -> assembly Lambda (stateful + Bedrock)
+# Auth is NONE at the edge for MVP dev (the BFF is the only caller) — add a
+# JWT/authorizer before real use.
+# -----------------------------------------------------------------------------
+resource "aws_apigatewayv2_api" "tripplanner" {
+  name          = "${local.tp_name_prefix}-api"
+  protocol_type = "HTTP"
+  tags          = local.tp_tags
 }
 
-resource "aws_lambda_function_url" "tripplanner_assembly" {
-  function_name      = aws_lambda_function.tripplanner_assembly.function_name
-  authorization_type = "NONE"
+resource "aws_apigatewayv2_integration" "tripplanner_browse" {
+  api_id                 = aws_apigatewayv2_api.tripplanner.id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = aws_lambda_function.tripplanner_browse.invoke_arn
+  integration_method     = "POST"
+  payload_format_version = "2.0"
 }
 
-output "tripplanner_browse_url" {
-  value = aws_lambda_function_url.tripplanner_browse.function_url
+resource "aws_apigatewayv2_integration" "tripplanner_assembly" {
+  api_id                 = aws_apigatewayv2_api.tripplanner.id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = aws_lambda_function.tripplanner_assembly.invoke_arn
+  integration_method     = "POST"
+  payload_format_version = "2.0"
 }
 
-output "tripplanner_assembly_url" {
-  value = aws_lambda_function_url.tripplanner_assembly.function_url
+resource "aws_apigatewayv2_route" "tripplanner_browse" {
+  api_id    = aws_apigatewayv2_api.tripplanner.id
+  route_key = "ANY /browse/{proxy+}"
+  target    = "integrations/${aws_apigatewayv2_integration.tripplanner_browse.id}"
+}
+
+resource "aws_apigatewayv2_route" "tripplanner_assembly" {
+  api_id    = aws_apigatewayv2_api.tripplanner.id
+  route_key = "ANY /trip/{proxy+}"
+  target    = "integrations/${aws_apigatewayv2_integration.tripplanner_assembly.id}"
+}
+
+resource "aws_apigatewayv2_stage" "tripplanner" {
+  api_id      = aws_apigatewayv2_api.tripplanner.id
+  name        = "$default"
+  auto_deploy = true
+  tags        = local.tp_tags
+}
+
+resource "aws_lambda_permission" "tripplanner_browse_apigw" {
+  statement_id  = "AllowApiGwInvokeBrowse"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.tripplanner_browse.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_apigatewayv2_api.tripplanner.execution_arn}/*/*"
+}
+
+resource "aws_lambda_permission" "tripplanner_assembly_apigw" {
+  statement_id  = "AllowApiGwInvokeAssembly"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.tripplanner_assembly.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_apigatewayv2_api.tripplanner.execution_arn}/*/*"
+}
+
+# The BFF calls "<api_base>/browse/..." and "<api_base>/trip/...".
+output "tripplanner_api_base_url" {
+  value = aws_apigatewayv2_stage.tripplanner.invoke_url
 }
 
 output "tripplanner_lambda_exec_role_arn" {
