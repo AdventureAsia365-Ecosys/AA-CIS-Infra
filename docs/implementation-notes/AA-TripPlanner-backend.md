@@ -38,6 +38,14 @@ so reviewers can tell the TripPlanner surface apart from AA-CIS at a glance.
     `accounts/aa365/bedrock_satellite_assume.tf`, which grants the *ECS task
     role* the same assume — TripPlanner just needs the parallel grant on its
     own Lambda role.
+- `aws_s3_bucket.tripplanner_artifacts` (+ versioning / public-access-block /
+  SSE) — `aa-tripplanner-dev-lambda-artifacts-<account_id>`. Holds the Lambda
+  deployment zips. Used instead of local `filename` because the zips are built
+  in the AA-TripPlanner-Web repo, not this Infra repo, so they are not in a
+  fresh Infra CI checkout. `aws_s3_object.tripplanner_{browse,assembly}_zip`
+  upload the zips (guarded with `fileexists()` so plan is a no-op when the
+  artifact isn't built yet); the Lambdas deploy via `s3_bucket`/`s3_key`/
+  `s3_object_version`.
 - `aws_lambda_function.tripplanner_browse` — `-browse`, handler
   `backend.browse.handler.handler`. Stateless read path.
 - `aws_lambda_function.tripplanner_assembly` — `-assembly`, handler
@@ -85,7 +93,11 @@ VPC/subnet/SG/RDS is created** — those are read-only references.
 
 ## 6. Follow-ups (not in this change)
 
-- Lambda zips (`browse.zip` / `assembly.zip`) must be built by the app repo's
-  packaging step into `dist/tripplanner/` before apply.
+- Before apply: run the app repo's packaging step
+  (`backend/package_lambdas.sh`) so `dist/tripplanner/{browse,assembly}.zip`
+  exist locally. Terraform (`aws_s3_object`) then uploads them to the
+  artifacts bucket and the Lambdas deploy from S3. If the zips are absent at
+  plan time the S3 objects/Lambda code are simply skipped (fileexists guard),
+  so `terraform plan` stays clean.
 - Function URL auth is `NONE` for MVP dev — tighten before real use.
 - CloudFront in front of the browse read routes is a later change.
