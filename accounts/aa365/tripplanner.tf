@@ -42,11 +42,18 @@ locals {
 
   # Cohere Embed v4 inference profile in acc2 (direct-invoke, verified live).
   tp_embed_profile_arn = "arn:aws:bedrock:${var.aws_region}:${var.account_id}:inference-profile/us.cohere.embed-v4:0"
-  # Cohere v4 foundation model (region + region-empty forms, mirroring the
-  # AA3-Bedrock-Invoker whitelist discipline of listing all ARN forms).
+  # The `us.` CROSS-REGION inference profile routes the actual model call to a
+  # member region (observed live: us-east-1) and authorizes bedrock:InvokeModel
+  # against the foundation-model ARN IN THAT MEMBER REGION — not just the
+  # profile's home region. A us-west-1-only grant fails with AccessDenied on
+  # arn:aws:bedrock:us-east-1::foundation-model/cohere.embed-v4:0. So allow the
+  # foundation-model ARN in ANY region (wildcard) plus the inference-profile
+  # ARN in any region — same "list every ARN form" discipline as
+  # AA3-Bedrock-Invoker, extended to cross-region member regions.
   tp_embed_model_arns = [
     local.tp_embed_profile_arn,
-    "arn:aws:bedrock:${var.aws_region}::foundation-model/cohere.embed-v4:0",
+    "arn:aws:bedrock:*:${var.account_id}:inference-profile/us.cohere.embed-v4:0",
+    "arn:aws:bedrock:*::foundation-model/cohere.embed-v4:0",
     "arn:aws:bedrock:::foundation-model/cohere.embed-v4:0",
   ]
 
