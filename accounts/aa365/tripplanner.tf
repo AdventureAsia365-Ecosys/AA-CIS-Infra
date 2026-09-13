@@ -154,8 +154,13 @@ resource "aws_lambda_function" "tripplanner_browse" {
   timeout       = 30
   memory_size   = 512
 
+  # The zip is built by the AA-TripPlanner-Web packaging step into
+  # var.tripplanner_lambda_zip_dir before apply. It is NOT present at plan
+  # time in a fresh CI checkout, so guard filebase64sha256 with fileexists()
+  # to keep `terraform plan` clean when the artifact isn't there yet — the
+  # apply step (which builds/uploads the zip first) will have it.
   filename         = "${var.tripplanner_lambda_zip_dir}/browse.zip"
-  source_code_hash = filebase64sha256("${var.tripplanner_lambda_zip_dir}/browse.zip")
+  source_code_hash = fileexists("${var.tripplanner_lambda_zip_dir}/browse.zip") ? filebase64sha256("${var.tripplanner_lambda_zip_dir}/browse.zip") : null
 
   vpc_config {
     subnet_ids         = module.vpc.private_subnet_ids
@@ -182,8 +187,10 @@ resource "aws_lambda_function" "tripplanner_assembly" {
   timeout       = 60
   memory_size   = 512
 
+  # See browse.zip note above — guard with fileexists() so plan is clean
+  # when the artifact isn't in the checkout yet.
   filename         = "${var.tripplanner_lambda_zip_dir}/assembly.zip"
-  source_code_hash = filebase64sha256("${var.tripplanner_lambda_zip_dir}/assembly.zip")
+  source_code_hash = fileexists("${var.tripplanner_lambda_zip_dir}/assembly.zip") ? filebase64sha256("${var.tripplanner_lambda_zip_dir}/assembly.zip") : null
 
   vpc_config {
     subnet_ids         = module.vpc.private_subnet_ids
