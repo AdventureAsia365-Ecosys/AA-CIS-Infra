@@ -30,6 +30,11 @@
 #       profile is enough.
 # =============================================================================
 
+resource "random_password" "tripplanner_api_key" {
+  length  = 48
+  special = false # url/header-safe token
+}
+
 locals {
   tp_name_prefix = "aa-tripplanner-${var.environment}"
 
@@ -83,6 +88,26 @@ resource "aws_secretsmanager_secret_version" "tripplanner_db" {
   lifecycle {
     ignore_changes = [secret_string]
   }
+}
+
+# -----------------------------------------------------------------------------
+# Edge shared-secret. The Lambdas verify the X-TripPlanner-Key header against
+# this value (backend/shared/auth.py); the Vercel BFF sends it. API Gateway
+# itself stays authorization = NONE (MVP; a JWT/authorizer is the later
+# hardening). Generated here (random_password) so the value is managed, and
+# also stored in Secrets Manager so the BFF's value can be fetched to set the
+# Vercel env without reading Lambda config.
+# -----------------------------------------------------------------------------
+resource "aws_secretsmanager_secret" "tripplanner_api_key" {
+  name                    = "tripplanner/${var.environment}/api-key"
+  description             = "AA-TripPlanner edge shared secret (X-TripPlanner-Key header)"
+  recovery_window_in_days = var.environment == "dev" ? 0 : 30
+  tags                    = local.tp_tags
+}
+
+resource "aws_secretsmanager_secret_version" "tripplanner_api_key" {
+  secret_id     = aws_secretsmanager_secret.tripplanner_api_key.id
+  secret_string = random_password.tripplanner_api_key.result
 }
 
 # -----------------------------------------------------------------------------
@@ -263,6 +288,7 @@ resource "aws_lambda_function" "tripplanner_browse" {
       TRIPPLANNER_DATABASE_URL_ARN = aws_secretsmanager_secret.tripplanner_db.arn
       BEDROCK_REGION               = var.aws_region
       BEDROCK_MODEL_EMBED          = "us.cohere.embed-v4:0"
+      TRIPPLANNER_API_KEY          = random_password.tripplanner_api_key.result
     }
   }
 
@@ -307,9 +333,12 @@ resource "aws_lambda_function" "tripplanner_assembly" {
       BEDROCK_ROLE_NAME_FALLBACK          = "AA-Bedrock-Invoker"
       BEDROCK_EXTERNAL_ID_PRIMARY         = "aa296-satellite-bedrock-acc3"
       BEDROCK_EXTERNAL_ID_FALLBACK        = "aa296-satellite-bedrock"
-      BEDROCK_MODEL_COMPOSE               = "us.anthropic.claude-sonnet-4-6"
+      # global (not us.) — that's what the satellite invoker roles allow;
+      # see accounts/acc1-bedrock/bedrock_invoker_import.tf.
+      BEDROCK_MODEL_COMPOSE               = "global.anthropic.claude-sonnet-4-6"
       ADVISOR_NOTIFY_EMAIL                = var.tripplanner_advisor_email
       REQUIRE_REGISTRATION_BEFORE_HANDOFF = "true"
+      TRIPPLANNER_API_KEY                 = random_password.tripplanner_api_key.result
     }
   }
 
@@ -496,4 +525,8 @@ output "tripplanner_app_deploy_role_arn" {
 
 output "tripplanner_artifacts_bucket" {
   value = aws_s3_bucket.tripplanner_artifacts.id
+}
+
+output "tripplanner_api_key_secret_arn" {
+  value = aws_secretsmanager_secret.tripplanner_api_key.arn
 }
