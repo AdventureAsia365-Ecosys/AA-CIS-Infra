@@ -25,6 +25,22 @@ resource "aws_iam_role" "bedrock_invoker" {
         Condition = {
           StringEquals = { "sts:ExternalId" = "aa296-satellite-bedrock" }
         }
+      },
+      # AA-TripPlanner — additive trust for the new B2C service's Lambda exec
+      # role (aa-tripplanner-dev-lambda-exec in acc2, defined in
+      # accounts/aa365/tripplanner.tf). acc1 is the FALLBACK satellite for
+      # TripPlanner (acc3 primary). Does NOT modify the AA-CIS ECS statement
+      # above. Same ExternalId as CIS on acc1 ("aa296-satellite-bedrock").
+      {
+        Sid    = "AllowAcc2TripPlannerLambdaAssume"
+        Effect = "Allow"
+        Principal = {
+          AWS = "arn:aws:iam::005097885195:role/aa-tripplanner-dev-lambda-exec"
+        }
+        Action = "sts:AssumeRole"
+        Condition = {
+          StringEquals = { "sts:ExternalId" = "aa296-satellite-bedrock" }
+        }
       }
     ]
   })
@@ -95,9 +111,9 @@ resource "aws_iam_role_policy" "bedrock_invoker_policy" {
       # to assume it when running the job — separate from the caller's own
       # CreateModelInvocationJob permission above.
       {
-        Sid    = "AllowPassBatchInferenceRole"
-        Effect = "Allow"
-        Action = ["iam:PassRole"]
+        Sid      = "AllowPassBatchInferenceRole"
+        Effect   = "Allow"
+        Action   = ["iam:PassRole"]
         Resource = "arn:aws:iam::867490540162:role/aa-bedrock-batch-inference-role"
       }
     ]
