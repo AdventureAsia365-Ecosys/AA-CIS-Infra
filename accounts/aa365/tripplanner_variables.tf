@@ -3,12 +3,6 @@
 # TripPlanner surface is easy to review/diff against the AA-CIS resources.
 # =============================================================================
 
-variable "tripplanner_lambda_zip_dir" {
-  type        = string
-  description = "Directory holding browse.zip / assembly.zip built by the AA-TripPlanner-Web packaging step."
-  default     = "../../dist/tripplanner"
-}
-
 variable "tripplanner_advisor_email" {
   type        = string
   description = "Single advisor notification address for send-to-advisor."

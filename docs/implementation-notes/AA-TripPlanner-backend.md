@@ -40,12 +40,15 @@ so reviewers can tell the TripPlanner surface apart from AA-CIS at a glance.
     own Lambda role.
 - `aws_s3_bucket.tripplanner_artifacts` (+ versioning / public-access-block /
   SSE) — `aa-tripplanner-dev-lambda-artifacts-<account_id>`. Holds the Lambda
-  deployment zips. Used instead of local `filename` because the zips are built
-  in the AA-TripPlanner-Web repo, not this Infra repo, so they are not in a
-  fresh Infra CI checkout. `aws_s3_object.tripplanner_{browse,assembly}_zip`
-  upload the zips (guarded with `fileexists()` so plan is a no-op when the
-  artifact isn't built yet); the Lambdas deploy via `s3_bucket`/`s3_key`/
-  `s3_object_version`.
+  deployment zips. **Split ownership:** Terraform seeds a 209-byte placeholder
+  zip (committed at `accounts/aa365/artifacts/placeholder.zip`) so the Lambdas
+  can be created on first apply; the **AA-TripPlanner-Web** repo's deploy
+  workflow builds the real zips and pushes them via `lambda:UpdateFunctionCode`
+  (Terraform `ignore_changes` the Lambda code attrs so it never reverts them).
+- `aws_iam_role.tripplanner_app_deploy` — least-privilege GitHub OIDC role
+  assumed ONLY by `repo:AdventureAsia365-CIS/AA-TripPlanner-Web:*`, allowed to
+  `s3:PutObject` on the artifacts bucket + `lambda:UpdateFunctionCode` on the
+  two Lambdas. Separate from the broad `aa-cis-dev-role` CI/CD role.
 - `aws_lambda_function.tripplanner_browse` — `-browse`, handler
   `backend.browse.handler.handler`. Stateless read path.
 - `aws_lambda_function.tripplanner_assembly` — `-assembly`, handler
@@ -93,11 +96,10 @@ VPC/subnet/SG/RDS is created** — those are read-only references.
 
 ## 6. Follow-ups (not in this change)
 
-- Before apply: run the app repo's packaging step
-  (`backend/package_lambdas.sh`) so `dist/tripplanner/{browse,assembly}.zip`
-  exist locally. Terraform (`aws_s3_object`) then uploads them to the
-  artifacts bucket and the Lambdas deploy from S3. If the zips are absent at
-  plan time the S3 objects/Lambda code are simply skipped (fileexists guard),
-  so `terraform plan` stays clean.
+- Deploy flow: (1) `terraform apply` creates the Lambdas from the committed
+  placeholder zip; (2) the AA-TripPlanner-Web `deploy-lambdas` workflow assumes
+  `tripplanner_app_deploy` via OIDC, builds the real zips
+  (`backend/package_lambdas.sh`), uploads them to the artifacts bucket, and
+  runs `lambda:UpdateFunctionCode`. No build artifact ever lives in this repo.
 - Function URL auth is `NONE` for MVP dev — tighten before real use.
 - CloudFront in front of the browse read routes is a later change.
