@@ -363,8 +363,14 @@ resource "aws_iam_role" "tripplanner_app_deploy" {
         StringEquals = {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
         }
+        # This org/repo has GitHub's "include owner/repo ID in the OIDC
+        # subject" customization ON, so the real sub is
+        #   repo:AdventureAsia365-CIS@<orgid>/AA-TripPlanner-Web@<repoid>:ref:...
+        # (confirmed via CloudTrail). The "@<id>" segments are why a plain
+        # repo:Org/Repo:* pattern failed with AccessDenied. Match with wildcards
+        # around each "@<id>" while still pinning the org + repo names.
         StringLike = {
-          "token.actions.githubusercontent.com:sub" = "repo:AdventureAsia365-CIS/AA-TripPlanner-Web:*"
+          "token.actions.githubusercontent.com:sub" = "repo:AdventureAsia365-CIS*/AA-TripPlanner-Web*:*"
         }
       }
     }]
