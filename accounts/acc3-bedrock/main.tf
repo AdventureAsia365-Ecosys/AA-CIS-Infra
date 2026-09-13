@@ -31,6 +31,21 @@ resource "aws_iam_role" "bedrock_invoker" {
         Condition = {
           StringEquals = { "sts:ExternalId" = "aa296-satellite-bedrock-acc3" }
         }
+      },
+      # AA-TripPlanner — new B2C service in the SAME acc2, separate Lambda
+      # exec role (aa-tripplanner-dev-lambda-exec, defined in
+      # accounts/aa365/tripplanner.tf). Additive: does NOT modify or replace
+      # the AA-CIS ECS statement above. Same ExternalId as CIS on acc3.
+      {
+        Sid    = "AllowAcc2TripPlannerLambdaAssume"
+        Effect = "Allow"
+        Principal = {
+          AWS = "arn:aws:iam::005097885195:role/aa-tripplanner-dev-lambda-exec"
+        }
+        Action = "sts:AssumeRole"
+        Condition = {
+          StringEquals = { "sts:ExternalId" = "aa296-satellite-bedrock-acc3" }
+        }
       }
     ]
   })
