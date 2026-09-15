@@ -46,7 +46,8 @@ so reviewers can tell the TripPlanner surface apart from AA-CIS at a glance.
   workflow builds the real zips and pushes them via `lambda:UpdateFunctionCode`
   (Terraform `ignore_changes` the Lambda code attrs so it never reverts them).
 - `aws_iam_role.tripplanner_app_deploy` — least-privilege GitHub OIDC role
-  assumed ONLY by `repo:AdventureAsia365-CIS/AA-TripPlanner-Web:*`, allowed to
+  assumed ONLY by `repo:AdventureAsia365-Ecosys/AA-TripPlanner-Web:*` (org renamed
+  from AdventureAsia365-CIS; OIDC trust accepts both during transition), allowed to
   `s3:PutObject` on the artifacts bucket + `lambda:UpdateFunctionCode` on the
   two Lambdas. Separate from the broad `aa-cis-dev-role` CI/CD role.
 - `aws_lambda_function.tripplanner_browse` — `-browse`, handler
