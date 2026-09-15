@@ -329,10 +329,10 @@ resource "aws_lambda_function" "tripplanner_assembly" {
       BEDROCK_ACCT_FALLBACK        = "867490540162"
       # acc3 and acc1 use DIFFERENT invoker role names — pass both (a single
       # name breaks the fallback path).
-      BEDROCK_ROLE_NAME_PRIMARY           = "AA3-Bedrock-Invoker"
-      BEDROCK_ROLE_NAME_FALLBACK          = "AA-Bedrock-Invoker"
-      BEDROCK_EXTERNAL_ID_PRIMARY         = "aa296-satellite-bedrock-acc3"
-      BEDROCK_EXTERNAL_ID_FALLBACK        = "aa296-satellite-bedrock"
+      BEDROCK_ROLE_NAME_PRIMARY    = "AA3-Bedrock-Invoker"
+      BEDROCK_ROLE_NAME_FALLBACK   = "AA-Bedrock-Invoker"
+      BEDROCK_EXTERNAL_ID_PRIMARY  = "aa296-satellite-bedrock-acc3"
+      BEDROCK_EXTERNAL_ID_FALLBACK = "aa296-satellite-bedrock"
       # global (not us.) — that's what the satellite invoker roles allow;
       # see accounts/acc1-bedrock/bedrock_invoker_import.tf.
       BEDROCK_MODEL_COMPOSE               = "global.anthropic.claude-sonnet-4-6"
@@ -473,8 +473,17 @@ resource "aws_iam_role" "tripplanner_app_deploy" {
         # (confirmed via CloudTrail). The "@<id>" segments are why a plain
         # repo:Org/Repo:* pattern failed with AccessDenied. Match with wildcards
         # around each "@<id>" while still pinning the org + repo names.
+        #
+        # TRANSITIONAL (org rename AdventureAsia365-CIS -> AdventureAsia365-Ecosys):
+        # additive OR-list accepting BOTH orgs so the deploy keeps working before,
+        # during and right after the rename. Keeps the same "@<id>*" wildcard
+        # style (this repo keeps its name; only the org changes). Drop the old
+        # "*-CIS*" entry at G5 cleanup once the new org is verified stable.
         StringLike = {
-          "token.actions.githubusercontent.com:sub" = "repo:AdventureAsia365-CIS*/AA-TripPlanner-Web*:*"
+          "token.actions.githubusercontent.com:sub" = [
+            "repo:AdventureAsia365-CIS*/AA-TripPlanner-Web*:*",
+            "repo:AdventureAsia365-Ecosys*/AA-TripPlanner-Web*:*",
+          ]
         }
       }
     }]

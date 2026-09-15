@@ -21,8 +21,23 @@ resource "aws_iam_role" "cicd" {
         StringEquals = {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
         }
+        # TRANSITIONAL (org rename AdventureAsia365-CIS -> AdventureAsia365-Ecosys):
+        # additive OR-list accepting BOTH the old and the new org, so deploys on
+        # the old org name keep working until the rename lands and is verified.
+        # Old org uses the PLAIN sub form (repo:Org/*:*) — the "include repo ID
+        # in subject" customization that forces the "@<id>" form on
+        # AA-TripPlanner-Web (see tripplanner.tf) is NOT in effect here, proven
+        # by this plain pattern having worked. For the NEW org we list BOTH the
+        # plain and the "@<id>*" wildcard form defensively, in case the
+        # customization is later turned on org-wide. G2-precheck must confirm
+        # whether it is org-level or repo-level; the redundant "*" form can be
+        # dropped at G5 cleanup if confirmed repo-level.
         StringLike = {
-          "token.actions.githubusercontent.com:sub" = "repo:AdventureAsia365-CIS/*:*"
+          "token.actions.githubusercontent.com:sub" = [
+            "repo:AdventureAsia365-CIS/*:*",
+            "repo:AdventureAsia365-Ecosys/*:*",
+            "repo:AdventureAsia365-Ecosys*/*:*",
+          ]
         }
       }
     }]
