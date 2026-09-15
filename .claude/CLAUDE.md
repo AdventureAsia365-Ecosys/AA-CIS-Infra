@@ -1,4 +1,20 @@
 # AA-CIS-Infra — Claude Code Context
+
+## ⚠️ RESTRUCTURE 15/09/2026 — ĐỌC TRƯỚC
+- **Workspace gom lại:** repo này giờ ở `~/projects/AA-Ecosys/infra/AA-CIS-Infra` (KHÔNG còn
+  `~/projects/aa-cis/AA-CIS-Infra`). Multi-repo, mỗi repo `.git` riêng.
+- **Org GitHub đổi tên:** `AdventureAsia365-CIS` → **`AdventureAsia365-Ecosys`** (redirect còn
+  chạy). Tên repo giữ nguyên. Remote origin đã trỏ org mới. Lệnh gh: `--repo AdventureAsia365-Ecosys/AA-CIS-Infra`.
+- **OIDC transitional (đã apply 15/09/2026):** 2 role trong `accounts/aa365/` (`cicd.tf` →
+  `aa-cis-dev-role`; `tripplanner.tf` → `aa-tripplanner-dev-app-deploy`) đã mở rộng `sub` nhận CẢ
+  `repo:AdventureAsia365-CIS...` VÀ `repo:AdventureAsia365-Ecosys...` (apply: 0 add/4 change/0 destroy).
+  `cicd.tf` dùng dạng phẳng `repo:<org>/*:*`; `tripplanner.tf` dùng `@id`-wildcard (repo
+  AA-TripPlanner-Web bật "include repo ID in subject"; org KHÔNG bật — đã xác minh).
+  **G5 (chờ vài ngày): gỡ tên org cũ** theo `~/projects/AA-Ecosys/docs/g5-remove-old-trust.md`.
+- **CI/CD:** `configure-aws-credentials` đã nâng `@v4`→`@v6` (Node 24) trong terraform-plan/apply.yml.
+- **TripPlanner** dùng chung acc2 (Lambda/API GW/S3 trong `accounts/aa365/tripplanner.tf`); repo
+  AA-TripPlanner-Web owns Lambda code. Sơ đồ tổng: `~/projects/AA-Ecosys/docs/ecosystem-architecture.md`.
+
 # Updated: 11/09/2026 (AA-587 — corrected stale account/profile, confirmed live root)
 
 ## LIVE ROOT — accounts/aa365/
