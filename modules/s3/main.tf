@@ -119,7 +119,10 @@ resource "aws_s3_bucket_policy" "bronze" {
         Action    = ["s3:GetObject", "s3:PutObject"]
         Resource = [
           "${aws_s3_bucket.bronze.arn}/batch-input/atom-decompose/*",
-          "${aws_s3_bucket.bronze.arn}/batch-output/atom-decompose/*"
+          "${aws_s3_bucket.bronze.arn}/batch-output/atom-decompose/*",
+          # AA-606 — S1-rewrite writer batch prefixes, alongside the atom-decompose ones.
+          "${aws_s3_bucket.bronze.arn}/batch-input/s1-rewrite/*",
+          "${aws_s3_bucket.bronze.arn}/batch-output/s1-rewrite/*"
         ]
       },
       {
@@ -129,7 +132,10 @@ resource "aws_s3_bucket_policy" "bronze" {
         Action    = ["s3:ListBucket"]
         Resource  = aws_s3_bucket.bronze.arn
         Condition = {
-          StringLike = { "s3:prefix" = ["batch-input/atom-decompose/*", "batch-output/atom-decompose/*"] }
+          StringLike = { "s3:prefix" = [
+            "batch-input/atom-decompose/*", "batch-output/atom-decompose/*",
+            "batch-input/s1-rewrite/*", "batch-output/s1-rewrite/*"
+          ] }
         }
       },
       # AA-399 — same grant, parallel, for the acc3 Batch inference service
@@ -142,7 +148,10 @@ resource "aws_s3_bucket_policy" "bronze" {
         Action    = ["s3:GetObject", "s3:PutObject"]
         Resource = [
           "${aws_s3_bucket.bronze.arn}/batch-input/atom-decompose/*",
-          "${aws_s3_bucket.bronze.arn}/batch-output/atom-decompose/*"
+          "${aws_s3_bucket.bronze.arn}/batch-output/atom-decompose/*",
+          # AA-606 — S1-rewrite writer batch prefixes (acc3 is the primary Batch account).
+          "${aws_s3_bucket.bronze.arn}/batch-input/s1-rewrite/*",
+          "${aws_s3_bucket.bronze.arn}/batch-output/s1-rewrite/*"
         ]
       },
       {
@@ -152,7 +161,10 @@ resource "aws_s3_bucket_policy" "bronze" {
         Action    = ["s3:ListBucket"]
         Resource  = aws_s3_bucket.bronze.arn
         Condition = {
-          StringLike = { "s3:prefix" = ["batch-input/atom-decompose/*", "batch-output/atom-decompose/*"] }
+          StringLike = { "s3:prefix" = [
+            "batch-input/atom-decompose/*", "batch-output/atom-decompose/*",
+            "batch-input/s1-rewrite/*", "batch-output/s1-rewrite/*"
+          ] }
         }
       }
     ]

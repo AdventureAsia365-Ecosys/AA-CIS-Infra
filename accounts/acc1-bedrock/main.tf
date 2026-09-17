@@ -32,13 +32,19 @@ resource "aws_iam_role_policy" "bedrock_batch_s3_access" {
         Sid      = "ReadBatchInput"
         Effect   = "Allow"
         Action   = ["s3:GetObject"]
-        Resource = "arn:aws:s3:::aa-cis-bronze-005097885195/batch-input/atom-decompose/*"
+        Resource = [
+          "arn:aws:s3:::aa-cis-bronze-005097885195/batch-input/atom-decompose/*",
+          "arn:aws:s3:::aa-cis-bronze-005097885195/batch-input/s1-rewrite/*"  # AA-606
+        ]
       },
       {
         Sid      = "WriteBatchOutput"
         Effect   = "Allow"
         Action   = ["s3:PutObject"]
-        Resource = "arn:aws:s3:::aa-cis-bronze-005097885195/batch-output/atom-decompose/*"
+        Resource = [
+          "arn:aws:s3:::aa-cis-bronze-005097885195/batch-output/atom-decompose/*",
+          "arn:aws:s3:::aa-cis-bronze-005097885195/batch-output/s1-rewrite/*"  # AA-606
+        ]
       },
       {
         Sid      = "ListBucketForBatchPrefixes"
@@ -46,7 +52,10 @@ resource "aws_iam_role_policy" "bedrock_batch_s3_access" {
         Action   = ["s3:ListBucket"]
         Resource = "arn:aws:s3:::aa-cis-bronze-005097885195"
         Condition = {
-          StringLike = { "s3:prefix" = ["batch-input/atom-decompose/*", "batch-output/atom-decompose/*"] }
+          StringLike = { "s3:prefix" = [
+            "batch-input/atom-decompose/*", "batch-output/atom-decompose/*",
+            "batch-input/s1-rewrite/*", "batch-output/s1-rewrite/*"
+          ] }
         }
       }
     ]
