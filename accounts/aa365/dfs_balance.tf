@@ -168,8 +168,12 @@ resource "aws_iam_role_policy" "dfs_balance_scheduler_invoke" {
 }
 
 resource "aws_scheduler_schedule" "dfs_balance_daily" {
-  name       = "${local.dfs_balance_fn_name}-daily"
-  group_name = "default"
+  name = "${local.dfs_balance_fn_name}-daily"
+  # Use the module.eventbridge schedule group (aa-cis-dev-acp) rather than "default":
+  # the CI role's IAM policy scopes scheduler:GetSchedule/CreateSchedule/etc to
+  # schedule/aa-cis-dev-acp/* (accounts/aa365/cicd.tf "EventBridgeSchedulerScheduleManage"),
+  # so a schedule in "default" makes every CI terraform plan fail on GetSchedule (403).
+  group_name = module.eventbridge.schedule_group_name
 
   schedule_expression          = var.dfs_balance_schedule_expression
   schedule_expression_timezone = "UTC"
