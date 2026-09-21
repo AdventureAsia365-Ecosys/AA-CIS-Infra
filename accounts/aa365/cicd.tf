@@ -22,12 +22,16 @@ resource "aws_iam_role" "cicd" {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
         }
         # AA-588 (G5, 21/09/2026): org rename AdventureAsia365-CIS -> AdventureAsia365-Ecosys
-        # is complete and stable (6 days of green deploys on the new org only, 0 workflows on the
-        # old name). Dropped the transitional old-org entry + the defensive "@<id>" wildcard form:
-        # this org does NOT have the "include repo ID in subject" customization (verified at org
-        # OIDC settings 15/09), so the plain repo:Org/*:* form is correct and sufficient.
+        # complete + stable; dropped the transitional old-org entry.
+        # CORRECTION (same day): the g5 precheck note that this org has NO "include repo ID in
+        # subject" customization was WRONG — CloudTrail on a real CI run shows the sub is
+        #   repo:AdventureAsia365-Ecosys@276539096/AA-CIS-Infra@1212290412:pull_request
+        # i.e. the "@<id>" form IS in effect here too (org- or repo-level). A plain
+        # "repo:AdventureAsia365-Ecosys/*:*" pattern does NOT match it ("/" won't match "@id"),
+        # which broke CI (sts:AssumeRoleWithWebIdentity AccessDenied). Keep the "*" right after
+        # the org name so it matches the "@<id>" segment, same style tripplanner.tf uses.
         StringLike = {
-          "token.actions.githubusercontent.com:sub" = "repo:AdventureAsia365-Ecosys/*:*"
+          "token.actions.githubusercontent.com:sub" = "repo:AdventureAsia365-Ecosys*/*:*"
         }
       }
     }]
