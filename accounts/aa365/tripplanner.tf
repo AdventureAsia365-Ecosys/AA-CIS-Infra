@@ -467,23 +467,17 @@ resource "aws_iam_role" "tripplanner_app_deploy" {
         StringEquals = {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
         }
-        # This org/repo has GitHub's "include owner/repo ID in the OIDC
-        # subject" customization ON, so the real sub is
-        #   repo:AdventureAsia365-CIS@<orgid>/AA-TripPlanner-Web@<repoid>:ref:...
+        # The AA-TripPlanner-Web repo has GitHub's "include owner/repo ID in the OIDC
+        # subject" customization ON (repo-level, verified 15/09), so the real sub is
+        #   repo:AdventureAsia365-Ecosys@<orgid>/AA-TripPlanner-Web@<repoid>:ref:...
         # (confirmed via CloudTrail). The "@<id>" segments are why a plain
-        # repo:Org/Repo:* pattern failed with AccessDenied. Match with wildcards
+        # repo:Org/Repo:* pattern failed with AccessDenied — hence the "*" wildcards
         # around each "@<id>" while still pinning the org + repo names.
         #
-        # TRANSITIONAL (org rename AdventureAsia365-CIS -> AdventureAsia365-Ecosys):
-        # additive OR-list accepting BOTH orgs so the deploy keeps working before,
-        # during and right after the rename. Keeps the same "@<id>*" wildcard
-        # style (this repo keeps its name; only the org changes). Drop the old
-        # "*-CIS*" entry at G5 cleanup once the new org is verified stable.
+        # AA-588 (G5, 21/09/2026): org rename AdventureAsia365-CIS -> AdventureAsia365-Ecosys
+        # complete + stable; dropped the transitional old-org "*-CIS*" entry, now new org only.
         StringLike = {
-          "token.actions.githubusercontent.com:sub" = [
-            "repo:AdventureAsia365-CIS*/AA-TripPlanner-Web*:*",
-            "repo:AdventureAsia365-Ecosys*/AA-TripPlanner-Web*:*",
-          ]
+          "token.actions.githubusercontent.com:sub" = "repo:AdventureAsia365-Ecosys*/AA-TripPlanner-Web*:*"
         }
       }
     }]

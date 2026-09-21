@@ -21,23 +21,17 @@ resource "aws_iam_role" "cicd" {
         StringEquals = {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
         }
-        # TRANSITIONAL (org rename AdventureAsia365-CIS -> AdventureAsia365-Ecosys):
-        # additive OR-list accepting BOTH the old and the new org, so deploys on
-        # the old org name keep working until the rename lands and is verified.
-        # Old org uses the PLAIN sub form (repo:Org/*:*) — the "include repo ID
-        # in subject" customization that forces the "@<id>" form on
-        # AA-TripPlanner-Web (see tripplanner.tf) is NOT in effect here, proven
-        # by this plain pattern having worked. For the NEW org we list BOTH the
-        # plain and the "@<id>*" wildcard form defensively, in case the
-        # customization is later turned on org-wide. G2-precheck must confirm
-        # whether it is org-level or repo-level; the redundant "*" form can be
-        # dropped at G5 cleanup if confirmed repo-level.
+        # AA-588 (G5, 21/09/2026): org rename AdventureAsia365-CIS -> AdventureAsia365-Ecosys
+        # complete + stable; dropped the transitional old-org entry.
+        # CORRECTION (same day): the g5 precheck note that this org has NO "include repo ID in
+        # subject" customization was WRONG — CloudTrail on a real CI run shows the sub is
+        #   repo:AdventureAsia365-Ecosys@276539096/AA-CIS-Infra@1212290412:pull_request
+        # i.e. the "@<id>" form IS in effect here too (org- or repo-level). A plain
+        # "repo:AdventureAsia365-Ecosys/*:*" pattern does NOT match it ("/" won't match "@id"),
+        # which broke CI (sts:AssumeRoleWithWebIdentity AccessDenied). Keep the "*" right after
+        # the org name so it matches the "@<id>" segment, same style tripplanner.tf uses.
         StringLike = {
-          "token.actions.githubusercontent.com:sub" = [
-            "repo:AdventureAsia365-CIS/*:*",
-            "repo:AdventureAsia365-Ecosys/*:*",
-            "repo:AdventureAsia365-Ecosys*/*:*",
-          ]
+          "token.actions.githubusercontent.com:sub" = "repo:AdventureAsia365-Ecosys*/*:*"
         }
       }
     }]
