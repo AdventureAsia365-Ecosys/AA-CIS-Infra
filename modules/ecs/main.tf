@@ -198,6 +198,20 @@ resource "aws_iam_role_policy" "ecs_task_infra_status_readonly" {
           "elasticache:DescribeCacheClusters"
         ]
         Resource = "*"
+      },
+      # AA-623 — GET /admin/cost-explorer (aa-cis-dev-api's admin_llm_ops.py) reconciles the
+      # External Spend page's token-derived cost estimate (AA-622) against real AWS billing.
+      # Cost Explorer is IAM-global (no per-account/per-resource ARN scoping — same constraint
+      # already documented on cloudwatch:PutMetricData above), and does not support
+      # resource-level restriction on ce:GetCostAndUsage either, so Resource="*" here is the
+      # only form AWS accepts, not a broadened grant. Read-only (Get*, no write/delete verb),
+      # same class of statement as the ecs/rds/ec2/elasticache describes already in this
+      # policy. Deliberately landed in its own PR per this file's own "no self-added IAM via
+      # Terraform auto-merge" convention noted below — Nghiệp reviews/merges/applies by hand.
+      {
+        Effect   = "Allow"
+        Action   = ["ce:GetCostAndUsage"]
+        Resource = "*"
       }
     ]
   })
