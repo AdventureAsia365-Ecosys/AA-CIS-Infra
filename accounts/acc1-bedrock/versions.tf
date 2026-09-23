@@ -16,9 +16,10 @@ terraform {
   }
 
   backend "s3" {
-    bucket = "aa-cis-tfstate-acc1-bedrock-867490540162"
-    key    = "acc1-bedrock/terraform.tfstate"
-    region = "us-west-1"
+    bucket  = "aa-cis-tfstate-acc1-bedrock-867490540162"
+    key     = "acc1-bedrock/terraform.tfstate"
+    region  = "us-west-1"
+    profile = "pqnghiep-admin"
   }
 }
 
