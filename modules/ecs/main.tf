@@ -305,6 +305,15 @@ resource "aws_ecs_task_definition" "api" {
       retries     = 3
       startPeriod = 60
     }
+    # AA-310 (AA-295 Direction 3) — SIGTERM→SIGKILL window. Fargate default is 30s, but the app's
+    # shutdown needs: uvicorn finishing in-flight HTTP requests (LLM-backed endpoints run 15-30s)
+    # + the lifespan drain of background jobs (asyncio.wait timeout=25, api/main.py) + pool/redis
+    # close + CancelledError→mark_interrupted() on jobs still pending. 90s covers that with margin
+    # and stays under both the Fargate cap (120s) and the FARGATE_SPOT 2-minute interruption notice
+    # (the service runs weight-3 Spot). It does NOT let a run_tour job finish (p50 ~13 min, max ~38
+    # min measured 24/09) — it only lets it be marked `interrupted` cleanly instead of SIGKILLed.
+    # Clean shutdowns exit in ~0.1s, so this does not slow normal deploys.
+    stopTimeout = 90
   }])
 
   tags = { Name = "${local.name_prefix}-api-task" }
