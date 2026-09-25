@@ -32,6 +32,26 @@ Secrets, Lambda plumbing, OIDC deploy roles, cross-account Bedrock trust — is 
 Bedrock routing across the ecosystem is **acc3 primary → acc1 fallback**. The cross-account
 assume-role wiring that lets the main stack (acc2) and TripPlanner reach Bedrock in acc3/acc1
 lives in `accounts/aa365/bedrock_satellite_assume.tf` and the `acc1-bedrock`/`acc3-bedrock` roots.
+The satellite invoker roles trust only the ECS task role (`aa-cis-dev-ecs-task-role`), not an
+admin session — Claude cannot be called from a local shell.
+
+Cross-account pieces added 15-25/09/2026 (same assume-role pattern as the Bedrock satellite):
+
+- **Cost Explorer read (AA-623)**: acc2 is a **member account**, not the AWS Organizations payer
+  (payer `033086823579` is unrelated to acc1/2/3), so there is no consolidated CE call. Each
+  account exposes its own read role, assumed by the acc2 ECS task role:
+  - acc1 `AA-CostExplorer-Reader` (ExternalId `aa623-satellite-cost-explorer`),
+    `accounts/acc1-bedrock/cost_explorer_reader.tf`;
+  - acc3 `AA3-CostExplorer-Reader` (ExternalId `aa623-satellite-cost-explorer-acc3`),
+    `accounts/acc3-bedrock/cost_explorer_reader.tf`;
+  - acc2 calls CE directly (`ce:GetCostAndUsage` on the ECS task role) and gets
+    `sts:AssumeRole` on the two roles above via `accounts/aa365/cost_explorer_satellite_assume.tf`.
+- **Bedrock Batch Inference (AA-606)**: bronze bucket prefixes `batch-input/s1-rewrite/*` and
+  `batch-output/s1-rewrite/*` (`modules/s3`), plus the batch service roles
+  `aa-bedrock-batch-inference-role` (acc1) and `aa3-bedrock-batch-inference-role` (acc3,
+  `accounts/acc3-bedrock/batch.tf`). IAM is complete, but **AWS has not enabled Batch
+  Inference on acc3 yet** (support case 178979743800653, Linear AA-624): job creation fails with
+  a `ValidationException` about account authorization, which is an entitlement, not IAM.
 
 ## Layout
 
@@ -43,10 +63,13 @@ accounts/
     cicd.tf                       (GitHub Actions OIDC deploy roles for the app repos)
     tripplanner.tf                (TripPlanner OIDC deploy role + TripPlanner-specific resources)
     bedrock_satellite_assume.tf   (cross-account Bedrock assume-role trust)
-    dfs_balance.tf, observability.tf, diagnostics.tf, ...
+    cost_explorer_satellite_assume.tf (acc2 → acc1/acc3 Cost Explorer read roles, AA-623)
+    dfs_balance.tf                (daily DFS balance alert Lambda + EventBridge schedule, AA-627)
+    observability.tf, diagnostics.tf
     variables.tf / tripplanner_variables.tf
-  acc1-bedrock/   ← acc1 Bedrock invoker role (fallback)
+  acc1-bedrock/   ← acc1 Bedrock invoker role (fallback) + Cost Explorer reader
   acc3-bedrock/   ← acc3 Bedrock invoker role (primary) + Bedrock Batch (batch.tf)
+                    + Cost Explorer reader
 modules/          ← reusable building blocks, consumed by the account roots
   vpc, rds, ecs, alb, api_gateway, s3, secrets, waf, lambda, dynamodb, efs,
   elasticache, eventbridge, sqs_sns, step_functions, langfuse, monitoring
@@ -64,15 +87,26 @@ ALB + API Gateway → S3 / Secrets / WAF**, plus **Lambda** (CIS functions + the
 `brand_brief_parser`), **EventBridge** (ACPv2 schedules: daily ingest, weekly export, Gate C veto
 window — not the dead AA-180 orchestration), **Step Functions**, and observability
 (`observability.tf`, `diagnostics.tf`, langfuse/monitoring modules). ECS runs the CIS API service
-(`aa-cis-dev-api` on cluster `aa-cis-dev-cluster`).
+(`aa-cis-dev-api` on cluster `aa-cis-dev-cluster`) with `stopTimeout = 90` so in-flight requests
+drain on deploy (AA-310, `modules/ecs/main.tf`).
+
+The **DFS balance alert** (AA-627) is a small in-VPC Lambda `aa-cis-dev-dfs-balance-check`
+triggered daily by EventBridge Scheduler. The schedule must live in the `aa-cis-dev-acp` schedule
+group: the CI role's IAM is scoped to `schedule/aa-cis-dev-acp/*`, and a schedule in `default`
+makes CI Terraform Plan fail with 403.
 
 ## State backend
 
 - **S3 backend** for the main stack: bucket `aa-cis-tfstate-005097885195`, key
   `dev/terraform.tfstate`, region `us-west-1`, with DynamoDB lock table
   `aa-cis-tfstate-lock-005097885195`.
-- No `profile` is hardcoded in the backend: CI (GitHub Actions OIDC) uses ambient env-var
+- No `profile` is hardcoded in the aa365 backend: CI (GitHub Actions OIDC) uses ambient env-var
   credentials; locally you `export AWS_PROFILE=aa365-admin` before running Terraform.
+- The acc1/acc3 roots are applied only by a human and **must** set `profile` in the backend
+  block as well as the provider: `pqnghiep-admin` (acc1, SSO) and `nghiep_aa365` (acc3). The
+  provider's `profile` does not apply to backend init; without it Terraform falls back to
+  `[default]` (acc2, MFA assume-role) and fails with a confusing MFA error (fixed for acc1 in
+  PR #70). Copy the backend block from `acc3-bedrock/versions.tf` when creating a new root.
 - Provider pins: Terraform `>= 1.7.0, < 2.0.0`, AWS provider `~> 5.40`.
 
 ## CI/CD and OIDC
