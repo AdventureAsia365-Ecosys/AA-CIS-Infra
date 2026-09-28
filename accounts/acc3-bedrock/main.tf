@@ -52,7 +52,9 @@ resource "aws_iam_role" "bedrock_invoker" {
 }
 
 resource "aws_iam_role_policy" "bedrock_invoker_policy" {
-  name = "InvokeApprovedModelsOnly"
+  # Name kept as-is on purpose: renaming an inline policy forces destroy+create, leaving the role
+  # with no invoke permission between the two steps. Only the Sid below was renamed.
+  name = "InvokeApprovedClaudeModelsOnly"
   role = aws_iam_role.bedrock_invoker.id
 
   # Same N-model x 3-ARN-form shape as acc1 (inference-profile, foundation-model
@@ -67,7 +69,7 @@ resource "aws_iam_role_policy" "bedrock_invoker_policy" {
   # only, matching the "global." convention bedrock_satellite.py already uses
   # for the existing 2 models (NOT "us." — see that file's docstring); "openai."
   # models use the same 3-ARN shape as "anthropic." ones, no vendor-specific form.
-  # No longer Claude-only, hence the policy rename above.
+  # No longer Claude-only, hence the statement Sid rename below.
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
