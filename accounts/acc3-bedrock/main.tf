@@ -98,7 +98,11 @@ resource "aws_iam_role_policy" "bedrock_invoker_policy" {
           "arn:aws:bedrock:::foundation-model/openai.gpt-5.6-luna",
           "arn:aws:bedrock:us-west-1:786888028788:inference-profile/global.openai.gpt-6-astra",
           "arn:aws:bedrock:us-west-1::foundation-model/openai.gpt-6-astra",
-          "arn:aws:bedrock:::foundation-model/openai.gpt-6-astra"
+          "arn:aws:bedrock:::foundation-model/openai.gpt-6-astra",
+          # AA-659 — GPT-6 Luna (agreement accepted on acc3 28/09/2026), judge fallback route.
+          "arn:aws:bedrock:us-west-1:786888028788:inference-profile/global.openai.gpt-6-luna",
+          "arn:aws:bedrock:us-west-1::foundation-model/openai.gpt-6-luna",
+          "arn:aws:bedrock:::foundation-model/openai.gpt-6-luna"
         ]
       },
       # AA-399 — Bedrock Batch job creation (model-scoped, same resource shape
