@@ -287,7 +287,6 @@ resource "aws_lambda_function" "tripplanner_browse" {
       ENVIRONMENT                  = var.environment
       TRIPPLANNER_DATABASE_URL_ARN = aws_secretsmanager_secret.tripplanner_db.arn
       BEDROCK_REGION               = var.aws_region
-      BEDROCK_MODEL_EMBED          = "us.cohere.embed-v4:0"
       TRIPPLANNER_API_KEY          = random_password.tripplanner_api_key.result
     }
   }
@@ -333,9 +332,6 @@ resource "aws_lambda_function" "tripplanner_assembly" {
       BEDROCK_ROLE_NAME_FALLBACK   = "AA-Bedrock-Invoker"
       BEDROCK_EXTERNAL_ID_PRIMARY  = "aa296-satellite-bedrock-acc3"
       BEDROCK_EXTERNAL_ID_FALLBACK = "aa296-satellite-bedrock"
-      # global (not us.) — that's what the satellite invoker roles allow;
-      # see accounts/acc1-bedrock/bedrock_invoker_import.tf.
-      BEDROCK_MODEL_COMPOSE               = "global.anthropic.claude-sonnet-4-6"
       ADVISOR_NOTIFY_EMAIL                = var.tripplanner_advisor_email
       REQUIRE_REGISTRATION_BEFORE_HANDOFF = "true"
       TRIPPLANNER_API_KEY                 = random_password.tripplanner_api_key.result
