@@ -31,3 +31,6 @@ Thumbs.db
 !accounts/aa365/terraform.tfvars
 *.tfvars.json
 !*.tfvars.example
+
+# Terraform archive_file outputs (built at plan/apply time)
+accounts/*/lambda_src/*.zip
