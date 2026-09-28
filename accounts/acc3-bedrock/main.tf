@@ -52,19 +52,29 @@ resource "aws_iam_role" "bedrock_invoker" {
 }
 
 resource "aws_iam_role_policy" "bedrock_invoker_policy" {
+  # Name kept as-is on purpose: renaming an inline policy forces destroy+create, leaving the role
+  # with no invoke permission between the two steps. Only the Sid below was renamed.
   name = "InvokeApprovedClaudeModelsOnly"
   role = aws_iam_role.bedrock_invoker.id
 
-  # Same 2-model x 3-ARN-form shape as acc1 (inference-profile, foundation-model
+  # Same N-model x 3-ARN-form shape as acc1 (inference-profile, foundation-model
   # +region, foundation-model region-empty) — undocumented Bedrock IAM evaluation
   # behavior under assumed-role sessions, confirmed live on acc1 2026-07-16 (see
   # shared/llm_client/bedrock_satellite.py docstring in AA-CIS-App). Same lesson
   # applies here: whitelist both ARN forms per model, not just the region-scoped one.
+  #
+  # AA-657 — added Sonnet 5, Opus 5.5, GPT-5.6 Luna, GPT-6 Astra (agreement
+  # AVAILABLE + AUTHORIZED on acc3, verified 28/09/2026 via
+  # get-foundation-model-availability). Inference-profile prefix is "global."
+  # only, matching the "global." convention bedrock_satellite.py already uses
+  # for the existing 2 models (NOT "us." — see that file's docstring); "openai."
+  # models use the same 3-ARN shape as "anthropic." ones, no vendor-specific form.
+  # No longer Claude-only, hence the statement Sid rename below.
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
-        Sid    = "InvokeApprovedClaudeModelsOnly"
+        Sid    = "InvokeApprovedModelsOnly"
         Effect = "Allow"
         Action = [
           "bedrock:InvokeModel",
@@ -76,7 +86,19 @@ resource "aws_iam_role_policy" "bedrock_invoker_policy" {
           "arn:aws:bedrock:us-west-1::foundation-model/anthropic.claude-sonnet-4-6",
           "arn:aws:bedrock:us-west-1::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0",
           "arn:aws:bedrock:::foundation-model/anthropic.claude-sonnet-4-6",
-          "arn:aws:bedrock:::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0"
+          "arn:aws:bedrock:::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0",
+          "arn:aws:bedrock:us-west-1:786888028788:inference-profile/global.anthropic.claude-sonnet-5",
+          "arn:aws:bedrock:us-west-1::foundation-model/anthropic.claude-sonnet-5",
+          "arn:aws:bedrock:::foundation-model/anthropic.claude-sonnet-5",
+          "arn:aws:bedrock:us-west-1:786888028788:inference-profile/global.anthropic.claude-opus-5-5",
+          "arn:aws:bedrock:us-west-1::foundation-model/anthropic.claude-opus-5-5",
+          "arn:aws:bedrock:::foundation-model/anthropic.claude-opus-5-5",
+          "arn:aws:bedrock:us-west-1:786888028788:inference-profile/global.openai.gpt-5.6-luna",
+          "arn:aws:bedrock:us-west-1::foundation-model/openai.gpt-5.6-luna",
+          "arn:aws:bedrock:::foundation-model/openai.gpt-5.6-luna",
+          "arn:aws:bedrock:us-west-1:786888028788:inference-profile/global.openai.gpt-6-astra",
+          "arn:aws:bedrock:us-west-1::foundation-model/openai.gpt-6-astra",
+          "arn:aws:bedrock:::foundation-model/openai.gpt-6-astra"
         ]
       },
       # AA-399 — Bedrock Batch job creation (model-scoped, same resource shape
