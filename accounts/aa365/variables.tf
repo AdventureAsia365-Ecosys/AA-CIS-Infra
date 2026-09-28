@@ -118,12 +118,6 @@ variable "secret_jwt_arn" {
   type        = string
 }
 
-variable "judge_model" {
-  description = "AA-518 — explicit JUDGE_MODEL for the N7 F8/F9 judge (services/acp_produce/judge_client.py). \"gpt41\" is a deliberate temporary pin pending GPT-5.6 (AA-351) unblocking."
-  type        = string
-  default     = "gpt41"
-}
-
 # ── Lambda runtime config (plaintext vars, same pattern as existing root module) ──
 variable "database_url" {
   description = "PostgreSQL connection string for Lambda functions — placeholder until real RDS provisioned"

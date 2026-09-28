@@ -38,10 +38,6 @@ secret_openai_arn    = "arn:aws:secretsmanager:us-west-1:005097885195:secret:aa-
 secret_admin_arn     = "arn:aws:secretsmanager:us-west-1:005097885195:secret:aa-cis/dev/admin-secret-gudNmP"
 secret_jwt_arn       = "arn:aws:secretsmanager:us-west-1:005097885195:secret:aa-cis/dev/jwt-secret-KOjq6l"
 
-# AA-518 (02/09/2026) — N7 F8/F9 judge, deliberate temporary pin pending GPT-5.6 (AA-351)
-# unblocking. Change to "nova_pro" to revert, or "gpt56" once AA-351's access gate clears.
-judge_model = "gpt41"
-
 # Lambda plaintext runtime config — placeholders, enter real values by hand
 # (do NOT copy account-1 values across).
 database_url        = "postgresql://REPLACE_ME:REPLACE_ME@REPLACE_ME:5432/aa_cis_dev?sslmode=require"
