@@ -147,7 +147,6 @@ module "ecs" {
   secret_jwt_arn        = var.secret_jwt_arn
   secret_dataforseo_arn = module.secrets.dataforseo_secret_arn
   bronze_bucket_name    = module.s3.bronze_bucket_name
-  judge_model           = var.judge_model
 
   step_functions_arn = local.sfn_pipeline_arn
   sf_batch_threshold = 15
