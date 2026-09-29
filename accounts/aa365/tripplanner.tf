@@ -111,6 +111,28 @@ resource "aws_secretsmanager_secret_version" "tripplanner_api_key" {
 }
 
 # -----------------------------------------------------------------------------
+# AA-675: Mapbox geocoding token for the assembly Lambda's tour-day extraction
+# (backend/extraction/lambda_entry.py geocodes each overnight place into
+# shared.destinations). Placeholder value; the real token is set out-of-band
+# (put-secret-value) and ignore_changes keeps Terraform from reverting it.
+# The app reads it by ARN (MAPBOX_GEOCODING_TOKEN_ARN), never as a plain env var.
+# -----------------------------------------------------------------------------
+resource "aws_secretsmanager_secret" "tripplanner_mapbox" {
+  name                    = "tripplanner/${var.environment}/mapbox-geocoding-token"
+  description             = "AA-TripPlanner Mapbox geocoding token (tour-day extraction, AA-675)"
+  recovery_window_in_days = var.environment == "dev" ? 0 : 30
+  tags                    = local.tp_tags
+}
+
+resource "aws_secretsmanager_secret_version" "tripplanner_mapbox" {
+  secret_id     = aws_secretsmanager_secret.tripplanner_mapbox.id
+  secret_string = "REPLACE_ME"
+  lifecycle {
+    ignore_changes = [secret_string]
+  }
+}
+
+# -----------------------------------------------------------------------------
 # Lambda deployment artifacts — S3, with a clean split of responsibility:
 #
 #   Terraform (this file, Infra repo) OWNS the artifacts bucket and seeds a
@@ -233,6 +255,12 @@ resource "aws_iam_role_policy" "tripplanner_lambda_permissions" {
         Resource = [aws_secretsmanager_secret.tripplanner_db.arn]
       },
       {
+        Sid      = "ReadMapboxSecret"
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = [aws_secretsmanager_secret.tripplanner_mapbox.arn]
+      },
+      {
         Sid      = "Logs"
         Effect   = "Allow"
         Action   = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
@@ -328,13 +356,14 @@ resource "aws_lambda_function" "tripplanner_assembly" {
       BEDROCK_ACCT_FALLBACK        = "867490540162"
       # acc3 and acc1 use DIFFERENT invoker role names — pass both (a single
       # name breaks the fallback path).
-      BEDROCK_ROLE_NAME_PRIMARY    = "AA3-Bedrock-Invoker"
-      BEDROCK_ROLE_NAME_FALLBACK   = "AA-Bedrock-Invoker"
-      BEDROCK_EXTERNAL_ID_PRIMARY  = "aa296-satellite-bedrock-acc3"
-      BEDROCK_EXTERNAL_ID_FALLBACK = "aa296-satellite-bedrock"
+      BEDROCK_ROLE_NAME_PRIMARY           = "AA3-Bedrock-Invoker"
+      BEDROCK_ROLE_NAME_FALLBACK          = "AA-Bedrock-Invoker"
+      BEDROCK_EXTERNAL_ID_PRIMARY         = "aa296-satellite-bedrock-acc3"
+      BEDROCK_EXTERNAL_ID_FALLBACK        = "aa296-satellite-bedrock"
       ADVISOR_NOTIFY_EMAIL                = var.tripplanner_advisor_email
       REQUIRE_REGISTRATION_BEFORE_HANDOFF = "true"
       TRIPPLANNER_API_KEY                 = random_password.tripplanner_api_key.result
+      MAPBOX_GEOCODING_TOKEN_ARN          = aws_secretsmanager_secret.tripplanner_mapbox.arn
     }
   }
 
