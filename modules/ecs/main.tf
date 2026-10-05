@@ -260,33 +260,39 @@ resource "aws_ecs_task_definition" "api" {
   task_role_arn            = aws_iam_role.ecs_task.arn
 
   container_definitions = jsonencode([{
-    name      = "api"
-    image     = "${aws_ecr_repository.api.repository_url}:latest"
-    essential = true
+    name         = "api"
+    image        = "${aws_ecr_repository.api.repository_url}:latest"
+    essential    = true
     portMappings = [{ containerPort = 8000, protocol = "tcp" }]
     environment = concat([
-      { name = "PORT",                 value = "8000" },
-      { name = "ENVIRONMENT",          value = var.environment },
-      { name = "PROJECT",              value = var.project },
-      { name = "AWS_REGION",           value = var.aws_region },
-      { name = "STEP_FUNCTIONS_ARN",   value = var.step_functions_arn },
-      { name = "SF_BATCH_THRESHOLD",   value = tostring(var.sf_batch_threshold) },
-      { name = "BRONZE_BUCKET",        value = var.bronze_bucket_name },
+      { name = "PORT", value = "8000" },
+      { name = "ENVIRONMENT", value = var.environment },
+      { name = "PROJECT", value = var.project },
+      { name = "AWS_REGION", value = var.aws_region },
+      { name = "STEP_FUNCTIONS_ARN", value = var.step_functions_arn },
+      { name = "SF_BATCH_THRESHOLD", value = tostring(var.sf_batch_threshold) },
+      { name = "BRONZE_BUCKET", value = var.bronze_bucket_name },
+      # AA-651 — the durable job runner now has its own ECS service (aws_ecs_service.worker
+      # below). Turn OFF the API's in-process worker so jobs are claimed only by the worker
+      # task, never double-claimed. (A single DB-wide advisory lock in queue.claim keeps the
+      # per-kind caps exact even if both ran, but running jobs in the API process is exactly
+      # the event-loop contention AA-651 removes — see api/main.py JOB_WORKER_IN_API.)
+      { name = "JOB_WORKER_IN_API", value = "false" },
       ],
       var.redis_host != null ? [{ name = "REDIS_HOST", value = var.redis_host }] : []
     )
     secrets = [
-      { name = "DATABASE_URL",       valueFrom = var.secret_rds_arn },
-      { name = "OPENAI_API_KEY",     valueFrom = var.secret_openai_arn },
+      { name = "DATABASE_URL", valueFrom = var.secret_rds_arn },
+      { name = "OPENAI_API_KEY", valueFrom = var.secret_openai_arn },
       # { name = "LANGFUSE_SECRET_KEY", valueFrom = var.secret_langfuse_arn },            # AA-23: removed
-      { name = "ADMIN_SECRET",        valueFrom = var.secret_admin_arn },
-      { name = "JWT_SECRET",          valueFrom = var.secret_jwt_arn },
+      { name = "ADMIN_SECRET", valueFrom = var.secret_admin_arn },
+      { name = "JWT_SECRET", valueFrom = var.secret_jwt_arn },
       # { name = "LANGFUSE_PUBLIC_KEY", valueFrom = var.secret_langfuse_public_key_arn }, # AA-23: removed
       # { name = "LANGFUSE_HOST",       valueFrom = var.secret_langfuse_host_arn },        # AA-23: removed
       # ANTHROPIC_API_KEY: removed AA-518 — provisioned but 0 callers in app code (direct-Anthropic
       # calls never shipped; the app only ever calls Claude via the Bedrock satellite pattern,
       # AA-296/397). Secret aa-cis/dev/anthropic-key itself deleted from Secrets Manager same PR.
-      { name = "DATAFORSEO_LOGIN",    valueFrom = "${var.secret_dataforseo_arn}:login::" },
+      { name = "DATAFORSEO_LOGIN", valueFrom = "${var.secret_dataforseo_arn}:login::" },
       { name = "DATAFORSEO_PASSWORD", valueFrom = "${var.secret_dataforseo_arn}:password::" },
     ]
     logConfiguration = {
@@ -409,6 +415,159 @@ resource "aws_appautoscaling_policy" "memory_scale_out" {
   resource_id        = aws_appautoscaling_target.api.resource_id
   scalable_dimension = aws_appautoscaling_target.api.scalable_dimension
   service_namespace  = aws_appautoscaling_target.api.service_namespace
+  target_tracking_scaling_policy_configuration {
+    predefined_metric_specification {
+      predefined_metric_type = "ECSServiceAverageMemoryUtilization"
+    }
+    target_value       = 80.0
+    scale_in_cooldown  = 300
+    scale_out_cooldown = 60
+  }
+}
+
+# ============================================================
+# AA-651 — Worker ECS service (durable job runner, own process)
+# ============================================================
+# Same image, execution role and TASK role as the api (so the Bedrock satellite trust and every
+# secret grant still apply — the issue requires the invoker IAM unchanged). Differences from api:
+#   - command override `python -m worker` (runs the job loop, not uvicorn)
+#   - no portMappings, no healthCheck, no ALB target (not an HTTP service)
+#   - stopTimeout 120s (the Fargate max): a worker drain releases running jobs back to the queue;
+#     give it the full window (api uses 90s because it also fronts the ALB deregistration).
+#   - its own `worker` log-stream prefix.
+# Env/secrets mirror the api so a job handler has the identical runtime (DB, OpenAI, DataForSEO,
+# Bedrock via the task role). JOB_WORKER_IN_API is irrelevant here (that flag only gates the API's
+# in-process loop); the worker process always runs the loop.
+
+resource "aws_ecs_task_definition" "worker" {
+  family                   = "${local.name_prefix}-worker"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = var.worker_task_cpu
+  memory                   = var.worker_task_memory
+  execution_role_arn       = aws_iam_role.ecs_execution.arn
+  task_role_arn            = aws_iam_role.ecs_task.arn
+
+  container_definitions = jsonencode([{
+    name      = "worker"
+    image     = "${aws_ecr_repository.api.repository_url}:latest"
+    essential = true
+    command   = ["python", "-m", "worker"]
+    environment = concat([
+      { name = "ENVIRONMENT", value = var.environment },
+      { name = "PROJECT", value = var.project },
+      { name = "AWS_REGION", value = var.aws_region },
+      { name = "STEP_FUNCTIONS_ARN", value = var.step_functions_arn },
+      { name = "SF_BATCH_THRESHOLD", value = tostring(var.sf_batch_threshold) },
+      { name = "BRONZE_BUCKET", value = var.bronze_bucket_name },
+      ],
+      var.redis_host != null ? [{ name = "REDIS_HOST", value = var.redis_host }] : []
+    )
+    secrets = [
+      { name = "DATABASE_URL", valueFrom = var.secret_rds_arn },
+      { name = "OPENAI_API_KEY", valueFrom = var.secret_openai_arn },
+      { name = "ADMIN_SECRET", valueFrom = var.secret_admin_arn },
+      { name = "JWT_SECRET", valueFrom = var.secret_jwt_arn },
+      { name = "DATAFORSEO_LOGIN", valueFrom = "${var.secret_dataforseo_arn}:login::" },
+      { name = "DATAFORSEO_PASSWORD", valueFrom = "${var.secret_dataforseo_arn}:password::" },
+    ]
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        "awslogs-group"         = aws_cloudwatch_log_group.ecs.name
+        "awslogs-region"        = var.aws_region
+        "awslogs-stream-prefix" = "worker"
+      }
+    }
+    # The worker drains by releasing running jobs back to the queue on SIGTERM (shared.jobs.worker
+    # shutdown). 120s = Fargate max, comfortably over the loop's grace_seconds (20s) + release.
+    stopTimeout = 120
+  }])
+
+  tags = { Name = "${local.name_prefix}-worker-task" }
+}
+
+resource "aws_ecs_service" "worker" {
+  name            = "${local.name_prefix}-worker"
+  cluster         = aws_ecs_cluster.main.id
+  task_definition = aws_ecs_task_definition.worker.arn
+  desired_count   = var.worker_desired_count
+
+  # Same Spot-weighted strategy as the api: the job runner tolerates interruption (a reaped job is
+  # re-queued, S201), so running mostly on Spot is both safe and ~70% cheaper.
+  capacity_provider_strategy {
+    capacity_provider = "FARGATE"
+    weight            = 1
+    base              = 1
+  }
+  capacity_provider_strategy {
+    capacity_provider = "FARGATE_SPOT"
+    weight            = 3
+    base              = 0
+  }
+
+  deployment_minimum_healthy_percent = 50
+  deployment_maximum_percent         = 200
+
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
+  }
+
+  network_configuration {
+    subnets          = var.private_subnet_ids
+    security_groups  = [var.sg_app_id]
+    assign_public_ip = false
+  }
+
+  # No load_balancer block — the worker is not an HTTP service.
+
+  enable_execute_command = true
+
+  # The App deploy workflow registers a new task def (new image) and points the service at it on
+  # every push, so Terraform must not fight it on task_definition; desired_count is autoscaled.
+  lifecycle {
+    ignore_changes = [desired_count, task_definition]
+  }
+
+  depends_on = [aws_iam_role_policy_attachment.ecs_execution]
+
+  tags = { Name = "${local.name_prefix}-worker-service" }
+}
+
+# Autoscale the worker on CPU/memory, same shape as the api. min = desired, max = worker_max_count
+# (default 3). Jobs piling up push CPU over target → ECS adds a worker task (each one its own 4
+# slots); the per-kind DB-wide caps still bound real concurrency (a3_atomize stays 1).
+resource "aws_appautoscaling_target" "worker" {
+  max_capacity       = var.worker_max_count
+  min_capacity       = var.worker_desired_count
+  resource_id        = "service/${aws_ecs_cluster.main.name}/${aws_ecs_service.worker.name}"
+  scalable_dimension = "ecs:service:DesiredCount"
+  service_namespace  = "ecs"
+}
+
+resource "aws_appautoscaling_policy" "worker_cpu_scale_out" {
+  name               = "${local.name_prefix}-worker-cpu-scale-out"
+  policy_type        = "TargetTrackingScaling"
+  resource_id        = aws_appautoscaling_target.worker.resource_id
+  scalable_dimension = aws_appautoscaling_target.worker.scalable_dimension
+  service_namespace  = aws_appautoscaling_target.worker.service_namespace
+  target_tracking_scaling_policy_configuration {
+    predefined_metric_specification {
+      predefined_metric_type = "ECSServiceAverageCPUUtilization"
+    }
+    target_value       = 70.0
+    scale_in_cooldown  = 300
+    scale_out_cooldown = 60
+  }
+}
+
+resource "aws_appautoscaling_policy" "worker_memory_scale_out" {
+  name               = "${local.name_prefix}-worker-memory-scale-out"
+  policy_type        = "TargetTrackingScaling"
+  resource_id        = aws_appautoscaling_target.worker.resource_id
+  scalable_dimension = aws_appautoscaling_target.worker.scalable_dimension
+  service_namespace  = aws_appautoscaling_target.worker.service_namespace
   target_tracking_scaling_policy_configuration {
     predefined_metric_specification {
       predefined_metric_type = "ECSServiceAverageMemoryUtilization"

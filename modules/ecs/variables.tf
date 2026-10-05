@@ -118,3 +118,31 @@ variable "bronze_bucket_name" {
   description = "S3 bronze bucket name for presigned upload URLs (admin_pipeline.py BRONZE_BUCKET env var)"
   type        = string
 }
+
+# ── AA-651 — worker ECS service sizing ────────────────────────
+# The job runner is I/O-bound (it mostly waits on Bedrock/TypeSafe/DataForSEO), so it needs far
+# less CPU than its wall-clock time suggests. 512/1024 matches the api task, which today also
+# carries the in-process worker, so this is not a reduction in headroom.
+variable "worker_task_cpu" {
+  description = "AA-651 — Fargate CPU units for the worker task (I/O-bound job runner)"
+  type        = number
+  default     = 512
+}
+
+variable "worker_task_memory" {
+  description = "AA-651 — Fargate memory (MiB) for the worker task"
+  type        = number
+  default     = 1024
+}
+
+variable "worker_desired_count" {
+  description = "AA-651 — baseline worker task count (autoscaling min)"
+  type        = number
+  default     = 1
+}
+
+variable "worker_max_count" {
+  description = "AA-651 — autoscaling max worker task count"
+  type        = number
+  default     = 3
+}
