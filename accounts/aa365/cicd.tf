@@ -122,9 +122,25 @@ resource "aws_iam_role_policy" "cicd_inline" {
         Resource = "*"
       },
       {
-        Sid      = "AutoscalingDescribeList"
-        Effect   = "Allow"
-        Action   = ["application-autoscaling:Describe*", "application-autoscaling:List*"]
+        # AA-651 — the worker ECS service's autoscaling target+policies (modules/ecs) are now
+        # Terraform-managed, so CI needs the write verbs too, not just Describe/List. The api's
+        # scalable target predates this and was registered out-of-band (admin), which is why CI
+        # never needed these before. RegisterScalableTarget tags the target, so TagResource is
+        # required (that exact action is what the first apply hit: AccessDeniedException on
+        # application-autoscaling:TagResource). All application-autoscaling actions are IAM-global
+        # (no resource-level ARN scoping), so Resource must be "*".
+        Sid    = "AutoscalingManage"
+        Effect = "Allow"
+        Action = [
+          "application-autoscaling:Describe*",
+          "application-autoscaling:List*",
+          "application-autoscaling:RegisterScalableTarget",
+          "application-autoscaling:DeregisterScalableTarget",
+          "application-autoscaling:PutScalingPolicy",
+          "application-autoscaling:DeleteScalingPolicy",
+          "application-autoscaling:TagResource",
+          "application-autoscaling:UntagResource",
+        ]
         Resource = "*"
       },
       {
