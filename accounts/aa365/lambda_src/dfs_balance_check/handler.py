@@ -1,9 +1,21 @@
-"""AA-627 — daily DataForSEO balance-check trigger.
+"""AA-627 + AA-720 — daily ops-probe trigger.
 
-EventBridge Scheduler (once/day) -> this Lambda -> POST /admin/dfs-balance/check with the
-X-Admin-Secret header. The backend reads the FREE DFS balance, stores a snapshot, and raises a
-low-balance notification if it is below the threshold. This Lambda is a thin trigger only: it
-holds no DataForSEO credentials (the ECS backend has those) and no DB access.
+EventBridge Scheduler (once/day) -> this Lambda -> a short list of secret-gated admin POSTs. Each
+backend endpoint does its own work (read a balance, probe a vendor, sweep a log) and raises its own
+throttled bell; this Lambda is a thin trigger only — no vendor credentials, no DB.
+
+Paths called each run (order matters only for logging; each is independent — one failing path does
+NOT stop the others, and a non-2xx is logged, not raised, so one flaky endpoint can't suppress the
+rest or spam Scheduler retries):
+  AA-627  POST /admin/dfs-balance/check — read FREE DFS balance, snapshot, low-balance bell.
+  AA-720  POST /admin/jev-canary/check  — one real Jev decide-endpoint probe; 402 -> credit bell
+          + breaker trip, even on a zero-traffic day.
+  AA-720  POST /admin/jev/402-sweep     — count decision_log 402s in the last 24h; bell if any.
+
+Kept as ONE Lambda (not one per concern): all three are the same "once-a-day, in-VPC, admin-secret
+POST" shape, so adding a path is cheaper than a new function + role + schedule. The function name
+stays dfs-balance-check (renaming the IAM role would destroy+recreate it, a brief permission gap —
+S200). History: AA-627 shipped the DFS path; AA-720 added the two Jev paths.
 
 Env:
   API_BASE_URL  — e.g. https://api-cis.lumiguides.it.com (no trailing slash needed)
@@ -21,9 +33,18 @@ logger.setLevel(logging.INFO)
 _API = os.environ["API_BASE_URL"].rstrip("/")
 _SECRET = os.environ.get("ADMIN_SECRET", "")
 
+# Each run POSTs these in order. Independent: a failure in one is logged and the rest still run.
+_PATHS = (
+    "/admin/dfs-balance/check",   # AA-627
+    "/admin/jev-canary/check",    # AA-720
+    "/admin/jev/402-sweep",       # AA-720
+)
 
-def handler(event, context):
-    url = f"{_API}/admin/dfs-balance/check"
+
+def _post(path):
+    """POST one admin path. Returns (ok, status, body_snippet). Never raises — a single flaky
+    endpoint must not stop the other daily probes or trigger Scheduler retries for the whole run."""
+    url = f"{_API}{path}"
     req = urllib.request.Request(
         url,
         data=b"{}",
@@ -32,14 +53,27 @@ def handler(event, context):
     )
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
-            body = resp.read().decode()
-            logger.info("dfs_balance_check ok: %s", body[:300])
-            return {"statusCode": 200, "body": body}
+            body = resp.read().decode()[:300]
+            logger.info("ops_probe ok path=%s body=%s", path, body)
+            return True, resp.status, body
     except urllib.error.HTTPError as exc:
-        err = exc.read().decode()[:300]
-        logger.error("dfs_balance_check http_error=%s body=%s", exc.code, err)
-        # Re-raise so the Scheduler retry policy kicks in on a real backend failure.
-        raise
-    except Exception as exc:
-        logger.error("dfs_balance_check exception: %s", exc)
-        raise
+        body = exc.read().decode()[:300]
+        logger.error("ops_probe http_error path=%s status=%s body=%s", path, exc.code, body)
+        return False, exc.code, body
+    except Exception as exc:                       # timeout / DNS / connection
+        logger.error("ops_probe exception path=%s error=%s", path, exc)
+        return False, None, str(exc)[:300]
+
+
+def handler(event, context):
+    results = {}
+    any_ok = False
+    for path in _PATHS:
+        ok, status, body = _post(path)
+        results[path] = {"ok": ok, "status": status}
+        any_ok = any_ok or ok
+    # 200 as long as at least one probe reached the backend; the per-path status is in the body.
+    # Each endpoint already surfaces its own problem via a throttled bell, so we do not raise here
+    # (raising would retry ALL paths, including ones that succeeded).
+    status_code = 200 if any_ok else 502
+    return {"statusCode": status_code, "body": json.dumps(results)}
