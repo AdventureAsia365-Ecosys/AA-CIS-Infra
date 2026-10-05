@@ -1,9 +1,16 @@
 # =============================================================================
-# AA-627 — DataForSEO balance daily-check trigger
-# EventBridge Scheduler (once/day) -> Lambda -> POST /admin/dfs-balance/check
-# (X-Admin-Secret). The backend reads the FREE DFS balance, stores a snapshot,
-# and raises a low-balance notification below the threshold. This Lambda is a
-# thin trigger: no DFS creds, no DB — only ADMIN_SECRET + the API URL.
+# AA-627 + AA-720 — daily ops-probe trigger (one Lambda, several admin POSTs)
+# EventBridge Scheduler (once/day) -> Lambda -> secret-gated admin POSTs
+# (X-Admin-Secret). The Lambda is a thin trigger only (no vendor creds, no DB);
+# each backend endpoint does its own work and raises its own throttled bell.
+# Paths (see lambda_src/dfs_balance_check/handler.py _PATHS):
+#   AA-627  /admin/dfs-balance/check — FREE DFS balance snapshot + low-balance bell.
+#   AA-720  /admin/jev-canary/check  — one real Jev probe; 402 -> credit bell + breaker.
+#   AA-720  /admin/jev/402-sweep     — count decision_log 402s in 24h; bell if any.
+# Kept as ONE function (name unchanged: renaming the IAM role would destroy+create
+# it, a permission gap — S200). AA-720 only widened the handler's _PATHS; no new
+# AWS resource, role or schedule — the archive_file re-zips on the handler change
+# and updates the existing Lambda in place.
 #
 # Self-contained feature file (same pattern as tripplanner.tf). Zero-dependency
 # handler (stdlib urllib only) packaged inline via archive_file — no dist zip to
