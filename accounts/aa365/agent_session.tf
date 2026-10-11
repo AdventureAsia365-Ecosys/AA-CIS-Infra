@@ -50,8 +50,9 @@ resource "aws_iam_role" "agent_session" {
   max_session_duration = 28800 # 8h, same as the admin session it replaces
 
   # default_tags make CreateRole call iam:TagRole; the CI role gets that permission for this
-  # role name in cicd.tf (AgentSessionRoleTagging). Make sure that lands first.
-  depends_on = [aws_iam_role_policy.cicd_inline]
+  # role name in cicd.tf (AgentSessionRoleTagging). Wait for it to propagate, same as the
+  # TripPlanner roles.
+  depends_on = [time_sleep.wait_for_iam_propagation]
 }
 
 data "aws_iam_policy_document" "agent_session" {
