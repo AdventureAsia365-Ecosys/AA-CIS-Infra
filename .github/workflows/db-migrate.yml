@@ -1,0 +1,122 @@
+name: DB Migrate (shared RDS)
+# Applies ONE reviewed migration from db/migrations/<owner>/ to the shared acc2 RDS.
+# RDS is VPC-private, so the SQL runs in a one-off ECS Fargate task started from the CIS api task
+# definition (same subnets/SG as the service), with the task's own DATABASE_URL secret. The
+# runner script and the SQL reach the task through short-lived presigned S3 URLs; the task's exit
+# code is the job result and its log is printed here.
+#
+# Flow: migration PR merged to main (human-approved) → run this with mode=check → mode=apply.
+# Re-running apply is a no-op once the version is in shared.schema_versions.
+on:
+  workflow_dispatch:
+    inputs:
+      migration:
+        description: "Path under db/migrations/, e.g. cis/215_publish_log_idempotency.sql"
+        required: true
+        type: string
+      mode:
+        description: "check = report only; apply = run the file"
+        required: true
+        type: choice
+        options: [check, apply]
+        default: check
+
+concurrency:
+  group: db-migrate
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  migrate:
+    name: Migrate (${{ inputs.mode }} ${{ inputs.migration }})
+    runs-on: ubuntu-latest
+    environment: prod
+    if: github.ref == 'refs/heads/main'
+    env:
+      AWS_REGION: us-west-1
+      CLUSTER: aa-cis-dev-cluster
+      SERVICE: aa-cis-dev-api
+      BUCKET: aa-cis-bronze-005097885195
+      LOG_GROUP: /ecs/aa-cis-dev
+      MIGRATION: ${{ inputs.migration }}
+      MODE: ${{ inputs.mode }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Validate input
+        id: file
+        run: |
+          if ! [[ "$MIGRATION" =~ ^[a-z0-9_-]+/([0-9]{3})_[a-z0-9_]+\.sql$ ]]; then
+            echo "::error::migration must look like cis/215_name.sql"; exit 1
+          fi
+          test -f "db/migrations/$MIGRATION" || { echo "::error::db/migrations/$MIGRATION not found on main"; exit 1; }
+          echo "version=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(sha256sum "db/migrations/$MIGRATION" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "### $MODE \`$MIGRATION\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-west-1
+
+      # Presigned URLs (15 min) are created and used in this one step — a masked value in a
+      # step output can be dropped by Actions, so they are never passed between steps.
+      - name: Upload runner + SQL, run one-off ECS task
+        id: task
+        env:
+          VERSION: ${{ steps.file.outputs.version }}
+          SHA256: ${{ steps.file.outputs.sha256 }}
+        run: |
+          PREFIX="db-migrate/${{ github.run_id }}"
+          echo "prefix=$PREFIX" >> "$GITHUB_OUTPUT"
+          aws s3 cp db/run_migration.py "s3://$BUCKET/$PREFIX/run_migration.py" --only-show-errors
+          aws s3 cp "db/migrations/$MIGRATION" "s3://$BUCKET/$PREFIX/migration.sql" --only-show-errors
+          RUNNER_URL=$(aws s3 presign "s3://$BUCKET/$PREFIX/run_migration.py" --expires-in 900)
+          SQL_URL=$(aws s3 presign "s3://$BUCKET/$PREFIX/migration.sql" --expires-in 900)
+          echo "::add-mask::$RUNNER_URL"
+          echo "::add-mask::$SQL_URL"
+
+          SVC=$(aws ecs describe-services --cluster "$CLUSTER" --services "$SERVICE" --output json)
+          TASK_DEF=$(jq -r '.services[0].taskDefinition' <<<"$SVC")
+          NET=$(jq -c '.services[0].networkConfiguration' <<<"$SVC")
+          echo "task definition: $TASK_DEF"
+          OVERRIDES=$(jq -nc \
+            --arg runner "$RUNNER_URL" --arg sql "$SQL_URL" --arg file "$MIGRATION" \
+            --arg version "$VERSION" --arg sha "$SHA256" --arg mode "$MODE" \
+            '{containerOverrides: [{name: "api",
+              command: ["python3", "-c", "import os,urllib.request;exec(urllib.request.urlopen(os.environ[\"RUNNER_URL\"],timeout=30).read())"],
+              environment: [
+                {name: "RUNNER_URL", value: $runner}, {name: "MIGRATION_URL", value: $sql},
+                {name: "MIGRATION_FILE", value: $file}, {name: "MIGRATION_VERSION", value: $version},
+                {name: "MIGRATION_SHA256", value: $sha}, {name: "MIGRATION_MODE", value: $mode},
+                {name: "JOB_WORKER_IN_API", value: "false"}]}]}')
+          TASK_ARN=$(aws ecs run-task --cluster "$CLUSTER" --task-definition "$TASK_DEF" \
+            --launch-type FARGATE --network-configuration "$NET" --overrides "$OVERRIDES" \
+            --started-by "gh-db-migrate-${{ github.run_id }}" \
+            --query 'tasks[0].taskArn' --output text)
+          [ -n "$TASK_ARN" ] && [ "$TASK_ARN" != "None" ] || { echo "::error::run-task returned no task"; exit 1; }
+          echo "task: $TASK_ARN"
+          echo "arn=$TASK_ARN" >> "$GITHUB_OUTPUT"
+          aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$TASK_ARN"
+
+      - name: Task log + result
+        if: always() && steps.task.outputs.arn != ''
+        env:
+          TASK_ARN: ${{ steps.task.outputs.arn }}
+        run: |
+          TASK_ID="${TASK_ARN##*/}"
+          aws logs get-log-events --log-group-name "$LOG_GROUP" --log-stream-name "api/api/$TASK_ID" \
+            --start-from-head --query 'events[].message' --output text | tr '\t' '\n' | tee task.log || true
+          grep '^MIGRATE' task.log >> "$GITHUB_STEP_SUMMARY" || true
+          DESC=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$TASK_ARN" --output json)
+          EXIT=$(jq -r '.tasks[0].containers[] | select(.name=="api") | .exitCode' <<<"$DESC")
+          echo "exit code: $EXIT  stopped: $(jq -r '.tasks[0].stoppedReason' <<<"$DESC")"
+          [ "$EXIT" = "0" ] || { echo "::error::migration task exited with $EXIT"; exit 1; }
+
+      - name: Remove S3 objects
+        if: always() && steps.task.outputs.prefix != ''
+        run: aws s3 rm "s3://$BUCKET/${{ steps.task.outputs.prefix }}/" --recursive --only-show-errors
