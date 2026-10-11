@@ -24,16 +24,6 @@ variable "tags" {
   default     = {}
 }
 
-variable "authorizer_lambda_invoke_arn" {
-  description = "Invoke ARN of the tenant key authorizer Lambda"
-  type        = string
-}
-
-variable "authorizer_lambda_name" {
-  description = "Function name of the tenant key authorizer Lambda"
-  type        = string
-}
-
 variable "alb_dns_name" {
   description = "DNS name of the internet-facing ALB"
   type        = string

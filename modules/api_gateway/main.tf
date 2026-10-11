@@ -1,6 +1,7 @@
 # =============================================================================
 # AA-CIS API Gateway Module — AA-13
-# REST API + TOKEN authorizer scoped to /v1/* only
+# REST API; every route is NONE at the gateway (FastAPI checks JWT / admin secret). AA-750
+# removed the old TOKEN authorizer.
 # All other routes (admin, content, docs, auth, health) use NONE — FastAPI JWT.
 # =============================================================================
 
@@ -13,15 +14,8 @@ resource "aws_api_gateway_rest_api" "this" {
   tags = var.tags
 }
 
-# Lambda Authorizer — validates X-API-Key against shared.tenants.api_key_hash
-resource "aws_api_gateway_authorizer" "tenant_key" {
-  name                             = "tenant-key-authorizer"
-  rest_api_id                      = aws_api_gateway_rest_api.this.id
-  type                             = "TOKEN"
-  identity_source                  = "method.request.header.X-API-Key"
-  authorizer_uri                   = var.authorizer_lambda_invoke_arn
-  authorizer_result_ttl_in_seconds = 300
-}
+# AA-750: the tenant-key TOKEN authorizer (X-API-Key) was removed with its Lambda. No method had
+# used it since AA-432 (/v1/* is NONE; JWT is checked in FastAPI).
 
 # Root (/) — NONE auth, passes through to ALB root
 resource "aws_api_gateway_method" "root" {
@@ -411,7 +405,6 @@ resource "aws_api_gateway_deployment" "this" {
       # NOT force a new deployment on its own, leaving the stage silently pinned to the old
       # snapshot (still 29000ms) even after `terraform apply` "succeeds". Added explicitly.
       tostring(aws_api_gateway_integration.v1.timeout_milliseconds),
-      aws_api_gateway_authorizer.tenant_key.id,
       aws_api_gateway_method.v1_any.authorization,
       coalesce(aws_api_gateway_method.v1_any.authorizer_id, "none"),
       aws_api_gateway_method.admin_any.authorization,
@@ -529,16 +522,4 @@ resource "aws_api_gateway_base_path_mapping" "this" {
   api_id      = aws_api_gateway_rest_api.this.id
   stage_name  = aws_api_gateway_stage.dev.stage_name
   domain_name = aws_api_gateway_domain_name.api_cis.domain_name
-}
-
-# =============================================================================
-# Lambda Permission — allow API Gateway to invoke the authorizer
-# =============================================================================
-
-resource "aws_lambda_permission" "api_gateway_authorizer" {
-  statement_id  = "AllowAPIGatewayInvoke"
-  action        = "lambda:InvokeFunction"
-  function_name = var.authorizer_lambda_name
-  principal     = "apigateway.amazonaws.com"
-  source_arn    = "${aws_api_gateway_rest_api.this.execution_arn}/*/*"
 }
