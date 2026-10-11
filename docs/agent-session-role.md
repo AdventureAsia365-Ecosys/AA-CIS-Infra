@@ -55,3 +55,34 @@ aws s3 ls s3://aa-cis-bronze-005097885195/scripts/ --profile aa365-agent  # work
 ```
 
 Then run one ECS exec script end to end (upload → presign → execute-command → download).
+
+## Caller must be allowed to assume the role (one-time, Nghiệp applies)
+
+The role trusts `arn:aws:iam::005097885195:root` + MFA. With a `:root` trust principal, AWS also
+requires the **caller's own identity policy** to grant `sts:AssumeRole` on the role ARN — a `:root`
+trust alone is not sufficient (verified S226/S227: assume from `user/nghiep-admin` returned
+`AccessDenied`; `nghiep-admin` has only AWS-managed ReadOnly policies, none grant `sts:AssumeRole`).
+
+`nghiep-admin` is a hand-created user, **not** managed by this Terraform state, so attach the grant
+directly (do not import the user into state). Policy document: `docs/agent-session-caller-assumerole.json`.
+
+Nghiệp runs (MFA'd `aa365-admin`), one time:
+
+```bash
+aws iam put-user-policy \
+  --user-name nghiep-admin \
+  --policy-name assume-agent-session \
+  --policy-document file://docs/agent-session-caller-assumerole.json \
+  --profile aa365-admin
+```
+
+Verify (should now succeed instead of AccessDenied):
+
+```bash
+aws sts assume-role \
+  --role-arn arn:aws:iam::005097885195:role/aa-cis-dev-agent-session \
+  --role-session-name probe --profile aa365-admin
+```
+
+After that, the agent `~/.aws/config` profile `aa365-agent` (above) works and AA-730 can be verified
+with the Done-when checks.
