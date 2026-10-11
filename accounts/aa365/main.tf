@@ -67,13 +67,6 @@ module "s3" {
   tags              = local.common_tags
 }
 
-module "sqs" {
-  source = "../../modules/sqs_sns"
-
-  project     = var.project
-  environment = var.environment
-}
-
 module "secrets" {
   source = "../../modules/secrets"
 
@@ -158,64 +151,6 @@ module "ecs" {
   depends_on = [module.vpc, module.alb]
 }
 
-module "lambda" {
-  source = "../../modules/lambda"
-
-  project     = var.project
-  environment = var.environment
-  aws_region  = var.aws_region
-  account_id  = var.account_id
-
-  private_subnet_ids = module.vpc.private_subnet_ids
-  sg_app_id          = module.vpc.sg_app_id
-
-  bronze_bucket_arn  = module.s3.bronze_bucket_arn
-  bronze_bucket_name = module.s3.bronze_bucket_name
-  gold_bucket_arn    = module.s3.gold_bucket_arn
-  gold_bucket_name   = module.s3.gold_bucket_name
-
-  secret_rds_arn    = module.secrets.rds_secret_arn
-  secret_openai_arn = var.secret_openai_arn
-
-  step_functions_arn      = local.sfn_pipeline_arn
-  ecs_cluster_arn         = local.ecs_cluster_arn
-  ecs_task_definition_arn = local.ecs_api_task_def_arn
-  ecs_container_name      = "api"
-
-  database_url        = var.database_url
-  redis_url           = var.redis_url
-  dataforseo_login    = var.dataforseo_login
-  dataforseo_password = var.dataforseo_password
-
-  lambda_zip_dir         = "${path.module}/../../dist/lambdas"
-  api_base_url           = "https://${var.domain_name}"
-  brand_brief_parser_zip = "${path.module}/../../dist/lambdas/brand_brief_parser.zip"
-
-  tags = local.common_tags
-}
-
-module "step_functions" {
-  source = "../../modules/step_functions"
-
-  project     = var.project
-  environment = var.environment
-  aws_region  = var.aws_region
-  account_id  = var.account_id
-
-  seo_lambda_arn        = module.lambda.seo_lambda_arn
-  validation_lambda_arn = module.lambda.validation_lambda_arn
-  export_lambda_arn     = module.lambda.export_lambda_arn
-  content_lambda_arn    = module.lambda.content_lambda_arn
-
-  ecs_cluster_arn         = local.ecs_cluster_arn
-  ecs_task_definition_arn = local.ecs_api_task_def_arn
-  ecs_container_name      = "api"
-  private_subnet_ids      = module.vpc.private_subnet_ids
-  sg_app_id               = module.vpc.sg_app_id
-
-  tags = local.common_tags
-}
-
 module "eventbridge" {
   source = "../../modules/eventbridge"
 
@@ -270,8 +205,6 @@ module "api_gateway" {
   account_id  = var.account_id
   tags        = local.common_tags
 
-  authorizer_lambda_invoke_arn = module.lambda.authorizer_lambda_invoke_arn
-  authorizer_lambda_name       = module.lambda.authorizer_lambda_name
   alb_dns_name                 = module.alb.alb_dns_name
   nlb_dns_name                 = module.alb.nlb_dns_name
   vpc_link_id                  = module.alb.vpc_link_id
@@ -279,5 +212,5 @@ module "api_gateway" {
   domain_name                  = var.domain_name
   enable_execution_logging     = true # AA-272 diagnostic only
 
-  depends_on = [module.lambda, module.alb, aws_api_gateway_account.this]
+  depends_on = [module.alb, aws_api_gateway_account.this]
 }

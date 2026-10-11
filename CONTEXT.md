@@ -71,8 +71,8 @@ accounts/
   acc3-bedrock/   ← acc3 Bedrock invoker role (primary) + Bedrock Batch (batch.tf)
                     + Cost Explorer reader
 modules/          ← reusable building blocks, consumed by the account roots
-  vpc, rds, ecs, alb, api_gateway, s3, secrets, waf, lambda, dynamodb, efs,
-  elasticache, eventbridge, sqs_sns, step_functions, langfuse, monitoring
+  vpc, rds, ecs, alb, api_gateway, s3, secrets, waf, dynamodb, efs,
+  elasticache, eventbridge, langfuse, monitoring
 envs/             ← dev / staging / prod thin roots (historical multi-env scaffold)
 ```
 
@@ -83,12 +83,15 @@ as the live one unless a task says otherwise.
 ### Main stack modules (accounts/aa365)
 
 The aa365 root composes the standard modules into the running CIS platform: **VPC → RDS → ECS +
-ALB + API Gateway → S3 / Secrets / WAF**, plus **Lambda** (CIS functions + the remaining ACP
-`brand_brief_parser`), **EventBridge** (ACPv2 schedules: daily ingest, weekly export, Gate C veto
-window — not the dead AA-180 orchestration), **Step Functions**, and observability
+ALB + API Gateway → S3 / Secrets / WAF**, plus **EventBridge** (ACPv2 schedules: daily ingest,
+weekly export, Gate C veto window — not the dead AA-180 orchestration), the ops-probe Lambda
+(`dfs_balance.tf`) and observability
 (`observability.tf`, `diagnostics.tf`, langfuse/monitoring modules). ECS runs the CIS API service
 (`aa-cis-dev-api` on cluster `aa-cis-dev-cluster`) with `stopTimeout = 90` so in-flight requests
-drain on deploy (AA-310, `modules/ecs/main.tf`).
+drain on deploy (AA-310, `modules/ecs/main.tf`). The old S3 → Lambda → Step Functions pipeline
+(ingestion/seo/validation/content/export Lambdas, the state machine, 6 SQS queues) and the
+`authorizer` / `brand-brief-parser` Lambdas were retired in AA-750; the pipeline runs in the API
+and the durable job worker.
 
 The **DFS balance alert** (AA-627) is a small in-VPC Lambda `aa-cis-dev-dfs-balance-check`
 triggered daily by EventBridge Scheduler. The schedule must live in the `aa-cis-dev-acp` schedule

@@ -57,32 +57,6 @@ resource "aws_sns_topic_subscription" "alerts_email" {
   endpoint  = var.alert_email
 }
 
-# DLQ depth — one alarm per queue (module.sqs manages 6 queues; AA-61's
-# original scope only covered one, but the account-1 definition is gone, so
-# re-created for all 6 rather than guess which one mattered).
-resource "aws_cloudwatch_metric_alarm" "dlq_depth" {
-  for_each = module.sqs.dlq_names
-
-  alarm_name          = "${each.value}-depth"
-  comparison_operator = "GreaterThanThreshold"
-  evaluation_periods  = 1
-  metric_name         = "ApproximateNumberOfMessagesVisible"
-  namespace           = "AWS/SQS"
-  period              = 300
-  statistic           = "Maximum"
-  threshold           = 0
-  alarm_description   = "DLQ ${each.value} has received a failed message — pipeline is dropping work"
-  treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
-
-  dimensions = {
-    QueueName = each.value
-  }
-
-  tags = merge(local.common_tags, { Issue = "AA-284" })
-}
-
 # Proposed addition (per S102 task) — RDS CPU sustained high. Kept in this PR
 # but flagged for Nghiep to confirm/drop; not part of the original AA-61 scope.
 resource "aws_cloudwatch_metric_alarm" "rds_cpu_high" {
