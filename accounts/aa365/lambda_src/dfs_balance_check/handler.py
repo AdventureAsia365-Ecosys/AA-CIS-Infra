@@ -11,6 +11,8 @@ rest or spam Scheduler retries):
   AA-720  POST /admin/jev-canary/check  — one real Jev decide-endpoint probe; 402 -> credit bell
           + breaker trip, even on a zero-traffic day.
   AA-720  POST /admin/jev/402-sweep     — count decision_log 402s in the last 24h; bell if any.
+  AA-727  POST /admin/waves/check       — evaluate open rerun waves; one bell when a wave's jobs
+          finished but some expected tour is not in a terminal state.
 
 Kept as ONE Lambda (not one per concern): all three are the same "once-a-day, in-VPC, admin-secret
 POST" shape, so adding a path is cheaper than a new function + role + schedule. The function name
@@ -38,6 +40,7 @@ _PATHS = (
     "/admin/dfs-balance/check",   # AA-627
     "/admin/jev-canary/check",    # AA-720
     "/admin/jev/402-sweep",       # AA-720
+    "/admin/waves/check",         # AA-727
 )
 
 

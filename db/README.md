@@ -9,6 +9,9 @@ with the task's own `DATABASE_URL`.
 db/migrations/<owner>/<NNN>_<name>.sql   # owner = cis | tripplanner | booking
 ```
 
+Version key registered in `shared.schema_versions`: `cis` → `NNN`, `tripplanner` → `tp-NNN`,
+`booking` → `bk-NNN` (ownership rules: `AA-Ecosys/docs/database/schema-ownership.md`).
+
 ## Flow
 1. PR adds the SQL here (human review = the approval).
 2. Merge to `main`.
@@ -20,7 +23,8 @@ db/migrations/<owner>/<NNN>_<name>.sql   # owner = cis | tripplanner | booking
 ## Rules
 - Every file self-registers: `INSERT INTO shared.schema_versions ... ON CONFLICT DO NOTHING`,
   inside its own `BEGIN; ... COMMIT;`.
-- CIS migrations keep an identical copy in `AA-CIS-App/api/migrations/` (numbering + the
-  integration tests build their schema from it). Apply the migration **before** merging app
+- The owner repo keeps the identical original (`AA-CIS-App/api/migrations/`,
+  `AA-TripPlanner-Web/migrations/`); this folder holds the copy the workflow applies. Infra itself
+  owns no schema. Apply the migration **before** merging app
   code that depends on it.
 - Destructive changes follow the DRY RUN procedure (`skill/aa-cis-schema/references/destructive-ops.md`).
