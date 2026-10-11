@@ -419,3 +419,65 @@ resource "aws_cloudtrail" "main" {
 
   depends_on = [aws_s3_bucket_policy.cloudtrail_logs, time_sleep.wait_for_iam_propagation]
 }
+
+# -----------------------------------------------------------------------------
+# AA-756 — alarm when a cost/decision log row is lost for good.
+# S224 found 347k billed Jev calls (30/09–09/10) missing from llm_call_log /
+# decision_log: the write failed, the app only logged a warning, and nobody
+# noticed until the provider dashboard disagreed with CIS by ~$6. A lost
+# decision_log row also means a lost cache entry, so the next run pays Jev again.
+#
+# AA-CIS-App PR #632 retries a failed pool write once on a fresh connection.
+# These filters match only the FINAL failure events (after that retry):
+#   llm_call_log_write_failed[_sync]  (shared/llm_client/call_log.py)
+#   decision_log_write_failed         (shared/llm_client/decide.py)
+#   llm_shadow_log_write_failed       (shared/llm_client/shadow.py)
+#   dfs_call_log_write_failed[_sync]  (shared/dfs_client/call_log.py)
+# The retried *_pool_write_failed events are deliberately NOT matched (the
+# quoted phrases below are not substrings of them). api and worker both log to
+# /ecs/aa-cis-dev (modules/ecs). Renaming any of these events in the app
+# silently disables its alarm — keep the names in sync.
+# -----------------------------------------------------------------------------
+
+locals {
+  log_write_failed_events = {
+    llm_call_log   = "llm_call_log_write_failed"
+    decision_log   = "decision_log_write_failed"
+    llm_shadow_log = "llm_shadow_log_write_failed"
+    dfs_call_log   = "dfs_call_log_write_failed"
+  }
+}
+
+resource "aws_cloudwatch_log_metric_filter" "log_write_failed" {
+  for_each = local.log_write_failed_events
+
+  name           = "${local.name_prefix}-${each.key}-write-failed"
+  log_group_name = "/ecs/${local.name_prefix}"
+  pattern        = "\"${each.value}\""
+
+  metric_transformation {
+    name      = "${each.key}_write_failed"
+    namespace = "aa-cis/ops"
+    value     = "1"
+    unit      = "Count"
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "log_write_failed" {
+  for_each = local.log_write_failed_events
+
+  alarm_name          = "${local.name_prefix}-${each.key}-write-failed"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = aws_cloudwatch_log_metric_filter.log_write_failed[each.key].metric_transformation[0].name
+  namespace           = "aa-cis/ops"
+  period              = 300
+  statistic           = "Sum"
+  threshold           = 0
+  alarm_description   = "${each.value} logged in /ecs/${local.name_prefix} — a billed call/decision was not recorded (cost under-reported; for decision_log the Jev cache entry is lost too). Check the ECS logs for the error."
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
+
+  tags = merge(local.common_tags, { Issue = "AA-756" })
+}
