@@ -155,6 +155,10 @@ resource "aws_iam_role_policy" "cicd_inline" {
           # place (e.g. the TripPlanner app-deploy OIDC sub fix) — CreateRole
           # only covers the initial trust, not later edits.
           "iam:UpdateAssumeRolePolicy",
+          # AA-750: DeleteRole first lists the role's instance profiles; without this the
+          # provider fails to delete any role (live AccessDenied on aa-cis-dev-sfn-exec /
+          # aa-cis-dev-lambda-exec during the Lambda retirement apply).
+          "iam:ListInstanceProfilesForRole",
         ]
         Resource = "*"
       },
