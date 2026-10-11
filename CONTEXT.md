@@ -143,7 +143,10 @@ makes CI Terraform Plan fail with 403.
 
 - No application code and no content-pipeline logic (that is AA-CIS-App).
 - No application DB schema migrations (`acp_*`, `*_aa_internal`, `tripplanner.*` are owned by the
-  app repos). It owns the RDS instance, not what lives inside it.
+  app repos). It owns the RDS instance, not what lives inside it. It does own the **DB Migrate**
+  workflow (`.github/workflows/db-migrate.yml`): `db/migrations/<owner>/` holds byte-identical copies
+  of a reviewed app migration, applied from `main` by a one-off ECS task (S225). Owners and version
+  keys: `AA-Ecosys/docs/database/schema-ownership.md`.
 - No auto-apply on merge — apply is manual/`workflow_dispatch`, and destructive changes need
   explicit human confirmation.
 - Run Terraform from the WSL path (`/home/nghiep/...`), never a Windows UNC path.
@@ -153,6 +156,7 @@ makes CI Terraform Plan fail with 403.
 - `README.md` (this repo).
 - `docs/ecosystem-architecture.md` (root docs repo) — ecosystem-wide account map, Bedrock
   routing, OIDC design, and the App/Infra ownership split.
+- `docs/database/schema-ownership.md` (root docs repo) — owner repo per schema / `shared.*` table.
 - `accounts/aa365/versions.tf` — the authoritative state backend + provider config.
 - `accounts/aa365/cicd.tf`, `accounts/aa365/tripplanner.tf` — the OIDC deploy roles and their
   corrected trust subjects.
