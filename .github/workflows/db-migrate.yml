@@ -63,26 +63,23 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: us-west-1
 
-      - name: Upload runner + SQL (presigned, 15 min)
-        id: s3
-        run: |
-          PREFIX="db-migrate/${{ github.run_id }}"
-          aws s3 cp db/run_migration.py "s3://$BUCKET/$PREFIX/run_migration.py" --only-show-errors
-          aws s3 cp "db/migrations/$MIGRATION" "s3://$BUCKET/$PREFIX/migration.sql" --only-show-errors
-          echo "prefix=$PREFIX" >> "$GITHUB_OUTPUT"
-          echo "::add-mask::$(aws s3 presign "s3://$BUCKET/$PREFIX/run_migration.py" --expires-in 900)"
-          echo "::add-mask::$(aws s3 presign "s3://$BUCKET/$PREFIX/migration.sql" --expires-in 900)"
-          echo "runner_url=$(aws s3 presign "s3://$BUCKET/$PREFIX/run_migration.py" --expires-in 900)" >> "$GITHUB_OUTPUT"
-          echo "sql_url=$(aws s3 presign "s3://$BUCKET/$PREFIX/migration.sql" --expires-in 900)" >> "$GITHUB_OUTPUT"
-
-      - name: Run one-off ECS task
+      # Presigned URLs (15 min) are created and used in this one step — a masked value in a
+      # step output can be dropped by Actions, so they are never passed between steps.
+      - name: Upload runner + SQL, run one-off ECS task
         id: task
         env:
-          RUNNER_URL: ${{ steps.s3.outputs.runner_url }}
-          SQL_URL: ${{ steps.s3.outputs.sql_url }}
           VERSION: ${{ steps.file.outputs.version }}
           SHA256: ${{ steps.file.outputs.sha256 }}
         run: |
+          PREFIX="db-migrate/${{ github.run_id }}"
+          echo "prefix=$PREFIX" >> "$GITHUB_OUTPUT"
+          aws s3 cp db/run_migration.py "s3://$BUCKET/$PREFIX/run_migration.py" --only-show-errors
+          aws s3 cp "db/migrations/$MIGRATION" "s3://$BUCKET/$PREFIX/migration.sql" --only-show-errors
+          RUNNER_URL=$(aws s3 presign "s3://$BUCKET/$PREFIX/run_migration.py" --expires-in 900)
+          SQL_URL=$(aws s3 presign "s3://$BUCKET/$PREFIX/migration.sql" --expires-in 900)
+          echo "::add-mask::$RUNNER_URL"
+          echo "::add-mask::$SQL_URL"
+
           SVC=$(aws ecs describe-services --cluster "$CLUSTER" --services "$SERVICE" --output json)
           TASK_DEF=$(jq -r '.services[0].taskDefinition' <<<"$SVC")
           NET=$(jq -c '.services[0].networkConfiguration' <<<"$SVC")
@@ -121,5 +118,5 @@ jobs:
           [ "$EXIT" = "0" ] || { echo "::error::migration task exited with $EXIT"; exit 1; }
 
       - name: Remove S3 objects
-        if: always() && steps.s3.outputs.prefix != ''
-        run: aws s3 rm "s3://$BUCKET/${{ steps.s3.outputs.prefix }}/" --recursive --only-show-errors
+        if: always() && steps.task.outputs.prefix != ''
+        run: aws s3 rm "s3://$BUCKET/${{ steps.task.outputs.prefix }}/" --recursive --only-show-errors
