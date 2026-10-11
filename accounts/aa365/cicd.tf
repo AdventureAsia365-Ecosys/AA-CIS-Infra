@@ -321,6 +321,15 @@ resource "aws_iam_role_policy" "cicd_inline" {
         Resource = "arn:aws:iam::${var.account_id}:role/aa-tripplanner-${var.environment}-*"
       },
       {
+        # AA-730 — the agent-session role (agent_session.tf) is tagged by default_tags, so its
+        # CreateRole calls iam:TagRole. Same gap/precedent as the two statements above; scoped to
+        # that one role name.
+        Sid      = "AgentSessionRoleTagging"
+        Effect   = "Allow"
+        Action   = ["iam:TagRole", "iam:UntagRole"]
+        Resource = "arn:aws:iam::${var.account_id}:role/${local.name_prefix}-agent-session"
+      },
+      {
         # AA-402 — module.eventbridge's custom EventBridge bus
         # (aa-cis-dev-acp-events). No events:* action existed anywhere on
         # this role before (confirmed via live AccessDenied on
