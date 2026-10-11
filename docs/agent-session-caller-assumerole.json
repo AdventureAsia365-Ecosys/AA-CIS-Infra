@@ -1,0 +1,11 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowAssumeAgentSessionRole",
+      "Effect": "Allow",
+      "Action": "sts:AssumeRole",
+      "Resource": "arn:aws:iam::005097885195:role/aa-cis-dev-agent-session"
+    }
+  ]
+}
