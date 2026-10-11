@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       migration:
-        description: "Path under db/migrations/, e.g. cis/215_publish_log_idempotency.sql"
+        description: "Path under db/migrations/, e.g. cis/215_publish_log_idempotency.sql or tripplanner/007_register_versions.sql"
         required: true
         type: string
       mode:
@@ -49,11 +49,16 @@ jobs:
       - name: Validate input
         id: file
         run: |
-          if ! [[ "$MIGRATION" =~ ^[a-z0-9_-]+/([0-9]{3})_[a-z0-9_]+\.sql$ ]]; then
-            echo "::error::migration must look like cis/215_name.sql"; exit 1
+          if ! [[ "$MIGRATION" =~ ^(cis|tripplanner|booking)/([0-9]{3})_[a-z0-9_]+\.sql$ ]]; then
+            echo "::error::migration must look like <cis|tripplanner|booking>/215_name.sql"; exit 1
           fi
           test -f "db/migrations/$MIGRATION" || { echo "::error::db/migrations/$MIGRATION not found on main"; exit 1; }
-          echo "version=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+          # shared.schema_versions key per owner (AA-684, docs/database/schema-ownership.md rule 4):
+          # CIS keeps plain numbers; other owners are prefixed so their 007 cannot collide with CIS 007.
+          case "${BASH_REMATCH[1]}" in
+            cis) PREFIX="" ;; tripplanner) PREFIX="tp-" ;; booking) PREFIX="bk-" ;;
+          esac
+          echo "version=${PREFIX}${BASH_REMATCH[2]}" >> "$GITHUB_OUTPUT"
           echo "sha256=$(sha256sum "db/migrations/$MIGRATION" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
           echo "### $MODE \`$MIGRATION\`" >> "$GITHUB_STEP_SUMMARY"
 
