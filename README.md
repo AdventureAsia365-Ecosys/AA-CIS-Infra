@@ -19,7 +19,7 @@ applies reviewed app migrations to the shared RDS.
 | repo-root `*.tf`, `envs/*` | — | historical, **not live** — do not run Terraform there | — |
 
 ```
-accounts/aa365/   main.tf, cicd.tf, tripplanner.tf, booking.tf, observability.tf, dfs_balance.tf, … (+ lambda_src/)
+accounts/aa365/   main.tf, cicd.tf, tripplanner.tf, booking.tf, observability.tf, observability_ecosys.tf, dfs_balance.tf, … (+ lambda_src/)
 modules/          vpc, rds, ecs, alb, api_gateway, s3, secrets, waf, eventbridge, monitoring, …
 db/               run_migration.py + migrations/<owner>/ copies applied by DB Migrate
 .github/workflows terraform-plan.yml (PR), terraform-apply.yml (manual), db-migrate.yml (manual)

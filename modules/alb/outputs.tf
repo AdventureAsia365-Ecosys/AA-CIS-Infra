@@ -6,6 +6,11 @@ output "alb_arn" {
   value = aws_lb.main.arn
 }
 
+output "alb_arn_suffix" {
+  description = "ALB ARN suffix (app/<name>/<id>) for AWS/ApplicationELB alarm dimensions (S235)"
+  value       = aws_lb.main.arn_suffix
+}
+
 output "alb_subnet_ids" {
   description = "Subnets the ALB is deployed in (AA-272 diagnostic flow logs)"
   value       = aws_lb.main.subnets
