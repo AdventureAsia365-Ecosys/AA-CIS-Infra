@@ -38,11 +38,18 @@
 #     AdminCreateUser without one, account recovery is admin_only, and no client enables
 #     ALLOW_USER_PASSWORD_AUTH / ALLOW_USER_SRP_AUTH. ADR 0006 decision 2 ("EXTERNAL allows
 #     EMAIL_OTP only") is therefore met by procedure, not by pool configuration.
-#   - EXTERNAL clients that offer a social IdP get write access to email / email_verified / name:
-#     Cognito requires the app client to be able to write every mapped attribute. Users still
-#     cannot change them, because no client grants the aws.cognito.signin.user.admin scope, and the
-#     EXTERNAL pre sign-up trigger refuses a native SignUp that sets email_verified. WORKFORCE
-#     clients write `name` only.
+#   - EXTERNAL clients that offer a social IdP get write access to the mapped attributes (email,
+#     name, and email_verified only when Google is on, since Facebook does not map it): Cognito
+#     requires the app client to be able to write every mapped attribute. CAUTION: the
+#     allowed_oauth_scopes below only limit tokens from the OAuth /token endpoint. AWS: "A token
+#     from Amazon Cognito API sign-in only contains the scope aws.cognito.signin.user.admin", and
+#     ALLOW_USER_AUTH lets anyone holding a public client id (booking-customer, tripplanner) sign in
+#     through the API and call UpdateUserAttributes with whatever the client may write. Once
+#     email_verified is client-writable, a traveller may be able to mark an arbitrary email as
+#     verified, which ADR 0006 decision 6 (linking, lead merge) trusts. All social IdP variables
+#     therefore stay empty until that is settled (see identity_external_google_client_id). The
+#     EXTERNAL pre sign-up trigger already refuses a native SignUp that sets email_verified.
+#     WORKFORCE clients write `name` only and are confidential (API sign-in needs the secret).
 #   - Break-glass is restricted to its own client only by procedure: the pre token trigger is a
 #     pure function and cannot know client ids (pool -> trigger -> client would be a Terraform
 #     cycle). It logs every break-glass token issue (alarm below).
@@ -98,7 +105,9 @@ locals {
   id_ext_idps_portal    = concat(["COGNITO"], local.id_ext_google ? ["Google"] : [])
   id_ext_idps_traveller = concat(["COGNITO"], local.id_ext_google ? ["Google"] : [], local.id_facebook ? ["Facebook"] : [])
 
-  id_federated_writes = ["email", "email_verified", "name"]
+  # Mapped attributes must be client-writable. email_verified is mapped by Google only (Facebook
+  # sends none), so it is writable only while the Google IdP exists (see the CAUTION above).
+  id_federated_writes = concat(["email"], local.id_ext_google ? ["email_verified"] : [], ["name"])
 
   # ADR 0006 decisions 2 and 7. Lifetimes: access/id in minutes, refresh in hours. WORKFORCE has
   # no social IdP (staff sign in with an email code), so its clients offer COGNITO only.
@@ -889,7 +898,7 @@ output "identity_idp_redirect_uris" {
 }
 
 output "identity_custom_domain_cloudfront_targets" {
-  description = "CNAME targets for the auth custom domains (set at Namecheap)."
+  description = "CNAME targets for the auth custom domains (records in the lumiguides.it.com DNS zone: Route 53 once the nameservers are switched, S237 D5)."
   value = local.id_custom_domains ? {
     (var.identity_workforce_custom_domain) = aws_cognito_user_pool_domain.workforce_custom[0].cloudfront_distribution
     (var.identity_external_custom_domain)  = aws_cognito_user_pool_domain.external_custom[0].cloudfront_distribution
