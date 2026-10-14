@@ -47,7 +47,7 @@ resource "aws_iam_role" "agent_session" {
   name                 = local.agent_role_name
   description          = "AA-730: agent shells (Kiro / Claude Code) - ECS exec, runner S3 prefix, logs, read-only describe"
   assume_role_policy   = data.aws_iam_policy_document.agent_session_assume.json
-  max_session_duration = 28800 # 8h, same as the admin session it replaces
+  max_session_duration = 43200 # 12h, same as the admin session it replaces (S236)
 
   # default_tags make CreateRole call iam:TagRole; the CI role gets that permission for this
   # role name in cicd.tf (AgentSessionRoleTagging). Wait for it to propagate, same as the
