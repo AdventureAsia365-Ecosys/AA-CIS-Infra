@@ -48,3 +48,6 @@ dataforseo_password = "REPLACE_ME"
 # Not Terraform-managed at all (read at runtime via boto3, see
 # api/main.py — secret name "aa-cis/dev/api-keys"). Created manually
 # (placeholder) — update with a real APIFY_API_TOKEN key before relying on S2.
+
+# AA-Booking (S235): immutable GitHub repo id — pins the aa-booking-dev-app-deploy OIDC trust to this repo.
+booking_github_repo_id = "1418188499"
