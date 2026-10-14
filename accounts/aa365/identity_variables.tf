@@ -97,7 +97,7 @@ variable "identity_ses_configuration_set_external" {
 
 # ── EXTERNAL Google / Facebook IdPs (created only when both id and secret ARN are set) ─
 variable "identity_external_google_client_id" {
-  description = "Google OAuth client id for EXTERNAL (External consent screen, scopes openid email profile). Empty = no Google IdP on EXTERNAL."
+  description = "Google OAuth client id for EXTERNAL (External consent screen, scopes openid email profile). Empty = no Google IdP on EXTERNAL. Setting it makes email_verified writable by the EXTERNAL clients (Cognito requires mapped attributes to be writable), and API sign-in tokens carry aws.cognito.signin.user.admin whatever the OAuth scopes say. Before setting it, prove that a traveller cannot set email_verified=true with UpdateUserAttributes, or move social sign-in to clients without ALLOW_USER_AUTH (AA-703 review S237)."
   type        = string
   default     = ""
 }
