@@ -27,9 +27,8 @@
 # step 4 puts the workload boundary on the CI-managed roles, so the text below describes the
 # state before it): every other aa-*-dev-* role (ECS task/execution, Lambda exec, ...) had no
 # boundary. The apply role may rewrite its inline policy or trust and PassRole it to an ECS task or
-# Lambda it can start,
-# so code running under that role gets whatever IAM rights the apply role wrote into it - including
-# rights the boundary denies the apply role itself. The sts:AssumeRole deny does not help there (no
+# Lambda it can start, so code running under that role gets whatever IAM rights the apply role
+# wrote into it - including rights the boundary denies the apply role itself. The sts:AssumeRole deny does not help there (no
 # AssumeRole call is involved). Phase 3 (var.tf_apply_require_boundary_on_role_policy_writes) after
 # step 4 caps such roles at the workload boundary (no IAM writes).
 #

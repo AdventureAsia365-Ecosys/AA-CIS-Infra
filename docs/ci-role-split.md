@@ -111,6 +111,11 @@ local apply too), plus the plan role's secret list (`local.tf_plan_secret_arns` 
    in the step-3 PR or after it. Only steps 3 + 4 + phase 3 together close the escalation path
    below.
 
+   After step 4 is applied, every **local admin apply** (bootstrap PRs such as the agent-session
+   boundary) must run from a branch that already contains step 4. The admin profile is not bound by
+   `DenyBoundaryRemoval`, so a plan from an older base shows `- permissions_boundary` on these roles
+   and would silently strip them: stop and rebase if the plan shows that.
+
 ## Residual risk until steps 3 + 4 + phase 3
 
 After step 4 every CI-managed workload role carries the workload boundary, so a role the apply
