@@ -19,7 +19,7 @@ applies reviewed app migrations to the shared RDS.
 | repo-root `*.tf`, `envs/*` | — | historical, **not live** — do not run Terraform there | — |
 
 ```
-accounts/aa365/   main.tf, cicd.tf, tripplanner.tf, observability.tf, dfs_balance.tf, … (+ lambda_src/)
+accounts/aa365/   main.tf, cicd.tf, tripplanner.tf, booking.tf, observability.tf, dfs_balance.tf, … (+ lambda_src/)
 modules/          vpc, rds, ecs, alb, api_gateway, s3, secrets, waf, eventbridge, monitoring, …
 db/               run_migration.py + migrations/<owner>/ copies applied by DB Migrate
 .github/workflows terraform-plan.yml (PR), terraform-apply.yml (manual), db-migrate.yml (manual)
@@ -60,7 +60,7 @@ Details: [`db/README.md`](db/README.md).
 
 Names only. GitHub secrets: `AWS_ROLE_ARN` (OIDC role assumed by CI), `AWS_REGION`,
 `TF_STATE_BUCKET`, `TF_VAR_DB_PASSWORD`. Terraform inputs for `accounts/aa365` are in
-`variables.tf` / `tripplanner_variables.tf` and `terraform.tfvars` (no secret values in git —
+`variables.tf` / `tripplanner_variables.tf` / `booking_variables.tf` and `terraform.tfvars` (no secret values in git —
 secrets are referenced by ARN).
 
 ## Rules
