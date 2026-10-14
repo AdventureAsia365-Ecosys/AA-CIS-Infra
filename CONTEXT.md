@@ -101,6 +101,14 @@ drain on deploy (AA-310, `modules/ecs/main.tf`). The old S3 → Lambda → Step 
 `authorizer` / `brand-brief-parser` Lambdas were retired in AA-750; the pipeline runs in the API
 and the durable job worker.
 
+**Edge (S235 Phase 0):** the only way in is API Gateway REST (CIS `4ylo382khg`, Booking
+`9z3xnalp59`) → VPC link → internal NLB → ALB :80. The ALB is still `internet-facing`, but its SG
+admits only :80 from the VPC CIDR (NLB), so it cannot be called directly. The REGIONAL web ACL
+`aa-cis-dev-waf` evaluates CommonRuleSet (COUNT-only until `var.waf_common_rules_count_only = false`)
+→ VpcLinkInternalAllow → RateLimit → GeoBlock; rate and
+geo only bite on REST API stages (`var.waf_protect_rest_api_stages`, needs `apigateway:SetWebACL`
+on the CI role). RDS `aa-cis-dev-db` has deletion protection on.
+
 **AA-Booking** (`booking.tf`, AA-678, root ADR 0004) is a separate app on the same cluster, VPC,
 ALB and RDS: ECS service `aa-booking-dev-api` (created at `desired_count = 0`, scaled by hand,
 `ignore_changes` on count and task definition), ECR `aa-booking-dev-api` (immutable git-SHA tags),
@@ -145,7 +153,9 @@ makes CI Terraform Plan fail with 403.
     (org id `276539096`, repo ids `1212291079` / `1212290412`), context `*`
     (`environment:dev`, `environment:prod`, `pull_request`). See `local.cicd_oidc_subjects`. Before
     AA-678 it trusted every org repo (`repo:AdventureAsia365-Ecosys*/*:*`).
-  - `aa-tripplanner-dev-app-deploy` still uses the name-wildcard form
+  - `aa-tripplanner-dev-app-deploy` trusts one exact subject (S235 Phase 0, `StringEquals`):
+    `repo:AdventureAsia365-Ecosys@276539096/AA-TripPlanner-Web@1365222661:ref:refs/heads/main`
+    (only `deploy-lambdas.yml` on main assumes it). Before S235 it used the name-wildcard form
     `repo:AdventureAsia365-Ecosys*/AA-TripPlanner-Web*:*`.
   - `aa-booking-dev-app-deploy` trusts only AA-Booking, contexts `environment:dev` and
     `ref:refs/heads/main`. Until `booking_github_repo_id` is set it accepts the immutable form with
