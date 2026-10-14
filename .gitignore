@@ -34,3 +34,6 @@ Thumbs.db
 
 # Terraform archive_file outputs (built at plan/apply time)
 accounts/*/lambda_src/*.zip
+
+# Python bytecode (identity trigger tests)
+__pycache__/
