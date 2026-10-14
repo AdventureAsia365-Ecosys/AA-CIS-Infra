@@ -60,7 +60,9 @@ accounts/
   aa365/          ← main stack root (acc2 005097885195, us-west-1) — the big one
     main.tf                       (wires all modules for the dev stack)
     versions.tf                   (providers + S3 state backend)
-    cicd.tf                       (GitHub Actions OIDC deploy roles for the app repos)
+    cicd.tf                       (GitHub Actions OIDC provider + legacy shared CI role aa-cis-dev-role)
+    cicd_split.tf                 (AA-806: aa-cis-dev-app-deploy, aa-cis-infra-tf-plan/-apply,
+                                   permissions boundaries; bootstrap, applied by a human)
     tripplanner.tf                (TripPlanner OIDC deploy role + TripPlanner-specific resources)
     booking.tf                    (AA-Booking ECS service, ECR, ALB rule /booking/*, REST API on the
                                    existing VPC link, OIDC deploy role — AA-678)
@@ -163,6 +165,24 @@ makes CI Terraform Plan fail with 403.
     immutable subject with that id (fail closed). Its policy is scoped to the Booking ECR repo,
     task family `aa-booking-dev-api` and service `aa-booking-dev-api` (it cannot register a CIS
     task-definition revision or update a CIS service).
+- **AA-806 role split** (`cicd_split.tf`, cut-over plan `docs/ci-role-split.md`):
+  `aa-cis-dev-app-deploy` (AA-CIS-App, `environment:dev`, CIS ECR/task families/services only),
+  `aa-cis-infra-tf-plan` (`pull_request`, read only) and `aa-cis-infra-tf-apply`
+  (`environment:prod`, boundary `aa-cis-infra-tf-apply-boundary`). `aa-cis-dev-role` stays until
+  the workflows have switched. Once the apply role is in use, **every new `aws_iam_role` must set
+  `permissions_boundary = aws_iam_policy.workload_boundary.arn`** and keep an `aa-*-dev-*` name, or
+  CI apply is denied. Changes to the bootstrap objects (the three roles, both boundaries, the GitHub
+  OIDC provider, `aa-cis-dev-role`, `aa-cis-dev-agent-session`) are applied locally. Until step 4
+  of the cut-over (boundary on every existing role) the apply role can still escalate by editing
+  an unbounded `aa-*-dev-*` workload role and passing it to a task/Lambda (see the doc).
+- **TripPlanner HTTP API throttling** (AA-806, Dev placeholders): generous stage default 500 rps /
+  burst 1000 **per route** (`default_route_settings`; each route gets its own bucket, it is not one
+  stage-wide cap; must stay generous because the map fetches one tile per 1-degree cell in a single
+  burst). Tight limits only on the LLM-cost routes, each a dedicated route on the same Lambda:
+  `POST /trip/{trip_id}/narrate` 2 rps / burst 5 and `GET /browse/search` 10 rps / burst 20
+  (`tripplanner_variables.tf`). A new LLM-backed path needs its own route + `route_settings`. HTTP APIs
+  cannot carry a WAF web ACL, so this is the only edge cap. WAF count review runbook:
+  `docs/waf-count-review.md`.
 - This repo has **branch protection** (CI Terraform Plan among the required checks). Terraform
   Plan runs on PRs; PRs are merged after CI passes. There is no auto-merge on this repo.
 
