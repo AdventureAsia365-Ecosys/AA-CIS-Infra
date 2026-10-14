@@ -433,11 +433,35 @@ resource "aws_apigatewayv2_route" "tripplanner_assembly" {
   target    = "integrations/${aws_apigatewayv2_integration.tripplanner_assembly.id}"
 }
 
+# AA-806 (from AA-805): narration is the one LLM-backed call (compose/renarrate on the satellite
+# Bedrock roles), so it gets its own route with a lower throttle than the rest of /trip. A specific
+# route wins over the greedy ANY /trip/{proxy+}; both go to the same assembly integration, and the
+# handler routes on requestContext.http.path, which is the same either way.
+resource "aws_apigatewayv2_route" "tripplanner_narrate" {
+  api_id    = aws_apigatewayv2_api.tripplanner.id
+  route_key = "POST /trip/{trip_id}/narrate"
+  target    = "integrations/${aws_apigatewayv2_integration.tripplanner_assembly.id}"
+}
+
 resource "aws_apigatewayv2_stage" "tripplanner" {
   api_id      = aws_apigatewayv2_api.tripplanner.id
   name        = "$default"
   auto_deploy = true
   tags        = local.tp_tags
+
+  # AA-806 (from AA-805): the HTTP API has no auth at the edge and HTTP APIs cannot carry a WAF web
+  # ACL, so stage throttling is the only cap in front of the Lambdas. The limits are shared by every
+  # caller (the Vercel BFF is the only one), not per client. Numbers: tripplanner_variables.tf.
+  default_route_settings {
+    throttling_rate_limit  = var.tripplanner_throttle_rate_limit
+    throttling_burst_limit = var.tripplanner_throttle_burst_limit
+  }
+
+  route_settings {
+    route_key              = aws_apigatewayv2_route.tripplanner_narrate.route_key
+    throttling_rate_limit  = var.tripplanner_narrate_throttle_rate_limit
+    throttling_burst_limit = var.tripplanner_narrate_throttle_burst_limit
+  }
 
   # Creating the stage calls apigateway:TagResource (provider default_tags).
   # That grant was added to the CI/CD role in the same apply, so wait for IAM

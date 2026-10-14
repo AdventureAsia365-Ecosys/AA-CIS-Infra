@@ -60,7 +60,9 @@ accounts/
   aa365/          ← main stack root (acc2 005097885195, us-west-1) — the big one
     main.tf                       (wires all modules for the dev stack)
     versions.tf                   (providers + S3 state backend)
-    cicd.tf                       (GitHub Actions OIDC deploy roles for the app repos)
+    cicd.tf                       (GitHub Actions OIDC provider + legacy shared CI role aa-cis-dev-role)
+    cicd_split.tf                 (AA-806: aa-cis-dev-app-deploy, aa-cis-infra-tf-plan/-apply,
+                                   permissions boundaries; bootstrap, applied by a human)
     tripplanner.tf                (TripPlanner OIDC deploy role + TripPlanner-specific resources)
     booking.tf                    (AA-Booking ECS service, ECR, ALB rule /booking/*, REST API on the
                                    existing VPC link, OIDC deploy role — AA-678)
@@ -163,6 +165,17 @@ makes CI Terraform Plan fail with 403.
     immutable subject with that id (fail closed). Its policy is scoped to the Booking ECR repo,
     task family `aa-booking-dev-api` and service `aa-booking-dev-api` (it cannot register a CIS
     task-definition revision or update a CIS service).
+- **AA-806 role split** (`cicd_split.tf`, cut-over plan `docs/ci-role-split.md`):
+  `aa-cis-dev-app-deploy` (AA-CIS-App, `environment:dev`, CIS ECR/task families/services only),
+  `aa-cis-infra-tf-plan` (`pull_request`, read only) and `aa-cis-infra-tf-apply`
+  (`environment:prod`, boundary `aa-cis-infra-tf-apply-boundary`). `aa-cis-dev-role` stays until
+  the workflows have switched. Once the apply role is in use, **every new `aws_iam_role` must set
+  `permissions_boundary = aws_iam_policy.workload_boundary.arn`** and keep an `aa-*-dev-*` name, or
+  CI apply is denied. Changes to the bootstrap roles/boundaries themselves are applied locally.
+- **TripPlanner HTTP API throttling** (AA-806): stage default 20 rps / burst 40 and a dedicated
+  `POST /trip/{trip_id}/narrate` route at 2 rps / burst 5 (`tripplanner_variables.tf`). HTTP APIs
+  cannot carry a WAF web ACL, so this is the only edge cap. WAF count review runbook:
+  `docs/waf-count-review.md`.
 - This repo has **branch protection** (CI Terraform Plan among the required checks). Terraform
   Plan runs on PRs; PRs are merged after CI passes. There is no auto-merge on this repo.
 
