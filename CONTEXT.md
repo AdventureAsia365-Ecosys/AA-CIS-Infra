@@ -172,9 +172,13 @@ makes CI Terraform Plan fail with 403.
   the workflows have switched. Once the apply role is in use, **every new `aws_iam_role` must set
   `permissions_boundary = aws_iam_policy.workload_boundary.arn`** and keep an `aa-*-dev-*` name, or
   CI apply is denied. Changes to the bootstrap objects (the three roles, both boundaries, the GitHub
-  OIDC provider, `aa-cis-dev-role`, `aa-cis-dev-agent-session`) are applied locally. Until step 4
-  of the cut-over (boundary on every existing role) the apply role can still escalate by editing
-  an unbounded `aa-*-dev-*` workload role and passing it to a task/Lambda (see the doc).
+  OIDC provider, `aa-cis-dev-role`, `aa-cis-dev-agent-session`) are applied locally. Step 4
+  sets `aa-workload-boundary` on every existing CI-managed workload role (CIS ECS execution/task
+  via `modules/ecs` `permissions_boundary_arn`, the ACP scheduler via `modules/eventbridge`, the NAT
+  instance role via `modules/vpc`, Booking/TripPlanner roles, DFS balance Lambda + scheduler,
+  diagnostics roles); `aa-cis-dev-agent-session` gets it in a local bootstrap apply. Until step 3
+  (legacy role removed) and the phase-3 flag, the apply role can still edit a role's policy and
+  pass it, but the role it passes is capped at the workload boundary (no IAM writes; see the doc).
 - **TripPlanner HTTP API throttling** (AA-806, Dev placeholders): generous stage default 500 rps /
   burst 1000 **per route** (`default_route_settings`; each route gets its own bucket, it is not one
   stage-wide cap; must stay generous because the map fetches one tile per 1-degree cell in a single

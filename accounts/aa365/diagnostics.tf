@@ -19,7 +19,8 @@ resource "aws_cloudwatch_log_group" "diag_flow_logs" {
 }
 
 resource "aws_iam_role" "diag_flow_logs" {
-  name = "${local.name_prefix}-diag-flow-logs-role"
+  name                 = "${local.name_prefix}-diag-flow-logs-role"
+  permissions_boundary = aws_iam_policy.workload_boundary.arn
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -163,7 +164,8 @@ resource "aws_s3_bucket_policy" "diag_alb_logs" {
 # ---------------------------------------------------------------------------
 
 resource "aws_iam_role" "diag_apigw_cloudwatch" {
-  name = "${local.name_prefix}-diag-apigw-cloudwatch-role"
+  name                 = "${local.name_prefix}-diag-apigw-cloudwatch-role"
+  permissions_boundary = aws_iam_policy.workload_boundary.arn
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"

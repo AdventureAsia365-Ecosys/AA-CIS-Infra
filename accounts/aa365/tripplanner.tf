@@ -216,7 +216,8 @@ resource "aws_s3_object" "tripplanner_assembly_zip" {
 # Lambda execution role (shared by both TripPlanner Lambdas).
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "tripplanner_lambda_exec" {
-  name = "${local.tp_name_prefix}-lambda-exec"
+  name                 = "${local.tp_name_prefix}-lambda-exec"
+  permissions_boundary = aws_iam_policy.workload_boundary.arn
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -535,7 +536,8 @@ locals {
 }
 
 resource "aws_iam_role" "tripplanner_app_deploy" {
-  name = "${local.tp_name_prefix}-app-deploy"
+  name                 = "${local.tp_name_prefix}-app-deploy"
+  permissions_boundary = aws_iam_policy.workload_boundary.arn
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"

@@ -29,7 +29,8 @@ resource "aws_ecs_cluster_capacity_providers" "main" {
 
 # ── IAM Roles ─────────────────────────────────────────────────
 resource "aws_iam_role" "ecs_execution" {
-  name = "${local.name_prefix}-ecs-execution-role"
+  name                 = "${local.name_prefix}-ecs-execution-role"
+  permissions_boundary = var.permissions_boundary_arn
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
@@ -65,7 +66,8 @@ resource "aws_iam_role_policy" "ecs_execution_secrets" {
 }
 
 resource "aws_iam_role" "ecs_task" {
-  name = "${local.name_prefix}-ecs-task-role"
+  name                 = "${local.name_prefix}-ecs-task-role"
+  permissions_boundary = var.permissions_boundary_arn
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
