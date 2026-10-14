@@ -460,6 +460,10 @@ resource "aws_ecs_task_definition" "worker" {
       { name = "STEP_FUNCTIONS_ARN", value = var.step_functions_arn },
       { name = "SF_BATCH_THRESHOLD", value = tostring(var.sf_batch_threshold) },
       { name = "BRONZE_BUCKET", value = var.bronze_bucket_name },
+      # AA-801 (S236): T2 judge with tenant score anchors; gate on brand_fit only, mission logged
+      # as a diagnostic (anchors: spread <= 1 on 9/9; brand-swap control: brand_fit 7-8 -> 5.67).
+      { name = "T2_JUDGE_ANCHORS", value = "on" },
+      { name = "T2_JUDGE_GATE", value = "brand_fit" },
       ],
       var.redis_host != null ? [{ name = "REDIS_HOST", value = var.redis_host }] : []
     )
