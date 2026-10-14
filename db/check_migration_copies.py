@@ -126,13 +126,18 @@ def check_file(rel_path: str, repo_root: Path, fetch: Fetcher) -> list[str]:
         errors.append(f"cannot compare with {where}: {e}")
         return errors
     if upstream is None:
-        errors.append(f"not found on {where} — {OWNER_FIRST}, then open this copy PR (flow D8)")
+        errors.append(
+            f"not found on {where} — {OWNER_FIRST}, then open this copy PR or re-run this check "
+            f"(flow D8)"
+        )
     elif upstream != local:
         errors.append(
             f"differs from {where}: {first_difference(local, upstream)}; "
             f"sha256 copy={hashlib.sha256(local).hexdigest()[:12]} "
             f"owner={hashlib.sha256(upstream).hexdigest()[:12]}. Copy the owner file byte for byte "
-            f"(cp, not an editor); if the owner changed it, {OWNER_FIRST}"
+            f"(cp, not an editor). If the owner changed a file that is already copied: DB Migrate never "
+            f"re-runs an applied version, so if it is applied, revert the owner edit and ship the "
+            f"change as a new migration; if it is not applied yet, {OWNER_FIRST} and re-copy"
         )
     return errors
 

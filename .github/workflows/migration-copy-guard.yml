@@ -51,6 +51,11 @@ jobs:
           if [ "$EVENT" = "pull_request" ]; then
             # Added, copied, modified, renamed files only; a deleted copy has nothing to compare.
             git diff --name-only --diff-filter=ACMR "$BASE_SHA"...HEAD -- db/migrations/ > changed.txt
+            # Editing a copy that is already on main is legal only before it is applied: DB Migrate
+            # never re-runs a registered version, so an edit to an applied file is a silent no-op.
+            git diff --name-only --diff-filter=M "$BASE_SHA"...HEAD -- db/migrations/ | while read -r f; do
+              echo "::warning file=$f::edits a copy already on main. If this version is applied, DB Migrate will not re-run it: ship the change as a new migration instead."
+            done
           else
             : > changed.txt
           fi
