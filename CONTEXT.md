@@ -67,7 +67,7 @@ accounts/
     bedrock_satellite_assume.tf   (cross-account Bedrock assume-role trust)
     cost_explorer_satellite_assume.tf (acc2 → acc1/acc3 Cost Explorer read roles, AA-623)
     dfs_balance.tf                (daily DFS balance alert Lambda + EventBridge schedule, AA-627)
-    observability.tf, diagnostics.tf
+    observability.tf, observability_ecosys.tf (S235 alarms + log retention), diagnostics.tf
     variables.tf / tripplanner_variables.tf / booking_variables.tf
   acc1-bedrock/   ← acc1 Bedrock invoker role (fallback) + Cost Explorer reader
   acc3-bedrock/   ← acc3 Bedrock invoker role (primary) + Bedrock Batch (batch.tf)
@@ -88,7 +88,13 @@ The aa365 root composes the standard modules into the running CIS platform: **VP
 ALB + API Gateway → S3 / Secrets / WAF**, plus **EventBridge** (ACPv2 schedules: daily ingest,
 weekly export, Gate C veto window — not the dead AA-180 orchestration), the ops-probe Lambda
 (`dfs_balance.tf`) and observability
-(`observability.tf`, `diagnostics.tf`, langfuse/monitoring modules). ECS runs the CIS API service
+(`observability.tf`, `observability_ecosys.tf`, `diagnostics.tf`, langfuse/monitoring modules).
+`observability_ecosys.tf` (S235 Phase 0) covers what is not CIS: NAT status check, Booking target
+health / CPU / REST 5XX, TripPlanner Lambda errors + throttles, shared RDS storage + connections,
+and 14-day retention on the TripPlanner Lambda and CIS API Gateway execution log groups (imported).
+Its resources carry the blueprint tags (`Project = AA-Ecosys`, `App`); TripPlanner and Booking
+resources also carry `App`. Provider `default_tags` are unchanged (re-tagging every resource needs
+a wider CI-role grant). ECS runs the CIS API service
 (`aa-cis-dev-api` on cluster `aa-cis-dev-cluster`) with `stopTimeout = 90` so in-flight requests
 drain on deploy (AA-310, `modules/ecs/main.tf`). The old S3 → Lambda → Step Functions pipeline
 (ingestion/seo/validation/content/export Lambdas, the state machine, 6 SQS queues) and the

@@ -54,6 +54,7 @@ locals {
     Environment = var.environment
     ManagedBy   = "terraform"
     Service     = "booking"
+    App         = "booking" # S235 Phase 0: per-app cost allocation tag (additive)
     Issue       = "AA-678"
   }
 

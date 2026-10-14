@@ -43,6 +43,7 @@ locals {
     Environment = var.environment
     ManagedBy   = "terraform"
     Service     = "tripplanner"
+    App         = "tripplanner" # S235 Phase 0: per-app cost allocation tag (additive)
   }
 
   # Cohere Embed v4 inference profile in acc2 (direct-invoke, verified live).
