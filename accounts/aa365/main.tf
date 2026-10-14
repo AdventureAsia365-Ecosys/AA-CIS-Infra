@@ -205,12 +205,12 @@ module "api_gateway" {
   account_id  = var.account_id
   tags        = local.common_tags
 
-  alb_dns_name                 = module.alb.alb_dns_name
-  nlb_dns_name                 = module.alb.nlb_dns_name
-  vpc_link_id                  = module.alb.vpc_link_id
-  acm_cert_arn_us_east1        = var.acm_certificate_arn
-  domain_name                  = var.domain_name
-  enable_execution_logging     = true # AA-272 diagnostic only
+  alb_dns_name             = module.alb.alb_dns_name
+  nlb_dns_name             = module.alb.nlb_dns_name
+  vpc_link_id              = module.alb.vpc_link_id
+  acm_cert_arn_us_east1    = var.acm_certificate_arn
+  domain_name              = var.domain_name
+  enable_execution_logging = true # AA-272 diagnostic only
 
   depends_on = [module.alb, aws_api_gateway_account.this]
 }
