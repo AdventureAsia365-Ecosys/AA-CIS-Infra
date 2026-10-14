@@ -72,6 +72,10 @@ accounts/
     dfs_balance.tf                (ops-probe Lambda: 06:15 UTC schedule POSTs the admin probes, AA-627/720/727;
                                    20:30 UTC schedule POSTs /admin/job-runner/retention/schedule, AA-825;
                                    the AA-832 every-5-min schedule was removed in AA-751)
+    identity.tf, identity_variables.tf (AA-703, root ADR 0006: Cognito pools aa-workforce-dev /
+                                   aa-external-dev, app clients, groups, trigger Lambdas in
+                                   lambda_src/identity_triggers + tests, WAF; SES and custom
+                                   domains gated by variables, default off)
     observability.tf, observability_ecosys.tf (S235 alarms + log retention; RDS alarms per data standard
                                    C4.1 + per-role AA/RDS RoleConnectionLimitPct alarms, AA-832; job
                                    backlog alarms per owner AA/Jobs/CIS + AA/Jobs/Booking and the

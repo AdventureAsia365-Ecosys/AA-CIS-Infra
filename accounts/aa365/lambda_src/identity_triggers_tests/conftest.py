@@ -99,10 +99,8 @@ def token_event(attrs, groups, source="TokenGeneration_HostedAuth", client_id="c
 
 
 @pytest.fixture(autouse=True)
-def workforce_env(monkeypatch):
+def trigger_env(monkeypatch):
     monkeypatch.setenv("ALLOWED_EMAIL_DOMAIN", "adventure.asia")
-    monkeypatch.setenv("REQUIRE_HD", "true")
-    monkeypatch.setenv("HD_ATTRIBUTE", "custom:hd")
     monkeypatch.setenv("GOOGLE_PROVIDER_NAME", "Google")
     monkeypatch.setenv("FACEBOOK_PROVIDER_NAME", "Facebook")
     monkeypatch.setenv("BREAKGLASS_EMAIL", "breakglass@adventure.asia")
@@ -111,5 +109,4 @@ def workforce_env(monkeypatch):
         "TRAVELLER_CLIENT_NAMES", "aa-external-dev-tripplanner,aa-external-dev-booking-customer"
     )
     monkeypatch.setenv("NATIVE_SIGNUP_ENABLED", "true")
-    monkeypatch.delenv("LINK_TARGET_STATUSES", raising=False)
     monkeypatch.delenv("STAFF_GROUPS", raising=False)
