@@ -1,0 +1,67 @@
+name: Migration Copy Guard
+# AA-807: every DB Migrate copy in db/migrations/<owner>/ must be byte-identical to the same file on
+# the owner repo's main (AA-CIS-App api/migrations, AA-TripPlanner-Web migrations, AA-Booking
+# migrations) and register its own version key (NNN / tp-NNN / bk-NNN) in shared.schema_versions.
+#
+# Migration flow (S237 D8): migration-file-only PR merged to the owner's main FIRST → Infra copy PR
+# (this check) → DB Migrate check → apply → the app PR that uses the new objects. A copy PR opened
+# before the owner PR merges fails here with "merge the migration-only PR in the owner repo first".
+#
+# pull_request: only the files the PR adds or changes. schedule / manual: every copy, so a later
+# edit of an already-copied file on an owner's main also shows up.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "db/migrations/**"
+      - "db/check_migration_copies.py"
+      - "db/tests/**"
+      - ".github/workflows/migration-copy-guard.yml"
+  schedule:
+    - cron: "17 2 * * *"   # nightly, 02:17 UTC
+  workflow_dispatch:
+
+concurrency:
+  group: migration-copy-guard-${{ github.ref }}
+  cancel-in-progress: true
+
+# No AWS, no secrets: the owner repos are public, GITHUB_TOKEN only lifts the API rate limit.
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    name: Copies match owner main
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Guard unit tests
+        run: python3 -m unittest discover -s db/tests -v
+
+      - name: Compare copies with owner main
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set +e
+          if [ "$EVENT" = "pull_request" ]; then
+            # Added, copied, modified, renamed files only; a deleted copy has nothing to compare.
+            git diff --name-only --diff-filter=ACMR "$BASE_SHA"...HEAD -- db/migrations/ > changed.txt
+          else
+            : > changed.txt
+          fi
+          if [ -s changed.txt ]; then
+            echo "changed migration copies:"; cat changed.txt
+            xargs -a changed.txt python3 db/check_migration_copies.py > guard.log 2>&1
+          else
+            # Nightly / manual, or a PR that only changes the guard itself: check every copy.
+            python3 db/check_migration_copies.py --all > guard.log 2>&1
+          fi
+          status=$?
+          cat guard.log
+          { echo '### Migration copy guard'; echo '```'; grep -v '^::' guard.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"

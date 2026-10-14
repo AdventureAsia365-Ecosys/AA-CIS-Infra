@@ -13,7 +13,16 @@ Version key registered in `shared.schema_versions`: `cis` → `NNN`, `tripplanne
 `booking` → `bk-NNN` (ownership rules: `AA-Ecosys/docs/database/schema-ownership.md`).
 
 ## Flow
-1. PR adds the SQL here (human review = the approval).
+0. The owner repo merges a **migration-file-only** PR to its `main` first (S237 D8). Code that
+   reads the new objects comes in a later PR, after the apply.
+1. PR adds the SQL here as a byte-identical copy (`cp` the owner file; human review = the
+   approval). **Migration Copy Guard** (`.github/workflows/migration-copy-guard.yml`, AA-807)
+   compares each added/changed file with the owner's `main` through the GitHub API and fails on:
+   a path DB Migrate would refuse, a missing or wrongly prefixed `shared.schema_versions` key, a
+   file not on the owner's `main` yet ("merge the migration-only PR in the owner repo first"), or
+   any byte difference. It also runs nightly over every copy. Local run:
+   `python3 db/check_migration_copies.py db/migrations/cis/228_x.sql` (or `--all`); tests:
+   `python3 -m unittest discover -s db/tests`.
 2. Merge to `main`.
 3. Run **DB Migrate** on `main` with `mode=check` (prints whether the version is registered),
    then `mode=apply`. The job fails unless the task exits 0 and the version is in
@@ -24,7 +33,8 @@ Version key registered in `shared.schema_versions`: `cis` → `NNN`, `tripplanne
 - Every file self-registers: `INSERT INTO shared.schema_versions ... ON CONFLICT DO NOTHING`,
   inside its own `BEGIN; ... COMMIT;`.
 - The owner repo keeps the identical original (`AA-CIS-App/api/migrations/`,
-  `AA-TripPlanner-Web/migrations/`); this folder holds the copy the workflow applies. Infra itself
+  `AA-TripPlanner-Web/migrations/`, `AA-Booking/migrations/`); this folder holds the copy the
+  workflow applies, checked byte for byte against the owner's `main`. Infra itself
   owns no schema. Apply the migration **before** merging app
   code that depends on it.
 - Destructive changes follow the DRY RUN procedure (`skill/aa-cis-schema/references/destructive-ops.md`).

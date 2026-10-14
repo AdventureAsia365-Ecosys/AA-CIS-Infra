@@ -208,8 +208,10 @@ makes CI Terraform Plan fail with 403.
 - No application DB schema migrations (`acp_*`, `*_aa_internal`, `tripplanner.*` are owned by the
   app repos). It owns the RDS instance, not what lives inside it. It does own the **DB Migrate**
   workflow (`.github/workflows/db-migrate.yml`): `db/migrations/<owner>/` holds byte-identical copies
-  of a reviewed app migration, applied from `main` by a one-off ECS task (S225). Owners and version
-  keys: `AA-Ecosys/docs/database/schema-ownership.md`.
+  of a reviewed app migration, applied from `main` by a one-off ECS task (S225). The
+  **Migration Copy Guard** workflow (AA-807) checks each copy byte for byte against the owner
+  repo's `main` on every PR and nightly, so the owner's migration-only PR merges first. Owners and
+  version keys: `AA-Ecosys/docs/database/schema-ownership.md`.
 - No auto-apply on merge — apply is manual/`workflow_dispatch`, and destructive changes need
   explicit human confirmation.
 - Run Terraform from the WSL path (`/home/nghiep/...`), never a Windows UNC path.
