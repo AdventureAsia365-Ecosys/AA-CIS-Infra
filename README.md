@@ -21,8 +21,10 @@ applies reviewed app migrations to the shared RDS.
 ```
 accounts/aa365/   main.tf, cicd.tf, tripplanner.tf, booking.tf, observability.tf, observability_ecosys.tf, dfs_balance.tf, … (+ lambda_src/)
 modules/          vpc, rds, ecs, alb, api_gateway, s3, secrets, waf, eventbridge, monitoring, …
-db/               run_migration.py + migrations/<owner>/ copies applied by DB Migrate
-.github/workflows terraform-plan.yml (PR), terraform-apply.yml (manual), db-migrate.yml (manual)
+db/               run_migration.py + migrations/<owner>/ copies applied by DB Migrate,
+                  check_migration_copies.py (+ tests/) for the copy guard
+.github/workflows terraform-plan.yml (PR), terraform-apply.yml (manual), db-migrate.yml (manual),
+                  migration-copy-guard.yml (PR on db/migrations/**, nightly)
 ```
 
 ## How a change is applied
@@ -47,12 +49,15 @@ Run Terraform from the WSL path, never a Windows UNC path. State: S3
 RDS is private, so `db-migrate.yml` starts a one-off Fargate task from the CIS api task definition
 and runs one SQL file with the task's own `DATABASE_URL`:
 
-1. The owner repo's PR adds the migration; an identical copy goes in `db/migrations/<owner>/`
-   (`cis`, `tripplanner`, `booking`) in an Infra PR.
-2. After the Infra PR merges: run **DB Migrate** on `main` with `mode=check`, then `mode=apply`.
+1. A **migration-file-only** PR merges to the owner repo's `main` first (no code that reads the
+   new objects yet).
+2. An Infra PR adds a byte-identical copy in `db/migrations/<owner>/` (`cis`, `tripplanner`,
+   `booking`) — `cp`, not an editor. **Migration Copy Guard** (AA-807) fails the PR if the file
+   is not on the owner's `main` yet, differs by one byte, or does not register its own key.
+3. After the Infra PR merges: run **DB Migrate** on `main` with `mode=check`, then `mode=apply`.
    The job fails unless the version (`NNN`, `tp-NNN`, `bk-NNN`) is registered in
    `shared.schema_versions` afterwards. Re-running `apply` is a no-op.
-3. Merge the app PR that needs the migration.
+4. Merge the app PR that needs the migration.
 
 Details: [`db/README.md`](db/README.md).
 
