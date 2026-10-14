@@ -70,7 +70,9 @@ resource "aws_lb_target_group" "api" {
 # API Gateway HTTP_PROXY cannot follow 301 redirects, and TLS verification
 # would fail on HTTPS because the ALB cert only covers the custom domain, not
 # the ELB hostname. Forwarding on HTTP allows API Gateway to reach the backend.
-# Auth is enforced by the Lambda Authorizer before any request reaches the ALB.
+# There is no gateway authorizer any more (AA-750 removed the TOKEN authorizer): every API
+# Gateway route is NONE and the app enforces auth (FastAPI JWT / admin secret). The ALB itself is
+# internet-facing, so a service behind it must never trust the gateway to have authenticated.
 resource "aws_lb_listener" "http" {
   load_balancer_arn = aws_lb.main.arn
   port              = 80

@@ -2,15 +2,19 @@
 # AA-246 Track B — AA-CIS root module for account 005097885195 (aa365)
 # Mirrors the architecture of the account-1 root module (../../main.tf) but
 # wires ARNs through module outputs instead of literal account-1 ARNs.
-# Scope (confirmed): VPC, RDS, ECS, ALB, S3, Secrets, API Gateway, Step
-# Functions, WAF, Lambda (5 CIS + 1 ACP), EventBridge (AA-402, 2026-08-14).
+# Scope (confirmed): VPC, RDS, ECS, ALB, S3, Secrets, API Gateway, WAF,
+# EventBridge (AA-402, 2026-08-14). The CIS Lambdas, the Step Functions pipeline
+# and its SQS queues were retired in AA-750 (#88); the STEP_FUNCTIONS_ARN env var
+# still passed to the ECS task def below is kept on purpose (unused computed
+# string; dropping it would change the task definitions, see AA-750 notes).
 # AA-180 (ACPv1 orchestration epic) stays separate and deferred/dead — the
 # eventbridge module below is ACPv2's own schedules (daily ingest, weekly
 # export, Gate C veto window), not an AA-180 revival.
 # AA-477 (2026-08-27): removed the other 2 ACP Lambdas (acp-s3-campaign-planner,
 # acp-s4-evaluate) — 0 EventBridge rule, 0 resource policy, 0 invocation ever
 # recorded, dead ACPv1 stage-chain source (services/acp_s3/, services/
-# acp_s4_evaluate/ in AA-CIS-App). Only brand_brief_parser remains as "1 ACP".
+# acp_s4_evaluate/ in AA-CIS-App). brand_brief_parser, the last "1 ACP" Lambda,
+# was retired with the rest in AA-750.
 # =============================================================================
 
 locals {
@@ -205,12 +209,12 @@ module "api_gateway" {
   account_id  = var.account_id
   tags        = local.common_tags
 
-  alb_dns_name                 = module.alb.alb_dns_name
-  nlb_dns_name                 = module.alb.nlb_dns_name
-  vpc_link_id                  = module.alb.vpc_link_id
-  acm_cert_arn_us_east1        = var.acm_certificate_arn
-  domain_name                  = var.domain_name
-  enable_execution_logging     = true # AA-272 diagnostic only
+  alb_dns_name             = module.alb.alb_dns_name
+  nlb_dns_name             = module.alb.nlb_dns_name
+  vpc_link_id              = module.alb.vpc_link_id
+  acm_cert_arn_us_east1    = var.acm_certificate_arn
+  domain_name              = var.domain_name
+  enable_execution_logging = true # AA-272 diagnostic only
 
   depends_on = [module.alb, aws_api_gateway_account.this]
 }

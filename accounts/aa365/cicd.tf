@@ -8,6 +8,30 @@ resource "aws_iam_openid_connect_provider" "github_actions" {
   thumbprint_list = [data.tls_certificate.github_actions.certificates[0].sha1_fingerprint]
 }
 
+locals {
+  # GitHub OIDC subjects allowed to assume aa-cis-dev-role (AA-678, S235).
+  #
+  # Both repos have GitHub's immutable subject claim ON ("use_immutable_subject": true, read
+  # 14/10/2026 via GET /repos/{owner}/{repo}/actions/oidc/customization/sub), so the sub is
+  #   repo:<org>@<org_id>/<repo>@<repo_id>:<context>
+  # e.g. repo:AdventureAsia365-Ecosys@276539096/AA-CIS-Infra@1212290412:pull_request (also seen in
+  # CloudTrail, AA-588). A plain "repo:<org>/<repo>:*" pattern does NOT match that form (the
+  # AA-588 AccessDenied). Pinning the numeric org + repo ids means no org/repo-name wildcard is
+  # needed and a renamed or re-created repo cannot inherit this role. The trailing "*" is the
+  # context, which must stay open because the callers use three forms:
+  #   AA-CIS-App   deploy-dev.yml (build-and-push, deploy) + eval-regression.yml -> environment:dev
+  #   AA-CIS-Infra terraform-plan.yml                                            -> pull_request
+  #   AA-CIS-Infra terraform-apply.yml + db-migrate.yml                          -> environment:prod
+  # AA-TripPlanner-Web uses its own aa-tripplanner-dev-app-deploy role (tripplanner.tf), and
+  # AA-Booking will get its own aa-booking-dev-app-deploy role (booking.tf). Do NOT add them here.
+  # If a repo turns the immutable subject off, or is renamed or re-created, this role stops
+  # trusting it (fail closed): re-read the sub prefix with the API call above and update the list.
+  cicd_oidc_subjects = [
+    "repo:AdventureAsia365-Ecosys@276539096/AA-CIS-App@1212291079:*",
+    "repo:AdventureAsia365-Ecosys@276539096/AA-CIS-Infra@1212290412:*",
+  ]
+}
+
 resource "aws_iam_role" "cicd" {
   name = "aa-cis-dev-role"
 
@@ -21,17 +45,13 @@ resource "aws_iam_role" "cicd" {
         StringEquals = {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
         }
-        # AA-588 (G5, 21/09/2026): org rename AdventureAsia365-CIS -> AdventureAsia365-Ecosys
-        # complete + stable; dropped the transitional old-org entry.
-        # CORRECTION (same day): the g5 precheck note that this org has NO "include repo ID in
-        # subject" customization was WRONG — CloudTrail on a real CI run shows the sub is
-        #   repo:AdventureAsia365-Ecosys@276539096/AA-CIS-Infra@1212290412:pull_request
-        # i.e. the "@<id>" form IS in effect here too (org- or repo-level). A plain
-        # "repo:AdventureAsia365-Ecosys/*:*" pattern does NOT match it ("/" won't match "@id"),
-        # which broke CI (sts:AssumeRoleWithWebIdentity AccessDenied). Keep the "*" right after
-        # the org name so it matches the "@<id>" segment, same style tripplanner.tf uses.
+        # AA-678 (S235, 14/10/2026): trust ONLY the two repos that assume this role. It used to
+        # trust "repo:AdventureAsia365-Ecosys*/*:*" (every repo in the org), so any new org repo
+        # (AA-Booking next) would have inherited RDS/Secrets/ECS full access and iam:CreateRole/
+        # PassRole on "*". Each repo now gets its exact immutable subject prefix, see
+        # local.cicd_oidc_subjects above.
         StringLike = {
-          "token.actions.githubusercontent.com:sub" = "repo:AdventureAsia365-Ecosys*/*:*"
+          "token.actions.githubusercontent.com:sub" = local.cicd_oidc_subjects
         }
       }
     }]
@@ -332,6 +352,57 @@ resource "aws_iam_role_policy" "cicd_inline" {
         Effect   = "Allow"
         Action   = ["iam:TagRole", "iam:UntagRole"]
         Resource = "arn:aws:iam::${var.account_id}:role/${local.name_prefix}-agent-session"
+      },
+      {
+        # AA-678 (Booking bootstrap) — booking.tf creates tagged roles (e.g. aa-booking-dev-ecs-exec,
+        # -ecs-task, -app-deploy), so CreateRole calls iam:TagRole. Same gap/precedent as
+        # TripPlannerRoleTagging. This statement must be APPLIED BEFORE booking.tf is planned/applied
+        # (two-phase Infra apply): IAM is eventually consistent, and a grant created in the same run
+        # as the role can still be AccessDenied (time_sleep.wait_for_iam_propagation only covers
+        # resources that depend_on it). Scoped to the aa-booking-<env>-* name prefix.
+        Sid      = "BookingRoleTagging"
+        Effect   = "Allow"
+        Action   = ["iam:TagRole", "iam:UntagRole"]
+        Resource = "arn:aws:iam::${var.account_id}:role/aa-booking-${var.environment}-*"
+      },
+      {
+        # AA-678 — booking.tf creates its own ECR repo (aa-booking-dev-api). ECRPushPull above only
+        # has push/pull + read verbs (the CIS repo in modules/ecs was created before this role
+        # managed it), so CreateRepository, the lifecycle policy and tag-on-create would be
+        # AccessDenied. Scoped to aa-booking-<env>-* repositories; CIS repos are untouched.
+        Sid    = "BookingEcrRepoManage"
+        Effect = "Allow"
+        Action = [
+          "ecr:CreateRepository",
+          "ecr:DeleteRepository",
+          "ecr:BatchDeleteImage",
+          "ecr:PutLifecyclePolicy",
+          "ecr:DeleteLifecyclePolicy",
+          "ecr:PutImageScanningConfiguration",
+          "ecr:PutImageTagMutability",
+          "ecr:TagResource",
+          "ecr:UntagResource",
+        ]
+        Resource = "arn:aws:ecr:${var.aws_region}:${var.account_id}:repository/aa-booking-${var.environment}-*"
+      },
+      {
+        # AA-678 — booking.tf adds an aws_lb_listener_rule (/booking/*) on the CIS ALB's HTTP
+        # listener (module.alb http_listener_arn output). No statement on this role grants the
+        # listener-rule verbs explicitly (ELBManageVpcLinkNLB covers listeners/target groups only),
+        # so grant them here instead of relying on a managed policy's contents. Scoped to
+        # listeners and rules of the aa-cis-<env>-alb load balancer only.
+        Sid    = "BookingAlbListenerRuleManage"
+        Effect = "Allow"
+        Action = [
+          "elasticloadbalancing:CreateRule",
+          "elasticloadbalancing:DeleteRule",
+          "elasticloadbalancing:ModifyRule",
+          "elasticloadbalancing:SetRulePriorities",
+        ]
+        Resource = [
+          "arn:aws:elasticloadbalancing:${var.aws_region}:${var.account_id}:listener/app/${local.name_prefix}-alb/*",
+          "arn:aws:elasticloadbalancing:${var.aws_region}:${var.account_id}:listener-rule/app/${local.name_prefix}-alb/*",
+        ]
       },
       {
         # AA-402 — module.eventbridge's custom EventBridge bus

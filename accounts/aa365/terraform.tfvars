@@ -34,9 +34,9 @@ service_desired_count = 1
 # (secret_rds_arn / secret_dataforseo_arn are wired via module.secrets outputs
 # instead — those two secrets MUST exist under names "aa-cis/dev/rds" and
 # "aa-cis/dev/dataforseo" before `terraform plan` will succeed at all.)
-secret_openai_arn    = "arn:aws:secretsmanager:us-west-1:005097885195:secret:aa-cis/dev/openai-key-Wcxuae"
-secret_admin_arn     = "arn:aws:secretsmanager:us-west-1:005097885195:secret:aa-cis/dev/admin-secret-gudNmP"
-secret_jwt_arn       = "arn:aws:secretsmanager:us-west-1:005097885195:secret:aa-cis/dev/jwt-secret-KOjq6l"
+secret_openai_arn = "arn:aws:secretsmanager:us-west-1:005097885195:secret:aa-cis/dev/openai-key-Wcxuae"
+secret_admin_arn  = "arn:aws:secretsmanager:us-west-1:005097885195:secret:aa-cis/dev/admin-secret-gudNmP"
+secret_jwt_arn    = "arn:aws:secretsmanager:us-west-1:005097885195:secret:aa-cis/dev/jwt-secret-KOjq6l"
 
 # Lambda plaintext runtime config — placeholders, enter real values by hand
 # (do NOT copy account-1 values across).

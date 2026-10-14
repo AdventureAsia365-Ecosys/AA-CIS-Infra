@@ -19,6 +19,11 @@ output "https_listener_arn" {
   value = aws_lb_listener.https.arn
 }
 
+output "http_listener_arn" {
+  description = "Port-80 listener ARN. API Gateway reaches the ALB on HTTP through the VPC-link NLB, so path rules for other services (AA-678 /booking/*) attach here, not to the HTTPS listener."
+  value       = aws_lb_listener.http.arn
+}
+
 output "nlb_dns_name" {
   description = "DNS name of the internal NLB fronting the ALB (VPC Link target, AA-272)"
   value       = aws_lb.vpc_link_nlb.dns_name

@@ -115,14 +115,20 @@ makes CI Terraform Plan fail with 403.
 ## CI/CD and OIDC
 
 - App repos deploy via **GitHub Actions OIDC**, assuming IAM roles defined in `cicd.tf`
-  (CIS app deploy) and `tripplanner.tf` (`aa-tripplanner-dev-app-deploy`).
-- **OIDC subject fact (learned AA-588):** the org `AdventureAsia365-Ecosys` has "include repo ID
-  in the subject" **enabled**, so the real OIDC subject is
-  `repo:AdventureAsia365-Ecosys@<orgid>/<repo>@<repoid>:<ref>`. Trust conditions therefore MUST
-  use the wildcard form after the org name — e.g. `repo:AdventureAsia365-Ecosys*/*:*` for CI/CD,
-  `repo:AdventureAsia365-Ecosys*/AA-TripPlanner-Web*:*` for TripPlanner. A plain
-  `repo:AdventureAsia365-Ecosys/<repo>:*` subject (no wildcard) fails with AccessDenied. AA-588
-  dropped the old-org trust and corrected these to the wildcard form.
+  (`aa-cis-dev-role`, CIS app deploy + this repo's own Terraform/DB Migrate workflows) and
+  `tripplanner.tf` (`aa-tripplanner-dev-app-deploy`). Each app repo gets its **own** deploy role;
+  a new repo (e.g. AA-Booking) is never added to `aa-cis-dev-role`.
+- **OIDC subject fact (learned AA-588, re-verified AA-678):** the repos have GitHub's immutable
+  subject claim **on** (`use_immutable_subject: true` from
+  `GET /repos/{owner}/{repo}/actions/oidc/customization/sub`), so the real OIDC subject is
+  `repo:AdventureAsia365-Ecosys@<orgid>/<repo>@<repoid>:<context>`. A plain
+  `repo:AdventureAsia365-Ecosys/<repo>:*` subject fails with AccessDenied.
+  - `aa-cis-dev-role` trusts **only** AA-CIS-App and AA-CIS-Infra by their exact immutable prefix
+    (org id `276539096`, repo ids `1212291079` / `1212290412`), context `*`
+    (`environment:dev`, `environment:prod`, `pull_request`). See `local.cicd_oidc_subjects`. Before
+    AA-678 it trusted every org repo (`repo:AdventureAsia365-Ecosys*/*:*`).
+  - `aa-tripplanner-dev-app-deploy` still uses the name-wildcard form
+    `repo:AdventureAsia365-Ecosys*/AA-TripPlanner-Web*:*`.
 - This repo has **branch protection** (CI Terraform Plan among the required checks). Terraform
   Plan runs on PRs; PRs are merged after CI passes. There is no auto-merge on this repo.
 
