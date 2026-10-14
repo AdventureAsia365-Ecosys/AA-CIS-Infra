@@ -15,12 +15,34 @@
 -- AA master-content tenant 00000000-0000-0000-0000-000000000001 (all AA tours; TripPlanner's
 -- MASTER_CONTENT_TENANT_ID).
 --
--- RLS: published_tours / raw_tours FORCE row-level security on app.tenant_id. These views are not
--- security_invoker, so they read with their owner's rights; DB Migrate runs as aa_cis_admin
--- (BYPASSRLS, migration 007b). The tenant filter below is therefore what scopes the rows, and
--- readers do not set app.tenant_id. The first statement asserts the runner bypasses RLS: under any
--- other role the views would silently return no rows (or fail on app.tenant_id) for every consumer,
--- so the file fails loudly instead and is not registered.
+-- RLS (S236 redesign — RDS has no superuser and no BYPASSRLS role): published_tours / raw_tours have
+-- RLS ENABLED + FORCED, policy tenant_isolation (TO public, tenant_id = app.tenant_id). The runner
+-- aa_cis_admin owns them and is neither superuser nor BYPASSRLS, so a view owned by it would see no
+-- row unless the reader set app.tenant_id. Least-privilege design instead:
+--   * role catalog_owner (NOLOGIN, no BYPASSRLS, no members after this file) owns every catalog view;
+--     a (non security_invoker) view reads with its owner's rights, so consumers read through it;
+--   * catalog_owner gets USAGE + SELECT on exactly the objects the views read (below);
+--   * one RLS policy per FORCE-RLS table, catalog_owner_aa_master_read: FOR SELECT TO catalog_owner
+--     USING (tenant_id = AA master tenant). catalog_owner can never see another tenant's rows, even
+--     if the views' own filter were wrong. (tenant_isolation TO public still ORs in: a reader that
+--     sets app.tenant_id = X lets catalog_owner see X's rows too, so the views keep their own
+--     master-tenant WHERE + security_barrier. Consumers need not set app.tenant_id.)
+--   * tenant_isolation on those two tables now reads NULLIF(current_setting('app.tenant_id', true),
+--     '')::uuid: a pooled connection holds '' after any set_config(..., true) transaction, and the
+--     old ''::uuid cast made every catalog read on it fail ("invalid input syntax for type uuid") as
+--     soon as the scan met a non-master row. '' now means no tenant (no rows), like NULL already did.
+--   * catalog views read acp_contract.tour_atoms with the rule of v_active_tour_atoms (203), not the
+--     view itself: v_active_tour_atoms is owned by aa_cis_admin and joins published_tours, so through
+--     it the RLS check would run as aa_cis_admin (no app.tenant_id -> no rows). The shared photo views
+--     (200) read only shared.place_photo (no RLS) and are reused as they are.
+--   * The runner is made a member of catalog_owner only for this transaction (ALTER ... OWNER TO needs
+--     it, and catalog_owner needs CREATE on schema catalog at that moment), then the membership and
+--     the CREATE are revoked: a lasting membership would make the catalog_owner policy apply to
+--     aa_cis_admin's own sessions too (policies apply to inheriting members), widening its tenant
+--     scope to AA master rows. A later migration that changes a catalog view does the same dance.
+--   * Sanity check before COMMIT: as catalog_owner (app.tenant_id pinned to the nil uuid so only the
+--     new policy can admit rows) catalog.v_tour must not be empty when the runner, scoped to the
+--     master tenant, counts live AA tours. On an empty DB (CI) the check passes vacuously.
 --
 -- Not here: prices (owned by AA-Booking, ADR 0005), events catalog.tour.published|updated|trashed
 -- (next AA-679 slice: an outbox; until then consumers poll v_tour and compare content_hash).
@@ -31,19 +53,90 @@
 
 BEGIN;
 
+-- ── Owner role + its read grants ───────────────────────────────────────────────────────────────
 DO $$
 BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_roles
-                    WHERE rolname = current_user AND (rolbypassrls OR rolsuper)) THEN
-        RAISE EXCEPTION 'migration 225 must run as a BYPASSRLS role (aa_cis_admin), not %: the catalog '
-                        'views read RLS tables with their owner''s rights', current_user;
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'catalog_owner') THEN
+        CREATE ROLE catalog_owner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS NOREPLICATION;
     END IF;
+END $$;
+COMMENT ON ROLE catalog_owner IS
+    'AA-679 — owns the views of schema catalog (CIS read model). NOLOGIN, no BYPASSRLS, no members; '
+    'reads AA master-tenant rows of published_tours / raw_tours through policy catalog_owner_aa_master_read.';
+
+-- Transaction-scoped membership (revoked at the end of this file, see header). Needs CREATEROLE or
+-- ADMIN on catalog_owner: aa_cis_admin (RDS master user) has CREATEROLE.
+GRANT catalog_owner TO CURRENT_USER;
+
+DO $$
+BEGIN
+    IF NOT pg_has_role(current_user, 'catalog_owner', 'MEMBER') THEN
+        RAISE EXCEPTION 'migration 225: % must be able to SET ROLE catalog_owner (GRANT catalog_owner '
+                        'TO % failed?)', current_user, current_user;
+    END IF;
+    SET LOCAL ROLE catalog_owner;   -- proves SET ROLE works for the runner (PG16 needs SET option)
+    RESET ROLE;
 END $$;
 
 CREATE SCHEMA IF NOT EXISTS catalog;
 COMMENT ON SCHEMA catalog IS
     'AA-679 — CIS catalog read model for other apps (TripPlanner, AA-Booking). Owner: AA-CIS-App. '
     'Contract: AA-Ecosys/docs/contracts/catalog.tour.v1.json.';
+
+GRANT USAGE ON SCHEMA catalog, gold_aa_internal, silver_aa_internal, acp_contract, acp_shared, shared
+    TO catalog_owner;
+-- exactly what the views read (no BYPASSRLS, no write, no other table)
+GRANT SELECT ON gold_aa_internal.published_tours, silver_aa_internal.raw_tours,
+                acp_contract.tour_atoms, acp_shared.place_card, acp_shared.atom_place_card,
+                shared.destinations, shared.v_tour_photos, shared.v_destination_photos
+    TO catalog_owner;
+
+-- ── RLS: catalog_owner reads the AA master tenant only ─────────────────────────────────────────
+-- CREATE POLICY has no IF NOT EXISTS. The AA master-content tenant is TripPlanner's
+-- MASTER_CONTENT_TENANT_ID and the 'aa_internal' tenant of migrations 004/005.
+DO $$
+DECLARE
+    t text;
+BEGIN
+    FOREACH t IN ARRAY ARRAY['gold_aa_internal.published_tours', 'silver_aa_internal.raw_tours'] LOOP
+        IF NOT EXISTS (SELECT 1 FROM pg_policies
+                        WHERE schemaname || '.' || tablename = t
+                          AND policyname = 'catalog_owner_aa_master_read') THEN
+            EXECUTE format('CREATE POLICY catalog_owner_aa_master_read ON %s FOR SELECT TO catalog_owner '
+                           'USING (tenant_id = %L::uuid)', t, '00000000-0000-0000-0000-000000000001');
+        END IF;
+        EXECUTE format('COMMENT ON POLICY catalog_owner_aa_master_read ON %s IS %L', t,
+                       'AA-679 — the catalog views (owner catalog_owner) read AA master-tenant rows only.');
+    END LOOP;
+END $$;
+
+-- ── tenant_isolation: '' means "no tenant", not an error ────────────────────────────────────────
+-- tenant_isolation (TO public, FOR ALL, USING only — migrations 004/008) is OR-ed with the policy above
+-- for catalog_owner. A pooled connection that ran set_config('app.tenant_id', ..., true) in an earlier
+-- transaction holds '' afterwards, and ''::uuid raised "invalid input syntax for type uuid" on every
+-- non-master row a catalog view scanned (TripPlanner catalog pages, AA-812). NULLIF makes '' behave
+-- like an unset value (no rows), as NULL already did. Same name, roles, command and permissive kind;
+-- a WITH CHECK, if one exists, gets the same expression. Re-run: no-op once the qual has the NULLIF.
+DO $$
+DECLARE
+    t   text;
+    pol record;
+    expr constant text := 'tenant_id = NULLIF(current_setting(''app.tenant_id'', true), '''')::uuid';
+BEGIN
+    FOREACH t IN ARRAY ARRAY['gold_aa_internal.published_tours', 'silver_aa_internal.raw_tours'] LOOP
+        SELECT qual, with_check INTO pol FROM pg_policies
+         WHERE schemaname || '.' || tablename = t AND policyname = 'tenant_isolation';
+        IF NOT FOUND THEN
+            RAISE EXCEPTION 'migration 225: policy tenant_isolation missing on %', t;
+        END IF;
+        IF pol.qual NOT ILIKE '%nullif%' THEN
+            EXECUTE format('ALTER POLICY tenant_isolation ON %s USING (%s)', t, expr);
+        END IF;
+        IF pol.with_check IS NOT NULL AND pol.with_check NOT ILIKE '%nullif%' THEN
+            EXECUTE format('ALTER POLICY tenant_isolation ON %s WITH CHECK (%s)', t, expr);
+        END IF;
+    END LOOP;
+END $$;
 
 -- ── Tours ───────────────────────────────────────────────────────────────────────────────────────
 CREATE OR REPLACE VIEW catalog.v_tour WITH (security_barrier = true) AS
@@ -161,7 +254,8 @@ WITH atom AS (
            dt.title || E'\n' || dt.body AS day_text,
            pc.card_id
       FROM catalog.v_tour t
-      JOIN acp_contract.v_active_tour_atoms a ON a.tour_id = t.tour_id
+      -- the v_active_tour_atoms rule (203) on the base table: t is already a live master tour
+      JOIN acp_contract.tour_atoms a ON a.tour_id = t.tour_id AND NOT a.deleted AND NOT a.is_empty_marker
       LEFT JOIN catalog._tour_day_text dt ON dt.tour_id = t.tour_id AND dt.day_number = a.itinerary_day
       LEFT JOIN acp_shared.atom_place_card apc ON apc.atom_id = a.atom_id
       LEFT JOIN acp_shared.place_card pc ON pc.card_id = apc.card_id AND pc.status <> 'rejected'
@@ -278,16 +372,63 @@ SELECT p.destination_id, p.photo_id, p.path, p.place_label, p.tour_id, p.width, 
 COMMENT ON VIEW catalog.v_destination_photo IS
     'AA-679 — matched AA photos per destination (path as in catalog.v_tour_photo); position 1 = cover.';
 
+-- ── Ownership: every catalog view belongs to catalog_owner ─────────────────────────────────────
+-- ALTER ... OWNER TO needs the runner to be able to SET ROLE catalog_owner and catalog_owner to
+-- have CREATE on the schema; that CREATE is revoked right after (an owner keeps its views without it).
+GRANT CREATE ON SCHEMA catalog TO catalog_owner;
+ALTER VIEW catalog.v_tour              OWNER TO catalog_owner;
+ALTER VIEW catalog._tour_day_text      OWNER TO catalog_owner;
+ALTER VIEW catalog.v_tour_place        OWNER TO catalog_owner;
+ALTER VIEW catalog.v_tour_day          OWNER TO catalog_owner;
+ALTER VIEW catalog.v_tour_photo        OWNER TO catalog_owner;
+ALTER VIEW catalog.v_destination       OWNER TO catalog_owner;
+ALTER VIEW catalog.v_destination_photo OWNER TO catalog_owner;
+REVOKE CREATE ON SCHEMA catalog FROM catalog_owner;
+
 -- ── Grants (unguarded, see header) ──────────────────────────────────────────────────────────────
 GRANT USAGE ON SCHEMA catalog TO aa_app_user, tripplanner, booking;
 GRANT SELECT ON catalog.v_tour, catalog.v_tour_day, catalog.v_tour_place, catalog.v_tour_photo,
                 catalog.v_destination, catalog.v_destination_photo
     TO aa_app_user, tripplanner, booking;
 
+-- ── Sanity check: the views see live AA tours as catalog_owner, through the new policy only ─────
+DO $$
+DECLARE
+    n_view     bigint;
+    n_expected bigint;
+BEGIN
+    -- nil uuid: no tenant has it, so tenant_isolation admits nothing and only
+    -- catalog_owner_aa_master_read can (set_config(..., true) ends with the transaction)
+    PERFORM set_config('app.tenant_id', '00000000-0000-0000-0000-000000000000', true);
+    SET LOCAL ROLE catalog_owner;
+    SELECT count(*) INTO n_view FROM catalog.v_tour;
+    RESET ROLE;
+
+    -- the runner (owner, FORCE RLS) counts the same rows scoped to the master tenant
+    PERFORM set_config('app.tenant_id', '00000000-0000-0000-0000-000000000001', true);
+    SELECT count(*) INTO n_expected
+      FROM gold_aa_internal.published_tours pt
+      JOIN silver_aa_internal.raw_tours rt ON rt.tour_id = pt.tour_id
+     WHERE pt.tenant_id = '00000000-0000-0000-0000-000000000001'::uuid
+       AND pt.master_status = 'active' AND pt.deleted_at IS NULL
+       AND rt.source_status = 'active' AND rt.deleted_at IS NULL;
+    PERFORM set_config('app.tenant_id', '00000000-0000-0000-0000-000000000000', true);
+
+    RAISE NOTICE 'migration 225: catalog.v_tour as catalog_owner = % rows, live AA master tours = %',
+                 n_view, n_expected;
+    IF n_expected > 0 AND n_view = 0 THEN
+        RAISE EXCEPTION 'migration 225: catalog.v_tour is empty for catalog_owner but % live AA tours exist '
+                        '(RLS policy catalog_owner_aa_master_read or a grant is missing)', n_expected;
+    END IF;
+END $$;
+
+-- the runner keeps no membership (see header)
+REVOKE catalog_owner FROM CURRENT_USER;
+
 INSERT INTO shared.schema_versions (version, applied_at, description)
 VALUES ('225', now(), 'AA-679: schema catalog (CIS read model) — v_tour, v_tour_day, v_tour_place, '
-                      'v_tour_photo, v_destination, v_destination_photo; SELECT to aa_app_user, '
-                      'tripplanner, booking')
+                      'v_tour_photo, v_destination, v_destination_photo owned by catalog_owner (NOLOGIN, '
+                      'AA-master RLS read policy); SELECT to aa_app_user, tripplanner, booking')
 ON CONFLICT (version) DO NOTHING;
 
 COMMIT;
