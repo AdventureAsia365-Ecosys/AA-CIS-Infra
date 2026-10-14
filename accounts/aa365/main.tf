@@ -197,6 +197,15 @@ module "waf" {
   vpc_allow_cidr = var.vpc_cidr
   tags           = local.common_tags
 
+  # S235 Phase 0: same web ACL on the CIS and Booking REST API stages (real client IP -> rate + geo
+  # actually apply). Gated OFF by default: associating a web ACL with an API Gateway stage needs
+  # apigateway:SetWebACL, which the CI role (cicd.tf APIGatewayManage) does not have yet. Turn on
+  # after that grant is applied (separate cicd.tf PR), see var.waf_protect_rest_api_stages.
+  rest_api_stage_arns = var.waf_protect_rest_api_stages ? {
+    cis     = module.api_gateway.stage_arn
+    booking = aws_api_gateway_stage.booking.arn
+  } : {}
+
   depends_on = [module.alb]
 }
 

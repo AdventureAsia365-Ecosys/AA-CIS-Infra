@@ -1,4 +1,4 @@
-variable "project"     { type = string }
+variable "project" { type = string }
 variable "environment" { type = string }
 
 variable "alb_arn" {
@@ -28,4 +28,16 @@ variable "vpc_allow_cidr" {
   type        = string
   default     = null
   description = "Optional CIDR to bypass GeoBlock/RateLimit for internal VPC Link traffic health checks — leave null to skip this rule entirely"
+}
+
+variable "managed_rule_count_overrides" {
+  type        = list(string)
+  description = "AWSManagedRulesCommonRuleSet sub-rules set to COUNT instead of BLOCK (S235: known false positives for this API)"
+  default     = ["SizeRestrictions_BODY", "CrossSiteScripting_BODY"]
+}
+
+variable "rest_api_stage_arns" {
+  type        = map(string)
+  description = "API Gateway REST API stage ARNs to associate with this web ACL, keyed by a static label (S235). Empty = none."
+  default     = {}
 }

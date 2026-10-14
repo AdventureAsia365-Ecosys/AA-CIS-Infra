@@ -12,3 +12,8 @@ output "custom_domain_target" {
   description = "Regional domain name to set as CNAME in Namecheap"
   value       = aws_api_gateway_domain_name.api_cis.regional_domain_name
 }
+
+output "stage_arn" {
+  description = "ARN of the REST API stage (WAF web ACL association target, S235)"
+  value       = aws_api_gateway_stage.dev.arn
+}

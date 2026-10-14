@@ -249,18 +249,18 @@ resource "aws_security_group" "alb" {
   description = "ALB security group"
   vpc_id      = aws_vpc.main.id
 
+  # S235 Phase 0 (AA-678): the ALB is reached ONLY through API Gateway -> VPC link -> internal NLB
+  # (modules/alb/vpc_link.tf). That traffic, and the NLB's own health checks, arrive on :80 from the
+  # NLB's private IPs inside this VPC (PrivateLink traffic is source-NATed to the NLB). Nothing calls
+  # the ALB DNS name directly (no DNS record, no app config points at it; checked 14/10/2026), so the
+  # previous 0.0.0.0/0 on :80 and :443 only let the internet skip API Gateway and the gateway WAF.
+  # :443 is closed entirely: the HTTPS listener has no caller (the NLB forwards :80 only).
   ingress {
+    description = "HTTP from the VPC (VPC-link NLB traffic + NLB health checks)"
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  ingress {
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = [var.vpc_cidr]
   }
 
   egress {

@@ -71,8 +71,10 @@ resource "aws_lb_target_group" "api" {
 # would fail on HTTPS because the ALB cert only covers the custom domain, not
 # the ELB hostname. Forwarding on HTTP allows API Gateway to reach the backend.
 # There is no gateway authorizer any more (AA-750 removed the TOKEN authorizer): every API
-# Gateway route is NONE and the app enforces auth (FastAPI JWT / admin secret). The ALB itself is
-# internet-facing, so a service behind it must never trust the gateway to have authenticated.
+# Gateway route is NONE and the app enforces auth (FastAPI JWT / admin secret). The ALB is still
+# internet-facing (scheme change = replacement, deferred), but since S235 Phase 0 its security group
+# only admits :80 from the VPC CIDR (VPC-link NLB). A service behind it must still never trust the
+# gateway to have authenticated.
 resource "aws_lb_listener" "http" {
   load_balancer_arn = aws_lb.main.arn
   port              = 80

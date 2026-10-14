@@ -148,3 +148,12 @@ variable "alert_email" {
   type        = string
   default     = "pqnghiep1354@gmail.com"
 }
+
+# S235 Phase 0 (AA-678): associate the REGIONAL web ACL (modules/waf) with the CIS and Booking REST
+# API stages. Keep false until (1) the CI role has apigateway:SetWebACL (otherwise the CI apply
+# fails with AccessDenied on the association) and (2) the geo allow-list is confirmed for Booking
+# (customers outside the 10 allowed countries would be blocked).
+variable "waf_protect_rest_api_stages" {
+  type    = bool
+  default = false
+}
