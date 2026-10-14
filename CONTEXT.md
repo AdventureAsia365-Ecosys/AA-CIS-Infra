@@ -62,11 +62,13 @@ accounts/
     versions.tf                   (providers + S3 state backend)
     cicd.tf                       (GitHub Actions OIDC deploy roles for the app repos)
     tripplanner.tf                (TripPlanner OIDC deploy role + TripPlanner-specific resources)
+    booking.tf                    (AA-Booking ECS service, ECR, ALB rule /booking/*, REST API on the
+                                   existing VPC link, OIDC deploy role — AA-678)
     bedrock_satellite_assume.tf   (cross-account Bedrock assume-role trust)
     cost_explorer_satellite_assume.tf (acc2 → acc1/acc3 Cost Explorer read roles, AA-623)
     dfs_balance.tf                (daily DFS balance alert Lambda + EventBridge schedule, AA-627)
     observability.tf, diagnostics.tf
-    variables.tf / tripplanner_variables.tf
+    variables.tf / tripplanner_variables.tf / booking_variables.tf
   acc1-bedrock/   ← acc1 Bedrock invoker role (fallback) + Cost Explorer reader
   acc3-bedrock/   ← acc3 Bedrock invoker role (primary) + Bedrock Batch (batch.tf)
                     + Cost Explorer reader
@@ -93,6 +95,16 @@ drain on deploy (AA-310, `modules/ecs/main.tf`). The old S3 → Lambda → Step 
 `authorizer` / `brand-brief-parser` Lambdas were retired in AA-750; the pipeline runs in the API
 and the durable job worker.
 
+**AA-Booking** (`booking.tf`, AA-678, root ADR 0004) is a separate app on the same cluster, VPC,
+ALB and RDS: ECS service `aa-booking-dev-api` (created at `desired_count = 0`, scaled by hand,
+`ignore_changes` on count and task definition), ECR `aa-booking-dev-api` (immutable git-SHA tags),
+own execution/task roles, secret `booking/dev/database-url` (container only, value set out-of-band).
+Routing: its own REST API `aa-booking-dev-api` on the existing VPC link → NLB → ALB HTTP listener
+rule `/booking`, `/booking/*` (priority 100) → target group `aa-booking-dev-api-tg` (health
+`/booking/health`). That listener rule is the only object attached to a CIS resource. Dev uses
+the execute-api URL (output `booking_api_base_url`); both CIS custom domains use an empty base
+path, so a `booking` mapping cannot be added there, and the ACM cert has no Booking name yet.
+
 The **DFS balance alert** (AA-627) is a small in-VPC Lambda `aa-cis-dev-dfs-balance-check`
 triggered daily by EventBridge Scheduler. The schedule must live in the `aa-cis-dev-acp` schedule
 group: the CI role's IAM is scoped to `schedule/aa-cis-dev-acp/*`, and a schedule in `default`
@@ -116,8 +128,8 @@ makes CI Terraform Plan fail with 403.
 
 - App repos deploy via **GitHub Actions OIDC**, assuming IAM roles defined in `cicd.tf`
   (`aa-cis-dev-role`, CIS app deploy + this repo's own Terraform/DB Migrate workflows) and
-  `tripplanner.tf` (`aa-tripplanner-dev-app-deploy`). Each app repo gets its **own** deploy role;
-  a new repo (e.g. AA-Booking) is never added to `aa-cis-dev-role`.
+  `tripplanner.tf` (`aa-tripplanner-dev-app-deploy`) and `booking.tf` (`aa-booking-dev-app-deploy`).
+  Each app repo gets its **own** deploy role; a new repo is never added to `aa-cis-dev-role`.
 - **OIDC subject fact (learned AA-588, re-verified AA-678):** the repos have GitHub's immutable
   subject claim **on** (`use_immutable_subject: true` from
   `GET /repos/{owner}/{repo}/actions/oidc/customization/sub`), so the real OIDC subject is
@@ -129,6 +141,12 @@ makes CI Terraform Plan fail with 403.
     AA-678 it trusted every org repo (`repo:AdventureAsia365-Ecosys*/*:*`).
   - `aa-tripplanner-dev-app-deploy` still uses the name-wildcard form
     `repo:AdventureAsia365-Ecosys*/AA-TripPlanner-Web*:*`.
+  - `aa-booking-dev-app-deploy` trusts only AA-Booking, contexts `environment:dev` and
+    `ref:refs/heads/main`. Until `booking_github_repo_id` is set it accepts the immutable form with
+    any repo id plus the plain form, both pinned to the exact repo name; once set, only the
+    immutable subject with that id (fail closed). Its policy is scoped to the Booking ECR repo,
+    task family `aa-booking-dev-api` and service `aa-booking-dev-api` (it cannot register a CIS
+    task-definition revision or update a CIS service).
 - This repo has **branch protection** (CI Terraform Plan among the required checks). Terraform
   Plan runs on PRs; PRs are merged after CI passes. There is no auto-merge on this repo.
 
@@ -167,5 +185,5 @@ makes CI Terraform Plan fail with 403.
   routing, OIDC design, and the App/Infra ownership split.
 - `docs/database/schema-ownership.md` (root docs repo) — owner repo per schema / `shared.*` table.
 - `accounts/aa365/versions.tf` — the authoritative state backend + provider config.
-- `accounts/aa365/cicd.tf`, `accounts/aa365/tripplanner.tf` — the OIDC deploy roles and their
+- `accounts/aa365/cicd.tf`, `accounts/aa365/tripplanner.tf`, `accounts/aa365/booking.tf` — the OIDC deploy roles and their
   corrected trust subjects.
