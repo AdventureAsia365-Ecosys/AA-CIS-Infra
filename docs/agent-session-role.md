@@ -39,7 +39,7 @@ role_arn       = arn:aws:iam::005097885195:role/aa-cis-dev-agent-session
 source_profile = <same source_profile as aa365-admin>
 mfa_serial     = <same mfa_serial as aa365-admin>
 region         = us-west-1
-duration_seconds = 28800
+duration_seconds = 43200
 ```
 
 In an agent shell: `export AWS_PROFILE=aa365-agent` (never `aa365-admin`).

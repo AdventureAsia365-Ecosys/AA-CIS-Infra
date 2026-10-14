@@ -166,3 +166,12 @@ variable "waf_common_rules_count_only" {
   type    = bool
   default = true
 }
+
+# AA-806: phase 3 of the CI role split (docs/ci-role-split.md). When true, the Terraform apply
+# role's boundary also requires the workload boundary on role policy writes (Put/Delete/Attach/
+# DetachRolePolicy), not only on CreateRole. Leave false until every aa-*-dev-* role carries
+# aws_iam_policy.workload_boundary, or every policy change to an existing role is denied.
+variable "tf_apply_require_boundary_on_role_policy_writes" {
+  type    = bool
+  default = false
+}
