@@ -14,10 +14,22 @@
 #                           Same grants as aa-cis-dev-role (so the cut-over is a drop-in), capped by
 #                           the permissions boundary aa-cis-infra-tf-apply-boundary.
 #
-# Bootstrap: the three roles and the two boundary policies are NOT manageable by the apply role
-# (their names are outside aa-*-dev-*, and the boundary denies writes to the boundary policies).
-# They are applied by a human with the MFA admin profile, like the acc1/acc3 roots. A CI apply of a
-# change to them fails with AccessDenied by design.
+# Bootstrap objects, which the apply role cannot change (a CI apply of a change to them fails with
+# AccessDenied by design; a human applies them with the MFA admin profile, like the acc1/acc3 roots):
+#   - aa-cis-infra-tf-plan / -apply: names outside aa-*-dev-*;
+#   - aa-cis-dev-app-deploy, aa-cis-dev-agent-session: inside the pattern, so explicitly denied
+#     (local.tf_apply_protected_role_arns);
+#   - aa-cis-dev-role (legacy, cicd.tf): explicitly denied except DeleteRole / DetachRolePolicy /
+#     DeleteRolePolicy (retirement only), never PassRole;
+#   - both boundary policies, and the GitHub OIDC provider (no OIDC/SAML provider writes at all).
+#
+# What the apply boundary does NOT stop yet (closed only by steps 3 + 4 of docs/ci-role-split.md):
+# every other aa-*-dev-* role (ECS task/execution, Lambda exec, ...) has no boundary today. The apply
+# role may rewrite its inline policy or trust and PassRole it to an ECS task or Lambda it can start,
+# so code running under that role gets whatever IAM rights the apply role wrote into it - including
+# rights the boundary denies the apply role itself. The sts:AssumeRole deny does not help there (no
+# AssumeRole call is involved). Phase 3 (var.tf_apply_require_boundary_on_role_policy_writes) after
+# step 4 caps such roles at the workload boundary (no IAM writes).
 #
 # aa-cis-dev-role stays until both repos have switched (cut-over plan: docs/ci-role-split.md).
 # =============================================================================
@@ -30,6 +42,7 @@ locals {
   app_deploy_role_name = "${local.name_prefix}-app-deploy"
   tf_plan_role_name    = "aa-cis-infra-tf-plan"
   tf_apply_role_name   = "aa-cis-infra-tf-apply"
+  legacy_cicd_role_arn = "arn:aws:iam::${var.account_id}:role/aa-cis-dev-role"
 
   # Roles Terraform in this root may create, change, tag or pass. Every role in accounts/aa365 and
   # its modules is aa-<app>-<env>-*, except the NAT instance role (modules/vpc), which predates the
@@ -37,6 +50,36 @@ locals {
   tf_managed_role_arns = [
     "arn:aws:iam::${var.account_id}:role/aa-*-${var.environment}-*",
     "arn:aws:iam::${var.account_id}:role/aa-cis-nat-instance-role",
+  ]
+
+  # Roles that match tf_managed_role_arns but that the apply role must not write or pass: the app
+  # deploy role created here (its permissions are the whole point of the split) and the agent
+  # session role (humans' agent shells). The legacy aa-cis-dev-role is handled separately (it may be
+  # dismantled, never edited upward or passed).
+  tf_apply_protected_role_arns = [
+    "arn:aws:iam::${var.account_id}:role/${local.app_deploy_role_name}",
+    "arn:aws:iam::${var.account_id}:role/${local.name_prefix}-agent-session",
+  ]
+
+  # Every IAM role write the apply role's identity policy grants, plus PassRole.
+  iam_role_write_actions = [
+    "iam:CreateRole", "iam:DeleteRole", "iam:UpdateRole", "iam:UpdateRoleDescription",
+    "iam:UpdateAssumeRolePolicy", "iam:PutRolePolicy", "iam:DeleteRolePolicy",
+    "iam:AttachRolePolicy", "iam:DetachRolePolicy", "iam:PutRolePermissionsBoundary",
+    "iam:TagRole", "iam:UntagRole", "iam:PassRole",
+  ]
+
+  # Secret values terraform plan reads on refresh: every aws_secretsmanager_secret_version in this
+  # root and the dfs_balance admin-secret data source. Nothing else (no RDS DSN, JWT, OpenAI key).
+  # A new aws_secretsmanager_secret_version must be added here (bootstrap: local apply), or plan
+  # fails with AccessDenied on refresh after it is first applied.
+  tf_plan_secret_arns = [
+    aws_secretsmanager_secret.tripplanner_db.arn,
+    aws_secretsmanager_secret.tripplanner_api_key.arn,
+    aws_secretsmanager_secret.tripplanner_mapbox.arn,
+    module.secrets.acp_webhook_secret_arn,
+    module.secrets.acp_partner_api_secret_arn,
+    var.secret_admin_arn,
   ]
 
   # CIS app objects the app deploy role may touch.
@@ -55,6 +98,7 @@ locals {
     "TripPlannerRoleTagging",
     "AgentSessionRoleTagging",
     "BookingRoleTagging",
+    "OIDCProviderManage", # -> OIDCProviderRead; the provider is a bootstrap object
   ]
 }
 
@@ -98,7 +142,9 @@ resource "aws_iam_policy" "workload_boundary" {
 }
 
 # Boundary of the Terraform apply role. Its identity policy keeps the broad service grants of
-# aa-cis-dev-role; this boundary is what stops it from escalating through IAM.
+# aa-cis-dev-role; this boundary keeps it off the bootstrap objects, other systems' roles, users and
+# keys. It does NOT by itself stop escalation through an unbounded aa-*-dev-* workload role (header
+# comment); phase 3 after step 4 of the cut-over closes that.
 data "aws_iam_policy_document" "tf_apply_boundary" {
   statement {
     sid       = "AllowWithinIdentityPolicy"
@@ -109,15 +155,45 @@ data "aws_iam_policy_document" "tf_apply_boundary" {
   # Create/change/tag/pass only roles named like this stack's roles. The bootstrap roles in this
   # file (aa-cis-infra-tf-*) and any role of another system are out of reach.
   statement {
-    sid    = "DenyRoleWritesOutsideStack"
+    sid           = "DenyRoleWritesOutsideStack"
+    effect        = "Deny"
+    actions       = local.iam_role_write_actions
+    not_resources = local.tf_managed_role_arns
+  }
+
+  # Inside the pattern but bootstrap: the app deploy role and the agent session role.
+  statement {
+    sid       = "DenyProtectedRoleWrites"
+    effect    = "Deny"
+    actions   = local.iam_role_write_actions
+    resources = local.tf_apply_protected_role_arns
+  }
+
+  # Legacy aa-cis-dev-role: no boundary and IAM rights on "*", so editing its trust or passing it
+  # would be a direct escalation. Only the actions that take it apart (step 3) stay possible.
+  statement {
+    sid    = "DenyLegacyCiRoleWrites"
     effect = "Deny"
     actions = [
-      "iam:CreateRole", "iam:DeleteRole", "iam:UpdateRole", "iam:UpdateRoleDescription",
-      "iam:UpdateAssumeRolePolicy", "iam:PutRolePolicy", "iam:DeleteRolePolicy",
-      "iam:AttachRolePolicy", "iam:DetachRolePolicy", "iam:PutRolePermissionsBoundary",
-      "iam:TagRole", "iam:UntagRole", "iam:PassRole",
+      for a in local.iam_role_write_actions : a
+      if !contains(["iam:DeleteRole", "iam:DetachRolePolicy", "iam:DeleteRolePolicy"], a)
     ]
-    not_resources = local.tf_managed_role_arns
+    resources = [local.legacy_cicd_role_arn]
+  }
+
+  # The GitHub OIDC provider is a bootstrap object: adding an issuer or client id would let a
+  # rewritten aa-*-dev-* trust accept tokens from an attacker-controlled issuer.
+  statement {
+    sid    = "DenyIdentityProviderWrites"
+    effect = "Deny"
+    actions = [
+      "iam:CreateOpenIDConnectProvider", "iam:DeleteOpenIDConnectProvider",
+      "iam:UpdateOpenIDConnectProviderThumbprint", "iam:AddClientIDToOpenIDConnectProvider",
+      "iam:RemoveClientIDFromOpenIDConnectProvider", "iam:TagOpenIDConnectProvider",
+      "iam:UntagOpenIDConnectProvider", "iam:CreateSAMLProvider", "iam:UpdateSAMLProvider",
+      "iam:DeleteSAMLProvider",
+    ]
+    resources = ["*"]
   }
 
   # A role the apply role creates must carry the workload boundary. StringNotEquals is also true
@@ -137,6 +213,9 @@ data "aws_iam_policy_document" "tf_apply_boundary" {
   # Phase 3 switch (docs/ci-role-split.md): once every aa-*-dev-* role carries the workload
   # boundary, also require it on policy writes to existing roles. Off by default because no
   # existing role has a boundary yet, so turning it on now would block every role policy change.
+  # UpdateAssumeRolePolicy and PassRole cannot be conditioned on iam:PermissionsBoundary (AWS does
+  # not populate that key for them), so they are not in this statement: once every role carries
+  # the workload boundary, passing or re-trusting one only ever yields bounded rights.
   dynamic "statement" {
     for_each = var.tf_apply_require_boundary_on_role_policy_writes ? [1] : []
     content {
@@ -186,8 +265,9 @@ data "aws_iam_policy_document" "tf_apply_boundary" {
     resources = ["*"]
   }
 
-  # Terraform never assumes another role from this root. Denying it closes the path "rewrite the
-  # trust policy of an aa-*-dev-* role to trust me, then assume it" (that role has no boundary yet).
+  # Terraform never assumes another role from this root. Denying it closes the direct path "rewrite
+  # the trust policy of an aa-*-dev-* role to trust me, then assume it". It does not close the
+  # PassRole path (header comment).
   statement {
     sid       = "DenyAssumeRole"
     effect    = "Deny"
@@ -392,17 +472,15 @@ resource "aws_iam_role_policy" "tf_plan" {
         Resource = "arn:aws:dynamodb:${var.aws_region}:${var.account_id}:table/aa-cis-tfstate-lock-${var.account_id}"
       },
       {
-        # Refresh of aws_secretsmanager_secret_version resources and the dfs_balance admin-secret
-        # data source reads the values. ReadOnlyAccess does not include GetSecretValue. The same
-        # values are already in the state file this role reads, so this widens nothing in practice.
-        Sid    = "ReadStackSecretValues"
-        Effect = "Allow"
-        Action = ["secretsmanager:GetSecretValue"]
-        Resource = [
-          "arn:aws:secretsmanager:${var.aws_region}:${var.account_id}:secret:${var.project}/${var.environment}/*",
-          "arn:aws:secretsmanager:${var.aws_region}:${var.account_id}:secret:tripplanner/${var.environment}/*",
-          "arn:aws:secretsmanager:${var.aws_region}:${var.account_id}:secret:booking/${var.environment}/*",
-        ]
+        # Refresh of the aws_secretsmanager_secret_version resources and the dfs_balance
+        # admin-secret data source reads these values; ReadOnlyAccess has no GetSecretValue. This
+        # role is assumed from any PR branch of AA-CIS-Infra, whose workflow file the PR can edit,
+        # so it is limited to exactly the secrets Terraform reads (residual risk:
+        # docs/ci-role-split.md).
+        Sid      = "ReadStackSecretValues"
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = local.tf_plan_secret_arns
       },
     ]
   })
@@ -463,7 +541,8 @@ resource "aws_iam_role_policy" "tf_apply" {
         },
         {
           # IAMRoleManage of aa-cis-dev-role, scoped to the stack's role names. The boundary
-          # enforces the same scope and requires the workload boundary on CreateRole.
+          # enforces the same scope, carves out the bootstrap roles and requires the workload
+          # boundary on CreateRole.
           Sid    = "IAMRoleManageStack"
           Effect = "Allow"
           Action = [
@@ -476,6 +555,16 @@ resource "aws_iam_role_policy" "tf_apply" {
             "iam:TagRole", "iam:UntagRole",
           ]
           Resource = local.tf_managed_role_arns
+        },
+        {
+          # OIDCProviderManage of aa-cis-dev-role, read only (refresh of the provider).
+          Sid    = "OIDCProviderRead"
+          Effect = "Allow"
+          Action = [
+            "iam:GetOpenIDConnectProvider", "iam:ListOpenIDConnectProviders",
+            "iam:ListOpenIDConnectProviderTags",
+          ]
+          Resource = "*"
         },
         {
           # Associating the REGIONAL web ACL with the CIS / Booking REST API stages

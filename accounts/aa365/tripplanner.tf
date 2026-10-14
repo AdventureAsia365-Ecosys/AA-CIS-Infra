@@ -450,7 +450,8 @@ resource "aws_apigatewayv2_stage" "tripplanner" {
   tags        = local.tp_tags
 
   # AA-806 (from AA-805): the HTTP API has no auth at the edge and HTTP APIs cannot carry a WAF web
-  # ACL, so stage throttling is the only cap in front of the Lambdas. The limits are shared by every
+  # ACL, so stage throttling is the only cap in front of the Lambdas. default_route_settings applies
+  # per route (each route its own bucket), not as one stage-wide cap. The limits are shared by every
   # caller (the Vercel BFF is the only one), not per client. Numbers: tripplanner_variables.tf.
   default_route_settings {
     throttling_rate_limit  = var.tripplanner_throttle_rate_limit

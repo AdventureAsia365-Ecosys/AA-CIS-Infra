@@ -171,9 +171,13 @@ makes CI Terraform Plan fail with 403.
   (`environment:prod`, boundary `aa-cis-infra-tf-apply-boundary`). `aa-cis-dev-role` stays until
   the workflows have switched. Once the apply role is in use, **every new `aws_iam_role` must set
   `permissions_boundary = aws_iam_policy.workload_boundary.arn`** and keep an `aa-*-dev-*` name, or
-  CI apply is denied. Changes to the bootstrap roles/boundaries themselves are applied locally.
-- **TripPlanner HTTP API throttling** (AA-806): stage default 20 rps / burst 40 and a dedicated
-  `POST /trip/{trip_id}/narrate` route at 2 rps / burst 5 (`tripplanner_variables.tf`). HTTP APIs
+  CI apply is denied. Changes to the bootstrap objects (the three roles, both boundaries, the GitHub
+  OIDC provider, `aa-cis-dev-role`, `aa-cis-dev-agent-session`) are applied locally. Until step 4
+  of the cut-over (boundary on every existing role) the apply role can still escalate by editing
+  an unbounded `aa-*-dev-*` workload role and passing it to a task/Lambda (see the doc).
+- **TripPlanner HTTP API throttling** (AA-806): 20 rps / burst 40 **per route** (stage
+  `default_route_settings`; each route gets its own bucket, it is not one stage-wide cap) and a
+  dedicated `POST /trip/{trip_id}/narrate` route at 2 rps / burst 5 (`tripplanner_variables.tf`). HTTP APIs
   cannot carry a WAF web ACL, so this is the only edge cap. WAF count review runbook:
   `docs/waf-count-review.md`.
 - This repo has **branch protection** (CI Terraform Plan among the required checks). Terraform

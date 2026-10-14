@@ -10,19 +10,21 @@ variable "tripplanner_advisor_email" {
 }
 
 # -----------------------------------------------------------------------------
-# AA-806 (from AA-805): HTTP API stage throttling. Account-wide API Gateway limits are 10,000 rps /
+# AA-806 (from AA-805): HTTP API route throttling. default_route_settings is applied to each route
+# separately (ANY /browse/{proxy+} and ANY /trip/{proxy+} each get their own bucket); it is not one
+# aggregate cap for the stage. Account-wide API Gateway limits are 10,000 rps /
 # 5,000 burst; these Dev defaults sit far below that and are meant as a backstop against a scan or
 # a runaway client, not as capacity planning. Revisit with real traffic before any public launch.
 # -----------------------------------------------------------------------------
 variable "tripplanner_throttle_rate_limit" {
   type        = number
-  description = "Steady-state requests per second for all TripPlanner routes (stage default)."
+  description = "Steady-state requests per second, per route (applied to every TripPlanner route without its own route_settings; each route has its own bucket, not one stage-wide cap)."
   default     = 20
 }
 
 variable "tripplanner_throttle_burst_limit" {
   type        = number
-  description = "Burst (token bucket size) for all TripPlanner routes (stage default)."
+  description = "Burst (token bucket size), per route (applied to every TripPlanner route without its own route_settings)."
   default     = 40
 }
 
