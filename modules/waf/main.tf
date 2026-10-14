@@ -56,8 +56,19 @@ resource "aws_wafv2_web_acl" "main" {
     name     = "AWSManagedRulesCommonRuleSet"
     priority = 1
 
+    # Observe mode (S235 rollout): with var.common_rules_count_only = true the WHOLE group runs in
+    # COUNT (matches are logged and labelled, nothing is blocked). Set it to false (enforce,
+    # override_action none) only after reviewing the counted matches; the per-sub-rule overrides
+    # below then still keep their sub-rules in COUNT.
     override_action {
-      none {}
+      dynamic "count" {
+        for_each = var.common_rules_count_only ? [1] : []
+        content {}
+      }
+      dynamic "none" {
+        for_each = var.common_rules_count_only ? [] : [1]
+        content {}
+      }
     }
 
     statement {
@@ -65,7 +76,7 @@ resource "aws_wafv2_web_acl" "main" {
         name        = "AWSManagedRulesCommonRuleSet"
         vendor_name = "AWS"
 
-        # Sub-rules switched to COUNT (logged, not blocked). These requests never reached the
+        # Sub-rules kept in COUNT once the group is enforced. These requests never reached the
         # managed rules before S235; the defaults are known to break this API (SizeRestrictions_BODY
         # blocks any body > 8 KB: Excel/file uploads and large admin JSON; CrossSiteScripting_BODY
         # matches HTML in tour content edits). Review the WAF log (label

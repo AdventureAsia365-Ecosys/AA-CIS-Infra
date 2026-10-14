@@ -197,6 +197,10 @@ module "waf" {
   vpc_allow_cidr = var.vpc_cidr
   tags           = local.common_tags
 
+  # S235 Phase 0: CommonRuleSet starts in observe mode (whole group COUNT). Flip
+  # var.waf_common_rules_count_only to false after reviewing 1-2 days of counted matches.
+  common_rules_count_only = var.waf_common_rules_count_only
+
   # S235 Phase 0: same web ACL on the CIS and Booking REST API stages (real client IP -> rate + geo
   # actually apply). Gated OFF by default: associating a web ACL with an API Gateway stage needs
   # apigateway:SetWebACL, which the CI role (cicd.tf APIGatewayManage) does not have yet. Turn on

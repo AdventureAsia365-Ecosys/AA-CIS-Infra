@@ -157,3 +157,12 @@ variable "waf_protect_rest_api_stages" {
   type    = bool
   default = false
 }
+
+# S235 Phase 0 (AA-678): AWSManagedRulesCommonRuleSet rollout switch. true (default) = the whole
+# managed group runs in COUNT: matches show up in the WAF log (terminatingRuleMatchDetails is empty,
+# look at nonTerminatingMatchingRules / labels) and in AWS/WAFV2 CountedRequests, nothing is
+# blocked. Set false to enforce once the counted matches have been reviewed.
+variable "waf_common_rules_count_only" {
+  type    = bool
+  default = true
+}

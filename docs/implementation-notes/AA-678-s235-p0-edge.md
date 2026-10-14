@@ -25,6 +25,11 @@ Branch `feat/s235-p0-edge-hardening`. Part of the ecosystem blueprint Phase 0 ap
 - **Managed rule overrides to COUNT:** `SizeRestrictions_BODY` (bodies > 8 KB: uploads, large admin
   JSON) and `CrossSiteScripting_BODY` (HTML in tour content). These requests never reached the
   managed rules before (7-day WAF metrics: 224,781 requests allowed by VpcLinkInternalAllow).
+- **Observe mode first (orchestrator request):** `var.waf_common_rules_count_only` (default true)
+  puts the whole CommonRuleSet group in COUNT (`override_action count`). First apply blocks
+  nothing new; review `AWS/WAFV2 CountedRequests` (Rule=AWSManagedRulesCommonRuleSet) and the WAF
+  log for 1-2 days, then set false to enforce (the per-sub-rule COUNT overrides stay). After the SG
+  closure no direct-internet request reaches the ALB, so observe mode drops no protection there.
 - **TripPlanner trust = one exact sub** (`StringEquals`):
   `repo:AdventureAsia365-Ecosys@276539096/AA-TripPlanner-Web@1365222661:ref:refs/heads/main`.
   Only `deploy-lambdas.yml` (job `deploy`, no `environment:`) assumes the role; `ci.yml` has no

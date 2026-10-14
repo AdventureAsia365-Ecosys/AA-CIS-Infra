@@ -41,3 +41,9 @@ variable "rest_api_stage_arns" {
   description = "API Gateway REST API stage ARNs to associate with this web ACL, keyed by a static label (S235). Empty = none."
   default     = {}
 }
+
+variable "common_rules_count_only" {
+  type        = bool
+  description = "true = AWSManagedRulesCommonRuleSet in COUNT for the whole group (observe mode); false = enforce, with managed_rule_count_overrides still in COUNT (S235)"
+  default     = true
+}
