@@ -1,7 +1,8 @@
 # =============================================================================
-# Ecosystem identity (AA-703, root ADR 0006) — inputs for identity.tf.
-# Every optional piece defaults to "off" so the first apply works before Nghiep has created the
-# Google / Facebook OAuth apps, the SES identity (AA-811) or the us-east-1 ACM certificate.
+# Ecosystem identity (AA-703, root ADR 0006, accepted S236) — inputs for identity.tf.
+# Every optional piece defaults to "off" so the first apply works before the SES identity (AA-811)
+# is verified, the us-east-1 ACM certificate (AA-818) is issued, or the EXTERNAL Google / Facebook
+# OAuth apps exist. WORKFORCE has no social IdP at all (staff sign in with an email code).
 # =============================================================================
 
 variable "identity_staff_email_domain" {
@@ -29,8 +30,14 @@ variable "identity_external_domain_prefix" {
   default     = "aa365-auth-dev"
 }
 
+variable "identity_custom_domains_enabled" {
+  description = "Create the custom domains auth. / staff-auth. (ADR 0006 decision 10). Turn on only after the AA-818 us-east-1 certificate is ISSUED and the parent lumiguides.it.com has an A record; then add the CNAMEs from output identity_custom_domain_cloudfront_targets. Off = Dev runs on the prefix domains."
+  type        = bool
+  default     = false
+}
+
 variable "identity_custom_domain_certificate_arn" {
-  description = "Public ACM certificate in us-east-1 (acc2) covering the two auth custom domains. Empty = custom domains are not created (Dev runs on the prefix domains)."
+  description = "Public ACM certificate in us-east-1 (acc2, AA-818) covering auth. and staff-auth. Required when identity_custom_domains_enabled = true."
   type        = string
   default     = ""
 
@@ -41,20 +48,26 @@ variable "identity_custom_domain_certificate_arn" {
 }
 
 variable "identity_workforce_custom_domain" {
-  description = "WORKFORCE custom domain, used only when identity_custom_domain_certificate_arn is set."
+  description = "WORKFORCE custom domain, used only when identity_custom_domains_enabled = true."
   type        = string
   default     = "staff-auth.lumiguides.it.com"
 }
 
 variable "identity_external_custom_domain" {
-  description = "EXTERNAL custom domain, used only when identity_custom_domain_certificate_arn is set."
+  description = "EXTERNAL custom domain, used only when identity_custom_domains_enabled = true."
   type        = string
   default     = "auth.lumiguides.it.com"
 }
 
 # ── Email (AA-811) ───────────────────────────────────────────────────────────
+variable "identity_ses_enabled" {
+  description = "Send Cognito mail through the AA-811 SES identity (DEVELOPER mode) and enable EMAIL_OTP as a first factor in both pools. Turn on only when the identity shows VerifiedForSendingStatus=true and DKIM SUCCESS (and, for real users, the account is out of the SES sandbox in us-west-1). Off = COGNITO_DEFAULT sender, no email codes: only break-glass can sign in to WORKFORCE."
+  type        = bool
+  default     = false
+}
+
 variable "identity_ses_identity_arn" {
-  description = "ARN of the verified SES identity in acc2 us-west-1 (AA-811). Empty = COGNITO_DEFAULT sender (50 mails/day) and EMAIL_OTP is NOT enabled as a first factor (it requires SES)."
+  description = "ARN of the verified SES identity in acc2 us-west-1 created by AA-811 (ses.tf), e.g. arn:aws:ses:us-west-1:005097885195:identity/lumiguides.it.com. Required when identity_ses_enabled = true."
   type        = string
   default     = ""
 
@@ -65,36 +78,24 @@ variable "identity_ses_identity_arn" {
 }
 
 variable "identity_ses_from_address" {
-  description = "FROM address for Cognito mail via SES, e.g. \"Adventure Asia <no-reply@lumiguides.it.com>\". Required when identity_ses_identity_arn is set."
+  description = "FROM address for Cognito mail via SES (S237 D5 / ADR 0006 item 5: no-reply@ on the apex identity). Must be inside the identity's domain and match any ses:FromAddress condition AA-811 sets."
   type        = string
-  default     = ""
+  default     = "Adventure Asia <no-reply@lumiguides.it.com>"
 }
 
 variable "identity_ses_configuration_set_workforce" {
-  description = "Optional SES configuration set for WORKFORCE mail (separate reputation tracking from EXTERNAL, ADR 0006 Costs)."
+  description = "SES configuration set (AA-811) for WORKFORCE mail: separate bounce/complaint tracking from EXTERNAL (ADR 0006 Costs). Empty = none. Used only when identity_ses_enabled = true."
   type        = string
   default     = ""
 }
 
 variable "identity_ses_configuration_set_external" {
-  description = "Optional SES configuration set for EXTERNAL mail."
+  description = "SES configuration set (AA-811) for EXTERNAL mail. Empty = none. Used only when identity_ses_enabled = true."
   type        = string
   default     = ""
 }
 
-# ── Google / Facebook IdPs (created only when both id and secret ARN are set) ─
-variable "identity_workforce_google_client_id" {
-  description = "Google OAuth client id for WORKFORCE (Internal consent screen, adventure.asia Cloud Organization). Empty = no Google IdP on WORKFORCE."
-  type        = string
-  default     = ""
-}
-
-variable "identity_workforce_google_client_secret_arn" {
-  description = "Secrets Manager ARN (acc2) whose SecretString is the WORKFORCE Google client secret (plain string). Set out-of-band by Nghiep."
-  type        = string
-  default     = ""
-}
-
+# ── EXTERNAL Google / Facebook IdPs (created only when both id and secret ARN are set) ─
 variable "identity_external_google_client_id" {
   description = "Google OAuth client id for EXTERNAL (External consent screen, scopes openid email profile). Empty = no Google IdP on EXTERNAL."
   type        = string
@@ -125,22 +126,9 @@ variable "identity_facebook_api_version" {
   default     = "v19.0"
 }
 
-# ── Google hd enforcement (ADR 0006 Open item 3, spike) ──────────────────────
-variable "identity_workforce_map_google_hd" {
-  description = "Add the custom:hd attribute to WORKFORCE and map Google's hd claim into it. A custom attribute can never be removed: turn on only after the spike shows the mapping works."
-  type        = bool
-  default     = false
-}
-
-variable "identity_workforce_require_hd" {
-  description = "WORKFORCE pre sign-up refuses a Google sign-in whose custom:hd is not the staff domain. Default true = fail closed: Google staff sign-in is refused until hd mapping works OR Nghiep explicitly accepts the ADR fallback (Internal consent screen + pool allow-list) by setting this to false."
-  type        = bool
-  default     = true
-}
-
 # ── App client URLs ──────────────────────────────────────────────────────────
 variable "identity_client_urls" {
-  description = "Callback and sign-out URLs per app client key (cis-admin, booking-staff, breakglass, cis-portal, booking-customer, tripplanner). Paths are placeholders until each app implements its callback route."
+  description = "Callback and sign-out URLs per app client key (cis-admin, booking-staff, breakglass, cis-portal, booking-customer, tripplanner). Hosts follow the S237 hostname decision (AA-818); they need not resolve yet. Paths are placeholders until each app implements its callback route. booking-staff / booking-customer stay on localhost until their frontend hosts are chosen."
   type = map(object({
     callback_urls = list(string)
     logout_urls   = list(string)
@@ -167,8 +155,8 @@ variable "identity_client_urls" {
       logout_urls   = ["http://localhost:3002/"]
     }
     "tripplanner" = {
-      callback_urls = ["http://localhost:3003/auth/callback"]
-      logout_urls   = ["http://localhost:3003/"]
+      callback_urls = ["https://tripplanner.lumiguides.it.com/auth/callback", "http://localhost:3003/auth/callback"]
+      logout_urls   = ["https://tripplanner.lumiguides.it.com/", "http://localhost:3003/"]
     }
   }
 }
