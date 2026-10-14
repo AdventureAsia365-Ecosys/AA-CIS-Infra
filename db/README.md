@@ -21,7 +21,8 @@ Version key registered in `shared.schema_versions`: `cis` → `NNN`, `tripplanne
    a path DB Migrate would refuse, a missing or wrongly prefixed `shared.schema_versions` key, a
    file not on the owner's `main` yet ("merge the migration-only PR in the owner repo first"), or
    any byte difference. It also runs nightly over every copy. Local run:
-   `python3 db/check_migration_copies.py db/migrations/cis/228_x.sql` (or `--all`); tests:
+   `GH_TOKEN=$(gh auth token) python3 db/check_migration_copies.py db/migrations/cis/228_x.sql`
+   (or `--all`; without a token GitHub allows 60 anonymous requests/hour); tests:
    `python3 -m unittest discover -s db/tests`.
 2. Merge to `main`.
 3. Run **DB Migrate** on `main` with `mode=check` (prints whether the version is registered),

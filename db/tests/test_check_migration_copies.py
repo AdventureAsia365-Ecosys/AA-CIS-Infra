@@ -6,6 +6,8 @@ import io
 import sys
 import tempfile
 import unittest
+import urllib.error
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -156,6 +158,64 @@ class GuardTest(unittest.TestCase):
         fetch = FakeOwnerRepos({("AA-TripPlanner-Web", "migrations/007_register_versions.sql"): TP_007})
         self.assertEqual(self.check(rel, fetch), [])
         self.assertEqual(guard.registered_keys(TP_007.decode()), ["tp-001", "tp-007"])
+
+    # ── GitHub errors ───────────────────────────────────────────────────────────
+
+    def test_fetch_error_is_a_fail_and_the_run_continues(self):
+        self.write("db/migrations/cis/228_catalog_views.sql", CIS_228)
+        self.write("db/migrations/booking/007_fx_write.sql", BK_007)
+
+        def flaky(repo, path):
+            if repo == "AA-CIS-App":
+                raise guard.FetchError("could not read AA-CIS-App:x from GitHub: HTTP 403")
+            return BK_007
+
+        out = io.StringIO()
+        paths = ["db/migrations/cis/228_catalog_views.sql", "db/migrations/booking/007_fx_write.sql"]
+        self.assertEqual(guard.run(paths, self.root, flaky, out=out), 1)
+        self.assertIn("FAIL  db/migrations/cis/228_catalog_views.sql: cannot compare", out.getvalue())
+        self.assertIn("ok    db/migrations/booking/007_fx_write.sql", out.getvalue())
+        self.assertIn("2 file(s) checked, 1 failed", out.getvalue())
+
+    def _http(self, code):
+        return urllib.error.HTTPError("https://api.github.com/x", code, "err", {}, None)
+
+    def _urlopen(self, outcomes, seen):
+        def fake(req, timeout=None):
+            seen.append(req.get_header("Authorization"))
+            item = outcomes.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            cm = mock.MagicMock()
+            cm.__enter__.return_value.read.return_value = item
+            return cm
+        return fake
+
+    def test_github_fetch_404_token_fallback_and_retry(self):
+        env = {"GITHUB_TOKEN": "t0k", "GH_TOKEN": ""}
+        with mock.patch.dict("os.environ", env), mock.patch.object(guard.time, "sleep"):
+            seen = []
+            with mock.patch.object(guard.urllib.request, "urlopen", self._urlopen([self._http(404)], seen)):
+                self.assertIsNone(guard.github_fetch("AA-CIS-App", "api/migrations/228_x.sql"))
+
+            seen = []   # token refused → anonymous retry succeeds
+            outcomes = [self._http(403), b"sql"]
+            with mock.patch.object(guard.urllib.request, "urlopen", self._urlopen(outcomes, seen)):
+                self.assertEqual(guard.github_fetch("AA-CIS-App", "p"), b"sql")
+            self.assertEqual(seen, ["Bearer t0k", None])
+
+            seen = []   # 5xx then success on the next round
+            outcomes = [self._http(502), b"sql"]
+            with mock.patch.object(guard.urllib.request, "urlopen", self._urlopen(outcomes, seen)):
+                self.assertEqual(guard.github_fetch("AA-CIS-App", "p"), b"sql")
+
+            seen = []   # always rate limited → FetchError, not a traceback
+            outcomes = [self._http(403)] * 6
+            with mock.patch.object(guard.urllib.request, "urlopen", self._urlopen(outcomes, seen)):
+                with self.assertRaises(guard.FetchError):
+                    guard.github_fetch("AA-CIS-App", "p")
+            self.assertEqual(len(seen), 6)
+
 
     # ── CLI ─────────────────────────────────────────────────────────────────────
 

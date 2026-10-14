@@ -13,8 +13,10 @@ Usage:
   python3 db/check_migration_copies.py db/migrations/cis/228_x.sql [...]   # given files
   python3 db/check_migration_copies.py --all                                # every copy
 
-Reads the owner files through the GitHub contents API (the app repos are public). GITHUB_TOKEN is
-used when set (higher rate limit); without it, or if GitHub rejects it, the call is anonymous.
+Reads the owner files through the GitHub contents API (the app repos are public). GITHUB_TOKEN (or
+GH_TOKEN) is used when set (higher rate limit); without it, or if GitHub rejects it, the call is
+anonymous. Rate limits, network errors and 5xx are retried, then reported as a FAIL for that file
+(never a traceback that stops the run).
 Only the standard library is used, so CI needs no install step.
 """
 from __future__ import annotations
@@ -24,6 +26,7 @@ import hashlib
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -55,7 +58,12 @@ PATH_RE = re.compile(r"^db/migrations/(cis|tripplanner|booking)/([0-9]{3})_[a-z0
 INSERT_RE = re.compile(r"INSERT\s+INTO\s+shared\.schema_versions\b(.*?);", re.IGNORECASE | re.DOTALL)
 KEY_RE = re.compile(r"\(\s*'([^']*)'\s*,")
 
-# Returns the owner file's bytes, or None when the file is not on that branch (HTTP 404).
+class FetchError(RuntimeError):
+    """The owner file could not be read (rate limit, network, GitHub outage); not a 404."""
+
+
+# Returns the owner file's bytes, or None when the file is not on that branch (HTTP 404);
+# raises FetchError when GitHub cannot be read.
 Fetcher = Callable[[str, str], Optional[bytes]]
 
 
@@ -112,7 +120,11 @@ def check_file(rel_path: str, repo_root: Path, fetch: Fetcher) -> list[str]:
 
     source_path = f"{owner.source_dir}/{Path(rel_path).name}"
     where = f"{ORG}/{owner.repo}@{BRANCH}:{source_path}"
-    upstream = fetch(owner.repo, source_path)
+    try:
+        upstream = fetch(owner.repo, source_path)
+    except FetchError as e:
+        errors.append(f"cannot compare with {where}: {e}")
+        return errors
     if upstream is None:
         errors.append(f"not found on {where} — {OWNER_FIRST}, then open this copy PR (flow D8)")
     elif upstream != local:
@@ -125,27 +137,45 @@ def check_file(rel_path: str, repo_root: Path, fetch: Fetcher) -> list[str]:
     return errors
 
 
-def github_fetch(repo: str, path: str) -> Optional[bytes]:
+def _token() -> str:
+    # GITHUB_TOKEN in Actions; GH_TOKEN or GITHUB_TOKEN locally (e.g. GH_TOKEN=$(gh auth token)).
+    return (os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN") or "").strip()
+
+
+def github_fetch(repo: str, path: str, attempts: int = 3) -> Optional[bytes]:
     url = f"https://api.github.com/repos/{ORG}/{repo}/contents/{path}?ref={BRANCH}"
-    token = os.environ.get("GITHUB_TOKEN", "").strip()
-    for auth in ([token] if token else []) + [""]:
-        headers = {
-            "Accept": "application/vnd.github.raw",
-            "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "aa-cis-infra-migration-copy-guard",
-        }
-        if auth:
-            headers["Authorization"] = f"Bearer {auth}"
-        try:
-            with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=30) as r:
-                return r.read()
-        except urllib.error.HTTPError as e:
-            if e.code == 404:
-                return None
-            if auth and e.code in (401, 403):
-                continue                      # token not accepted for this repo: retry anonymous
-            raise RuntimeError(f"GitHub API {e.code} for {repo}:{path}") from None
-    raise RuntimeError(f"GitHub API refused {repo}:{path}")
+    token = _token()
+    auths = ([token] if token else []) + [""]
+    last = ""
+    for attempt in range(attempts):
+        for auth in auths:
+            headers = {
+                "Accept": "application/vnd.github.raw",
+                "X-GitHub-Api-Version": "2022-11-28",
+                "User-Agent": "aa-cis-infra-migration-copy-guard",
+            }
+            if auth:
+                headers["Authorization"] = f"Bearer {auth}"
+            try:
+                req = urllib.request.Request(url, headers=headers)
+                with urllib.request.urlopen(req, timeout=30) as r:
+                    return r.read()
+            except urllib.error.HTTPError as e:
+                if e.code == 404:
+                    return None
+                last = f"HTTP {e.code}"
+                if e.code in (401, 403, 429):
+                    continue            # token refused or rate limited: try anonymous / next round
+                if e.code < 500:
+                    raise FetchError(f"GitHub API {last} for {repo}:{path}") from None
+                break                   # 5xx: back off and retry
+            except (urllib.error.URLError, TimeoutError, OSError) as e:
+                last = f"network error {e}"
+                break
+        if attempt + 1 < attempts:
+            time.sleep(2 * (attempt + 1))
+    hint = "" if token else " (anonymous: 60 requests/hour; set GITHUB_TOKEN or GH_TOKEN)"
+    raise FetchError(f"could not read {repo}:{path} from GitHub: {last}{hint}")
 
 
 def all_copies(repo_root: Path) -> list[str]:
