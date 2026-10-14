@@ -392,6 +392,8 @@ resource "aws_lambda_function" "tripplanner_assembly" {
 # Routes:
 #   ANY /browse/{proxy+} -> browse Lambda   (stateless, cacheable reads)
 #   ANY /trip/{proxy+}   -> assembly Lambda (stateful + Bedrock)
+#   GET /browse/search, POST /trip/{trip_id}/narrate -> same Lambdas, own
+#     tighter throttles (LLM cost per request, AA-806)
 # Auth is NONE at the edge for MVP dev (the BFF is the only caller) — add a
 # JWT/authorizer before real use.
 # -----------------------------------------------------------------------------
@@ -443,6 +445,18 @@ resource "aws_apigatewayv2_route" "tripplanner_narrate" {
   target    = "integrations/${aws_apigatewayv2_integration.tripplanner_assembly.id}"
 }
 
+# AA-806: free-text search is the other per-request LLM cost (one Cohere embedding call per query,
+# backend/browse/search.py), so it gets its own route and a moderate throttle. It is a specific route
+# over the greedy ANY /browse/{proxy+}, same browse integration; the handler matches rawPath
+# /browse/search either way. Tiles, destinations, countries, routes and by-country stay on the greedy
+# route with the generous stage default: the map fetches one tile per 1-degree cell with Promise.all
+# on every moveend/filter change, so a tight default throttles the map itself (429s).
+resource "aws_apigatewayv2_route" "tripplanner_search" {
+  api_id    = aws_apigatewayv2_api.tripplanner.id
+  route_key = "GET /browse/search"
+  target    = "integrations/${aws_apigatewayv2_integration.tripplanner_browse.id}"
+}
+
 resource "aws_apigatewayv2_stage" "tripplanner" {
   api_id      = aws_apigatewayv2_api.tripplanner.id
   name        = "$default"
@@ -452,7 +466,9 @@ resource "aws_apigatewayv2_stage" "tripplanner" {
   # AA-806 (from AA-805): the HTTP API has no auth at the edge and HTTP APIs cannot carry a WAF web
   # ACL, so stage throttling is the only cap in front of the Lambdas. default_route_settings applies
   # per route (each route its own bucket), not as one stage-wide cap. The limits are shared by every
-  # caller (the Vercel BFF is the only one), not per client. Numbers: tripplanner_variables.tf.
+  # caller (the Vercel BFF is the only one), not per client. The default is deliberately generous
+  # (map tile fan-out, see the search route above); tight limits sit only on the two LLM-cost routes.
+  # Numbers (Dev placeholders): tripplanner_variables.tf.
   default_route_settings {
     throttling_rate_limit  = var.tripplanner_throttle_rate_limit
     throttling_burst_limit = var.tripplanner_throttle_burst_limit
@@ -462,6 +478,12 @@ resource "aws_apigatewayv2_stage" "tripplanner" {
     route_key              = aws_apigatewayv2_route.tripplanner_narrate.route_key
     throttling_rate_limit  = var.tripplanner_narrate_throttle_rate_limit
     throttling_burst_limit = var.tripplanner_narrate_throttle_burst_limit
+  }
+
+  route_settings {
+    route_key              = aws_apigatewayv2_route.tripplanner_search.route_key
+    throttling_rate_limit  = var.tripplanner_search_throttle_rate_limit
+    throttling_burst_limit = var.tripplanner_search_throttle_burst_limit
   }
 
   # Creating the stage calls apigateway:TagResource (provider default_tags).

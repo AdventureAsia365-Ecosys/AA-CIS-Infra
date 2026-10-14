@@ -59,7 +59,8 @@ local apply too), plus the plan role's secret list (`local.tf_plan_secret_arns` 
      `aws_iam_role.tf_plan` + `aws_iam_role_policy_attachment.tf_plan_readonly` +
      `aws_iam_role_policy.tf_plan`, `aws_iam_role.tf_apply` + the 10
      `aws_iam_role_policy_attachment.tf_apply_managed[...]` + `aws_iam_role_policy.tf_apply`;
-   - **create** `aws_apigatewayv2_route.tripplanner_narrate`;
+   - **create** `aws_apigatewayv2_route.tripplanner_narrate` and
+     `aws_apigatewayv2_route.tripplanner_search`;
    - **update in place** `aws_iam_role_policy.cicd_inline` (+ `IAMPolicyRead`) and
      `aws_apigatewayv2_stage.tripplanner` (throttle settings);
    - **replace** `time_sleep.wait_for_iam_propagation` (its trigger hashes `cicd_inline.policy`;

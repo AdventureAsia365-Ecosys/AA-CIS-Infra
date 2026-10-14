@@ -175,9 +175,12 @@ makes CI Terraform Plan fail with 403.
   OIDC provider, `aa-cis-dev-role`, `aa-cis-dev-agent-session`) are applied locally. Until step 4
   of the cut-over (boundary on every existing role) the apply role can still escalate by editing
   an unbounded `aa-*-dev-*` workload role and passing it to a task/Lambda (see the doc).
-- **TripPlanner HTTP API throttling** (AA-806): 20 rps / burst 40 **per route** (stage
-  `default_route_settings`; each route gets its own bucket, it is not one stage-wide cap) and a
-  dedicated `POST /trip/{trip_id}/narrate` route at 2 rps / burst 5 (`tripplanner_variables.tf`). HTTP APIs
+- **TripPlanner HTTP API throttling** (AA-806, Dev placeholders): generous stage default 500 rps /
+  burst 1000 **per route** (`default_route_settings`; each route gets its own bucket, it is not one
+  stage-wide cap; must stay generous because the map fetches one tile per 1-degree cell in a single
+  burst). Tight limits only on the LLM-cost routes, each a dedicated route on the same Lambda:
+  `POST /trip/{trip_id}/narrate` 2 rps / burst 5 and `GET /browse/search` 10 rps / burst 20
+  (`tripplanner_variables.tf`). A new LLM-backed path needs its own route + `route_settings`. HTTP APIs
   cannot carry a WAF web ACL, so this is the only edge cap. WAF count review runbook:
   `docs/waf-count-review.md`.
 - This repo has **branch protection** (CI Terraform Plan among the required checks). Terraform

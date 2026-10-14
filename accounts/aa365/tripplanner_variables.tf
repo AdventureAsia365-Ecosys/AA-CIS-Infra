@@ -10,32 +10,52 @@ variable "tripplanner_advisor_email" {
 }
 
 # -----------------------------------------------------------------------------
-# AA-806 (from AA-805): HTTP API route throttling. default_route_settings is applied to each route
-# separately (ANY /browse/{proxy+} and ANY /trip/{proxy+} each get their own bucket); it is not one
-# aggregate cap for the stage. Account-wide API Gateway limits are 10,000 rps /
-# 5,000 burst; these Dev defaults sit far below that and are meant as a backstop against a scan or
-# a runaway client, not as capacity planning. Revisit with real traffic before any public launch.
+# AA-806 (from AA-805): HTTP API route throttling. All numbers are Dev placeholders, not capacity
+# planning; revisit with real traffic before any public launch.
+#
+# default_route_settings is applied to each route separately (ANY /browse/{proxy+} and
+# ANY /trip/{proxy+} each get their own bucket); it is not one aggregate cap for the stage. It must
+# stay generous: the map (MapView) fetches one /browse/tiles request per 1-degree cell with
+# Promise.all on every moveend / filter change, so a whole viewport arrives as one burst of dozens of
+# requests. The first cut (20 rps / burst 40) returned 429 on normal panning. Account-wide API
+# Gateway limits are 10,000 rps / 5,000 burst.
+#
+# Tight limits apply only to the two routes that cost money per request:
+#   POST /trip/{trip_id}/narrate  - Bedrock compose/renarrate (satellite roles)
+#   GET  /browse/search           - one Cohere embedding call per query
 # -----------------------------------------------------------------------------
 variable "tripplanner_throttle_rate_limit" {
   type        = number
-  description = "Steady-state requests per second, per route (applied to every TripPlanner route without its own route_settings; each route has its own bucket, not one stage-wide cap)."
-  default     = 20
+  description = "Dev placeholder. Steady-state requests per second, per route, for every TripPlanner route without its own route_settings (each route has its own bucket, not one stage-wide cap). Generous on purpose: map tile fan-out."
+  default     = 500
 }
 
 variable "tripplanner_throttle_burst_limit" {
   type        = number
-  description = "Burst (token bucket size), per route (applied to every TripPlanner route without its own route_settings)."
-  default     = 40
+  description = "Dev placeholder. Burst (token bucket size), per route, for every TripPlanner route without its own route_settings."
+  default     = 1000
 }
 
 variable "tripplanner_narrate_throttle_rate_limit" {
   type        = number
-  description = "Requests per second for POST /trip/{trip_id}/narrate (LLM call, costs money)."
+  description = "Dev placeholder. Requests per second for POST /trip/{trip_id}/narrate (Bedrock LLM call, costs money)."
   default     = 2
 }
 
 variable "tripplanner_narrate_throttle_burst_limit" {
   type        = number
-  description = "Burst for POST /trip/{trip_id}/narrate."
+  description = "Dev placeholder. Burst for POST /trip/{trip_id}/narrate."
   default     = 5
+}
+
+variable "tripplanner_search_throttle_rate_limit" {
+  type        = number
+  description = "Dev placeholder. Requests per second for GET /browse/search (one embedding call per query, costs money)."
+  default     = 10
+}
+
+variable "tripplanner_search_throttle_burst_limit" {
+  type        = number
+  description = "Dev placeholder. Burst for GET /browse/search."
+  default     = 20
 }
