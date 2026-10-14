@@ -38,9 +38,10 @@
 #   api-booking.* domain yet: Dev uses this API's default execute-api endpoint. A custom domain is
 #   a later change once a certificate exists (ADR 0004 open decision 3).
 #
-# EXPOSURE: the CIS ALB is internet-facing (HTTP :80 open, WAF attached), so /booking/* is also
-# reachable on the ALB DNS name directly, exactly like CIS paths. The gateway does no auth
-# (authorization NONE, same as CIS): the Booking app must authenticate every non-health route.
+# EXPOSURE: the CIS ALB is internet-facing, but since S235 Phase 0 its security group admits :80
+# only from the VPC CIDR (the VPC-link NLB), so /booking/* is reachable only through this REST API.
+# The gateway does no auth (authorization NONE, same as CIS): the Booking app must authenticate
+# every non-health route.
 # =============================================================================
 
 locals {

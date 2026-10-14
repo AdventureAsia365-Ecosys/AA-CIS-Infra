@@ -477,9 +477,16 @@ output "tripplanner_lambda_exec_role_arn" {
 # aa-cis-dev-role CI/CD role (which is broad); this keeps the app repo's
 # blast radius to exactly "ship TripPlanner Lambda code".
 #
-# Trust is scoped to this one repo (any branch) via the sub claim, reusing the
-# existing GitHub OIDC provider (cicd.tf).
+# Trust is pinned to ONE exact OIDC subject (S235 Phase 0): this repo by immutable
+# org + repo id, and only the context its deploy workflow actually produces. Reuses
+# the existing GitHub OIDC provider (cicd.tf).
 # -----------------------------------------------------------------------------
+locals {
+  # S235 Phase 0: exact OIDC subjects for aa-tripplanner-dev-app-deploy (see the trust comment).
+  tp_oidc_sub_prefix = "repo:AdventureAsia365-Ecosys@276539096/AA-TripPlanner-Web@1365222661"
+  tp_oidc_subjects   = ["${local.tp_oidc_sub_prefix}:ref:refs/heads/main"]
+}
+
 resource "aws_iam_role" "tripplanner_app_deploy" {
   name = "${local.tp_name_prefix}-app-deploy"
 
@@ -490,20 +497,22 @@ resource "aws_iam_role" "tripplanner_app_deploy" {
       Principal = { Federated = aws_iam_openid_connect_provider.github_actions.arn }
       Action    = "sts:AssumeRoleWithWebIdentity"
       Condition = {
+        # The AA-TripPlanner-Web repo has GitHub's immutable OIDC subject ON (read 14/10/2026 via
+        # GET /repos/AdventureAsia365-Ecosys/AA-TripPlanner-Web/actions/oidc/customization/sub:
+        # use_immutable_subject=true, sub_claim_prefix below; repo id 1365222661, org id 276539096).
+        #
+        # Only ONE workflow assumes this role: .github/workflows/deploy-lambdas.yml, job `deploy`,
+        # triggered by push to main (paths backend/**) or workflow_dispatch. The job has no
+        # `environment:`, so its sub context is the ref -> `ref:refs/heads/main`. A dispatch from any
+        # other branch, a pull_request run or a tag is denied. ci.yml has no id-token permission.
+        #
+        # History: AA-588 used "repo:AdventureAsia365-Ecosys*/AA-TripPlanner-Web*:*" (any branch,
+        # any id). S235 Phase 0 replaces it with the exact subject (StringEquals, fail closed): if the
+        # repo is renamed/re-created, the immutable subject is turned off, or the deploy job gains an
+        # `environment:`, re-read the prefix with the call above and update tp_oidc_subjects.
         StringEquals = {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
-        }
-        # The AA-TripPlanner-Web repo has GitHub's "include owner/repo ID in the OIDC
-        # subject" customization ON (repo-level, verified 15/09), so the real sub is
-        #   repo:AdventureAsia365-Ecosys@<orgid>/AA-TripPlanner-Web@<repoid>:ref:...
-        # (confirmed via CloudTrail). The "@<id>" segments are why a plain
-        # repo:Org/Repo:* pattern failed with AccessDenied — hence the "*" wildcards
-        # around each "@<id>" while still pinning the org + repo names.
-        #
-        # AA-588 (G5, 21/09/2026): org rename AdventureAsia365-CIS -> AdventureAsia365-Ecosys
-        # complete + stable; dropped the transitional old-org "*-CIS*" entry, now new org only.
-        StringLike = {
-          "token.actions.githubusercontent.com:sub" = "repo:AdventureAsia365-Ecosys*/AA-TripPlanner-Web*:*"
+          "token.actions.githubusercontent.com:sub" = local.tp_oidc_subjects
         }
       }
     }]

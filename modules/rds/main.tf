@@ -9,7 +9,7 @@ locals {
 resource "aws_db_instance" "main" {
   identifier        = "${local.name_prefix}-db"
   engine            = "postgres"
-  engine_version = "15.17"
+  engine_version    = "15.17"
   instance_class    = var.instance_class
   allocated_storage = var.allocated_storage
   storage_type      = "gp3"
@@ -26,7 +26,10 @@ resource "aws_db_instance" "main" {
   multi_az            = false
   publicly_accessible = false
   skip_final_snapshot = true
-  deletion_protection = false
+  # S235 Phase 0 (AA-678): shared CIS + TripPlanner + Booking database. In-place modify
+  # (ModifyDBInstance, no reboot, no replacement). A deliberate delete now needs this set back to
+  # false in a reviewed PR first.
+  deletion_protection = true
 
   # Backup
   backup_retention_period = 7
