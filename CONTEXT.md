@@ -69,6 +69,10 @@ accounts/
     bedrock_satellite_assume.tf   (cross-account Bedrock assume-role trust)
     cost_explorer_satellite_assume.tf (acc2 → acc1/acc3 Cost Explorer read roles, AA-623)
     dfs_balance.tf                (daily DFS balance alert Lambda + EventBridge schedule, AA-627)
+    identity.tf, identity_variables.tf (AA-703, root ADR 0006: Cognito pools aa-workforce-dev /
+                                   aa-external-dev, app clients, groups, trigger Lambdas in
+                                   lambda_src/identity_triggers + tests, WAF; SES and custom
+                                   domains gated by variables, default off)
     observability.tf, observability_ecosys.tf (S235 alarms + log retention), diagnostics.tf
     variables.tf / tripplanner_variables.tf / booking_variables.tf
   acc1-bedrock/   ← acc1 Bedrock invoker role (fallback) + Cost Explorer reader

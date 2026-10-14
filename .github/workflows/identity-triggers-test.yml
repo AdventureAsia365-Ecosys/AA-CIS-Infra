@@ -1,0 +1,48 @@
+name: Identity Trigger Tests
+
+# AA-703 (root ADR 0006 decision 5): the Cognito trigger Lambdas fail closed, so a broken release
+# denies every sign-in, break-glass included. Their unit tests run on every PR and push that touches
+# them, before Terraform publishes a new version behind the `live` alias. No AWS access needed.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "accounts/aa365/lambda_src/identity_triggers/**"
+      - "accounts/aa365/lambda_src/identity_triggers_tests/**"
+      - ".github/workflows/identity-triggers-test.yml"
+  push:
+    branches: [main]
+    paths:
+      - "accounts/aa365/lambda_src/identity_triggers/**"
+      - "accounts/aa365/lambda_src/identity_triggers_tests/**"
+      - ".github/workflows/identity-triggers-test.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  identity-trigger-tests:
+    name: Identity trigger tests (pytest)
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: accounts/aa365
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python (Lambda runtime python3.12)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pytest
+        run: python -m pip install "pytest>=8,<10"
+
+      # -p no:cacheprovider + sys.dont_write_bytecode (conftest.py) keep caches out of the
+      # archive_file source dir.
+      - name: Run trigger tests
+        run: python -m pytest -p no:cacheprovider -q lambda_src/identity_triggers_tests

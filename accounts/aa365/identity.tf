@@ -1,8 +1,9 @@
 # =============================================================================
-# Ecosystem identity on Amazon Cognito — DRAFT (AA-703, root ADR 0006 "Ecosystem identity",
-# Phase 0 "Pools and triggers"). Not applied. Self-contained like booking.tf: every resource lives
-# in this file, uses the aa-workforce-* / aa-external-* / aa-identity-* prefixes and only READS
-# aws_sns_topic.alerts (observability.tf). No CIS / Booking / TripPlanner resource is changed.
+# Ecosystem identity on Amazon Cognito (AA-703, root ADR 0006 "Ecosystem identity", ACCEPTED S236,
+# Phase 0 "Pools and triggers"). Self-contained like booking.tf: every resource lives in this file,
+# uses the aa-workforce-* / aa-external-* / aa-identity-* prefixes and only READS
+# aws_sns_topic.alerts (observability.tf) and aws_iam_policy.workload_boundary (cicd_split.tf).
+# No CIS / Booking / TripPlanner resource is changed.
 #
 # WHAT THIS FILE ADDS:
 #   - 2 user pools on the Essentials plan, deletion protection ACTIVE (decision 1):
@@ -11,45 +12,56 @@
 #   - 6 app clients (decision 2): workforce cis-admin / booking-staff / breakglass (confidential),
 #     external cis-portal (confidential), booking-customer / tripplanner (public, PKCE)
 #   - 6 WORKFORCE groups <app>-<role> (decision 3); EXTERNAL has none (tenant roles live in CIS DB)
-#   - Google IdP on each pool and Facebook IdP on EXTERNAL, each created ONLY when its client id
-#     and secret ARN variables are set (count = 0 otherwise, so this applies before the OAuth apps
-#     exist)
+#   - Staff sign in with an EMAIL ONE-TIME CODE ONLY (S236 amendment: adventure.asia mail is on
+#     DreamHost, not Google Workspace, so there is no `hd` claim to restrict Google to staff). The
+#     WORKFORCE pool has NO social identity provider. Google and Facebook exist on EXTERNAL only,
+#     each created ONLY when its client id and secret ARN variables are set (count = 0 otherwise)
 #   - 4 Python 3.12 trigger Lambdas (pre sign-up + pre token generation V2_0 per pool), outside
-#     the VPC, published versions behind a `live` alias (decision 5), with alarms
-#   - prefix domains (managed login v2); custom domains only when the us-east-1 cert ARN is set
+#     the VPC, published versions behind a `live` alias (decision 5), with alarms. Their roles carry
+#     the AA-806 workload boundary (the CI apply role may only create roles that carry it)
+#   - prefix domains (managed login v2) always; custom domains auth. / staff-auth. only when
+#     identity_custom_domains_enabled = true (needs the AA-818 us-east-1 certificate)
+#   - Cognito mail through the AA-811 SES identity only when identity_ses_enabled = true (needs the
+#     identity verified, DKIM SUCCESS); until then COGNITO_DEFAULT and no EMAIL_OTP
 #   - one REGIONAL WAF web ACL with per-IP rate rules, associated with both pools
 #   - Secrets Manager container aa-identity/<env>/breakglass (no value; decision 11)
 #
-# ALLOW-LIST SOURCE (WORKFORCE Google sign-in): the WORKFORCE POOL ITSELF. A Google sign-in is
-# accepted only if the staff directory (AA-816) pre-created exactly one enabled native user with
-# that @adventure.asia email (ADR 0006 decision 5). No DynamoDB table / SSM parameter: triggers
-# have no DB/VPC access and a hard 5 s timeout. See lambda_src/identity_triggers/workforce.py.
+# SIGN-IN UNTIL SES IS ON: EMAIL_OTP needs the DEVELOPER (SES) email configuration, so with
+# identity_ses_enabled = false nobody but break-glass (password + TOTP) can sign in to WORKFORCE,
+# and EXTERNAL native sign-up is refused by the trigger (NATIVE_SIGNUP_ENABLED=false). The pools,
+# clients and issuers are still stable, so the apps can wire their verifier config early.
 #
 # DELIBERATE DEVIATIONS / NOTES FOR REVIEWERS:
-#   - PASSWORD stays in allowed_first_auth_factors on both pools: Cognito always requires it in
-#     the list. Nobody but break-glass has a password; account recovery is admin_only.
-#   - EMAIL_OTP is added as a first factor only when identity_ses_identity_arn is set (AA-811):
-#     it requires the DEVELOPER (SES) email configuration. Until then EXTERNAL native sign-up is
-#     refused by the trigger (NATIVE_SIGNUP_ENABLED=false) and staff sign in with Google only.
-#   - Clients that offer a social IdP get write access to email / email_verified / name (and
-#     custom:hd on WORKFORCE when mapped): Cognito requires the app client to be able to write every
-#     mapped attribute. Users still cannot change them, because no client grants the
-#     aws.cognito.signin.user.admin scope, and the EXTERNAL pre sign-up trigger refuses a native
-#     SignUp that tries to set email_verified or any custom:* attribute. ADR 0006 decision 2 says
-#     email/email_verified are never client-writable; this is the narrowest form that still lets
-#     federation work. Confirm in the Phase 0 spike.
+#   - PASSWORD stays in allowed_first_auth_factors on both pools: AWS documents that "the Password
+#     option is always available" for choice-based sign-in, and first factors are pool-wide (not
+#     per client). Nobody but break-glass has a usable password: staff are created by
+#     AdminCreateUser without one, account recovery is admin_only, and no client enables
+#     ALLOW_USER_PASSWORD_AUTH / ALLOW_USER_SRP_AUTH. ADR 0006 decision 2 ("EXTERNAL allows
+#     EMAIL_OTP only") is therefore met by procedure, not by pool configuration.
+#   - EXTERNAL clients that offer a social IdP get write access to email / email_verified / name:
+#     Cognito requires the app client to be able to write every mapped attribute. Users still
+#     cannot change them, because no client grants the aws.cognito.signin.user.admin scope, and the
+#     EXTERNAL pre sign-up trigger refuses a native SignUp that sets email_verified. WORKFORCE
+#     clients write `name` only.
 #   - Break-glass is restricted to its own client only by procedure: the pre token trigger is a
 #     pure function and cannot know client ids (pool -> trigger -> client would be a Terraform
-#     cycle). It logs every break-glass token issue (alarm below). Follow-up if needed.
+#     cycle). It logs every break-glass token issue (alarm below).
 #   - Managed-login branding is NOT here (provider 6.12+). Managed login v2 needs a branding style
 #     per client before its pages render: create it with the CLI after apply (see output
 #     identity_branding_commands).
 #   - The break-glass USER is not created here (Terraform would hold its password). One-off script
 #     in Phase 1 (ADR 0006 migration plan).
 #
-# APPLY PREREQUISITE: the CI role (cicd.tf) has no cognito-idp:*, no wafv2:CreateWebACL and no
-# iam:TagRole on these role names. Apply this file from an admin session with MFA, or grant those
-# first (coordinate with Infra #103, which splits the CI role).
+# APPLY PREREQUISITES (CI apply role aa-cis-infra-tf-apply, AA-806 split):
+#   - cognito-idp:* and wafv2:CreateWebACL/DeleteWebACL/CheckCapacity: the AA-811 bootstrap grant
+#     (local MFA apply) must be live first, or the CI apply fails with AccessDenied.
+#   - identity_ses_enabled = true switches both pools to DEVELOPER email: Cognito then creates the
+#     service-linked role AWSServiceRoleForAmazonCognitoIdpEmailService with the CALLER's
+#     credentials, so the apply role needs iam:CreateServiceLinkedRole for
+#     email.cognito-idp.amazonaws.com unless that role already exists in acc2.
+#   - EXTERNAL Google / Facebook: the plan role (aa-cis-infra-tf-plan) reads secret values only for
+#     ARNs in local.tf_plan_secret_arns (cicd_split.tf, bootstrap). Add the IdP secret ARNs there
+#     before setting the IdP variables, or the next CI plan fails on refresh.
 # =============================================================================
 
 locals {
@@ -65,14 +77,13 @@ locals {
     Issue       = "AA-703"
   }
 
-  id_ses_enabled   = var.identity_ses_identity_arn != ""
+  id_ses_enabled   = var.identity_ses_enabled
   id_first_factors = local.id_ses_enabled ? ["PASSWORD", "EMAIL_OTP"] : ["PASSWORD"]
 
-  id_wf_google  = var.identity_workforce_google_client_id != "" && var.identity_workforce_google_client_secret_arn != ""
   id_ext_google = var.identity_external_google_client_id != "" && var.identity_external_google_client_secret_arn != ""
   id_facebook   = var.identity_facebook_app_id != "" && var.identity_facebook_app_secret_arn != ""
 
-  id_custom_domains = var.identity_custom_domain_certificate_arn != ""
+  id_custom_domains = var.identity_custom_domains_enabled
 
   # ADR 0006 decision 3: group name = <app>-<role>. Precedence only matters for cognito:preferred_role (unused).
   id_staff_groups = {
@@ -84,22 +95,21 @@ locals {
     "booking-contracting" = { precedence = 60, description = "Booking contracting" }
   }
 
-  id_wf_idps            = concat(["COGNITO"], local.id_wf_google ? ["Google"] : [])
   id_ext_idps_portal    = concat(["COGNITO"], local.id_ext_google ? ["Google"] : [])
   id_ext_idps_traveller = concat(["COGNITO"], local.id_ext_google ? ["Google"] : [], local.id_facebook ? ["Facebook"] : [])
 
-  id_federated_writes    = ["email", "email_verified", "name"]
-  id_wf_federated_writes = concat(local.id_federated_writes, var.identity_workforce_map_google_hd ? ["custom:hd"] : [])
+  id_federated_writes = ["email", "email_verified", "name"]
 
-  # ADR 0006 decisions 2 and 7. Lifetimes: access/id in minutes, refresh in hours.
+  # ADR 0006 decisions 2 and 7. Lifetimes: access/id in minutes, refresh in hours. WORKFORCE has
+  # no social IdP (staff sign in with an email code), so its clients offer COGNITO only.
   id_workforce_clients = {
     "cis-admin" = {
       secret = true, access_minutes = 15, refresh_hours = 12
-      idps   = local.id_wf_idps, writes = local.id_wf_google ? local.id_wf_federated_writes : ["name"]
+      idps   = ["COGNITO"], writes = ["name"]
     }
     "booking-staff" = {
       secret = true, access_minutes = 15, refresh_hours = 12
-      idps   = local.id_wf_idps, writes = local.id_wf_google ? local.id_wf_federated_writes : ["name"]
+      idps   = ["COGNITO"], writes = ["name"]
     }
     "breakglass" = {
       secret = true, access_minutes = 15, refresh_hours = 1
@@ -127,10 +137,6 @@ locals {
 
   id_workforce_env = {
     ALLOWED_EMAIL_DOMAIN = lower(var.identity_staff_email_domain)
-    REQUIRE_HD           = tostring(var.identity_workforce_require_hd)
-    HD_ATTRIBUTE         = "custom:hd"
-    GOOGLE_PROVIDER_NAME = "Google"
-    LINK_TARGET_STATUSES = "CONFIRMED,FORCE_CHANGE_PASSWORD"
     STAFF_GROUPS         = join(",", keys(local.id_staff_groups))
     BREAKGLASS_EMAIL     = lower(var.identity_breakglass_email)
   }
@@ -142,13 +148,16 @@ locals {
     NATIVE_SIGNUP_ENABLED  = tostring(local.id_ses_enabled)
   }
 
+  # Roles: `pure` = logs only (both pre token triggers and the WORKFORCE pre sign-up, which make no
+  # Cognito call); `external-signup` = logs + ListUsers / AdminLinkProviderForUser /
+  # DescribeUserPoolClient on the EXTERNAL pool.
   id_triggers = {
-    "workforce-pre-sign-up" = { handler = "workforce.pre_sign_up", role = "workforce-signup", env = local.id_workforce_env, pool = "workforce" }
-    "workforce-pre-token"   = { handler = "workforce.pre_token_generation", role = "token", env = local.id_workforce_env, pool = "workforce" }
+    "workforce-pre-sign-up" = { handler = "workforce.pre_sign_up", role = "pure", env = local.id_workforce_env, pool = "workforce" }
+    "workforce-pre-token"   = { handler = "workforce.pre_token_generation", role = "pure", env = local.id_workforce_env, pool = "workforce" }
     "external-pre-sign-up"  = { handler = "external.pre_sign_up", role = "external-signup", env = local.id_external_env, pool = "external" }
-    "external-pre-token"    = { handler = "external.pre_token_generation", role = "token", env = local.id_external_env, pool = "external" }
+    "external-pre-token"    = { handler = "external.pre_token_generation", role = "pure", env = local.id_external_env, pool = "external" }
   }
-  id_trigger_roles = toset(["workforce-signup", "external-signup", "token"])
+  id_trigger_roles = toset(["pure", "external-signup"])
 
   id_pool_arns = {
     workforce = aws_cognito_user_pool.workforce.arn
@@ -183,11 +192,15 @@ data "aws_iam_policy_document" "identity_lambda_assume" {
   }
 }
 
+# The AA-806 workload boundary is mandatory: the CI apply role's boundary denies CreateRole without
+# it (DenyCreateRoleWithoutWorkloadBoundary, cicd_split.tf). Names aa-identity-<env>-*-trigger sit
+# inside local.tf_managed_role_arns (aa-*-<env>-*), so the apply role may create, tag and pass them.
 resource "aws_iam_role" "identity_trigger" {
-  for_each           = local.id_trigger_roles
-  name               = "${local.id_prefix}-${each.key}-trigger"
-  assume_role_policy = data.aws_iam_policy_document.identity_lambda_assume.json
-  tags               = local.id_tags
+  for_each             = local.id_trigger_roles
+  name                 = "${local.id_prefix}-${each.key}-trigger"
+  assume_role_policy   = data.aws_iam_policy_document.identity_lambda_assume.json
+  permissions_boundary = aws_iam_policy.workload_boundary.arn
+  tags                 = local.id_tags
 }
 
 resource "aws_cloudwatch_log_group" "identity_trigger" {
@@ -214,23 +227,9 @@ resource "aws_iam_role_policy" "identity_trigger_logs" {
   })
 }
 
-# Cognito API on the trigger's OWN pool only. Separate resource so the pool -> Lambda -> role
-# chain has no cycle. Pre token roles get nothing here (pure functions).
-resource "aws_iam_role_policy" "identity_workforce_signup_cognito" {
-  name = "${local.id_prefix}-workforce-signup-cognito"
-  role = aws_iam_role.identity_trigger["workforce-signup"].id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Sid      = "OwnPoolLinkOnly"
-      Effect   = "Allow"
-      Action   = ["cognito-idp:ListUsers", "cognito-idp:AdminLinkProviderForUser"]
-      Resource = aws_cognito_user_pool.workforce.arn
-    }]
-  })
-}
-
+# Cognito API on the trigger's OWN pool only, and only for the EXTERNAL pre sign-up (the other
+# three triggers are pure functions of the event). Separate resource so the pool -> Lambda -> role
+# chain has no cycle.
 resource "aws_iam_role_policy" "identity_external_signup_cognito" {
   name = "${local.id_prefix}-external-signup-cognito"
   role = aws_iam_role.identity_trigger["external-signup"].id
@@ -352,21 +351,7 @@ resource "aws_cognito_user_pool" "workforce" {
     }
   }
 
-  # custom:hd only after the Open item 3 spike (custom attributes can never be removed).
-  dynamic "schema" {
-    for_each = var.identity_workforce_map_google_hd ? [1] : []
-    content {
-      name                     = "hd"
-      attribute_data_type      = "String"
-      mutable                  = true
-      developer_only_attribute = false
-      required                 = false
-      string_attribute_constraints {
-        min_length = 0
-        max_length = 256
-      }
-    }
-  }
+  # No custom attributes (ADR 0006 decision 1: they can never be changed or removed).
 
   tags = merge(local.id_tags, { Pool = "workforce" })
 
@@ -376,8 +361,12 @@ resource "aws_cognito_user_pool" "workforce" {
       error_message = "identity_breakglass_email must be inside identity_staff_email_domain, or the pre token trigger denies it."
     }
     precondition {
-      condition     = !local.id_ses_enabled || var.identity_ses_from_address != ""
-      error_message = "identity_ses_from_address is required when identity_ses_identity_arn is set."
+      condition     = !local.id_ses_enabled || (var.identity_ses_identity_arn != "" && var.identity_ses_from_address != "")
+      error_message = "identity_ses_enabled = true needs identity_ses_identity_arn (the verified AA-811 identity) and identity_ses_from_address."
+    }
+    precondition {
+      condition     = !local.id_custom_domains || var.identity_custom_domain_certificate_arn != ""
+      error_message = "identity_custom_domains_enabled = true needs identity_custom_domain_certificate_arn (the AA-818 us-east-1 certificate, ISSUED)."
     }
   }
 }
@@ -456,14 +445,10 @@ resource "aws_cognito_user_group" "workforce" {
 }
 
 # =============================================================================
-# Social identity providers. Secrets are read from Secrets Manager (values set out-of-band by
-# Nghiep); Cognito stores the client secret, so it also lands in Terraform state (encrypted S3).
+# Social identity providers, EXTERNAL only (WORKFORCE has none: staff sign in with an email code,
+# ADR 0006 S236). Secrets are read from Secrets Manager (values set out-of-band by Nghiep); Cognito
+# stores the client secret, so it also lands in Terraform state (encrypted S3).
 # =============================================================================
-data "aws_secretsmanager_secret_version" "identity_workforce_google" {
-  count     = local.id_wf_google ? 1 : 0
-  secret_id = var.identity_workforce_google_client_secret_arn
-}
-
 data "aws_secretsmanager_secret_version" "identity_external_google" {
   count     = local.id_ext_google ? 1 : 0
   secret_id = var.identity_external_google_client_secret_arn
@@ -472,30 +457,6 @@ data "aws_secretsmanager_secret_version" "identity_external_google" {
 data "aws_secretsmanager_secret_version" "identity_facebook" {
   count     = local.id_facebook ? 1 : 0
   secret_id = var.identity_facebook_app_secret_arn
-}
-
-resource "aws_cognito_identity_provider" "workforce_google" {
-  count         = local.id_wf_google ? 1 : 0
-  user_pool_id  = aws_cognito_user_pool.workforce.id
-  provider_name = "Google"
-  provider_type = "Google"
-
-  provider_details = {
-    client_id        = var.identity_workforce_google_client_id
-    client_secret    = data.aws_secretsmanager_secret_version.identity_workforce_google[0].secret_string
-    authorize_scopes = "openid email profile"
-  }
-
-  # email_verified MUST be mapped: the pre sign-up trigger refuses an unverified email.
-  attribute_mapping = merge(
-    {
-      email          = "email"
-      email_verified = "email_verified"
-      name           = "name"
-      username       = "sub"
-    },
-    var.identity_workforce_map_google_hd ? { "custom:hd" = "hd" } : {},
-  )
 }
 
 resource "aws_cognito_identity_provider" "external_google" {
@@ -577,8 +538,6 @@ resource "aws_cognito_user_pool_client" "workforce" {
 
   read_attributes  = distinct(concat(["email", "email_verified", "name"], each.value.writes))
   write_attributes = each.value.writes
-
-  depends_on = [aws_cognito_identity_provider.workforce_google]
 }
 
 resource "aws_cognito_user_pool_client" "external" {
@@ -622,8 +581,10 @@ resource "aws_cognito_user_pool_client" "external" {
 }
 
 # =============================================================================
-# Domains (ADR 0006 decision 10). Prefix domains always (Dev); custom domains only with the
-# us-east-1 certificate. DNS (CNAME to the CloudFront target) is set by hand at Namecheap.
+# Domains (ADR 0006 decision 10). Prefix domains always (Dev, and the fallback if a custom domain
+# breaks). Custom domains only with identity_custom_domains_enabled = true, which needs the AA-818
+# us-east-1 certificate ISSUED and an A record on the parent lumiguides.it.com (Cognito refuses the
+# custom domain otherwise). DNS: CNAME/alias of each name to its CloudFront target (output below).
 # =============================================================================
 resource "aws_cognito_user_pool_domain" "workforce_prefix" {
   domain                = var.identity_workforce_domain_prefix
@@ -919,18 +880,12 @@ output "identity_managed_login_base_urls" {
   }
 }
 
-# Exact redirect URIs to register in the Google / Facebook consoles.
+# Exact redirect URIs to register in the EXTERNAL Google / Facebook consoles (WORKFORCE has no IdP).
 output "identity_idp_redirect_uris" {
-  value = {
-    workforce_google = concat(
-      ["https://${var.identity_workforce_domain_prefix}.auth.${var.aws_region}.amazoncognito.com/oauth2/idpresponse"],
-      ["https://${var.identity_workforce_custom_domain}/oauth2/idpresponse"],
-    )
-    external_google_and_facebook = concat(
-      ["https://${var.identity_external_domain_prefix}.auth.${var.aws_region}.amazoncognito.com/oauth2/idpresponse"],
-      ["https://${var.identity_external_custom_domain}/oauth2/idpresponse"],
-    )
-  }
+  value = concat(
+    ["https://${var.identity_external_domain_prefix}.auth.${var.aws_region}.amazoncognito.com/oauth2/idpresponse"],
+    ["https://${var.identity_external_custom_domain}/oauth2/idpresponse"],
+  )
 }
 
 output "identity_custom_domain_cloudfront_targets" {
