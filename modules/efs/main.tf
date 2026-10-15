@@ -19,9 +19,9 @@ resource "aws_security_group" "efs" {
     security_groups = [var.sg_app_id]
   }
 
-  tags = {
+  tags = merge(var.tags, {
     Name = "${local.name_prefix}-sg-efs"
-  }
+  })
 }
 
 resource "aws_efs_file_system" "main" {
@@ -30,9 +30,9 @@ resource "aws_efs_file_system" "main" {
   throughput_mode  = "bursting"
   encrypted        = true
 
-  tags = {
+  tags = merge(var.tags, {
     Name = "${local.name_prefix}-efs"
-  }
+  })
 }
 
 resource "aws_efs_mount_target" "main" {
@@ -59,9 +59,9 @@ resource "aws_efs_access_point" "chromadb" {
     }
   }
 
-  tags = {
+  tags = merge(var.tags, {
     Name = "${local.name_prefix}-efs-chromadb"
-  }
+  })
 }
 
 resource "aws_efs_access_point" "langgraph" {
@@ -81,7 +81,7 @@ resource "aws_efs_access_point" "langgraph" {
     }
   }
 
-  tags = {
+  tags = merge(var.tags, {
     Name = "${local.name_prefix}-efs-langgraph"
-  }
+  })
 }

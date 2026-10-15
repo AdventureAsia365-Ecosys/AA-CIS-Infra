@@ -43,3 +43,9 @@ variable "permissions_boundary_arn" {
   type        = string
   default     = null
 }
+
+variable "tags" {
+  description = "AA-828: tags merged into every taggable resource of this module (the root passes App = \"shared\", DM-10.1). Provider default_tags still add Project/Environment/ManagedBy/Account."
+  type        = map(string)
+  default     = {}
+}

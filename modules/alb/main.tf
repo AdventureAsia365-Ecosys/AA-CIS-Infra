@@ -36,9 +36,9 @@ resource "aws_lb" "main" {
     }
   }
 
-  tags = {
+  tags = merge(var.tags, {
     Name = "${local.name_prefix}-alb"
-  }
+  })
 }
 
 # ── Target Group ──────────────────────────────────────────────
@@ -61,9 +61,9 @@ resource "aws_lb_target_group" "api" {
     matcher             = "200"
   }
 
-  tags = {
+  tags = merge(var.tags, {
     Name = "${local.name_prefix}-api-tg"
-  }
+  })
 }
 
 # ── HTTP Listener (forward — API Gateway HTTP_PROXY backend) ──
@@ -84,6 +84,8 @@ resource "aws_lb_listener" "http" {
     type             = "forward"
     target_group_arn = aws_lb_target_group.api.arn
   }
+
+  tags = var.tags
 }
 
 # ── HTTPS Listener ────────────────────────────────────────────
@@ -98,4 +100,6 @@ resource "aws_lb_listener" "https" {
     type             = "forward"
     target_group_arn = aws_lb_target_group.api.arn
   }
+
+  tags = var.tags
 }

@@ -14,7 +14,10 @@ resource "aws_ecs_cluster" "main" {
     name  = "containerInsights"
     value = "disabled"
   }
-  tags = { Name = "${local.name_prefix}-cluster" }
+  # AA-828: the cluster also runs aws_ecs_service.booking (accounts/aa365/booking.tf), so the root
+  # passes cluster_tags = { App = "shared" }. A cluster has no cost line of its own; task cost is
+  # attributed through the service tags propagated to each task (propagate_tags below).
+  tags = merge(var.tags, var.cluster_tags, { Name = "${local.name_prefix}-cluster" })
 }
 
 resource "aws_ecs_cluster_capacity_providers" "main" {
@@ -39,6 +42,8 @@ resource "aws_iam_role" "ecs_execution" {
       Action    = "sts:AssumeRole"
     }]
   })
+
+  tags = var.tags
 }
 
 resource "aws_iam_role_policy_attachment" "ecs_execution" {
@@ -76,6 +81,8 @@ resource "aws_iam_role" "ecs_task" {
       Action    = "sts:AssumeRole"
     }]
   })
+
+  tags = var.tags
 }
 # AWS managed policy required for ECS Exec (execute-command) — grants ssmmessages:
 # CreateControlChannel/CreateDataChannel/OpenControlChannel/OpenDataChannel on the task role.
@@ -235,6 +242,8 @@ resource "aws_iam_role_policy" "ecs_task_infra_status_readonly" {
 resource "aws_cloudwatch_log_group" "ecs" {
   name              = "/ecs/${local.name_prefix}"
   retention_in_days = 14
+
+  tags = var.tags
 }
 
 # ── ECR Repository ────────────────────────────────────────────
@@ -244,7 +253,7 @@ resource "aws_ecr_repository" "api" {
   image_scanning_configuration {
     scan_on_push = true
   }
-  tags = { Name = "${local.name_prefix}-api" }
+  tags = merge(var.tags, { Name = "${local.name_prefix}-api" })
 }
 
 resource "aws_ecr_lifecycle_policy" "api" {
@@ -335,7 +344,7 @@ resource "aws_ecs_task_definition" "api" {
     stopTimeout = 90
   }])
 
-  tags = { Name = "${local.name_prefix}-api-task" }
+  tags = merge(var.tags, { Name = "${local.name_prefix}-api-task" })
 }
 
 # ── ECS Service ───────────────────────────────────────────────
@@ -389,13 +398,20 @@ resource "aws_ecs_service" "api" {
 
   enable_execute_command = true
 
+  # AA-828: copy the service tags (App = "cis") onto every task it starts, so Fargate cost lands
+  # under the App cost allocation tag. SERVICE, not TASK_DEFINITION: the AA-CIS-App deploy workflow
+  # registers each new revision from `describe-task-definition` output, which carries no tags, so
+  # the revisions that actually run are untagged. In-place UpdateService; running tasks keep their
+  # old (empty) tags until the next deployment replaces them.
+  propagate_tags = "SERVICE"
+
   lifecycle {
     ignore_changes = [desired_count, task_definition]
   }
 
   depends_on = [aws_iam_role_policy_attachment.ecs_execution]
 
-  tags = { Name = "${local.name_prefix}-api-service" }
+  tags = merge(var.tags, { Name = "${local.name_prefix}-api-service" })
 }
 
 # ── Auto Scaling ──────────────────────────────────────────────
@@ -506,7 +522,7 @@ resource "aws_ecs_task_definition" "worker" {
     stopTimeout = 120
   }])
 
-  tags = { Name = "${local.name_prefix}-worker-task" }
+  tags = merge(var.tags, { Name = "${local.name_prefix}-worker-task" })
 }
 
 resource "aws_ecs_service" "worker" {
@@ -546,6 +562,9 @@ resource "aws_ecs_service" "worker" {
 
   enable_execute_command = true
 
+  # AA-828: same as the api service: service tags (App = "cis") reach every task.
+  propagate_tags = "SERVICE"
+
   # The App deploy workflow registers a new task def (new image) and points the service at it on
   # every push, so Terraform must not fight it on task_definition; desired_count is autoscaled.
   lifecycle {
@@ -554,7 +573,7 @@ resource "aws_ecs_service" "worker" {
 
   depends_on = [aws_iam_role_policy_attachment.ecs_execution]
 
-  tags = { Name = "${local.name_prefix}-worker-service" }
+  tags = merge(var.tags, { Name = "${local.name_prefix}-worker-service" })
 }
 
 # Autoscale the worker on CPU/memory, same shape as the api. min = desired, max = worker_max_count

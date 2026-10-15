@@ -11,9 +11,9 @@ resource "aws_elasticache_subnet_group" "main" {
   name       = "${local.name_prefix}-redis-subnet-group"
   subnet_ids = var.private_subnet_ids
 
-  tags = {
+  tags = merge(var.tags, {
     Name = "${local.name_prefix}-redis-subnet-group"
-  }
+  })
 }
 
 resource "aws_security_group" "redis" {
@@ -28,9 +28,9 @@ resource "aws_security_group" "redis" {
     security_groups = [var.sg_app_id]
   }
 
-  tags = {
+  tags = merge(var.tags, {
     Name = "${local.name_prefix}-sg-redis"
-  }
+  })
 }
 
 resource "aws_elasticache_cluster" "main" {
@@ -44,7 +44,7 @@ resource "aws_elasticache_cluster" "main" {
   subnet_group_name    = aws_elasticache_subnet_group.main.name
   security_group_ids   = [aws_security_group.redis.id]
 
-  tags = {
+  tags = merge(var.tags, {
     Name = "${local.name_prefix}-redis"
-  }
+  })
 }

@@ -13,18 +13,18 @@ resource "aws_vpc" "main" {
   enable_dns_hostnames = true
   enable_dns_support   = true
 
-  tags = {
+  tags = merge(var.tags, {
     Name = "${local.name_prefix}-vpc"
-  }
+  })
 }
 
 # ── Internet Gateway ─────────────────────────────────────────
 resource "aws_internet_gateway" "main" {
   vpc_id = aws_vpc.main.id
 
-  tags = {
+  tags = merge(var.tags, {
     Name = "${local.name_prefix}-igw"
-  }
+  })
 }
 
 # ── Public Subnets (ALB) ─────────────────────────────────────
@@ -35,10 +35,10 @@ resource "aws_subnet" "public" {
   availability_zone       = var.availability_zones[count.index]
   map_public_ip_on_launch = true
 
-  tags = {
+  tags = merge(var.tags, {
     Name = "${local.name_prefix}-public-${count.index + 1}"
     Tier = "public"
-  }
+  })
 }
 
 # ── Private Subnets (ECS, Lambda) ────────────────────────────
@@ -48,10 +48,10 @@ resource "aws_subnet" "private" {
   cidr_block        = var.private_subnet_cidrs[count.index]
   availability_zone = var.availability_zones[count.index]
 
-  tags = {
+  tags = merge(var.tags, {
     Name = "${local.name_prefix}-private-${count.index + 1}"
     Tier = "private"
-  }
+  })
 }
 
 # ── DB Subnets (RDS) ─────────────────────────────────────────
@@ -61,10 +61,10 @@ resource "aws_subnet" "db" {
   cidr_block        = var.db_subnet_cidrs[count.index]
   availability_zone = var.availability_zones[count.index]
 
-  tags = {
+  tags = merge(var.tags, {
     Name = "${local.name_prefix}-db-${count.index + 1}"
     Tier = "db"
-  }
+  })
 }
 
 # ── NAT Instance (t4g.nano) ──────────────────────────────────
@@ -83,9 +83,9 @@ data "aws_ami" "nat_al2023" {
 
 resource "aws_eip" "nat_instance" {
   domain = "vpc"
-  tags = {
+  tags = merge(var.tags, {
     Name = "${local.name_prefix}-nat-instance-eip"
-  }
+  })
 }
 
 resource "aws_eip_association" "nat_instance" {
@@ -113,9 +113,9 @@ resource "aws_security_group" "nat" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = {
+  tags = merge(var.tags, {
     Name = "${local.name_prefix}-sg-nat"
-  }
+  })
 }
 
 # IAM role + instance profile for NAT Instance SSM management.
@@ -135,6 +135,8 @@ resource "aws_iam_role" "nat_instance" {
       Action    = "sts:AssumeRole"
     }]
   })
+
+  tags = var.tags
 }
 
 resource "aws_iam_role_policy_attachment" "nat_instance_ssm" {
@@ -166,11 +168,17 @@ resource "aws_instance" "nat" {
     systemctl enable iptables
   EOT
 
-  tags = {
+  tags = merge(var.tags, {
     Name    = "${local.name_prefix}-nat-instance"
     Project = "AA-CIS"
     Role    = "nat"
-  }
+  })
+
+  # AA-828: the root EBS volume is billed on its own line; volume_tags is in-place (CreateTags on the
+  # attached volume), never a replacement. default_tags do not reach volume_tags, so it is explicit.
+  volume_tags = merge(var.tags, {
+    Name = "${local.name_prefix}-nat-instance-root"
+  })
 
   lifecycle {
     ignore_changes = [ami]
@@ -187,9 +195,9 @@ resource "aws_route_table" "public" {
     gateway_id = aws_internet_gateway.main.id
   }
 
-  tags = {
+  tags = merge(var.tags, {
     Name = "${local.name_prefix}-rt-public"
-  }
+  })
 }
 
 resource "aws_route_table_association" "public" {
@@ -207,9 +215,9 @@ resource "aws_route_table" "private" {
     network_interface_id = aws_instance.nat.primary_network_interface_id
   }
 
-  tags = {
+  tags = merge(var.tags, {
     Name = "${local.name_prefix}-rt-private"
-  }
+  })
 }
 
 resource "aws_route_table_association" "private" {
@@ -222,9 +230,9 @@ resource "aws_route_table_association" "private" {
 resource "aws_route_table" "db" {
   vpc_id = aws_vpc.main.id
 
-  tags = {
+  tags = merge(var.tags, {
     Name = "${local.name_prefix}-rt-db"
-  }
+  })
 }
 
 resource "aws_route_table_association" "db" {
@@ -238,9 +246,9 @@ resource "aws_db_subnet_group" "main" {
   name       = "${local.name_prefix}-db-subnet-group"
   subnet_ids = aws_subnet.db[*].id
 
-  tags = {
+  tags = merge(var.tags, {
     Name = "${local.name_prefix}-db-subnet-group"
-  }
+  })
 }
 
 # ── Security Groups ──────────────────────────────────────────
@@ -271,9 +279,9 @@ resource "aws_security_group" "alb" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = {
+  tags = merge(var.tags, {
     Name = "${local.name_prefix}-sg-alb"
-  }
+  })
 }
 
 # ECS / Lambda
@@ -304,9 +312,9 @@ resource "aws_security_group" "app" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = {
+  tags = merge(var.tags, {
     Name = "${local.name_prefix}-sg-app"
-  }
+  })
 }
 
 # RDS
@@ -322,7 +330,7 @@ resource "aws_security_group" "rds" {
     security_groups = [aws_security_group.app.id]
   }
 
-  tags = {
+  tags = merge(var.tags, {
     Name = "${local.name_prefix}-sg-rds"
-  }
+  })
 }

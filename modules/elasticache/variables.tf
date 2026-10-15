@@ -7,3 +7,9 @@ variable "node_type" {
   type    = string
   default = "cache.t3.micro"
 }
+
+variable "tags" {
+  description = "AA-828: tags merged into every taggable resource of this module (the root passes App = \"cis\", DM-10.1). Provider default_tags still add Project/Environment/ManagedBy/Account."
+  type        = map(string)
+  default     = {}
+}
