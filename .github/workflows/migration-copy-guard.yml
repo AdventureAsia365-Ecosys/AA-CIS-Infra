@@ -9,12 +9,19 @@ name: Migration Copy Guard
 #
 # pull_request: only the files the PR adds or changes. schedule / manual: every copy, so a later
 # edit of an already-copied file on an owner's main also shows up.
+#
+# Second job (AA-807 N5, no network): unique migration number per owner (MIG-3) and the
+# run_migration.py lint on every copy — `-- migrate:` directives parse, CONCURRENTLY only in a
+# `-- migrate: no-transaction` file, DROP TABLE/SCHEMA/COLUMN and TRUNCATE only with
+# `-- migrate: destructive` (MIG-9, MIG-10, MIG-12). DB Migrate runs the same lint before apply.
 on:
   pull_request:
     branches: [main]
     paths:
       - "db/migrations/**"
       - "db/check_migration_copies.py"
+      - "db/check_migration_files.py"
+      - "db/run_migration.py"
       - "db/tests/**"
       - ".github/workflows/migration-copy-guard.yml"
   schedule:
@@ -69,4 +76,19 @@ jobs:
           status=$?
           cat guard.log
           { echo '### Migration copy guard'; echo '```'; grep -v '^::' guard.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+
+  lint:
+    name: Migration lint and unique numbers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Lint every copy, check numbers are unique per owner
+        run: |
+          set +e
+          python3 db/check_migration_files.py > lint.log 2>&1
+          status=$?
+          cat lint.log
+          { echo '### Migration lint and unique numbers'; echo '```'; grep -v '^::' lint.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           exit "$status"

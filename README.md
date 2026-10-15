@@ -22,9 +22,11 @@ applies reviewed app migrations to the shared RDS.
 accounts/aa365/   main.tf, cicd.tf, tripplanner.tf, booking.tf, observability.tf, observability_ecosys.tf, dfs_balance.tf, … (+ lambda_src/)
 modules/          vpc, rds, ecs, alb, api_gateway, s3, secrets, waf, eventbridge, monitoring, …
 db/               run_migration.py + migrations/<owner>/ copies applied by DB Migrate,
-                  check_migration_copies.py (+ tests/) for the copy guard
+                  check_migration_copies.py + check_migration_files.py (+ tests/) for the guards,
+                  schema_dump.py + gen_schema_reference.py for the schema reference
 .github/workflows terraform-plan.yml (PR), terraform-apply.yml (manual), db-migrate.yml (manual),
-                  migration-copy-guard.yml (PR on db/migrations/**, nightly)
+                  migration-copy-guard.yml (PR on db/migrations/**, nightly),
+                  db-schema-dump.yml (nightly, manual, after each DB Migrate apply)
 ```
 
 ## How a change is applied
@@ -56,15 +58,21 @@ and runs one SQL file with the task's own `DATABASE_URL`:
    is not on the owner's `main` yet, differs by one byte, or does not register its own key.
 3. After the Infra PR merges: run **DB Migrate** on `main` with `mode=check`, then `mode=apply`.
    The job fails unless the version (`NNN`, `tp-NNN`, `bk-NNN`) is registered in
-   `shared.schema_versions` afterwards. Re-running `apply` is a no-op.
+   `shared.schema_versions` afterwards. Re-running `apply` is a no-op. The runner sets
+   `lock_timeout 5s` / `statement_timeout 15min` / `application_name db-migrate`; a file can
+   override the timeouts and use `-- migrate: no-transaction` or `-- migrate: destructive` (RDS
+   snapshot first) in its header.
 4. Merge the app PR that needs the migration.
+5. After the apply, **DB Schema Dump** runs by itself and opens/updates the root PR that
+   regenerates `AA-Ecosys/docs/architecture/db-schema-reference.md` (also nightly).
 
 Details: [`db/README.md`](db/README.md).
 
 ## CI secrets and variables
 
 Names only. GitHub secrets: `AWS_ROLE_ARN` (OIDC role assumed by CI), `AWS_REGION`,
-`TF_STATE_BUCKET`, `TF_VAR_DB_PASSWORD`. Terraform inputs for `accounts/aa365` are in
+`TF_STATE_BUCKET`, `TF_VAR_DB_PASSWORD`, `ROOT_REPO_DOCS_TOKEN` (DB Schema Dump: fine-grained token
+on AdventureAsia365-Ecosys/AA-Ecosys only, Contents + Pull requests read/write). Terraform inputs for `accounts/aa365` are in
 `variables.tf` / `tripplanner_variables.tf` / `booking_variables.tf` and `terraform.tfvars` (no secret values in git —
 secrets are referenced by ARN).
 

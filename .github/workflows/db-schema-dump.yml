@@ -1,0 +1,208 @@
+name: DB Schema Dump (shared RDS)
+# AA-807 N1: regenerates AA-Ecosys docs/architecture/db-schema-reference.md from the live catalog.
+#
+# 1. A one-off ECS Fargate task (CIS api task definition, same subnets/SG/DATABASE_URL as DB Migrate)
+#    runs db/schema_dump.py: read-only (default_transaction_read_only + one REPEATABLE READ READ ONLY
+#    transaction), catalog queries only, no row data. It writes JSON to the bronze bucket with the
+#    task role: columns, indexes, constraints, policies, table + column grants, owners, default
+#    privileges, roles, functions, sizes, pg_stat_user_tables activity, sessions per
+#    application_name, shared.schema_versions.
+# 2. db/gen_schema_reference.py renders the Markdown here on the runner.
+# 3. If the STRUCTURE changed (fingerprint in the file differs from the root repo's master, or
+#    publish=true), the file is pushed to the root repo branch bot/db-schema-reference and a PR is
+#    opened or updated. Nightly runs where only statistics moved open nothing. The root PR is merged
+#    by hand (root repo rule).
+#
+# Triggers: nightly, manual, and DB Migrate after every successful apply (gh workflow run).
+# Needs the secret ROOT_REPO_DOCS_TOKEN: a fine-grained PAT (or GitHub App token) on
+# AdventureAsia365-Ecosys/AA-Ecosys only, Contents read/write + Pull requests read/write. Without it
+# the dump and the artifact still run and the publish step fails with a clear error.
+on:
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "Why this run (shown in the root PR); DB Migrate sets it after an apply"
+        required: false
+        type: string
+        default: manual
+      publish:
+        description: "Open/update the root PR even if only statistics changed"
+        required: false
+        type: boolean
+        default: false
+  schedule:
+    - cron: "43 3 * * *"   # nightly, 03:43 UTC
+
+# Own group: never queued behind or ahead of a DB Migrate run (a pending run in a shared group would
+# cancel a pending migration). A dump that meets a migration's exclusive lock fails on lock_timeout.
+concurrency:
+  group: db-schema-dump
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  dump:
+    name: Dump schema, regenerate reference
+    runs-on: ubuntu-latest
+    # Same OIDC subject as DB Migrate (environment:prod -> aa-cis-infra-tf-apply). If a required
+    # reviewer is ever added to `prod`, the nightly run waits for approval: give the dump its own
+    # read-only role and environment then (AA-807 X1).
+    environment: prod
+    if: github.ref == 'refs/heads/main'
+    timeout-minutes: 45
+    env:
+      AWS_REGION: us-west-1
+      CLUSTER: aa-cis-dev-cluster
+      SERVICE: aa-cis-dev-api
+      BUCKET: aa-cis-bronze-005097885195
+      LOG_GROUP: /ecs/aa-cis-dev
+      ROOT_REPO: AdventureAsia365-Ecosys/AA-Ecosys
+      ROOT_BRANCH: master
+      PR_BRANCH: bot/db-schema-reference
+      REF_PATH: docs/architecture/db-schema-reference.md
+      REASON: ${{ github.event_name == 'schedule' && 'nightly' || inputs.reason || 'manual' }}
+      PUBLISH: ${{ github.event_name == 'workflow_dispatch' && inputs.publish && 'true' || 'false' }}
+      HAS_ROOT_TOKEN: ${{ secrets.ROOT_REPO_DOCS_TOKEN != '' }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Unit tests (runner, dump assembly, generator)
+        run: python3 -m unittest discover -s db/tests
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-west-1
+
+      # Presigned URL created and used in this one step (a masked step output can be dropped).
+      - name: Upload dump script, run one-off ECS task
+        id: task
+        run: |
+          PREFIX="db-schema-dump/${{ github.run_id }}"
+          echo "prefix=$PREFIX" >> "$GITHUB_OUTPUT"
+          aws s3 cp db/schema_dump.py "s3://$BUCKET/$PREFIX/schema_dump.py" --only-show-errors
+          RUNNER_URL=$(aws s3 presign "s3://$BUCKET/$PREFIX/schema_dump.py" --expires-in 900)
+          echo "::add-mask::$RUNNER_URL"
+
+          SVC=$(aws ecs describe-services --cluster "$CLUSTER" --services "$SERVICE" --output json)
+          TASK_DEF=$(jq -r '.services[0].taskDefinition' <<<"$SVC")
+          NET=$(jq -c '.services[0].networkConfiguration' <<<"$SVC")
+          echo "task definition: $TASK_DEF"
+          OVERRIDES=$(jq -nc \
+            --arg runner "$RUNNER_URL" --arg bucket "$BUCKET" --arg key "$PREFIX/schema.json" \
+            '{containerOverrides: [{name: "api",
+              command: ["python3", "-c", "import os,urllib.request;exec(urllib.request.urlopen(os.environ[\"RUNNER_URL\"],timeout=30).read())"],
+              environment: [
+                {name: "RUNNER_URL", value: $runner}, {name: "DUMP_BUCKET", value: $bucket},
+                {name: "DUMP_KEY", value: $key}, {name: "JOB_WORKER_IN_API", value: "false"}]}]}')
+          TASK_ARN=$(aws ecs run-task --cluster "$CLUSTER" --task-definition "$TASK_DEF" \
+            --launch-type FARGATE --network-configuration "$NET" --overrides "$OVERRIDES" \
+            --started-by "gh-db-schema-dump-${{ github.run_id }}" \
+            --query 'tasks[0].taskArn' --output text)
+          [ -n "$TASK_ARN" ] && [ "$TASK_ARN" != "None" ] || { echo "::error::run-task returned no task"; exit 1; }
+          echo "task: $TASK_ARN"
+          echo "arn=$TASK_ARN" >> "$GITHUB_OUTPUT"
+          # The waiter gives up after 10 min; retry it so a slow start does not fail the step.
+          for i in 1 2 3; do aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$TASK_ARN" && break; done
+
+      - name: Task log + result
+        if: always() && steps.task.outputs.arn != ''
+        env:
+          TASK_ARN: ${{ steps.task.outputs.arn }}
+        run: |
+          TASK_ID="${TASK_ARN##*/}"
+          aws logs get-log-events --log-group-name "$LOG_GROUP" --log-stream-name "api/api/$TASK_ID" \
+            --start-from-head --query 'events[].message' --output text | tr '\t' '\n' | tee task.log || true
+          grep '^DUMP' task.log >> "$GITHUB_STEP_SUMMARY" || true
+          DESC=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$TASK_ARN" --output json)
+          EXIT=$(jq -r '.tasks[0].containers[] | select(.name=="api") | .exitCode' <<<"$DESC")
+          echo "exit code: $EXIT  stopped: $(jq -r '.tasks[0].stoppedReason' <<<"$DESC")"
+          [ "$EXIT" = "0" ] || { echo "::error::schema dump task exited with $EXIT"; exit 1; }
+
+      - name: Fetch the dump, render the reference
+        id: render
+        run: |
+          PREFIX="${{ steps.task.outputs.prefix }}"
+          aws s3 cp "s3://$BUCKET/$PREFIX/schema.json" schema.json --only-show-errors
+          aws s3 cp schema.json "s3://$BUCKET/db-schema-dump/latest.json" --only-show-errors
+          python3 db/gen_schema_reference.py schema.json --out reference.md \
+            --source "AA-CIS-Infra DB Schema Dump ($REASON), $RUN_URL"
+          echo "fingerprint=$(python3 db/gen_schema_reference.py schema.json --fingerprint)" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Schema dump ($REASON)"
+            jq -r '"- latest: CIS \(.migrations_latest_per_owner.cis), TripPlanner \(.migrations_latest_per_owner.tripplanner), Booking \(.migrations_latest_per_owner.booking)",
+                   "- \(.counts.schemas) schemas, \(.counts.relations) tables/views, \(.counts.indexes) indexes, \(.counts.policies) policies, \(.counts.functions) functions",
+                   "- JSON: s3://'"$BUCKET"'/'"$PREFIX"'/schema.json (also db-schema-dump/latest.json)"' schema.json
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep dump + rendered file as an artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: db-schema-dump-${{ github.run_id }}
+          path: |
+            schema.json
+            reference.md
+          retention-days: 14
+
+      - name: Check out the root repo
+        if: env.HAS_ROOT_TOKEN == 'true'
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.ROOT_REPO }}
+          ref: ${{ env.ROOT_BRANCH }}
+          token: ${{ secrets.ROOT_REPO_DOCS_TOKEN }}
+          path: root
+          fetch-depth: 1
+
+      - name: Open or update the root PR when the structure changed
+        env:
+          GH_TOKEN: ${{ secrets.ROOT_REPO_DOCS_TOKEN }}
+          NEW_FP: ${{ steps.render.outputs.fingerprint }}
+        run: |
+          if [ "$HAS_ROOT_TOKEN" != "true" ]; then
+            echo "::error::secret ROOT_REPO_DOCS_TOKEN is not set: the dump is in the artifact and S3, but no root PR can be opened (see the header of this workflow)"
+            exit 1
+          fi
+          OLD_FP=$(grep -oE 'schema-fingerprint: [0-9a-f]{64}' "root/$REF_PATH" | cut -d' ' -f2 || true)
+          echo "fingerprint master=${OLD_FP:-none} dump=$NEW_FP"
+          if [ "$OLD_FP" = "$NEW_FP" ] && [ "$PUBLISH" != "true" ]; then
+            echo "- structure unchanged since master (\`${NEW_FP:0:12}\`): no PR" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          cp reference.md "root/$REF_PATH"
+          cd root
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -q -B "$PR_BRANCH"
+          git add "$REF_PATH"
+          git commit -q -m "docs: regenerate db-schema-reference.md from the live dump" \
+            -m "Generated by AA-CIS-Infra DB Schema Dump ($REASON): $RUN_URL"
+          git push -q --force origin "$PR_BRANCH"
+          {
+            echo "Generated by the AA-CIS-Infra **DB Schema Dump** workflow ($REASON): $RUN_URL"
+            echo
+            jq -r '"- Latest migration per owner: CIS **\(.migrations_latest_per_owner.cis)**, TripPlanner **\(.migrations_latest_per_owner.tripplanner)**, Booking **\(.migrations_latest_per_owner.booking)**",
+                   "- \(.counts.schemas) schemas, \(.counts.relations) tables/views, \(.counts.indexes) indexes, \(.counts.policies) RLS policies, \(.counts.functions) functions"' ../schema.json
+            echo "- Structural fingerprint: \`${OLD_FP:-none}\` on master -> \`$NEW_FP\`"
+            echo
+            echo "Review the diff for objects no migration explains (DDL outside DB Migrate, standards MIG-5), then merge by hand."
+            echo "Do not push to \`$PR_BRANCH\`: every run force-pushes it from master. This PR is updated in place until merged."
+          } > ../pr-body.md
+          PR=$(gh pr list --repo "$ROOT_REPO" --head "$PR_BRANCH" --state open --json number --jq '.[0].number // empty')
+          if [ -n "$PR" ]; then
+            gh pr edit "$PR" --repo "$ROOT_REPO" --body-file ../pr-body.md
+            echo "- updated root PR #$PR" >> "$GITHUB_STEP_SUMMARY"
+          else
+            URL=$(gh pr create --repo "$ROOT_REPO" --base "$ROOT_BRANCH" --head "$PR_BRANCH" \
+              --title "docs: regenerate db-schema-reference.md (live dump)" --body-file ../pr-body.md)
+            echo "- opened root PR $URL" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Remove the dump script from S3
+        if: always() && steps.task.outputs.prefix != ''
+        run: aws s3 rm "s3://$BUCKET/${{ steps.task.outputs.prefix }}/schema_dump.py" --only-show-errors

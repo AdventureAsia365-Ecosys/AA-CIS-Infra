@@ -7,6 +7,14 @@ name: DB Migrate (shared RDS)
 #
 # Flow: migration PR merged to main (human-approved) → run this with mode=check → mode=apply.
 # Re-running apply is a no-op once the version is in shared.schema_versions.
+#
+# Safety (AA-807 N5, db/run_migration.py): every session runs with lock_timeout 5s,
+# statement_timeout 15min, application_name db-migrate. Header directives in the file's leading
+# comment block: `-- migrate: lock_timeout=…` / `statement_timeout=…` (overrides),
+# `-- migrate: no-transaction` (statements one by one, e.g. CREATE INDEX CONCURRENTLY) and
+# `-- migrate: destructive` (this workflow takes a manual RDS snapshot before apply). The same lint
+# runs here before any AWS call and again in the task.
+# After a successful apply, the DB Schema Dump workflow is dispatched (root reference PR, AA-807 N1).
 on:
   workflow_dispatch:
     inputs:
@@ -28,6 +36,7 @@ concurrency:
 permissions:
   id-token: write
   contents: read
+  actions: write     # dispatch db-schema-dump.yml after an apply
 
 jobs:
   migrate:
@@ -41,6 +50,7 @@ jobs:
       SERVICE: aa-cis-dev-api
       BUCKET: aa-cis-bronze-005097885195
       LOG_GROUP: /ecs/aa-cis-dev
+      DB_INSTANCE: aa-cis-dev-db
       MIGRATION: ${{ inputs.migration }}
       MODE: ${{ inputs.mode }}
     steps:
@@ -61,12 +71,39 @@ jobs:
           echo "version=${PREFIX}${BASH_REMATCH[2]}" >> "$GITHUB_OUTPUT"
           echo "sha256=$(sha256sum "db/migrations/$MIGRATION" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
           echo "### $MODE \`$MIGRATION\`" >> "$GITHUB_STEP_SUMMARY"
+          # Header directives + lint (same code the task runs). A lint error stops here.
+          set +e
+          INSPECT=$(python3 db/run_migration.py --inspect "db/migrations/$MIGRATION"); LINT=$?
+          set -e
+          jq -r '.warnings[] | "::warning file=db/migrations/'"$MIGRATION"'::" + .' <<<"$INSPECT"
+          jq -r '.errors[] | "::error file=db/migrations/'"$MIGRATION"'::" + .' <<<"$INSPECT"
+          [ "$LINT" = "0" ] || exit 1
+          echo "destructive=$(jq -r '.destructive' <<<"$INSPECT")" >> "$GITHUB_OUTPUT"
+          jq -r '"- transaction: \(if .no_transaction then "no (statement by statement)" else "yes" end), destructive: \(.destructive), lock_timeout \(.settings.lock_timeout), statement_timeout \(.settings.statement_timeout)"' <<<"$INSPECT" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: us-west-1
+
+      # MIG-12: the only undo for a destructive file that does not roll back all three apps. Taken on
+      # every destructive apply dispatch (also when the version turns out to be applied already).
+      # Delete the snapshot by hand once the contract is confirmed (>= 14 days).
+      - name: Snapshot RDS before a destructive migration
+        id: snapshot
+        if: steps.file.outputs.destructive == 'true' && inputs.mode == 'apply'
+        env:
+          VERSION: ${{ steps.file.outputs.version }}
+        run: |
+          # run_attempt too: "Re-run jobs" keeps the run id, and a reused id fails create-db-snapshot.
+          SNAP="db-migrate-${VERSION}-${{ github.run_id }}-${{ github.run_attempt }}"
+          aws rds create-db-snapshot --db-instance-identifier "$DB_INSTANCE" --db-snapshot-identifier "$SNAP" \
+            --tags Key=purpose,Value=db-migrate-destructive Key=migration,Value="$MIGRATION" Key=run,Value="${{ github.run_id }}" \
+            --query 'DBSnapshot.Status' --output text
+          aws rds wait db-snapshot-available --db-snapshot-identifier "$SNAP"
+          echo "id=$SNAP" >> "$GITHUB_OUTPUT"
+          echo "- snapshot \`$SNAP\` available (delete by hand after the contract is confirmed)" >> "$GITHUB_STEP_SUMMARY"
 
       # Presigned URLs (15 min) are created and used in this one step — a masked value in a
       # step output can be dropped by Actions, so they are never passed between steps.
@@ -75,6 +112,7 @@ jobs:
         env:
           VERSION: ${{ steps.file.outputs.version }}
           SHA256: ${{ steps.file.outputs.sha256 }}
+          SNAPSHOT: ${{ steps.snapshot.outputs.id }}
         run: |
           PREFIX="db-migrate/${{ github.run_id }}"
           echo "prefix=$PREFIX" >> "$GITHUB_OUTPUT"
@@ -91,13 +129,14 @@ jobs:
           echo "task definition: $TASK_DEF"
           OVERRIDES=$(jq -nc \
             --arg runner "$RUNNER_URL" --arg sql "$SQL_URL" --arg file "$MIGRATION" \
-            --arg version "$VERSION" --arg sha "$SHA256" --arg mode "$MODE" \
+            --arg version "$VERSION" --arg sha "$SHA256" --arg mode "$MODE" --arg snap "$SNAPSHOT" \
             '{containerOverrides: [{name: "api",
               command: ["python3", "-c", "import os,urllib.request;exec(urllib.request.urlopen(os.environ[\"RUNNER_URL\"],timeout=30).read())"],
               environment: [
                 {name: "RUNNER_URL", value: $runner}, {name: "MIGRATION_URL", value: $sql},
                 {name: "MIGRATION_FILE", value: $file}, {name: "MIGRATION_VERSION", value: $version},
                 {name: "MIGRATION_SHA256", value: $sha}, {name: "MIGRATION_MODE", value: $mode},
+                {name: "MIGRATION_SNAPSHOT", value: $snap},
                 {name: "JOB_WORKER_IN_API", value: "false"}]}]}')
           TASK_ARN=$(aws ecs run-task --cluster "$CLUSTER" --task-definition "$TASK_DEF" \
             --launch-type FARGATE --network-configuration "$NET" --overrides "$OVERRIDES" \
@@ -106,7 +145,8 @@ jobs:
           [ -n "$TASK_ARN" ] && [ "$TASK_ARN" != "None" ] || { echo "::error::run-task returned no task"; exit 1; }
           echo "task: $TASK_ARN"
           echo "arn=$TASK_ARN" >> "$GITHUB_OUTPUT"
-          aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$TASK_ARN"
+          # The waiter gives up after 10 min, statement_timeout is 15 min: retry it (30 min total).
+          for i in 1 2 3; do aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$TASK_ARN" && break; done
 
       - name: Task log + result
         if: always() && steps.task.outputs.arn != ''
@@ -121,6 +161,17 @@ jobs:
           EXIT=$(jq -r '.tasks[0].containers[] | select(.name=="api") | .exitCode' <<<"$DESC")
           echo "exit code: $EXIT  stopped: $(jq -r '.tasks[0].stoppedReason' <<<"$DESC")"
           [ "$EXIT" = "0" ] || { echo "::error::migration task exited with $EXIT"; exit 1; }
+
+      # The apply already succeeded: a failed dispatch only warns (the nightly dump catches up).
+      - name: Regenerate the schema reference (DB Schema Dump)
+        if: success() && inputs.mode == 'apply'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run db-schema-dump.yml --repo "${{ github.repository }}" --ref main \
+            -f reason="after DB Migrate apply of $MIGRATION (run ${{ github.run_id }})"
+          echo "- dispatched DB Schema Dump (root reference PR if the structure changed)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Remove S3 objects
         if: always() && steps.task.outputs.prefix != ''
