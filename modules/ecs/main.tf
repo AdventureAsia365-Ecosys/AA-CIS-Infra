@@ -5,6 +5,14 @@
 
 locals {
   name_prefix = "${var.project}-${var.environment}"
+
+  # AA-828: operator alert e-mail (spend budget crossings, job ops_alert_email) for the api and the
+  # worker. Empty values are fine: the app logs and sends nothing (shared/ops_alerts.py).
+  ops_alert_mail_env = [
+    { name = "ALERT_EMAIL_TO", value = var.ops_alert_email },
+    { name = "SES_FROM_ADDRESS", value = var.ses_from_address },
+    { name = "SES_CONFIGURATION_SET", value = var.ses_configuration_set },
+  ]
 }
 
 # ── ECS Cluster ───────────────────────────────────────────────
@@ -302,6 +310,7 @@ resource "aws_ecs_task_definition" "api" {
       # the event-loop contention AA-651 removes — see api/main.py JOB_WORKER_IN_API.)
       { name = "JOB_WORKER_IN_API", value = "false" },
       ],
+      local.ops_alert_mail_env,
       var.redis_host != null ? [{ name = "REDIS_HOST", value = var.redis_host }] : []
     )
     secrets = [
@@ -499,6 +508,7 @@ resource "aws_ecs_task_definition" "worker" {
       # the source lacks (writer source-fidelity policy). Best draft wins + targeted repair default on.
       { name = "T3_BACKGROUND_FACTS", value = "on" },
       ],
+      local.ops_alert_mail_env,
       var.redis_host != null ? [{ name = "REDIS_HOST", value = var.redis_host }] : []
     )
     secrets = [

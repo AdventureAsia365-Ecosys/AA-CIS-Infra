@@ -15,7 +15,8 @@
 # SUCCESS) only completes after Nghiep switches the nameservers at Namecheap to that zone.
 #
 # Out of Terraform: the SES production-access request (sandbox exit, console / support case) and the
-# app send helpers (AA-Booking staff inquiry e-mail first, AA-811 S238; Cognito / CIS later) in the app repos.
+# app send helpers (AA-Booking staff inquiry e-mail, AA-811 S238; CIS operator alert e-mail, AA-828 S238;
+# Cognito later) in the app repos.
 # =============================================================================
 
 locals {
