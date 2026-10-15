@@ -575,6 +575,90 @@ resource "aws_iam_role_policy" "tf_apply" {
           Action   = ["apigateway:SetWebACL"]
           Resource = "arn:aws:apigateway:${var.aws_region}::/restapis/*/stages/*"
         },
+        # ---- AA-811 bootstrap grants (S237): one local MFA apply covers SES + Route 53 (AA-811),
+        # ACM (AA-818) and Cognito + its web ACL (AA-703). Inline statements, not managed policies:
+        # the role already has 10 managed attachments (default per-role quota). Keep them compact:
+        # all inline policies of a role share one 10,240-character limit.
+        {
+          # ses.tf: domain identity, DKIM/MAIL FROM attributes, configuration sets + event
+          # destinations, tags. No Send*: the CI role never sends mail.
+          Sid    = "SESIdentityManage"
+          Effect = "Allow"
+          Action = [
+            "ses:CreateEmailIdentity", "ses:DeleteEmailIdentity", "ses:GetEmailIdentity",
+            "ses:PutEmailIdentity*", "ses:*ConfigurationSet*", "ses:TagResource",
+            "ses:UntagResource", "ses:ListTagsForResource",
+          ]
+          Resource = [
+            "arn:aws:ses:${var.aws_region}:${var.account_id}:identity/*",
+            "arn:aws:ses:${var.aws_region}:${var.account_id}:configuration-set/*",
+          ]
+        },
+        {
+          # dns.tf / ses.tf / AA-818 / AA-703 records in the lumiguides.it.com zone. No
+          # DeleteHostedZone: removing the zone after the NS switch is an outage (local admin only).
+          Sid    = "Route53ZoneManage"
+          Effect = "Allow"
+          Action = [
+            "route53:Get*", "route53:List*", "route53:CreateHostedZone",
+            "route53:UpdateHostedZoneComment", "route53:ChangeResourceRecordSets",
+            "route53:ChangeTagsForResource",
+          ]
+          Resource = "*"
+        },
+        {
+          # AA-818: API GW custom-domain certs (us-west-1) and the Cognito custom-domain cert
+          # (us-east-1, ADR 0006 decision 10). RequestCertificate has no resource ARN.
+          Sid    = "ACMCertManage"
+          Effect = "Allow"
+          Action = [
+            "acm:RequestCertificate", "acm:DescribeCertificate", "acm:DeleteCertificate",
+            "acm:ListCertificates", "acm:AddTagsToCertificate", "acm:RemoveTagsFromCertificate",
+            "acm:ListTagsForCertificate", "acm:UpdateCertificateOptions",
+          ]
+          Resource = "*"
+          Condition = {
+            StringEquals = { "aws:RequestedRegion" = [var.aws_region, "us-east-1"] }
+          }
+        },
+        {
+          # AA-703 (Infra PR #105): the two user pools, clients, groups, domains, identity
+          # providers, triggers config, WAF association. Several Cognito actions (CreateUserPool,
+          # DescribeUserPoolDomain, ...) have no resource ARN, so the scope is the region. Control
+          # plane only: no Admin* (AdminCreateUser / AdminSetUserPassword / AdminInitiateAuth would
+          # let a CI apply mint a staff login) and no Start/StopUserImportJob.
+          Sid    = "CognitoUserPoolManage"
+          Effect = "Allow"
+          Action = [
+            "cognito-idp:Create*", "cognito-idp:Delete*", "cognito-idp:Update*",
+            "cognito-idp:Describe*", "cognito-idp:Get*", "cognito-idp:List*", "cognito-idp:Set*",
+            "cognito-idp:AddCustomAttributes", "cognito-idp:TagResource",
+            "cognito-idp:UntagResource", "cognito-idp:AssociateWebACL",
+            "cognito-idp:DisassociateWebACL",
+          ]
+          Resource = "*"
+          Condition = {
+            StringEquals = { "aws:RequestedRegion" = var.aws_region }
+          }
+        },
+        {
+          # AA-703: the Cognito web ACL (WAFv2Manage in cicd.tf has update/associate only).
+          Sid      = "WAFv2WebACLCreate"
+          Effect   = "Allow"
+          Action   = ["wafv2:CreateWebACL", "wafv2:DeleteWebACL", "wafv2:CheckCapacity"]
+          Resource = "*"
+        },
+        {
+          # AA-703: a pool in DEVELOPER (SES) email mode makes Cognito create its email
+          # service-linked role on first use; the caller needs this. Only that one service.
+          Sid      = "CognitoEmailServiceLinkedRole"
+          Effect   = "Allow"
+          Action   = ["iam:CreateServiceLinkedRole"]
+          Resource = "arn:aws:iam::${var.account_id}:role/aws-service-role/email.cognito-idp.amazonaws.com/*"
+          Condition = {
+            StringEquals = { "iam:AWSServiceName" = "email.cognito-idp.amazonaws.com" }
+          }
+        },
       ],
     )
   })
