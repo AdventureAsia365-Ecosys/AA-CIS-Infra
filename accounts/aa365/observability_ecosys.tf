@@ -244,7 +244,7 @@ resource "aws_cloudwatch_metric_alarm" "rds_free_storage_low" {
 # connection budget (per-role CONNECTION LIMIT, Lambda reserved concurrency) is exhausted.
 resource "aws_cloudwatch_metric_alarm" "rds_connections_high" {
   alarm_name          = "${local.name_prefix}-rds-connections-high"
-  alarm_description   = "RDS ${module.rds.db_identifier} above 60 connections for 5 minutes (shared by CIS, TripPlanner, Booking)."
+  alarm_description   = "RDS ${module.rds.db_identifier} peak connections above 60 within a 5-minute period (shared by CIS, TripPlanner, Booking)."
   namespace           = "AWS/RDS"
   metric_name         = "DatabaseConnections"
   dimensions          = { DBInstanceIdentifier = module.rds.db_identifier }

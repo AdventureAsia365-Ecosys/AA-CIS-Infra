@@ -29,6 +29,15 @@ resource "aws_db_parameter_group" "main" {
     value = "500"
   }
 
+  # The slow-query log runs on asyncpg prepared statements, so PostgreSQL would also log the bind
+  # values ("DETAIL: parameters: $1 = ...") at full length by default (-1). Those can be Booking
+  # customer PII or sign-in codes, and this log is exported to CloudWatch. 0 = log the statement
+  # text only, never the bind values.
+  parameter {
+    name  = "log_parameter_max_length"
+    value = "0"
+  }
+
   parameter {
     name  = "log_lock_waits"
     value = "1"
