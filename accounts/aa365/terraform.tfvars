@@ -51,3 +51,6 @@ dataforseo_password = "REPLACE_ME"
 
 # AA-Booking (S235): immutable GitHub repo id — pins the aa-booking-dev-app-deploy OIDC trust to this repo.
 booking_github_repo_id = "1418188499"
+
+# AA-811 (S238): AA-Booking sends the staff "new inquiry" e-mail (SES, ses.tf) to this inbox on Dev.
+booking_staff_notify_email = "nghieppham@adventure.asia"

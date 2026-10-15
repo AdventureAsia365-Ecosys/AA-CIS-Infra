@@ -364,11 +364,11 @@ resource "aws_lambda_function" "tripplanner_assembly" {
       BEDROCK_ACCT_FALLBACK        = "867490540162"
       # acc3 and acc1 use DIFFERENT invoker role names — pass both (a single
       # name breaks the fallback path).
-      BEDROCK_ROLE_NAME_PRIMARY           = "AA3-Bedrock-Invoker"
-      BEDROCK_ROLE_NAME_FALLBACK          = "AA-Bedrock-Invoker"
-      BEDROCK_EXTERNAL_ID_PRIMARY         = "aa296-satellite-bedrock-acc3"
-      BEDROCK_EXTERNAL_ID_FALLBACK        = "aa296-satellite-bedrock"
-      ADVISOR_NOTIFY_EMAIL                = var.tripplanner_advisor_email
+      BEDROCK_ROLE_NAME_PRIMARY    = "AA3-Bedrock-Invoker"
+      BEDROCK_ROLE_NAME_FALLBACK   = "AA-Bedrock-Invoker"
+      BEDROCK_EXTERNAL_ID_PRIMARY  = "aa296-satellite-bedrock-acc3"
+      BEDROCK_EXTERNAL_ID_FALLBACK = "aa296-satellite-bedrock"
+      # No ADVISOR_NOTIFY_EMAIL: the advisor e-mail is sent by AA-Booking (bk_notify_email, AA-811 S238).
       REQUIRE_REGISTRATION_BEFORE_HANDOFF = "true"
       TRIPPLANNER_API_KEY                 = random_password.tripplanner_api_key.result
       MAPBOX_GEOCODING_TOKEN_ARN          = aws_secretsmanager_secret.tripplanner_mapbox.arn

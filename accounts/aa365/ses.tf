@@ -15,7 +15,7 @@
 # SUCCESS) only completes after Nghiep switches the nameservers at Namecheap to that zone.
 #
 # Out of Terraform: the SES production-access request (sandbox exit, console / support case) and the
-# app send helpers (TripPlanner notify.py, Booking, CIS) which live in the app repos.
+# app send helpers (AA-Booking staff inquiry e-mail first, AA-811 S238; Cognito / CIS later) in the app repos.
 # =============================================================================
 
 locals {
@@ -216,7 +216,8 @@ resource "aws_iam_role_policy" "booking_ecs_task_ses_send" {
   policy = data.aws_iam_policy_document.ses_send.json
 }
 
-# Shared by the browse and assembly Lambdas; assembly (notify.py) is the first real consumer.
+# Shared by the browse and assembly Lambdas. Unused since S238 (AA-811): AA-Booking sends the staff
+# inquiry e-mail, TripPlanner notify.py only logs. Kept for a future traveller e-mail from TripPlanner.
 resource "aws_iam_role_policy" "tripplanner_lambda_ses_send" {
   name   = "${local.tp_name_prefix}-lambda-ses-send"
   role   = aws_iam_role.tripplanner_lambda_exec.id
