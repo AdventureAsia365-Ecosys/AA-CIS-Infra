@@ -208,9 +208,11 @@ resource "aws_iam_role_policy" "booking_ecs_execution" {
 }
 
 # -----------------------------------------------------------------------------
-# Task role (the app process). The app needs no AWS API today: DATABASE_URL is injected by the
-# execution role. The only grant is the SSM channel for ECS Exec (debugging, same access path as
-# CIS, SSM only). No Bedrock, no S3, no CIS secrets: add them only when a feature needs them.
+# Task role (the app process). DATABASE_URL is injected by the execution role. Grants: the SSM channel
+# for ECS Exec (debugging, same access path as CIS, SSM only) below, and SES send as
+# var.ses_from_address through the transactional configuration set (ses.tf
+# aws_iam_role_policy.booking_ecs_task_ses_send, AA-811). No Bedrock, no S3, no CIS secrets: add them
+# only when a feature needs them.
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "booking_ecs_task" {
   name                 = "${local.bk_name_prefix}-ecs-task-role"
@@ -250,8 +252,14 @@ resource "aws_iam_role_policy" "booking_ecs_task" {
 # only containerDefinitions[0].image swapped to <repo>:<git_sha>. ignore_changes on the service's
 # task_definition keeps Terraform from reverting that.
 #
-# Env names read by the app (backend/app/settings.py): DATABASE_URL (secret), DB_SSL, ENVIRONMENT.
-# GIT_SHA is baked into the image at build time.
+# Env names read by the app (backend/app/settings.py): DATABASE_URL (secret), DB_SSL, ENVIRONMENT, and the
+# AA-811 staff e-mail settings (bk_notify_email job): STAFF_NOTIFY_EMAIL, SES_FROM_ADDRESS (must equal
+# var.ses_from_address, the only From the task role may send as, ses.tf), SES_CONFIGURATION_SET (the
+# transactional stream of ses.tf), STAFF_ADMIN_URL (links to the staff admin). GIT_SHA is baked into the
+# image at build time.
+#
+# A change here registers a new revision that the service ignores (ignore_changes below); the next
+# AA-Booking deploy copies the family's LATEST revision (deploy-dev.yml, AA-811) and carries it to the task.
 # -----------------------------------------------------------------------------
 resource "aws_ecs_task_definition" "booking" {
   family                   = local.bk_service
@@ -270,6 +278,10 @@ resource "aws_ecs_task_definition" "booking" {
     environment = [
       { name = "ENVIRONMENT", value = var.environment },
       { name = "DB_SSL", value = "require" },
+      { name = "STAFF_NOTIFY_EMAIL", value = var.booking_staff_notify_email },
+      { name = "SES_FROM_ADDRESS", value = var.ses_from_address },
+      { name = "SES_CONFIGURATION_SET", value = aws_sesv2_configuration_set.stream["transactional"].configuration_set_name },
+      { name = "STAFF_ADMIN_URL", value = var.booking_staff_admin_url },
     ]
     secrets = [
       { name = "DATABASE_URL", valueFrom = aws_secretsmanager_secret.booking_db.arn },
