@@ -23,11 +23,12 @@
 #     DeleteRolePolicy (retirement only), never PassRole;
 #   - both boundary policies, and the GitHub OIDC provider (no OIDC/SAML provider writes at all).
 #
-# What the apply boundary does NOT stop yet (closed only by steps 3 + 4 of docs/ci-role-split.md):
-# every other aa-*-dev-* role (ECS task/execution, Lambda exec, ...) has no boundary today. The apply
-# role may rewrite its inline policy or trust and PassRole it to an ECS task or Lambda it can start,
-# so code running under that role gets whatever IAM rights the apply role wrote into it - including
-# rights the boundary denies the apply role itself. The sts:AssumeRole deny does not help there (no
+# What the apply boundary does NOT stop yet (closed only by steps 3 + 4 of docs/ci-role-split.md;
+# step 4 puts the workload boundary on the CI-managed roles, so the text below describes the
+# state before it): every other aa-*-dev-* role (ECS task/execution, Lambda exec, ...) had no
+# boundary. The apply role may rewrite its inline policy or trust and PassRole it to an ECS task or
+# Lambda it can start, so code running under that role gets whatever IAM rights the apply role
+# wrote into it - including rights the boundary denies the apply role itself. The sts:AssumeRole deny does not help there (no
 # AssumeRole call is involved). Phase 3 (var.tf_apply_require_boundary_on_role_policy_writes) after
 # step 4 caps such roles at the workload boundary (no IAM writes).
 #
@@ -211,8 +212,9 @@ data "aws_iam_policy_document" "tf_apply_boundary" {
   }
 
   # Phase 3 switch (docs/ci-role-split.md): once every aa-*-dev-* role carries the workload
-  # boundary, also require it on policy writes to existing roles. Off by default because no
-  # existing role has a boundary yet, so turning it on now would block every role policy change.
+  # boundary, also require it on policy writes to existing roles. Off by default: step 4 bounds
+  # the CI-managed roles, but the legacy aa-cis-dev-role stays unbounded until step 3 removes it,
+  # and this deny would block that removal (Detach/DeleteRolePolicy). Turn it on in or after step 3.
   # UpdateAssumeRolePolicy and PassRole cannot be conditioned on iam:PermissionsBoundary (AWS does
   # not populate that key for them), so they are not in this statement: once every role carries
   # the workload boundary, passing or re-trusting one only ever yields bounded rights.

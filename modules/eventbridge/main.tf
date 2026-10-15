@@ -42,8 +42,9 @@ data "aws_iam_policy_document" "scheduler_assume" {
 }
 
 resource "aws_iam_role" "scheduler" {
-  name               = "${local.name_prefix}-acp-scheduler-role"
-  assume_role_policy = data.aws_iam_policy_document.scheduler_assume.json
+  name                 = "${local.name_prefix}-acp-scheduler-role"
+  assume_role_policy   = data.aws_iam_policy_document.scheduler_assume.json
+  permissions_boundary = var.permissions_boundary_arn
 
   # _iam_gate is a no-op tag whose only purpose is to force this resource to
   # wait on var.iam_propagation_gate's upstream time_sleep — see variables.tf.

@@ -43,6 +43,11 @@ data "archive_file" "dfs_balance" {
   type        = "zip"
   source_dir  = "${path.module}/lambda_src/dfs_balance_check"
   output_path = "${path.module}/lambda_src/dfs_balance_check.zip"
+
+  # AA-806: the zip stores the source file's mode, and the CI checkout writes handler.py as 0600
+  # while a local checkout has 0644, so CI and local applies kept re-uploading the same code
+  # (hash oTsj... in CI vs Qekb... locally). A fixed mode makes the hash the same everywhere.
+  output_file_mode = "0666"
 }
 
 # ── Read the admin secret value to inject as the Lambda env (authorizer pattern) ─
@@ -62,9 +67,10 @@ data "aws_iam_policy_document" "dfs_balance_assume" {
 }
 
 resource "aws_iam_role" "dfs_balance_exec" {
-  name               = "${local.dfs_balance_fn_name}-exec"
-  assume_role_policy = data.aws_iam_policy_document.dfs_balance_assume.json
-  tags               = local.common_tags
+  name                 = "${local.dfs_balance_fn_name}-exec"
+  permissions_boundary = aws_iam_policy.workload_boundary.arn
+  assume_role_policy   = data.aws_iam_policy_document.dfs_balance_assume.json
+  tags                 = local.common_tags
 }
 
 # VPC ENI management for a Lambda placed in the VPC (parity with the other app Lambdas).
@@ -155,9 +161,10 @@ data "aws_iam_policy_document" "dfs_balance_scheduler_assume" {
 }
 
 resource "aws_iam_role" "dfs_balance_scheduler" {
-  name               = "${local.dfs_balance_fn_name}-scheduler"
-  assume_role_policy = data.aws_iam_policy_document.dfs_balance_scheduler_assume.json
-  tags               = local.common_tags
+  name                 = "${local.dfs_balance_fn_name}-scheduler"
+  permissions_boundary = aws_iam_policy.workload_boundary.arn
+  assume_role_policy   = data.aws_iam_policy_document.dfs_balance_scheduler_assume.json
+  tags                 = local.common_tags
 }
 
 resource "aws_iam_role_policy" "dfs_balance_scheduler_invoke" {

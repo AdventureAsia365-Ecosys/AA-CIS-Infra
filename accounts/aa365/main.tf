@@ -47,6 +47,10 @@ module "vpc" {
   public_subnet_cidrs  = var.public_subnet_cidrs
   private_subnet_cidrs = var.private_subnet_cidrs
   db_subnet_cidrs      = var.db_subnet_cidrs
+
+  # AA-806 step 4: aa-cis-nat-instance-role is in local.tf_managed_role_arns, so it carries the
+  # workload boundary like every other role the CI apply role may write.
+  permissions_boundary_arn = aws_iam_policy.workload_boundary.arn
 }
 
 module "rds" {
@@ -152,6 +156,9 @@ module "ecs" {
   # account 1's execution role has this attached out-of-band; account 2 needs it explicit.
   execution_role_secrets_arn_pattern = "arn:aws:secretsmanager:${var.aws_region}:${var.account_id}:secret:${var.project}/${var.environment}/*"
 
+  # AA-806 step 4: workload boundary on the CIS execution + task roles (cicd_split.tf).
+  permissions_boundary_arn = aws_iam_policy.workload_boundary.arn
+
   depends_on = [module.vpc, module.alb]
 }
 
@@ -175,6 +182,9 @@ module "eventbridge" {
   # only touches the 3 resources that actually need it (see
   # modules/eventbridge/variables.tf's iam_propagation_gate).
   iam_propagation_gate = time_sleep.wait_for_iam_propagation.id
+
+  # AA-806 step 4: workload boundary on the ACP scheduler role (cicd_split.tf).
+  permissions_boundary_arn = aws_iam_policy.workload_boundary.arn
 }
 
 module "monitoring" {
