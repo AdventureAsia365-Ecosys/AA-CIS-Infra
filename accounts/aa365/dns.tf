@@ -80,19 +80,6 @@ locals {
       type    = "CNAME"
       records = ["_db1334da60091d3dc3b933a7027f9942.jkddzztszm.acm-validations.aws"]
     }
-
-    # Legacy: the old Quanskill ap-southeast-1 ALB, which no longer resolves (NXDOMAIN, 14/10).
-    # Copied for parity only; dropping them is a separate decision (dns-parity.md).
-    "www|CNAME" = {
-      name    = "www"
-      type    = "CNAME"
-      records = ["aa-alb-prod-203362903.ap-southeast-1.elb.amazonaws.com"]
-    }
-    "api|CNAME" = {
-      name    = "api"
-      type    = "CNAME"
-      records = ["aa-alb-prod-203362903.ap-southeast-1.elb.amazonaws.com"]
-    }
   }
 }
 
