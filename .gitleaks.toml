@@ -1,0 +1,60 @@
+# gitleaks config for AA-CIS-Infra (AA-841). Used by .github/workflows/secret-scan.yml and by the
+# local commands in README.md ("Secret scan").
+#
+# The default gitleaks rules (cloud keys, tokens, private keys, generic high-entropy api keys) plus
+# two repo rules for the leak shapes the defaults miss and this repo has actually had: a DSN with an
+# embedded password, and a plaintext password/key assigned in Terraform (tfvars/tf/hcl).
+#
+# Known false positives: prefer a narrow allowlist entry here (path or exact placeholder regex) for
+# a class of values; use .gitleaksignore (one fingerprint per line) for a single finding.
+
+title = "AA-CIS-Infra gitleaks config"
+
+[extend]
+useDefault = true
+
+# Credentials embedded in a connection URI: scheme://user:password@host
+[[rules]]
+id = "uri-embedded-credentials"
+description = "Password embedded in a connection URI (postgres, mysql, redis, amqp, mongodb, http)"
+regex = '''(?i)\b(?:postgres(?:ql)?(?:\+[a-z0-9]+)?|mysql|mariadb|rediss?|amqps?|mongodb(?:\+srv)?|https?)://[^\s:/@'"`]+:([^\s@'"`/]{4,})@[^\s'"`]+'''
+secretGroup = 1
+keywords = ["://"]
+
+  [[rules.allowlists]]
+  description = "Placeholders and variable references, not real passwords"
+  regexTarget = "secret"
+  regexes = [
+    '''(?i)^(?:replace_me|change_?me|placeholder|password|passwd|pass|pwd|secret|redacted|example|dummy|test|xxx+|\*+|\.\.\.)$''',
+    '''^\$\{[^}]*\}$''',
+    '''^\$[A-Za-z_][A-Za-z0-9_]*$''',
+    '''^<[^>]*>$''',
+    '''^\{[^}]*\}$''',
+  ]
+
+# Plaintext secret assigned in Terraform: <name>_password / _api_key / _secret_key / _token ... = "value"
+# Only names whose *value* is the secret: secret_*_arn / *_secret_name style keys do not match.
+[[rules]]
+id = "terraform-plaintext-secret"
+description = "Plaintext password, API key or token assigned in a Terraform file"
+path = '''(?i)\.(?:tf|tfvars|hcl)(?:\.json)?$'''
+regex = '''(?i)\b[a-z0-9_]*(?:password|passwd|api_key|apikey|access_key|secret_key|private_key|client_secret|auth_token|_token)\s*=\s*"([^"\s]{4,})"'''
+secretGroup = 1
+keywords = ["password", "passwd", "api_key", "apikey", "access_key", "secret_key", "private_key", "client_secret", "token"]
+
+  [[rules.allowlists]]
+  description = "Placeholders and interpolations, not real secrets"
+  regexTarget = "secret"
+  regexes = [
+    '''(?i)^(?:replace_me|change_?me|placeholder|redacted|example|dummy|test|xxx+|\*+|\.\.\.)$''',
+    '''\$\{''',  # any HCL interpolation, e.g. creation_token = "${local.name_prefix}-efs"
+    '''^<[^>]*>$''',
+  ]
+
+# Global allowlist: binary build outputs and provider lock files (hashes, not secrets).
+[[allowlists]]
+description = "Built Lambda zips and Terraform provider lock files"
+paths = [
+  '''(?:^|/)dist/lambdas/[^/]+\.zip$''',
+  '''(?:^|/)\.terraform\.lock\.hcl$''',
+]

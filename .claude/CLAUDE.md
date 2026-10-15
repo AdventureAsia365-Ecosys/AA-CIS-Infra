@@ -98,9 +98,8 @@ Pattern: grant WAF read manually → terraform apply → policy self-manages the
   NOT for CIS's main app infra. State bucket `aa-cis-tfstate-acc1-bedrock-867490540162`.
 - `accounts/acc3-bedrock/` — account **786888028788** (Acc3), profile `nghiep_aa365`. Bedrock
   satellite CHÍNH. State bucket `aa-cis-tfstate-acc3-bedrock-786888028788`.
-- `envs/dev`, `envs/prod`, `envs/staging/` — `.tf` files present but empty (0 bytes); no
-  backend config, not active roots. Not investigated further under AA-587 (out of scope), flagged
-  here so a future session doesn't mistake them for something live either.
+- `envs/` (dev/staging/prod) — REMOVED in AA-841 (S238): dead scaffold (empty `.tf` files, no
+  backend) whose `envs/dev/terraform.tfvars` held plaintext acc1-era credentials. Do not recreate it.
 
 ## SSM ONLY
 Never use SSH. All container access via:

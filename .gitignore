@@ -25,12 +25,15 @@ Thumbs.db
 
 # Claude Code local settings
 .claude/settings.local.json
-# Terraform variable files (chứa secrets)
+# Terraform variable files can hold secrets: never commit one (AA-841).
 *.tfvars
-!envs/dev/terraform.tfvars
-!accounts/aa365/terraform.tfvars
 *.tfvars.json
+**/terraform.tfvars
 !*.tfvars.example
+# Exception: the live root's tfvars is tracked on purpose. It holds only non-secret config; the
+# secret-shaped variables are REPLACE_ME placeholders and db_password comes from TF_VAR_db_password.
+# The Secret Scan PR check (.github/workflows/secret-scan.yml) fails if a real value lands there.
+!accounts/aa365/terraform.tfvars
 
 # Terraform archive_file outputs (built at plan/apply time)
 accounts/*/lambda_src/*.zip
