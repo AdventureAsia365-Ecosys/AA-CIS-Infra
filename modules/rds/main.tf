@@ -65,9 +65,9 @@ resource "aws_db_parameter_group" "main" {
     apply_method = "pending-reboot"
   }
 
-  tags = {
+  tags = merge(var.tags, {
     Name = "${local.name_prefix}-pg15"
-  }
+  })
 }
 
 # RDS creates /aws/rds/instance/<id>/postgresql on the first export with no expiry; creating it
@@ -76,9 +76,9 @@ resource "aws_cloudwatch_log_group" "postgresql" {
   name              = "/aws/rds/instance/${local.name_prefix}-db/postgresql"
   retention_in_days = var.log_retention_days
 
-  tags = {
+  tags = merge(var.tags, {
     Name = "${local.name_prefix}-db-postgresql"
-  }
+  })
 }
 
 resource "aws_db_instance" "main" {
@@ -130,9 +130,9 @@ resource "aws_db_instance" "main" {
   performance_insights_retention_period = 7
   enabled_cloudwatch_logs_exports       = ["postgresql"]
 
-  tags = {
+  tags = merge(var.tags, {
     Name = "${local.name_prefix}-db"
-  }
+  })
 
   # AA-267: RDS password rotated outside Terraform in the past (proven via
   # direct connect + Secrets Manager cross-check, S93 07/07/2026). TF_VAR

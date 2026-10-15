@@ -26,9 +26,9 @@ resource "aws_security_group" "nlb" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = {
+  tags = merge(var.tags, {
     Name = "${local.name_prefix}-sg-nlb"
-  }
+  })
 }
 
 resource "aws_lb" "vpc_link_nlb" {
@@ -52,9 +52,9 @@ resource "aws_lb" "vpc_link_nlb" {
   # enforced for everything else.
   enforce_security_group_inbound_rules_on_private_link_traffic = "off"
 
-  tags = {
+  tags = merge(var.tags, {
     Name = "${local.name_prefix}-nlb"
-  }
+  })
 }
 
 resource "aws_lb_target_group" "vpc_link_nlb" {
@@ -70,9 +70,9 @@ resource "aws_lb_target_group" "vpc_link_nlb" {
     port     = "traffic-port"
   }
 
-  tags = {
+  tags = merge(var.tags, {
     Name = "${local.name_prefix}-nlb-tg"
-  }
+  })
 }
 
 resource "aws_lb_target_group_attachment" "vpc_link_nlb_to_alb" {
@@ -90,13 +90,15 @@ resource "aws_lb_listener" "vpc_link_nlb" {
     type             = "forward"
     target_group_arn = aws_lb_target_group.vpc_link_nlb.arn
   }
+
+  tags = var.tags
 }
 
 resource "aws_api_gateway_vpc_link" "this" {
   name        = "${local.name_prefix}-vpc-link"
   target_arns = [aws_lb.vpc_link_nlb.arn]
 
-  tags = {
+  tags = merge(var.tags, {
     Name = "${local.name_prefix}-vpc-link"
-  }
+  })
 }

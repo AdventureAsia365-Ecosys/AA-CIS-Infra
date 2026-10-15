@@ -45,3 +45,9 @@ variable "access_logs_prefix" {
   default     = "alb-access-logs"
   description = "S3 key prefix for ALB access logs, if access_logs_bucket is set (AA-272 diagnostic only)"
 }
+
+variable "tags" {
+  description = "AA-828: tags merged into every taggable resource of this module (the root passes App = \"shared\", DM-10.1). Provider default_tags still add Project/Environment/ManagedBy/Account."
+  type        = map(string)
+  default     = {}
+}

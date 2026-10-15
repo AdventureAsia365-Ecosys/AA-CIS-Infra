@@ -408,6 +408,12 @@ resource "aws_ecs_service" "booking" {
 
   enable_execute_command = true
 
+  # AA-828: copy the service tags (local.bk_tags, App = "booking") onto every task, so Fargate cost
+  # lands under the App cost allocation tag. SERVICE, not TASK_DEFINITION: deploy-dev.yml registers
+  # each revision from `describe-task-definition` output, which carries no tags, so the revisions
+  # that run are untagged. In-place UpdateService; it reaches tasks started after the change.
+  propagate_tags = "SERVICE"
+
   lifecycle {
     ignore_changes = [desired_count, task_definition]
   }

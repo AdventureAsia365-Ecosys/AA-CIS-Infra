@@ -18,11 +18,31 @@
 # =============================================================================
 
 locals {
+  # AA-828 (DM-10.1): App is the cost allocation tag the per-App budgets filter on
+  # (observability.tf aws_budgets_budget.per_app_monthly). Everything in this root that is not
+  # TripPlanner (local.tp_tags), Booking (local.bk_tags) or shared is CIS, so common_tags carries
+  # App = "cis" and shared resources override it with local.shared_tags.
+  #
+  # Set here and in the module tag maps, NOT in the provider default_tags (versions.tf): a
+  # default_tags App would (1) silently bill every future resource that forgets its own App to
+  # "cis", including TripPlanner/Booking ones, and (2) re-tag every resource in the root at once,
+  # including the bootstrap IAM roles of cicd.tf / cicd_split.tf / agent_session.tf that only a
+  # human MFA apply may change. Resource-level tags win over default_tags for the same key.
   common_tags = {
     Project     = var.project
     Environment = var.environment
     ManagedBy   = "terraform"
+    App         = "cis"
   }
+
+  # Infrastructure used by more than one app: VPC/NAT/subnets, RDS, ALB + VPC-link NLB, WAF, the ECS
+  # cluster, the account alert topic, CloudTrail and the AA-272 network diagnostics.
+  shared_tags = merge(local.common_tags, { App = "shared" })
+
+  # Modules that had no tags input before AA-828 get only the App key, so the Project/ManagedBy
+  # values they already carry from the provider default_tags do not change.
+  cis_app_tags    = { App = "cis" }
+  shared_app_tags = { App = "shared" }
 
   # Breaks the ECS <-> Step Functions mutual module dependency (ECS task def
   # embeds STEP_FUNCTIONS_ARN as an env var; the state machine definition
@@ -51,6 +71,8 @@ module "vpc" {
   # AA-806 step 4: aa-cis-nat-instance-role is in local.tf_managed_role_arns, so it carries the
   # workload boundary like every other role the CI apply role may write.
   permissions_boundary_arn = aws_iam_policy.workload_boundary.arn
+
+  tags = local.shared_app_tags # AA-828: VPC, subnets, NAT instance + EIP, route tables, SGs
 }
 
 module "rds" {
@@ -63,6 +85,11 @@ module "rds" {
   db_subnet_group_name = module.vpc.db_subnet_group_name
   sg_rds_id            = module.vpc.sg_rds_id
   apply_immediately    = var.rds_apply_immediately
+
+  # AA-828 / DM-10.3: one instance for CIS + TripPlanner + Booking, owned by Infra. Tag change is
+  # AddTagsToResource only (no ModifyDBInstance, no reboot); copy_tags_to_snapshot carries it to
+  # new snapshots.
+  tags = local.shared_app_tags
 
   depends_on = [module.vpc]
 }
@@ -81,6 +108,7 @@ module "secrets" {
 
   project     = var.project
   environment = var.environment
+  tags        = local.cis_app_tags
 }
 
 module "elasticache" {
@@ -91,6 +119,7 @@ module "elasticache" {
   vpc_id             = module.vpc.vpc_id
   private_subnet_ids = module.vpc.private_subnet_ids
   sg_app_id          = module.vpc.sg_app_id
+  tags               = local.cis_app_tags # only the CIS api reads REDIS_HOST
 
   depends_on = [module.vpc]
 }
@@ -103,6 +132,7 @@ module "efs" {
   vpc_id             = module.vpc.vpc_id
   private_subnet_ids = module.vpc.private_subnet_ids
   sg_app_id          = module.vpc.sg_app_id
+  tags               = local.cis_app_tags
 
   depends_on = [module.vpc]
 }
@@ -119,6 +149,7 @@ module "alb" {
   private_subnet_ids  = module.vpc.private_subnet_ids
   vpc_cidr_block      = var.vpc_cidr
   access_logs_bucket  = aws_s3_bucket.diag_alb_logs.id # AA-272 diagnostic only
+  tags                = local.shared_app_tags          # AA-828: CIS + Booking (/booking/* rule) behind it
 
   depends_on = [module.vpc, aws_s3_bucket_policy.diag_alb_logs]
 }
@@ -159,6 +190,11 @@ module "ecs" {
 
   # AA-806 step 4: workload boundary on the CIS execution + task roles (cicd_split.tf).
   permissions_boundary_arn = aws_iam_policy.workload_boundary.arn
+
+  # AA-828: App = "cis" on the api/worker services (propagated to their Fargate tasks), task
+  # definitions, ECR repo, log group and roles; the cluster is shared with aws_ecs_service.booking.
+  tags         = local.cis_app_tags
+  cluster_tags = local.shared_app_tags
 
   depends_on = [module.vpc, module.alb]
 }
@@ -206,7 +242,7 @@ module "waf" {
   alb_arn        = module.alb.alb_arn
   rate_limit     = 1000
   vpc_allow_cidr = var.vpc_cidr
-  tags           = local.common_tags
+  tags           = local.shared_tags # AA-828: on the ALB and on the CIS + Booking REST API stages
 
   # S235 Phase 0: CommonRuleSet starts in observe mode (whole group COUNT). Flip
   # var.waf_common_rules_count_only to false after reviewing 1-2 days of counted matches.

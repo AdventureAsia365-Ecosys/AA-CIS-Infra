@@ -45,7 +45,7 @@ resource "time_sleep" "wait_for_iam_propagation" {
 resource "aws_sns_topic" "alerts" {
   name = "${local.name_prefix}-acp-alerts"
 
-  tags = merge(local.common_tags, { Issue = "AA-284" })
+  tags = merge(local.shared_tags, { Issue = "AA-284" }) # AA-828: CIS, Booking, TripPlanner and shared alarms all publish here
 }
 
 # Subscription is created PendingConfirmation — Nghiep must click the
@@ -76,7 +76,7 @@ resource "aws_cloudwatch_metric_alarm" "rds_cpu_high" {
     DBInstanceIdentifier = "${local.name_prefix}-db"
   }
 
-  tags = merge(local.common_tags, { Issue = "AA-284" })
+  tags = merge(local.shared_tags, { Issue = "AA-284" })
 }
 
 # Proposed addition (per S102 task) — ECS running task count below desired.
@@ -275,15 +275,19 @@ resource "aws_budgets_budget" "total_monthly" {
 # Coverage today (read before trusting a number):
 #   - booking / tripplanner: their resources carry App via local.bk_tags /
 #     local.tp_tags (S235 Phase 0) and local.ecosys_tags overrides.
-#   - cis: only a few resources carry App = "cis" (the REST API execution log
-#     group in observability_ecosys.tf). Everything built from local.common_tags
-#     (ECS api/worker, ALB, S3, Step Functions, Lambdas ...) has no App tag
-#     until the provider default_tags / common_tags gain one, so this budget
-#     reads close to $0 until then.
-#   - Shared and untagged spend (RDS instance, NAT, VPC, ALB, anything without
-#     an App tag) is in NO per-App budget — only aws_budgets_budget.total_monthly
-#     covers it. Tag shared infra App = "shared" (DM-10.1) and, if wanted, add a
-#     "shared" key to var.per_app_monthly_budgets.
+#   - cis: local.common_tags carries App = "cis" (main.tf), and the CIS modules
+#     (ecs, s3, api_gateway incl. its stage, elasticache, efs, secrets, eventbridge)
+#     get it through their tags input. The api/worker services propagate their
+#     tags to each Fargate task (propagate_tags = "SERVICE"); tasks started
+#     before that apply stay untagged until the next CIS deploy.
+#   - shared: VPC/NAT/EIP, RDS, ALB + VPC-link NLB, WAF, ECS cluster, the alert
+#     topic, CloudTrail and the AA-272 diagnostics carry App = "shared"
+#     (local.shared_tags / local.shared_app_tags, DM-10.1/10.3).
+#   - Untagged spend (data transfer, the bootstrap CI/agent IAM roles, anything
+#     created outside Terraform) is in NO per-App budget — only
+#     aws_budgets_budget.total_monthly covers it.
+#   - Tags apply only to usage from the moment they are set; Cost Explorer does
+#     not re-tag earlier usage, so the month of the apply is partly untagged.
 #   - Bedrock calls made in the acc3/acc1 satellite accounts are billed there,
 #     not here; LLM spend is guarded by the AA-CIS-App ledger (see AA-362 note).
 # -----------------------------------------------------------------------------
@@ -340,7 +344,7 @@ locals {
 resource "aws_s3_bucket" "cloudtrail_logs" {
   bucket = "${local.name_prefix}-cloudtrail-logs-${var.account_id}"
 
-  tags = merge(local.common_tags, { Issue = "AA-286" })
+  tags = merge(local.shared_tags, { Issue = "AA-286" }) # AA-828: account-wide audit trail
 }
 
 resource "aws_s3_bucket_public_access_block" "cloudtrail_logs" {
@@ -438,7 +442,7 @@ resource "aws_cloudtrail" "main" {
   include_global_service_events = true
   enable_log_file_validation    = true
 
-  tags = merge(local.common_tags, { Issue = "AA-286" })
+  tags = merge(local.shared_tags, { Issue = "AA-286" })
 
   depends_on = [aws_s3_bucket_policy.cloudtrail_logs, time_sleep.wait_for_iam_propagation]
 }
