@@ -160,6 +160,18 @@ resource "aws_iam_role_policy" "ecs_task_policy" {
           "secretsmanager:PutSecretValue"
         ]
         Resource = "arn:aws:secretsmanager:${var.aws_region}:005097885195:secret:acp/social/*"
+      },
+      # S237 — a tenant key rotation (POST /admin/tenants/{id}/generate-key, /restore) keeps the E2E test
+      # tenants' key copies in sync (AA-CIS-App services/acp_shared/e2e_tenant_key_sync.py). Describe +
+      # PutSecretValue only, never CreateSecret: the app overwrites a copy that already exists, so a real
+      # tenant (no such secret) is never written and its key exists only on the admin's screen.
+      {
+        Effect = "Allow"
+        Action = [
+          "secretsmanager:DescribeSecret",
+          "secretsmanager:PutSecretValue"
+        ]
+        Resource = "arn:aws:secretsmanager:${var.aws_region}:005097885195:secret:aa-cis/dev/e2e-tenant/*"
       }
     ]
   })
