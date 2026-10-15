@@ -70,6 +70,9 @@ accounts/
     cost_explorer_satellite_assume.tf (acc2 → acc1/acc3 Cost Explorer read roles, AA-623)
     dfs_balance.tf                (daily DFS balance alert Lambda + EventBridge schedule, AA-627)
     observability.tf, observability_ecosys.tf (S235 alarms + log retention), diagnostics.tf
+    dns.tf                        (Route 53 public zone lumiguides.it.com + records copied from Namecheap, AA-811)
+    ses.tf                        (SES domain identity, DKIM/MAIL FROM/DMARC records, configuration sets,
+                                   ses:SendEmail grants for the app roles, reputation alarms — AA-811)
     variables.tf / tripplanner_variables.tf / booking_variables.tf
   acc1-bedrock/   ← acc1 Bedrock invoker role (fallback) + Cost Explorer reader
   acc3-bedrock/   ← acc3 Bedrock invoker role (primary) + Bedrock Batch (batch.tf)
@@ -120,6 +123,18 @@ rule `/booking`, `/booking/*` (priority 100) → target group `aa-booking-dev-ap
 `/booking/health`). That listener rule is the only object attached to a CIS resource. Dev uses
 the execute-api URL (output `booking_api_base_url`); both CIS custom domains use an empty base
 path, so a `booking` mapping cannot be added there, and the ACM cert has no Booking name yet.
+
+**DNS + email (AA-811, S237):** `lumiguides.it.com` is a Route 53 public hosted zone in this root
+(`dns.tf`, `prevent_destroy`; the CI apply role has no `route53:DeleteHostedZone`). It is served
+only after Nghiep switches the nameservers at Namecheap (output `lumiguides_zone_name_servers`),
+after a record-by-record parity check (root `docs/audits/2026-10-14-S237-lane-backlog/dns-parity.md`).
+Every new `*.lumiguides.it.com` record goes into this zone, not into the Namecheap panel. SES
+(`ses.tf`) uses the apex as domain identity, sender `no-reply@lumiguides.it.com`, MAIL FROM
+`bounce.lumiguides.it.com`, configuration sets `aa-email-dev-{workforce,external,transactional}`
+(Cognito pools use the first two, apps the third). The CIS task role, the Booking task role and the
+TripPlanner Lambda exec role may `ses:SendEmail` only as that From address (`ses:FromAddress`) and
+only through the transactional set. The account is in the SES sandbox until the production-access
+request (console, human) is granted.
 
 The **DFS balance alert** (AA-627) is a small in-VPC Lambda `aa-cis-dev-dfs-balance-check`
 triggered daily by EventBridge Scheduler. The schedule must live in the `aa-cis-dev-acp` schedule
@@ -212,8 +227,10 @@ makes CI Terraform Plan fail with 403.
 - No application DB schema migrations (`acp_*`, `*_aa_internal`, `tripplanner.*` are owned by the
   app repos). It owns the RDS instance, not what lives inside it. It does own the **DB Migrate**
   workflow (`.github/workflows/db-migrate.yml`): `db/migrations/<owner>/` holds byte-identical copies
-  of a reviewed app migration, applied from `main` by a one-off ECS task (S225). Owners and version
-  keys: `AA-Ecosys/docs/database/schema-ownership.md`.
+  of a reviewed app migration, applied from `main` by a one-off ECS task (S225). The
+  **Migration Copy Guard** workflow (AA-807) checks each copy byte for byte against the owner
+  repo's `main` on every PR and nightly, so the owner's migration-only PR merges first. Owners and
+  version keys: `AA-Ecosys/docs/database/schema-ownership.md`.
 - No auto-apply on merge — apply is manual/`workflow_dispatch`, and destructive changes need
   explicit human confirmation.
 - Run Terraform from the WSL path (`/home/nghiep/...`), never a Windows UNC path.
