@@ -3,11 +3,8 @@
 # TripPlanner surface is easy to review/diff against the AA-CIS resources.
 # =============================================================================
 
-variable "tripplanner_advisor_email" {
-  type        = string
-  description = "Single advisor notification address for send-to-advisor."
-  default     = "pqnghiep1354@gmail.com"
-}
+# tripplanner_advisor_email removed (AA-811, S238): TripPlanner sends no e-mail; AA-Booking sends the staff
+# "new inquiry" e-mail (booking_staff_notify_email in booking_variables.tf).
 
 # -----------------------------------------------------------------------------
 # AA-806 (from AA-805): HTTP API route throttling. All numbers are Dev placeholders, not capacity
