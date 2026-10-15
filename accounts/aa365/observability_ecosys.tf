@@ -175,7 +175,7 @@ resource "aws_cloudwatch_metric_alarm" "booking_api_5xx" {
   tags = merge(local.ecosys_tags, { App = "booking" })
 }
 
-# TripPlanner Lambdas — errors (3+ in 5 minutes) and any throttle.
+# TripPlanner Lambdas — errors (3+ in 5 minutes) and sustained throttling (see below).
 resource "aws_cloudwatch_metric_alarm" "tripplanner_lambda_errors" {
   for_each = local.tp_functions
 
@@ -196,22 +196,28 @@ resource "aws_cloudwatch_metric_alarm" "tripplanner_lambda_errors" {
   tags = merge(local.ecosys_tags, { App = "tripplanner" })
 }
 
+# AA-833: was "Sum > 0 in one 5-minute period" with alarm + OK actions. A single burst (a page
+# prefetch fan-out after a deploy or ISR expiry) flipped browse OK -> ALARM -> OK 7 times in two
+# days, 14 emails on the topic that also carries the RDS, NAT and Booking alarms. It now pages only
+# on sustained throttling: more than 5 throttles in at least 2 of 3 consecutive 5-minute periods.
+# No ok_actions here (unlike the other alarms in this file): each flip would still cost 2 emails,
+# and the recovery is visible in the console / describe-alarm-history.
 resource "aws_cloudwatch_metric_alarm" "tripplanner_lambda_throttles" {
   for_each = local.tp_functions
 
   alarm_name          = "${each.value}-throttles"
-  alarm_description   = "TripPlanner Lambda ${each.value} was throttled (account or reserved concurrency limit)."
+  alarm_description   = "TripPlanner Lambda ${each.value}: more than 5 throttles (account or reserved concurrency limit) in at least 2 of 3 consecutive 5-minute periods. No OK notification."
   namespace           = "AWS/Lambda"
   metric_name         = "Throttles"
   dimensions          = { FunctionName = each.value }
   statistic           = "Sum"
   period              = 300
-  evaluation_periods  = 1
+  evaluation_periods  = 3
+  datapoints_to_alarm = 2
   comparison_operator = "GreaterThanThreshold"
-  threshold           = 0
+  threshold           = 5
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
 
   tags = merge(local.ecosys_tags, { App = "tripplanner" })
 }
