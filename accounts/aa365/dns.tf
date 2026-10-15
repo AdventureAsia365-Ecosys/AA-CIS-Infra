@@ -62,6 +62,9 @@ locals {
 
     # CIS REST API custom domain (API GW 4ylo382khg, hand-made domain + cert, not in Terraform
     # state) and the DNS-validation records ACM needs to auto-renew both api-cis certificates.
+    # Both certs are outside Terraform (var.acm_certificate_arn). If one is ever imported with an
+    # aws_route53_record for its validation (AA-818), delete the matching entry here first, or the
+    # second record of the same name fails with "already exists".
     "api-cis|CNAME" = {
       name    = "api-cis"
       type    = "CNAME"

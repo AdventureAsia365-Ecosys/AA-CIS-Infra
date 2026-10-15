@@ -614,7 +614,7 @@ resource "aws_iam_role_policy" "tf_apply" {
           Action = [
             "acm:RequestCertificate", "acm:DescribeCertificate", "acm:DeleteCertificate",
             "acm:ListCertificates", "acm:AddTagsToCertificate", "acm:RemoveTagsFromCertificate",
-            "acm:ListTagsForCertificate",
+            "acm:ListTagsForCertificate", "acm:UpdateCertificateOptions",
           ]
           Resource = "*"
           Condition = {
@@ -622,12 +622,20 @@ resource "aws_iam_role_policy" "tf_apply" {
           }
         },
         {
-          # AA-703 (Infra PR #105): the two user pools, clients, groups, domains, triggers config,
-          # WAF association. Several Cognito actions (CreateUserPool, DescribeUserPoolDomain, ...)
-          # have no resource ARN, so the scope is the region.
-          Sid      = "CognitoUserPoolManage"
-          Effect   = "Allow"
-          Action   = ["cognito-idp:*"]
+          # AA-703 (Infra PR #105): the two user pools, clients, groups, domains, identity
+          # providers, triggers config, WAF association. Several Cognito actions (CreateUserPool,
+          # DescribeUserPoolDomain, ...) have no resource ARN, so the scope is the region. Control
+          # plane only: no Admin* (AdminCreateUser / AdminSetUserPassword / AdminInitiateAuth would
+          # let a CI apply mint a staff login) and no Start/StopUserImportJob.
+          Sid    = "CognitoUserPoolManage"
+          Effect = "Allow"
+          Action = [
+            "cognito-idp:Create*", "cognito-idp:Delete*", "cognito-idp:Update*",
+            "cognito-idp:Describe*", "cognito-idp:Get*", "cognito-idp:List*", "cognito-idp:Set*",
+            "cognito-idp:AddCustomAttributes", "cognito-idp:TagResource",
+            "cognito-idp:UntagResource", "cognito-idp:AssociateWebACL",
+            "cognito-idp:DisassociateWebACL",
+          ]
           Resource = "*"
           Condition = {
             StringEquals = { "aws:RequestedRegion" = var.aws_region }

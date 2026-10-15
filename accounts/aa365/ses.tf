@@ -176,17 +176,22 @@ resource "aws_route53_record" "dmarc" {
 }
 
 # -----------------------------------------------------------------------------
-# Send permission for the app runtimes: only as var.ses_from_address, only through the identity
-# and the transactional configuration set (not the Cognito streams). Standalone inline policies,
-# not in modules/ecs, so they do not collide with the AA-806 step 4 boundary change on the same
-# roles.
+# Send permission for the app runtimes: only as var.ses_from_address, only through the
+# transactional configuration set (not the Cognito streams). Standalone inline policies, not in
+# modules/ecs, so they do not collide with the AA-806 step 4 boundary change on the same roles.
+#
+# Resource = every identity of this account, not only the apex: while the account is in the SES
+# sandbox, SES also authorizes the request against each verified RECIPIENT identity
+# (identity/<staff inbox>), so an apex-only grant is AccessDenied for the sandbox smoke test and
+# for Cognito-adjacent test inboxes. The ses:FromAddress condition is what pins the sender; it is
+# evaluated on every resource, so the wider resource list adds no new From address.
 # -----------------------------------------------------------------------------
 data "aws_iam_policy_document" "ses_send" {
   statement {
     sid     = "SesSendAsNoReply"
     actions = ["ses:SendEmail", "ses:SendRawEmail"]
     resources = [
-      local.ses_identity_arn,
+      "arn:aws:ses:${var.aws_region}:${var.account_id}:identity/*",
       aws_sesv2_configuration_set.stream["transactional"].arn,
     ]
 
