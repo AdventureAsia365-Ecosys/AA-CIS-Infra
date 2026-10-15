@@ -93,20 +93,6 @@ locals {
       type    = "CNAME"
       records = ["aa-alb-prod-203362903.ap-southeast-1.elb.amazonaws.com"]
     }
-
-    # Found in the Namecheap Advanced DNS panel at cut-over (15/10), missed by the dig discovery.
-    # acp: the archived ACP frontend on Vercel (still answers 307). langfuse: the acc1 ALB, deleted
-    # 09/07 (target does not resolve); copied for parity only.
-    "acp|CNAME" = {
-      name    = "acp"
-      type    = "CNAME"
-      records = ["a6cbf46227b27b30.vercel-dns-017.com"]
-    }
-    "langfuse|CNAME" = {
-      name    = "langfuse"
-      type    = "CNAME"
-      records = ["aa-cis-dev-alb-1114303360.us-west-1.elb.amazonaws.com"]
-    }
   }
 }
 
