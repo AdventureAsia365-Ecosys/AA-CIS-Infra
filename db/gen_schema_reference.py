@@ -46,6 +46,9 @@ def structural_view(dump: dict) -> dict:
             for idx in rel.get("indexes", []):
                 idx.pop("bytes", None)
                 idx.pop("scans", None)
+    for key in d.get("soft_keys", []):
+        for count in ("total", "without_key", "orphans", "orphan_rate"):
+            key.pop(count, None)
     return d
 
 
@@ -283,6 +286,22 @@ def render(d: dict, source: Optional[str] = None) -> str:
         w(f"- `{sch}.{i['index']}` on `{name}` ({human_bytes(i.get('bytes'))})")
     if not unused:
         w("- none")
+    w("")
+    w("## Soft-key orphans (DM-4.2)")
+    w("")
+    w("Cross-app keys that have no FK (data standards DM-2.3) and how many rows point at nothing in the target, as of "
+      "the Verified line (counts lag between structural changes, like `~rows`). `not_applicable` = the key columns or "
+      "the target do not exist yet; `no_privilege` = the dump role cannot read one side. Orphan rate = orphans / rows "
+      "with a key.")
+    w("")
+    w("| key | status | rows | without key | orphans | orphan rate |")
+    w("|---|---|---|---|---|---|")
+    for k in d.get("soft_keys", []):
+        rate = "" if k.get("orphan_rate") is None else f"{k['orphan_rate']:.2%}"
+        w(f"| {cell(k['name'])} | {cell(k['status'])} | {cell(k.get('total'))} | {cell(k.get('without_key'))} | "
+          f"{cell(k.get('orphans'))} | {rate} |")
+    if not d.get("soft_keys"):
+        w("| none | | | | | |")
     w("")
     w("## Connections at dump time")
     w("")

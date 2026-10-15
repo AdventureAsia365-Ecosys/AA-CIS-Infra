@@ -68,10 +68,13 @@ line (a directive after the first statement is an error):
 ## Schema reference (AA-807 N1)
 `schema_dump.py` runs in a one-off ECS task like the runner, read-only (`default_transaction_read_only`
 + one `REPEATABLE READ READ ONLY` transaction, `statement_timeout 60s`, `lock_timeout 10s`). It
-dumps catalog metadata only (no row data): columns, indexes, CHECK/FK constraints, RLS policies,
+dumps catalog metadata (no row values): columns, indexes, CHECK/FK constraints, RLS policies,
 table and column grants, owners, default privileges, roles + memberships (allow-listed settings
 only), functions, extensions, enums, sizes, `pg_stat_user_tables` activity and sessions per
-`application_name`, plus `shared.schema_versions`. JSON goes to
+`application_name`, plus `shared.schema_versions`, plus the orphan counts of cross-app soft keys (data standards
+DM-4.2, AA-830: `SOFT_KEY_CHECKS`, aggregate counts only, each check skipped as `not_applicable` until its owner's
+migration is applied; first check `booking.trip_case_legs (source_system, source_id)` against `catalog.v_tour`,
+bk-011). Orphans raise a workflow warning, never a failure. JSON goes to
 `s3://aa-cis-bronze-005097885195/db-schema-dump/<run id>/schema.json` (and `latest.json`) and the
 run artifact. `gen_schema_reference.py` renders the Markdown; its `schema-fingerprint` (hash of the
 dump without row counts, sizes and counters) decides whether the root PR is opened or updated, so
