@@ -2,6 +2,7 @@
 
 Run: python3 -m unittest discover -s db/tests -v
 """
+import asyncio
 import copy
 import io
 import json
@@ -93,8 +94,27 @@ def rows():
     }
 
 
+CHECK = sd.SOFT_KEY_CHECKS[0]
+
+
+def soft():
+    return [sd.soft_key_result(CHECK, "ok", {"total": 10, "without_key": 2, "orphans": 1}),
+            sd.soft_key_result(dict(CHECK, name="a | b"), "not_applicable")]
+
+
 def dump():
-    return sd.build_dump(SCHEMAS, rows(), "2026-10-15T05:00:00+00:00")
+    return sd.build_dump(SCHEMAS, rows(), "2026-10-15T05:00:00+00:00", soft())
+
+
+class FakeConn:
+    """Answers SOFT_KEY_READY_SQL with `ready` and every check SQL with `counts`; records the SQL it was given."""
+
+    def __init__(self, ready, counts=None):
+        self.ready, self.counts, self.sql = ready, counts, []
+
+    async def fetchrow(self, sql, *args):
+        self.sql.append(sql)
+        return self.ready if sql == sd.SOFT_KEY_READY_SQL else self.counts
 
 
 class BuildDumpTest(unittest.TestCase):
@@ -124,8 +144,40 @@ class BuildDumpTest(unittest.TestCase):
         self.assertEqual(dump()["roles"][0]["config"], {"statement_timeout": "30s"})
         self.assertEqual(sd.role_config(None), {})
 
+    def test_soft_key_result_rate_is_over_keyed_rows(self):
+        ok, na = soft()
+        self.assertEqual((ok["status"], ok["total"], ok["without_key"], ok["orphans"], ok["orphan_rate"]),
+                         ("ok", 10, 2, 1, 0.125))
+        self.assertEqual((na["status"], na["total"], na["orphan_rate"]), ("not_applicable", None, None))
+        none_keyed = sd.soft_key_result(CHECK, "ok", {"total": 3, "without_key": 3, "orphans": 0})
+        self.assertEqual(none_keyed["orphan_rate"], 0.0)
+        self.assertEqual(dump()["soft_keys"][0]["name"], CHECK["name"])
+        self.assertEqual(sd.build_dump(SCHEMAS, rows(), "x")["soft_keys"], [])
+
+    def test_soft_keys_run_only_when_ready(self):
+        counts = {"total": 8, "without_key": 0, "orphans": 0}
+        for ready, status, ran in (
+            ({"present": True, "columns": True, "readable": True}, "ok", True),
+            ({"present": True, "columns": False, "readable": True}, "not_applicable", False),
+            ({"present": False, "columns": False, "readable": None}, "not_applicable", False),
+            ({"present": True, "columns": True, "readable": False}, "no_privilege", False),
+        ):
+            with self.subTest(status=status, ready=ready):
+                conn = FakeConn(ready, counts)
+                (row,) = asyncio.run(sd.soft_keys(conn))
+                self.assertEqual(row["status"], status)
+                self.assertEqual(CHECK["sql"] in conn.sql, ran)
+                self.assertEqual(row["total"], 8 if ran else None)
+
+    def test_soft_key_checks_name_their_table_and_target(self):
+        for check in sd.SOFT_KEY_CHECKS:
+            self.assertIn(f"FROM {check['table']} ", check["sql"])
+            self.assertIn(f"FROM {check['target']} ", check["sql"])
+            self.assertLessEqual({"name", "table", "columns", "target", "target_columns", "sql"}, set(check))
+
     def test_every_query_is_read_only(self):
-        for name, sql in list(sd.QUERIES.items()) + [("schemas", sd.SCHEMAS_SQL)]:
+        for name, sql in (list(sd.QUERIES.items()) + [("schemas", sd.SCHEMAS_SQL), ("ready", sd.SOFT_KEY_READY_SQL)]
+                          + [(c["name"], c["sql"]) for c in sd.SOFT_KEY_CHECKS]):
             with self.subTest(query=name):
                 self.assertTrue(sql.lstrip().upper().startswith("SELECT"), name)
         self.assertEqual(sd.SESSION_SETTINGS["default_transaction_read_only"], "on")
@@ -173,6 +225,14 @@ class RenderTest(unittest.TestCase):
         self.assertIn("| 231 | 2026-10-15 04:29:28+00:00 | label \\| piece |", self.md)
         self.assertIn("| (empty) | aa_cis_admin | idle | 4 |", self.md)
 
+    def test_soft_key_section(self):
+        md = self.md
+        self.assertIn("## Soft-key orphans (DM-4.2)", md)
+        self.assertIn(f"| {CHECK['name']} | ok | 10 | 2 | 1 | 12.50% |", md)
+        self.assertIn("| a \\| b | not_applicable |  |  |  |  |", md)
+        empty = gen.render(sd.build_dump(SCHEMAS, rows(), "2026-10-15T05:00:00+00:00"))
+        self.assertIn("| none | | | | | |", empty)
+
     def test_render_is_deterministic(self):
         self.assertEqual(self.md, gen.render(json.loads(json.dumps(self.d)), source="https://example/run/1"))
 
@@ -189,6 +249,7 @@ class FingerprintTest(unittest.TestCase):
         job["indexes"][0]["scans"] += 1
         job["indexes"][0]["bytes"] += 1
         b["connections"] = []
+        b["soft_keys"][0].update(total=99, without_key=0, orphans=5, orphan_rate=0.0505)
         self.assertEqual(gen.fingerprint(a), gen.fingerprint(b))
 
     def test_structural_changes_move_the_fingerprint(self):
@@ -200,6 +261,7 @@ class FingerprintTest(unittest.TestCase):
             lambda d: d["relations"]["shared"]["job"].update(rls_forced=True),
             lambda d: d["roles"][0].update(connection_limit=30),
             lambda d: d["migrations"].insert(0, {"version": "232", "applied_at": "x", "description": "y"}),
+            lambda d: d["soft_keys"][1].update(status="ok"),
         ):
             d = dump()
             mutate(d)
