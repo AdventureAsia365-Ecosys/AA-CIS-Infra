@@ -116,25 +116,18 @@ resource "aws_cloudwatch_metric_alarm" "ecs_task_count_low" {
 # api/routers/acp_health.py/AA-141 — no "ACP/Pipeline"/"ACP/Produce"
 # namespace exists anywhere, confirmed by grep before choosing this).
 #
-# NOT included here (see AA-362 chat report / PR for full reasoning):
-#   - Bedrock daily cost — blocked by 2 live-verified findings: (a) AWS/Billing
-#     CloudWatch metrics require a manual, non-Terraform-able account setting
-#     ("Receive Billing Alerts") that is NOT enabled on this account (verified
-#     `aws cloudwatch list-metrics --namespace AWS/Billing --region us-east-1`
-#     → empty), and (b) Cost Explorer shows Bedrock spend split across 4
-#     separate SERVICE line items (`Amazon Bedrock`, `Cohere Embed 4 Model
-#     (Amazon Bedrock Edition)`, `Palmyra X4 (Amazon Bedrock Edition)`,
-#     `Palmyra X5 (Amazon Bedrock Edition)` — verified via
-#     `aws ce get-dimension-values --dimension SERVICE`), so a correct alarm
-#     needs a new Cost-Explorer-rollup Lambda, not just an alarm resource —
-#     real new cost-measurement infrastructure that overlaps AA-360's
-#     explicitly-reserved "unified cost tracking (infra + LLM)" scope
-#     (AA-360 confirmed still Backlog/undesigned, but building this now risks
-#     throwaway work AA-360 would replace). Left for Nghiep to decide: build
-#     as a one-off now, or fold into AA-360.
-#   - week_run Tuesday deadline — BLOCKED on AA-364 (Weekly Packet). No
-#     "week_run" runtime concept exists anywhere in either repo yet (grepped
-#     both, 0 hits) — there is nothing to alarm on. See TODO placeholder below.
+# NOT included here — Bedrock daily cost alarm. Decision (AA-828, S238): no
+# CloudWatch alarm and no Cost Explorer rollup Lambda will be built for it.
+#   - Per-app and per-stage LLM spend is guarded in the application ledger:
+#     AA-CIS-App shared/cost_guard.py + table shared.spend_budget, alerting to
+#     shared.notifications, edited in the admin Cost Operations page.
+#   - That ledger is reconciled against Cost Explorer under AA-804.
+#   - Most Bedrock spend runs in the acc3/acc1 satellite accounts
+#     (shared/llm_client/bedrock_satellite.py), which the acc2 `App` cost
+#     allocation tags and the per-app budgets below do not cover.
+# (Background, verified for AA-362: AWS/Billing CloudWatch metrics are not
+# enabled on this account, and Cost Explorer splits Bedrock across several
+# SERVICE line items, so a correct alarm would need its own rollup code.)
 # -----------------------------------------------------------------------------
 
 # held_rate — computed via CloudWatch metric math (ratio), not in Python:
@@ -229,12 +222,6 @@ resource "aws_cloudwatch_metric_alarm" "acp_repair_count_high" {
   tags = merge(local.common_tags, { Issue = "AA-362" })
 }
 
-# TODO(AA-364): week_run Tuesday-deadline alarm. Do not build ahead of AA-364
-# (Weekly Packet) — no "week_run" runtime concept exists yet anywhere in
-# either repo (grep confirmed 0 hits), so there is nothing real to alarm on.
-# Add here once AA-364 emits a real completion timestamp/metric to check
-# against a Tuesday deadline.
-
 # -----------------------------------------------------------------------------
 # AA-287 — AWS Budgets
 # Single $250/mo total-account budget (Execute Plan program-level number,
@@ -242,6 +229,9 @@ resource "aws_cloudwatch_metric_alarm" "acp_repair_count_high" {
 # total $250 is possible but this account has no cost-allocation tags applied
 # per project yet, so a per-project budget would silently cover $0 today —
 # noted here rather than built, since it'd just be misleading.
+# That gap is closed by the per-App budgets (AA-828) below this resource:
+# `App` is now an active cost allocation tag. This total budget stays as the
+# account-wide backstop (it also catches shared and untagged spend).
 # Email notification chosen over SNS: AWS Budgets → SNS requires a topic
 # resource policy granting budgets.amazonaws.com publish rights, which is
 # extra surface area for no real benefit here — direct email is simpler and
@@ -270,6 +260,65 @@ resource "aws_budgets_budget" "total_monthly" {
     notification_type          = "ACTUAL"
     subscriber_email_addresses = [var.alert_email]
   }
+
+  depends_on = [time_sleep.wait_for_iam_propagation]
+}
+
+# -----------------------------------------------------------------------------
+# AA-828 — per-App monthly budgets (data standard DM-10.2, X9)
+# One COST budget per value of the `App` cost allocation tag (activated in
+# Billing by the payer account on 15/10/2026; Cost Explorer data lags ~24 h).
+# Filter: TagKeyValue "user:App$<value>" = cost of resources tagged
+# App = <value>. Alerts: 80% of ACTUAL and 100% of FORECASTED spend, sent to
+# the same e-mail as the total budget above. Amounts: var.per_app_monthly_budgets.
+#
+# Coverage today (read before trusting a number):
+#   - booking / tripplanner: their resources carry App via local.bk_tags /
+#     local.tp_tags (S235 Phase 0) and local.ecosys_tags overrides.
+#   - cis: only a few resources carry App = "cis" (the REST API execution log
+#     group in observability_ecosys.tf). Everything built from local.common_tags
+#     (ECS api/worker, ALB, S3, Step Functions, Lambdas ...) has no App tag
+#     until the provider default_tags / common_tags gain one, so this budget
+#     reads close to $0 until then.
+#   - Shared and untagged spend (RDS instance, NAT, VPC, ALB, anything without
+#     an App tag) is in NO per-App budget — only aws_budgets_budget.total_monthly
+#     covers it. Tag shared infra App = "shared" (DM-10.1) and, if wanted, add a
+#     "shared" key to var.per_app_monthly_budgets.
+#   - Bedrock calls made in the acc3/acc1 satellite accounts are billed there,
+#     not here; LLM spend is guarded by the AA-CIS-App ledger (see AA-362 note).
+# -----------------------------------------------------------------------------
+
+resource "aws_budgets_budget" "per_app_monthly" {
+  for_each = var.per_app_monthly_budgets
+
+  name         = "${local.name_prefix}-monthly-app-${each.key}"
+  budget_type  = "COST"
+  limit_amount = tostring(each.value)
+  limit_unit   = "USD"
+  time_unit    = "MONTHLY"
+
+  cost_filter {
+    name   = "TagKeyValue"
+    values = [format("user:App$%s", each.key)]
+  }
+
+  notification {
+    comparison_operator        = "GREATER_THAN"
+    threshold                  = 80
+    threshold_type             = "PERCENTAGE"
+    notification_type          = "ACTUAL"
+    subscriber_email_addresses = [var.alert_email]
+  }
+
+  notification {
+    comparison_operator        = "GREATER_THAN"
+    threshold                  = 100
+    threshold_type             = "PERCENTAGE"
+    notification_type          = "FORECASTED"
+    subscriber_email_addresses = [var.alert_email]
+  }
+
+  tags = merge(local.ecosys_tags, { App = each.key, Issue = "AA-828" })
 
   depends_on = [time_sleep.wait_for_iam_propagation]
 }

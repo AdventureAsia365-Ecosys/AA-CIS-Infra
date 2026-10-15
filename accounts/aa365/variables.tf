@@ -155,6 +155,29 @@ variable "alert_email" {
   default     = "pqnghiep1354@gmail.com"
 }
 
+# AA-828: monthly USD limit per `App` cost allocation tag value (one aws_budgets_budget each,
+# observability.tf). Keys must be App tag values (DM-10.1). Defaults split the $250 account total
+# (aws_budgets_budget.total_monthly) by expected footprint and leave ~$50 for shared/untagged spend
+# (RDS, NAT, ALB, VPC), which only the total budget covers:
+#   cis         150 — ECS api + worker, pipeline Lambdas/Step Functions, S3; most of the account.
+#   tripplanner  25 — 2 Lambdas + REST API + Cohere embed calls in acc2.
+#   booking      25 — Fargate service (desired_count 0 today) + REST API + SES.
+# Starting points only: tune after one full month of Cost Explorer data grouped by App.
+variable "per_app_monthly_budgets" {
+  description = "Monthly USD budget per App cost allocation tag value (AA-828)"
+  type        = map(number)
+  default = {
+    cis         = 150
+    tripplanner = 25
+    booking     = 25
+  }
+
+  validation {
+    condition     = alltrue([for k, v in var.per_app_monthly_budgets : contains(["cis", "tripplanner", "booking", "crm", "shared"], k) && v > 0])
+    error_message = "Keys must be App tag values (cis, tripplanner, booking, crm, shared) and amounts must be > 0."
+  }
+}
+
 # S235 Phase 0 (AA-678): associate the REGIONAL web ACL (modules/waf) with the CIS and Booking REST
 # API stages. Keep false until (1) the CI role has apigateway:SetWebACL (otherwise the CI apply
 # fails with AccessDenied on the association) and (2) the geo allow-list is confirmed for Booking
