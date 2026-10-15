@@ -2,6 +2,9 @@
 # AA-272 — TEMPORARY diagnostic logging for the VPC Link cutover hang
 # investigation. Not part of the normal stack. Remove this file once the
 # root-cause investigation is done — see docs/implementation-notes/AA-272.md.
+#
+# AA-828: tagged App = "shared" (local.shared_tags): network, ALB and account-level API Gateway
+# logging serve every app behind the VPC link.
 # =============================================================================
 
 # ---------------------------------------------------------------------------
@@ -13,7 +16,7 @@ resource "aws_cloudwatch_log_group" "diag_flow_logs" {
   name              = "/aa-cis-dev/diagnostic/vpc-flow-logs"
   retention_in_days = 7
 
-  tags = merge(local.common_tags, {
+  tags = merge(local.shared_tags, {
     Purpose = "AA-272-diagnostic-only"
   })
 }
@@ -31,7 +34,7 @@ resource "aws_iam_role" "diag_flow_logs" {
     }]
   })
 
-  tags = merge(local.common_tags, {
+  tags = merge(local.shared_tags, {
     Purpose = "AA-272-diagnostic-only"
   })
 }
@@ -66,7 +69,7 @@ resource "aws_flow_log" "diag_nlb" {
   log_destination      = aws_cloudwatch_log_group.diag_flow_logs.arn
   iam_role_arn         = aws_iam_role.diag_flow_logs.arn
 
-  tags = merge(local.common_tags, {
+  tags = merge(local.shared_tags, {
     Name    = "${local.name_prefix}-diag-flowlog-nlb-${each.value}"
     Purpose = "AA-272-diagnostic-only"
   })
@@ -82,7 +85,7 @@ resource "aws_flow_log" "diag_alb" {
   log_destination      = aws_cloudwatch_log_group.diag_flow_logs.arn
   iam_role_arn         = aws_iam_role.diag_flow_logs.arn
 
-  tags = merge(local.common_tags, {
+  tags = merge(local.shared_tags, {
     Name    = "${local.name_prefix}-diag-flowlog-alb-${each.value}"
     Purpose = "AA-272-diagnostic-only"
   })
@@ -99,7 +102,7 @@ resource "aws_s3_bucket" "diag_alb_logs" {
   bucket        = "${local.name_prefix}-diag-alb-logs-${var.account_id}"
   force_destroy = true
 
-  tags = merge(local.common_tags, {
+  tags = merge(local.shared_tags, {
     Purpose = "AA-272-diagnostic-only"
   })
 }
@@ -176,7 +179,7 @@ resource "aws_iam_role" "diag_apigw_cloudwatch" {
     }]
   })
 
-  tags = merge(local.common_tags, {
+  tags = merge(local.shared_tags, {
     Purpose = "AA-272-diagnostic-only"
   })
 }

@@ -18,10 +18,10 @@ resource "aws_secretsmanager_secret" "acp_webhook_secret" {
   description             = "HMAC shared secret for ACP API Gateway webhook validation"
   recovery_window_in_days = var.environment == "dev" ? 0 : 30
 
-  tags = {
+  tags = merge(var.tags, {
     Environment = var.environment
     Feature     = "acp-pipeline"
-  }
+  })
 }
 
 resource "aws_secretsmanager_secret_version" "acp_webhook_secret" {
@@ -38,10 +38,10 @@ resource "aws_secretsmanager_secret" "acp_partner_api" {
   description             = "ACP partner system API credentials (JSON: {api_key, endpoint})"
   recovery_window_in_days = var.environment == "dev" ? 0 : 30
 
-  tags = {
+  tags = merge(var.tags, {
     Environment = var.environment
     Feature     = "acp-pipeline"
-  }
+  })
 }
 
 resource "aws_secretsmanager_secret_version" "acp_partner_api" {

@@ -157,11 +157,13 @@ variable "alert_email" {
 
 # AA-828: monthly USD limit per `App` cost allocation tag value (one aws_budgets_budget each,
 # observability.tf). Keys must be App tag values (DM-10.1). Defaults split the $250 account total
-# (aws_budgets_budget.total_monthly) by expected footprint and leave ~$50 for shared/untagged spend
-# (RDS, NAT, ALB, VPC), which only the total budget covers:
-#   cis         150 — ECS api + worker, pipeline Lambdas/Step Functions, S3; most of the account.
+# (aws_budgets_budget.total_monthly) by expected footprint and give ~$50 to shared infrastructure
+# (RDS, NAT, ALB, VPC); untagged spend is covered only by the total budget:
+#   cis         150 — ECS api + worker (Fargate), ElastiCache, S3 medallion buckets, REST API; most of the account.
 #   tripplanner  25 — 2 Lambdas + REST API + Cohere embed calls in acc2.
 #   booking      25 — Fargate service (desired_count 0 today) + REST API + SES.
+#   shared       50 — shared RDS, NAT instance + EIP, ALB + VPC-link NLB, WAF, CloudTrail (App =
+#                     "shared", DM-10.1/10.3; added with the tag coverage, AA-828).
 # Starting points only: tune after one full month of Cost Explorer data grouped by App.
 variable "per_app_monthly_budgets" {
   description = "Monthly USD budget per App cost allocation tag value (AA-828)"
@@ -170,6 +172,7 @@ variable "per_app_monthly_budgets" {
     cis         = 150
     tripplanner = 25
     booking     = 25
+    shared      = 50 # shared RDS/NAT/ALB
   }
 
   validation {

@@ -422,6 +422,9 @@ resource "aws_api_gateway_stage" "dev" {
   deployment_id = aws_api_gateway_deployment.this.id
   rest_api_id   = aws_api_gateway_rest_api.this.id
   stage_name    = var.environment
+
+  # AA-828: API Gateway REST cost is allocated by the STAGE's tags, not the rest_api's.
+  tags = var.tags
 }
 
 # AA-272 diagnostic only — INFO-level execution logging, gated so account-1's
