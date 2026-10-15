@@ -62,13 +62,13 @@ resource "aws_sns_topic_subscription" "alerts_email" {
 resource "aws_cloudwatch_metric_alarm" "rds_cpu_high" {
   alarm_name          = "${local.name_prefix}-rds-cpu-high"
   comparison_operator = "GreaterThanThreshold"
-  evaluation_periods  = 2
+  evaluation_periods  = 3 # AA-824: 15 minutes (was 2 = 10 minutes)
   metric_name         = "CPUUtilization"
   namespace           = "AWS/RDS"
   period              = 300
   statistic           = "Average"
   threshold           = 80
-  alarm_description   = "RDS ${local.name_prefix}-db CPU above 80% for 10 minutes"
+  alarm_description   = "RDS ${local.name_prefix}-db CPU above 80% for 15 minutes"
   alarm_actions       = [aws_sns_topic.alerts.arn]
   ok_actions          = [aws_sns_topic.alerts.arn]
 

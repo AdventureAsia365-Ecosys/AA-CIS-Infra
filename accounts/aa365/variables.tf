@@ -68,6 +68,12 @@ variable "db_password" {
   sensitive   = true
 }
 
+variable "rds_apply_immediately" {
+  description = "AA-824: false (default) defers the RDS class change + parameter group reboot to the maintenance window. Pass -var=rds_apply_immediately=true only in a window where shared.job and booking.job are idle."
+  type        = bool
+  default     = false
+}
+
 # ── S3 ──
 variable "s3_allowed_role_arns" {
   description = "IAM Role ARNs allowed to access CIS S3 buckets"

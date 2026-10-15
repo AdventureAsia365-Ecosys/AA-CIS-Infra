@@ -216,19 +216,21 @@ resource "aws_cloudwatch_metric_alarm" "tripplanner_lambda_throttles" {
   tags = merge(local.ecosys_tags, { App = "tripplanner" })
 }
 
-# Shared RDS (aa-cis-dev-db: CIS + TripPlanner + Booking). 20 GB gp3, no storage autoscaling;
-# ~17.4 GB free on 14/10/2026. Alarm at < 4 GiB free (80% used).
+# Shared RDS (aa-cis-dev-db: CIS + TripPlanner + Booking). AA-824: storage autoscaling to 100 GB
+# (modules/rds), so the alarm is an early warning at 50% of the configured base size (10 GiB free
+# of 20 GB), well before autoscaling kicks in at 10% free. The threshold follows the configured
+# base size, not the autoscaled size.
 resource "aws_cloudwatch_metric_alarm" "rds_free_storage_low" {
   alarm_name          = "${local.name_prefix}-rds-free-storage-low"
-  alarm_description   = "RDS ${local.name_prefix}-db free storage below 4 GiB (shared by CIS, TripPlanner, Booking; no storage autoscaling)."
+  alarm_description   = "RDS ${module.rds.db_identifier} free storage below 50% of the ${module.rds.allocated_storage} GB base allocation (shared by CIS, TripPlanner, Booking; autoscaling up to 100 GB)."
   namespace           = "AWS/RDS"
   metric_name         = "FreeStorageSpace"
-  dimensions          = { DBInstanceIdentifier = "${local.name_prefix}-db" }
+  dimensions          = { DBInstanceIdentifier = module.rds.db_identifier }
   statistic           = "Minimum"
   period              = 300
   evaluation_periods  = 2
   comparison_operator = "LessThanThreshold"
-  threshold           = 4294967296 # 4 GiB in bytes
+  threshold           = module.rds.allocated_storage * 1073741824 * 0.5 # 50% of base GB, in bytes
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
   ok_actions          = [aws_sns_topic.alerts.arn]
@@ -236,19 +238,61 @@ resource "aws_cloudwatch_metric_alarm" "rds_free_storage_low" {
   tags = merge(local.ecosys_tags, { App = "shared" })
 }
 
-# db.t3.micro max_connections = LEAST(DBInstanceClassMemory/9531392, 5000), roughly 80-110.
-# 3-day peak on 14/10/2026 was 25. Three apps now open pools against it.
+# max_connections = LEAST(DBInstanceClassMemory/9531392, 5000): roughly 80-110 on db.t3.micro,
+# roughly 190-200 on db.t4g.small (AA-824). 3-day peak on 14/10/2026 was 25. AA-824 tightens the
+# alarm to > 60 for 5 minutes (was > 70 for 10) so a TripPlanner burst shows up before the
+# connection budget (per-role CONNECTION LIMIT, Lambda reserved concurrency) is exhausted.
 resource "aws_cloudwatch_metric_alarm" "rds_connections_high" {
   alarm_name          = "${local.name_prefix}-rds-connections-high"
-  alarm_description   = "RDS ${local.name_prefix}-db above 70 connections for 10 minutes (db.t3.micro limit is roughly 80-110; shared by CIS, TripPlanner, Booking)."
+  alarm_description   = "RDS ${module.rds.db_identifier} peak connections above 60 within a 5-minute period (shared by CIS, TripPlanner, Booking)."
   namespace           = "AWS/RDS"
   metric_name         = "DatabaseConnections"
-  dimensions          = { DBInstanceIdentifier = "${local.name_prefix}-db" }
+  dimensions          = { DBInstanceIdentifier = module.rds.db_identifier }
   statistic           = "Maximum"
   period              = 300
-  evaluation_periods  = 2
+  evaluation_periods  = 1
   comparison_operator = "GreaterThanThreshold"
-  threshold           = 70
+  threshold           = 60
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
+
+  tags = merge(local.ecosys_tags, { App = "shared" })
+}
+
+# AA-824: db.t4g.small has 2 GB. Below 100 MB the instance starts swapping.
+resource "aws_cloudwatch_metric_alarm" "rds_freeable_memory_low" {
+  alarm_name          = "${local.name_prefix}-rds-freeable-memory-low"
+  alarm_description   = "RDS ${module.rds.db_identifier} freeable memory below 100 MB for 10 minutes (too many connections or work_mem pressure)."
+  namespace           = "AWS/RDS"
+  metric_name         = "FreeableMemory"
+  dimensions          = { DBInstanceIdentifier = module.rds.db_identifier }
+  statistic           = "Minimum"
+  period              = 300
+  evaluation_periods  = 2
+  comparison_operator = "LessThanThreshold"
+  threshold           = 104857600 # 100 MiB in bytes
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
+
+  tags = merge(local.ecosys_tags, { App = "shared" })
+}
+
+# AA-824: RDS T-class instances run in Unlimited mode, so CPU credit exhaustion shows up as cost
+# (surplus credits charged), not as throttling. Any charged credit means the instance is too small
+# for its sustained load.
+resource "aws_cloudwatch_metric_alarm" "rds_cpu_surplus_credits_charged" {
+  alarm_name          = "${local.name_prefix}-rds-cpu-surplus-credits-charged"
+  alarm_description   = "RDS ${module.rds.db_identifier} is being charged for CPU surplus credits (T-class Unlimited mode: sustained CPU above baseline)."
+  namespace           = "AWS/RDS"
+  metric_name         = "CPUSurplusCreditsCharged"
+  dimensions          = { DBInstanceIdentifier = module.rds.db_identifier }
+  statistic           = "Maximum"
+  period              = 300
+  evaluation_periods  = 1
+  comparison_operator = "GreaterThanThreshold"
+  threshold           = 0
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
   ok_actions          = [aws_sns_topic.alerts.arn]
