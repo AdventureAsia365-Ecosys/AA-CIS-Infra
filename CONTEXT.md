@@ -229,8 +229,13 @@ makes CI Terraform Plan fail with 403.
   workflow (`.github/workflows/db-migrate.yml`): `db/migrations/<owner>/` holds byte-identical copies
   of a reviewed app migration, applied from `main` by a one-off ECS task (S225). The
   **Migration Copy Guard** workflow (AA-807) checks each copy byte for byte against the owner
-  repo's `main` on every PR and nightly, so the owner's migration-only PR merges first. Owners and
-  version keys: `AA-Ecosys/docs/database/schema-ownership.md`.
+  repo's `main` on every PR and nightly, so the owner's migration-only PR merges first; a second
+  job lints every copy and checks numbers are unique per owner. The runner applies safe session
+  defaults and `-- migrate:` header directives (no-transaction, destructive → RDS snapshot first).
+  **DB Schema Dump** (`db-schema-dump.yml`, AA-807 N1) runs a read-only catalog dump in a one-off ECS
+  task nightly and after every apply, and opens a PR on the root repo that regenerates
+  `docs/architecture/db-schema-reference.md`. Owners and version keys:
+  `AA-Ecosys/docs/database/schema-ownership.md`.
 - No auto-apply on merge — apply is manual/`workflow_dispatch`, and destructive changes need
   explicit human confirmation.
 - Run Terraform from the WSL path (`/home/nghiep/...`), never a Windows UNC path.
