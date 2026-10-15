@@ -48,3 +48,20 @@ provider "aws" {
     }
   }
 }
+
+# AA-818: us-east-1 is needed only for the ACM certificate of the Cognito custom domains
+# (auth. / staff-auth.), which Cognito serves through CloudFront (custom_domains.tf). Same account,
+# same credentials, same default tags; every other resource stays on the default us-west-1 provider.
+provider "aws" {
+  alias  = "us_east_1"
+  region = "us-east-1"
+
+  default_tags {
+    tags = {
+      Project     = "AA-CIS"
+      Environment = var.environment
+      ManagedBy   = "Terraform"
+      Account     = "aa365"
+    }
+  }
+}
