@@ -33,10 +33,10 @@
 #   API Gateway REST -> VPC link -> internal NLB :80 -> ALB HTTP :80 -> target group.
 #   The CIS REST API (modules/api_gateway) has no catch-all proxy, and both CIS custom domains
 #   (api-cis.lumiguides.it.com, api-cis-aa365.lumiguides.it.com) use an EMPTY base path mapping,
-#   which API Gateway does not allow to coexist with a second mapping on the same domain. The ACM
-#   certificate only covers api-cis-aa365.lumiguides.it.com (checked 14/10/2026), so there is no
-#   api-booking.* domain yet: Dev uses this API's default execute-api endpoint. A custom domain is
-#   a later change once a certificate exists (ADR 0004 open decision 3).
+#   which API Gateway does not allow to coexist with a second mapping on the same domain. Booking
+#   gets its own domain api-booking.lumiguides.it.com in custom_domains.tf (AA-818), gated by
+#   var.custom_domains_enabled until the Route 53 NS switch; until then Dev uses this API's default
+#   execute-api endpoint.
 #
 # EXPOSURE: the CIS ALB is internet-facing, but since S235 Phase 0 its security group admits :80
 # only from the VPC CIDR (the VPC-link NLB), so /booking/* is reachable only through this REST API.
