@@ -34,10 +34,16 @@
 # DELIBERATE DEVIATIONS / NOTES FOR REVIEWERS:
 #   - PASSWORD stays in allowed_first_auth_factors on both pools: AWS documents that "the Password
 #     option is always available" for choice-based sign-in, and first factors are pool-wide (not
-#     per client). Nobody but break-glass has a usable password: staff are created by
-#     AdminCreateUser without one, account recovery is admin_only, and no client enables
-#     ALLOW_USER_PASSWORD_AUTH / ALLOW_USER_SRP_AUTH. ADR 0006 decision 2 ("EXTERNAL allows
-#     EMAIL_OTP only") is therefore met by procedure, not by pool configuration.
+#     per client), and ALLOW_USER_AUTH itself offers the PASSWORD challenge to any user who has a
+#     password. Nobody but break-glass may have a usable one, which holds only by procedure:
+#     account recovery is admin_only, no client enables ALLOW_USER_PASSWORD_AUTH /
+#     ALLOW_USER_SRP_AUTH, and every AdminCreateUser call (staff directory AA-816, the Phase 1
+#     bootstrap script, CIS invitations AA-813) MUST pass MessageAction=SUPPRESS. Cognito always
+#     gives an admin-created user a temporary password; without SUPPRESS it mails that password
+#     (COGNITO_DEFAULT works even before SES), the person can then set a permanent one through
+#     managed login and sign in with a password alone (MFA is OPTIONAL and not enrolled), which
+#     bypasses "staff sign in with an email code only". ADR 0006 decision 2 ("EXTERNAL allows
+#     EMAIL_OTP only") is likewise met by procedure, not by pool configuration.
 #   - EXTERNAL clients that offer a social IdP get write access to the mapped attributes (email,
 #     name, and email_verified only when Google is on, since Facebook does not map it): Cognito
 #     requires the app client to be able to write every mapped attribute. CAUTION: the
