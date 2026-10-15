@@ -466,6 +466,10 @@ resource "aws_ecs_task_definition" "worker" {
       # as a diagnostic (anchors: spread <= 1 on 9/9; brand-swap control: brand_fit 7-8 -> 5.67).
       { name = "T2_JUDGE_ANCHORS", value = "on" },
       { name = "T2_JUDGE_GATE", value = "brand_fit" },
+      # AA-793 (S237): T3 grounding accepts background facts about named places (past years,
+      # centuries, elevations) instead of flagging them; never tour activities, services or times
+      # the source lacks (writer source-fidelity policy). Best draft wins + targeted repair default on.
+      { name = "T3_BACKGROUND_FACTS", value = "on" },
       ],
       var.redis_host != null ? [{ name = "REDIS_HOST", value = var.redis_host }] : []
     )
