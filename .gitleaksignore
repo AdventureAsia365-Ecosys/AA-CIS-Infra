@@ -1,0 +1,8 @@
+# gitleaks ignore list for AA-CIS-Infra (AA-841): one finding fingerprint per line, for a single
+# known false positive that a narrow allowlist entry in .gitleaks.toml cannot express.
+#
+# Fingerprint format (printed by gitleaks with --redact, never the secret itself):
+#   PR / history scan:  <commit sha>:<file>:<rule id>:<line>
+#   working-tree scan:  <file>:<rule id>:<line>
+# Add a short comment above each entry: what the value is and why it is not a secret.
+# A real secret is never ignored here: remove it from the PR and rotate it instead.

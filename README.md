@@ -26,7 +26,8 @@ db/               run_migration.py + migrations/<owner>/ copies applied by DB Mi
                   schema_dump.py + gen_schema_reference.py for the schema reference
 .github/workflows terraform-plan.yml (PR), terraform-apply.yml (manual), db-migrate.yml (manual),
                   migration-copy-guard.yml (PR on db/migrations/**, nightly),
-                  db-schema-dump.yml (nightly, manual, after each DB Migrate apply)
+                  db-schema-dump.yml (nightly, manual, after each DB Migrate apply),
+                  secret-scan.yml (PR, manual; gitleaks with .gitleaks.toml + .gitleaksignore)
 ```
 
 ## How a change is applied
@@ -75,6 +76,35 @@ Names only. GitHub secrets: `AWS_ROLE_ARN` (OIDC role assumed by CI), `AWS_REGIO
 on AdventureAsia365-Ecosys/AA-Ecosys only, Contents + Pull requests read/write). Terraform inputs for `accounts/aa365` are in
 `variables.tf` / `tripplanner_variables.tf` / `booking_variables.tf` and `terraform.tfvars` (no secret values in git —
 secrets are referenced by ARN).
+
+## Secret scan
+
+**Secret Scan** (`.github/workflows/secret-scan.yml`, AA-841) runs gitleaks on every PR against the
+lines the PR's commits add, with the default rules plus two repo rules in `.gitleaks.toml` (a DSN
+with an embedded password; a plaintext password / API key / token in `.tf` / `.tfvars` / `.hcl`).
+It fails on any finding; values are redacted in the log. It does not scan old history (no history
+rewrite under AA-841), so a PR that only deletes a file passes.
+
+Never commit a real `terraform.tfvars`: `.gitignore` ignores every tfvars except
+`accounts/aa365/terraform.tfvars`, whose secret-shaped variables stay `REPLACE_ME` placeholders.
+
+Run it locally before pushing (Docker, same pinned image as CI; `--redact` keeps values out of
+the terminal):
+
+```bash
+IMG=ghcr.io/gitleaks/gitleaks:v8.28.0
+# The commits on this branch that main does not have (what the PR check sees)
+docker run --rm -u "$(id -u):$(id -g)" -v "$PWD:/repo" -w /repo $IMG git /repo --log-opts="origin/main..HEAD" -c /repo/.gitleaks.toml -i /repo/.gitleaksignore --redact --verbose --no-banner
+# The whole working tree, untracked files included
+docker run --rm -u "$(id -u):$(id -g)" -v "$PWD:/repo" -w /repo $IMG dir /repo -c /repo/.gitleaks.toml -i /repo/.gitleaksignore --redact --verbose --no-banner
+```
+
+Run from a normal clone: in a `git worktree`, `.git` is a file pointing outside the mount, so the
+`git` form needs the main repo's `.git` mounted at the same path (the `dir` form works anywhere).
+
+False positive: prefer a narrow allowlist entry in `.gitleaks.toml` (a placeholder regex or a
+path) for a class of values; add the printed fingerprint to `.gitleaksignore` (with a comment) for
+one finding. A real secret is never ignored: drop it from the branch and rotate it.
 
 ## Rules
 
