@@ -125,7 +125,8 @@ resource "aws_security_group" "nat" {
 # resources so `terraform import` works cleanly; account 2 creates fresh with the
 # same literal names in its own account namespace (no cross-account collision).
 resource "aws_iam_role" "nat_instance" {
-  name = "aa-cis-nat-instance-role"
+  name                 = "aa-cis-nat-instance-role"
+  permissions_boundary = var.permissions_boundary_arn
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{

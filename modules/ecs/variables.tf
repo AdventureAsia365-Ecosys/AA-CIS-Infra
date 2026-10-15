@@ -146,3 +146,9 @@ variable "worker_max_count" {
   type        = number
   default     = 3
 }
+
+variable "permissions_boundary_arn" {
+  description = "AA-806 step 4: ARN of the permissions boundary set on every IAM role this module creates (accounts/aa365 passes aa-workload-boundary). Null leaves the roles unbounded."
+  type        = string
+  default     = null
+}

@@ -162,9 +162,10 @@ data "aws_iam_policy_document" "booking_ecs_tasks_assume" {
 }
 
 resource "aws_iam_role" "booking_ecs_execution" {
-  name               = "${local.bk_name_prefix}-ecs-execution-role"
-  assume_role_policy = data.aws_iam_policy_document.booking_ecs_tasks_assume.json
-  tags               = local.bk_tags
+  name                 = "${local.bk_name_prefix}-ecs-execution-role"
+  permissions_boundary = aws_iam_policy.workload_boundary.arn
+  assume_role_policy   = data.aws_iam_policy_document.booking_ecs_tasks_assume.json
+  tags                 = local.bk_tags
 
   # Tagged role -> CreateRole calls iam:TagRole (cicd.tf BookingRoleTagging, phase 1).
   depends_on = [time_sleep.wait_for_iam_propagation]
@@ -212,9 +213,10 @@ resource "aws_iam_role_policy" "booking_ecs_execution" {
 # CIS, SSM only). No Bedrock, no S3, no CIS secrets: add them only when a feature needs them.
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "booking_ecs_task" {
-  name               = "${local.bk_name_prefix}-ecs-task-role"
-  assume_role_policy = data.aws_iam_policy_document.booking_ecs_tasks_assume.json
-  tags               = local.bk_tags
+  name                 = "${local.bk_name_prefix}-ecs-task-role"
+  permissions_boundary = aws_iam_policy.workload_boundary.arn
+  assume_role_policy   = data.aws_iam_policy_document.booking_ecs_tasks_assume.json
+  tags                 = local.bk_tags
 
   depends_on = [time_sleep.wait_for_iam_propagation]
 }
@@ -536,7 +538,8 @@ resource "aws_api_gateway_method_settings" "booking_throttle" {
 # AA-Booking never receives.
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "booking_app_deploy" {
-  name = "${local.bk_name_prefix}-app-deploy"
+  name                 = "${local.bk_name_prefix}-app-deploy"
+  permissions_boundary = aws_iam_policy.workload_boundary.arn
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"

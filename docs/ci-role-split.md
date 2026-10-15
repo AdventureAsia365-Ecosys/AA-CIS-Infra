@@ -81,13 +81,48 @@ local apply too), plus the plan role's secret list (`local.tf_plan_secret_arns` 
    it (`observability.tf`; re-point it at `aws_iam_role_policy.tf_apply`). Keep the
    `local.cicd_inline_statements` list (the apply role uses it). CloudTrail check before removing:
    no `AssumeRoleWithWebIdentity` on `aa-cis-dev-role` since the switch.
-4. **Boundary on existing roles** (separate PR): add
-   `permissions_boundary = aws_iam_policy.workload_boundary.arn` to every `aa-*-dev-*` workload role
-   (ECS task/execution, Lambda exec, scheduler, flow logs, API GW CloudWatch, Booking/TripPlanner
-   deploy roles, agent session). Then set `tf_apply_require_boundary_on_role_policy_writes = true`.
-   Only steps 3 + 4 together close the escalation path below.
+4. **Boundary on existing roles** (separate PR, CI apply): add
+   `permissions_boundary = aws_iam_policy.workload_boundary.arn` to every CI-managed workload role.
+   13 roles, all in-place updates (`iam:PutRolePermissionsBoundary`, which the apply role may call
+   only with the workload boundary ARN):
+   - `modules/ecs`: `aa-cis-dev-ecs-execution-role`, `aa-cis-dev-ecs-task-role` (module variable
+     `permissions_boundary_arn`, also used by `modules/eventbridge` and `modules/vpc`);
+   - `modules/eventbridge`: `aa-cis-dev-acp-scheduler-role`; `modules/vpc`: `aa-cis-nat-instance-role`
+     (inside `local.tf_managed_role_arns`, so the phase-3 deny would reach it);
+   - `booking.tf`: `aa-booking-dev-ecs-execution-role`, `aa-booking-dev-ecs-task-role`,
+     `aa-booking-dev-app-deploy`; `tripplanner.tf`: `aa-tripplanner-dev-lambda-exec`,
+     `aa-tripplanner-dev-app-deploy`;
+   - `dfs_balance.tf`: `aa-cis-dev-dfs-balance-check-exec` / `-scheduler`; `diagnostics.tf`:
+     `aa-cis-dev-diag-flow-logs-role`, `aa-cis-dev-diag-apigw-cloudwatch-role`.
 
-## Residual risk until step 4
+   Not in the CI PR: `aa-cis-dev-agent-session` is protected (the apply boundary denies every write
+   on it), so its boundary goes in a bootstrap PR applied locally. `aa-cis-dev-app-deploy` already
+   has it; the legacy `aa-cis-dev-role` is removed in step 3 instead.
+
+   The workload boundary is "Allow `*`" minus IAM writes (PassRole stays allowed) and
+   `account:*` / `organizations:*`. No role policy or AWS-managed attachment on these roles grants an
+   IAM write or account/org action (only `iam:PassRole` on `aa-booking-dev-app-deploy`), and no app
+   repo creates a boto3 `iam` / `organizations` / `account` client, so runtime behaviour (ECS exec,
+   S3, Secrets Manager, Bedrock and Cost Explorer cross-account AssumeRole, SES) is unchanged.
+
+   **Do not** set `tf_apply_require_boundary_on_role_policy_writes = true` in this PR: the phase-3
+   statement denies `DetachRolePolicy` / `DeleteRolePolicy` on any role without the workload
+   boundary, which includes the legacy `aa-cis-dev-role` that step 3 dismantles through CI. Flip it
+   in the step-3 PR or after it. Only steps 3 + 4 + phase 3 together close the escalation path
+   below.
+
+   After step 4 is applied, every **local admin apply** (bootstrap PRs such as the agent-session
+   boundary) must run from a branch that already contains step 4. The admin profile is not bound by
+   `DenyBoundaryRemoval`, so a plan from an older base shows `- permissions_boundary` on these roles
+   and would silently strip them: stop and rebase if the plan shows that.
+
+## Residual risk until steps 3 + 4 + phase 3
+
+After step 4 every CI-managed workload role carries the workload boundary, so a role the apply
+role rewrites and passes yields at most workload-boundary rights (no IAM writes). What is left until
+step 3 and phase 3: the apply role may still *rewrite* those roles' policies (broad non-IAM rights),
+and the agent session role stays unbounded until its local bootstrap apply. The text below is the
+situation before step 4.
 
 **The apply role can still escalate through IAM.** Every `aa-*-dev-*` workload role except the
 bootstrap ones has no boundary yet, and the apply role may rewrite its inline policy, attachments
