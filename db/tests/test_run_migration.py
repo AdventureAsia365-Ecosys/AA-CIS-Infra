@@ -131,6 +131,18 @@ class LintTest(unittest.TestCase):
         errors, _ = self.lint("BEGIN;\nCREATE INDEX CONCURRENTLY ix ON t (a);\nCOMMIT;\n")
         self.assertIn("line 2: CONCURRENTLY", errors[0])
 
+    def test_refresh_concurrently_is_allowed_in_a_transaction(self):
+        sql = "BEGIN;\nREFRESH MATERIALIZED VIEW CONCURRENTLY a.mv;\nCOMMIT;\n"
+        self.assertEqual(self.lint(sql), ([], []))
+
+    def test_vacuum_needs_no_transaction(self):
+        errors, _ = self.lint("BEGIN;\nCOMMIT;\nVACUUM ANALYZE a.b;\n")
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("line 3: VACUUM", errors[0])
+        ok = ("-- migrate: no-transaction\nVACUUM ANALYZE a.b;\n"
+              "INSERT INTO shared.schema_versions VALUES ('1', now(), 'x') ON CONFLICT DO NOTHING;\n")
+        self.assertEqual(self.lint(ok)[0], [])
+
     def test_destructive_statements_need_the_header(self):
         cases = {
             "DROP TABLE IF EXISTS a.b;": "DROP TABLE",

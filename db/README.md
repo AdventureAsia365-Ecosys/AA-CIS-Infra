@@ -52,11 +52,12 @@ line (a directive after the first statement is an error):
   retry.
 - **destructive** (MIG-12): required for `DROP TABLE` / `DROP SCHEMA` / `DROP MATERIALIZED VIEW`,
   `ALTER TABLE … DROP [COLUMN]` and `TRUNCATE`. On `mode=apply`, DB Migrate creates the manual
-  snapshot `db-migrate-<version>-<run id>` of `aa-cis-dev-db`, waits until it is available and
+  snapshot `db-migrate-<version>-<run id>-<attempt>` of `aa-cis-dev-db`, waits until it is available and
   passes its id to the task; the runner refuses a destructive apply without it (exit 5). The DRY
   RUN procedure still applies. Delete the snapshot by hand once the contract is confirmed.
 - **Lint** (same code in CI, in the DB Migrate "Validate input" step and in the task): unknown or
-  misplaced directives, `CONCURRENTLY` without no-transaction, destructive statements without the
+  misplaced directives, `CONCURRENTLY` (except `REFRESH MATERIALIZED VIEW CONCURRENTLY`) or `VACUUM`
+  without no-transaction, destructive statements without the
   header and transaction control in a no-transaction file are errors; `DELETE` without the header
   is a warning. Local: `python3 db/run_migration.py --inspect db/migrations/cis/241_x.sql`.
 - **Unique numbers** (MIG-3): `db/check_migration_files.py` fails when two files in one owner dir

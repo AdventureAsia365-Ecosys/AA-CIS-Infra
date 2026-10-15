@@ -96,7 +96,8 @@ jobs:
         env:
           VERSION: ${{ steps.file.outputs.version }}
         run: |
-          SNAP="db-migrate-${VERSION}-${{ github.run_id }}"
+          # run_attempt too: "Re-run jobs" keeps the run id, and a reused id fails create-db-snapshot.
+          SNAP="db-migrate-${VERSION}-${{ github.run_id }}-${{ github.run_attempt }}"
           aws rds create-db-snapshot --db-instance-identifier "$DB_INSTANCE" --db-snapshot-identifier "$SNAP" \
             --tags Key=purpose,Value=db-migrate-destructive Key=migration,Value="$MIGRATION" Key=run,Value="${{ github.run_id }}" \
             --query 'DBSnapshot.Status' --output text
@@ -161,8 +162,10 @@ jobs:
           echo "exit code: $EXIT  stopped: $(jq -r '.tasks[0].stoppedReason' <<<"$DESC")"
           [ "$EXIT" = "0" ] || { echo "::error::migration task exited with $EXIT"; exit 1; }
 
+      # The apply already succeeded: a failed dispatch only warns (the nightly dump catches up).
       - name: Regenerate the schema reference (DB Schema Dump)
         if: success() && inputs.mode == 'apply'
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

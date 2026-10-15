@@ -21,8 +21,8 @@ Safety defaults (AA-807 N5; data standards MIG-9, MIG-10, MIG-12):
         -- migrate: destructive                 (DROP TABLE/SCHEMA/COLUMN, TRUNCATE: DB Migrate
                                                   takes a manual RDS snapshot first and passes its
                                                   id in MIGRATION_SNAPSHOT; apply refuses without it)
-  * a lint runs before any connection: unknown or misplaced directives, CONCURRENTLY outside a
-    no-transaction file, destructive statements without the header, transaction control inside a
+  * a lint runs before any connection: unknown or misplaced directives, CONCURRENTLY (not REFRESH …
+    CONCURRENTLY) or VACUUM outside a no-transaction file, destructive statements without the header, transaction control inside a
     no-transaction file. A lint error stops check and apply alike.
 
 Exit codes: 0 ok · 2 sha256 mismatch · 3 file ran but did not register · 4 lint error ·
@@ -53,6 +53,11 @@ DOLLAR_TAG_RE = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)?\$")
 # whitespace collapsed, upper case).
 TX_CONTROL_RE = re.compile(r"^(BEGIN|START TRANSACTION|COMMIT|END|ROLLBACK|ABORT)\b")
 CONCURRENTLY_RE = re.compile(r"\bCONCURRENTLY\b")
+# REFRESH MATERIALIZED VIEW CONCURRENTLY is allowed inside a transaction block; the other
+# CONCURRENTLY forms (CREATE/DROP INDEX, REINDEX, DETACH PARTITION) are not.
+TX_SAFE_CONCURRENTLY_RE = re.compile(r"^REFRESH MATERIALIZED VIEW CONCURRENTLY\b")
+# Statements PostgreSQL refuses inside a transaction block (the whole-file path runs in one).
+NO_TX_ONLY_RE = re.compile(r"^VACUUM\b")
 DESTRUCTIVE_RES = (
     (re.compile(r"^DROP (TABLE|SCHEMA|MATERIALIZED VIEW)\b"), "DROP {0}"),
     (re.compile(r"^TRUNCATE\b"), "TRUNCATE"),
@@ -217,9 +222,13 @@ def lint(sql: str, d: Directives) -> tuple:
     errors, warnings = list(d.errors), []
     stmts = split_statements(sql)
     for s in stmts:
-        if CONCURRENTLY_RE.search(s.code) and not d.no_transaction:
+        if (CONCURRENTLY_RE.search(s.code) and not TX_SAFE_CONCURRENTLY_RE.search(s.code)
+                and not d.no_transaction):
             errors.append(f"line {s.line}: CONCURRENTLY cannot run inside a transaction — put it in its own "
                           f"file with `-- migrate: no-transaction` (MIG-10)")
+        if NO_TX_ONLY_RE.search(s.code) and not d.no_transaction:
+            errors.append(f"line {s.line}: VACUUM cannot run inside a transaction — put it in a file with "
+                          f"`-- migrate: no-transaction` (MIG-10)")
         for rx, label in DESTRUCTIVE_RES:
             m = rx.search(s.code)
             if m and not d.destructive:
