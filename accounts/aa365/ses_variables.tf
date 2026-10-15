@@ -28,3 +28,16 @@ variable "ses_dmarc_rua_email" {
   type        = string
   default     = ""
 }
+
+# AA-828: operator mailbox for CIS alert e-mails (spend budget crossings, CIS job ops_alert_email).
+# Not var.alert_email: that is a personal mailbox for SNS/AWS Budgets; this one is the work inbox.
+variable "cis_ops_alert_email" {
+  description = "Operator inbox that receives CIS alert e-mails (ALERT_EMAIL_TO on the CIS api + worker). Empty = CIS sends no alert e-mail (the app logs it)."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.cis_ops_alert_email == "" || can(regex("^[^@\\s,]+@[^@\\s,]+$", var.cis_ops_alert_email))
+    error_message = "cis_ops_alert_email must be empty or a single e-mail address."
+  }
+}

@@ -196,6 +196,12 @@ module "ecs" {
   tags         = local.cis_app_tags
   cluster_tags = local.shared_app_tags
 
+  # AA-828: operator alert e-mail env (api + worker). Send permission: aws_iam_role_policy
+  # .cis_ecs_task_ses_send in ses.tf (only this From, only the transactional configuration set).
+  ops_alert_email       = var.cis_ops_alert_email
+  ses_from_address      = var.ses_from_address
+  ses_configuration_set = aws_sesv2_configuration_set.stream["transactional"].configuration_set_name
+
   depends_on = [module.vpc, module.alb]
 }
 

@@ -164,3 +164,22 @@ variable "cluster_tags" {
   type        = map(string)
   default     = {}
 }
+
+# ── AA-828 — operator alert e-mail (SES, accounts/aa365/ses.tf) ──
+variable "ops_alert_email" {
+  description = "AA-828 — operator mailbox for CIS alert e-mails (ALERT_EMAIL_TO; spend budget crossings). Empty = the app sends no e-mail."
+  type        = string
+  default     = ""
+}
+
+variable "ses_from_address" {
+  description = "AA-828 — SES_FROM_ADDRESS; must equal the ses:FromAddress the task role may send as (accounts/aa365 var.ses_from_address)."
+  type        = string
+  default     = ""
+}
+
+variable "ses_configuration_set" {
+  description = "AA-828 — SES_CONFIGURATION_SET; the transactional stream the task role may send through (ses.tf)."
+  type        = string
+  default     = ""
+}

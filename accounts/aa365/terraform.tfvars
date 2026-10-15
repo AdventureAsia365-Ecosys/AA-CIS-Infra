@@ -54,3 +54,6 @@ booking_github_repo_id = "1418188499"
 
 # AA-811 (S238): AA-Booking sends the staff "new inquiry" e-mail (SES, ses.tf) to this inbox on Dev.
 booking_staff_notify_email = "nghieppham@adventure.asia"
+
+# AA-828 (S238): CIS spend budget alert e-mails (job ops_alert_email, SES) go to this inbox on Dev.
+cis_ops_alert_email = "nghieppham@adventure.asia"
