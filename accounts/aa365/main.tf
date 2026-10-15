@@ -62,6 +62,7 @@ module "rds" {
   db_password          = var.db_password
   db_subnet_group_name = module.vpc.db_subnet_group_name
   sg_rds_id            = module.vpc.sg_rds_id
+  apply_immediately    = var.rds_apply_immediately
 
   depends_on = [module.vpc]
 }
