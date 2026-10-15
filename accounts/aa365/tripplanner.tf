@@ -302,7 +302,7 @@ resource "aws_lambda_function" "tripplanner_browse" {
   memory_size   = 512
 
   # AA-824 connection budget: cap concurrent instances (each opens its own DB pool).
-  reserved_concurrent_executions = var.tripplanner_lambda_reserved_concurrency
+  reserved_concurrent_executions = var.tripplanner_browse_reserved_concurrency
 
   # Created from the S3 placeholder object; the AA-TripPlanner-Web deploy
   # workflow replaces the actual code via lambda:UpdateFunctionCode. Terraform

@@ -63,13 +63,20 @@ variable "tripplanner_search_throttle_burst_limit" {
 # -----------------------------------------------------------------------------
 # AA-824 (decision E6): reserved concurrency on browse and assembly, so the account Lambda quota
 # (raised 10 -> 1000 on 15/10/2026, case 179197638600671) cannot turn a TripPlanner burst into
-# hundreds of DB connections on the shared RDS. 5 per function = the interim cap set by hand on
-# 15/10/2026 (put-function-concurrency) when AWS approved the quota early: total 10 = the old
-# account limit, and with the TripPlanner pool at max 5 per instance that is <= 50 connections.
-# Raise it (AA-824 scope: 10 each) only after the TripPlanner pool max 1 per instance has shipped.
+# hundreds of DB connections on the shared RDS. The TripPlanner pool is max 1 connection per
+# instance (AA-TripPlanner-Web backend/shared/db.py, S237), so the TripPlanner connection budget
+# is browse + assembly = 15 + 5 = 20, inside the 30 planned for the `tripplanner` role (data
+# standards C2.2). Browse gets the larger share: the S237 UI verify saw 503s (Lambda throttling)
+# when the /plan List view prefetched 24 tour pages at the interim cap of 5.
 # -----------------------------------------------------------------------------
+variable "tripplanner_browse_reserved_concurrency" {
+  type        = number
+  description = "Reserved concurrent executions for the TripPlanner browse Lambda (1 DB connection each)."
+  default     = 15
+}
+
 variable "tripplanner_lambda_reserved_concurrency" {
   type        = number
-  description = "Reserved concurrent executions for each TripPlanner Lambda (browse, assembly). Interim 5 while the TP DB pool max is 5 per instance; raise after pool max 1 ships."
+  description = "Reserved concurrent executions for the TripPlanner assembly Lambda (1 DB connection each)."
   default     = 5
 }
