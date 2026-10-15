@@ -301,6 +301,9 @@ resource "aws_lambda_function" "tripplanner_browse" {
   timeout       = 30
   memory_size   = 512
 
+  # AA-824 connection budget: cap concurrent instances (each opens its own DB pool).
+  reserved_concurrent_executions = var.tripplanner_lambda_reserved_concurrency
+
   # Created from the S3 placeholder object; the AA-TripPlanner-Web deploy
   # workflow replaces the actual code via lambda:UpdateFunctionCode. Terraform
   # ignore_changes the code attributes so it never reverts the app's deploy.
@@ -338,6 +341,9 @@ resource "aws_lambda_function" "tripplanner_assembly" {
   handler       = "backend.assembly.handler.handler"
   timeout       = 60
   memory_size   = 512
+
+  # AA-824 connection budget: cap concurrent instances (each opens its own DB pool).
+  reserved_concurrent_executions = var.tripplanner_lambda_reserved_concurrency
 
   # Created from the S3 placeholder (see browse Lambda above); app deploy
   # workflow replaces the code.
