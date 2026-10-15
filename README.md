@@ -16,7 +16,7 @@ applies reviewed app migrations to the shared RDS.
 | `accounts/aa365/` | acc2 `005097885195`, us-west-1 | **Live stack**: CIS (ECS api + worker, RDS, ALB, API GW, WAF, S3, ops-probe Lambda, alarms) and TripPlanner (2 Lambdas, HTTP API, artifacts, OIDC role) | CI workflow `Terraform Apply Prod` |
 | `accounts/acc3-bedrock/` | acc3 `786888028788` | Bedrock invoker role (primary), Bedrock Batch, Cost Explorer reader | a human, locally (profile `nghiep_aa365`) |
 | `accounts/acc1-bedrock/` | acc1 `867490540162` | Bedrock invoker role (fallback), Cost Explorer reader | a human, locally (profile `pqnghiep-admin`) |
-| repo-root `*.tf`, `envs/*` | — | historical, **not live** — do not run Terraform there | — |
+| repo-root `main.tf.bak*` | — | historical, **not live** — do not run Terraform there (`envs/*` removed in AA-841) | — |
 
 ```
 accounts/aa365/   main.tf, cicd.tf, tripplanner.tf, booking.tf, observability.tf, observability_ecosys.tf, dfs_balance.tf, … (+ lambda_src/)

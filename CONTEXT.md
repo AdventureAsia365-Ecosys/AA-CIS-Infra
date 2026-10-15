@@ -83,12 +83,14 @@ accounts/
 modules/          ← reusable building blocks, consumed by the account roots
   vpc, rds, ecs, alb, api_gateway, s3, secrets, waf, dynamodb, efs,
   elasticache, eventbridge, langfuse, monitoring
-envs/             ← dev / staging / prod thin roots (historical multi-env scaffold)
 ```
 
 The **active dev stack** is `accounts/aa365` — it is the root Terraform actually applies against
-today. The `envs/{dev,staging,prod}` roots are the older multi-env scaffold; treat `accounts/aa365`
-as the live one unless a task says otherwise.
+today. The old `envs/{dev,staging,prod}` scaffold was removed in AA-841 (S238): nothing applied
+from it (`envs/dev/main.tf` was empty, staging/prod were 0-byte files) and its
+`envs/dev/terraform.tfvars` held plaintext acc1-era credentials. Do not recreate per-env roots
+there; a new environment gets its own `accounts/<name>/` root. Only the aa365 root keeps a tracked
+`terraform.tfvars` (placeholders for anything secret, see `.gitignore`).
 
 ### Main stack modules (accounts/aa365)
 
