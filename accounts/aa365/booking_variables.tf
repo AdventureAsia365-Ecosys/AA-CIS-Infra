@@ -24,7 +24,7 @@ variable "booking_staff_notify_email" {
 variable "booking_staff_admin_url" {
   description = "Base URL of the AA-Booking staff admin (Vercel project aa-booking-admin); staff e-mail links to <this>/cases/<code>."
   type        = string
-  default     = "https://aa-booking-admin.vercel.app"
+  default     = "https://booking.lumiguides.it.com"
 
   validation {
     condition     = startswith(var.booking_staff_admin_url, "https://")
