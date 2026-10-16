@@ -81,8 +81,10 @@ DELETE_RE = re.compile(r"^(WITH\b.*\b)?DELETE FROM\b")
 # (owners.yaml): CIS registry `deploy_gate_exempt`; Booking backend/app/inquiry/intake.py RECURRING
 # (bk_inquiry_pull, every 60 s) - Booking's DEPLOY_GATE_EXEMPT registry arrives with B4, point here
 # at it then. Daily retention kinds are deliberately NOT exempt.
+# shared: none since AA-751 (S240). ops_rds_role_connections (every 5 min, AA-832) was removed
+# from the CIS registry when the CIS api started publishing AA/RDS from an in-process sampler.
 IDLE_EXEMPT_KINDS = {
-    "shared": frozenset({"ops_rds_role_connections"}),   # enqueued every 5 min (AA-832)
+    "shared": frozenset(),
     "booking": frozenset({"bk_inquiry_pull"}),            # always queued at +60 s (bk-002 intake)
 }
 IDLE_WAITS = 3          # apply re-checks this many times before it refuses …
