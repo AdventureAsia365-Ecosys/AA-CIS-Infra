@@ -424,8 +424,12 @@ resource "aws_ecs_service" "api" {
 }
 
 # ── Auto Scaling ──────────────────────────────────────────────
+# AA-859 (S240, sizing option A): max 10 -> 7 api tasks. The tenant pool goes from 1 to 2 connections per
+# task (AA-CIS-App api/core/aa544_tenant_pool.py TENANT_POOL_MAX_SIZE), and 2 x 7 = 14 stays under the
+# aa_app_user CONNECTION LIMIT 15 (CIS migration 234). Data standard C2.2/C2.3c: change this value only
+# together with the tenant pool size and the C2.2 budget table. Dev runs 1 task, so the cap costs nothing.
 resource "aws_appautoscaling_target" "api" {
-  max_capacity       = 10
+  max_capacity       = 7
   min_capacity       = var.service_desired_count
   resource_id        = "service/${aws_ecs_cluster.main.name}/${aws_ecs_service.api.name}"
   scalable_dimension = "ecs:service:DesiredCount"
