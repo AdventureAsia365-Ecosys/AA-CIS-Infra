@@ -76,6 +76,27 @@ resource "aws_s3_bucket_lifecycle_configuration" "bronze" {
       days = 2555 # 7 years
     }
   }
+
+  # AA-825 (DM-7.3, data-management.md "S3 archive objects"): the retention jobs write
+  # Parquet to archive/<table>/yyyy/mm/ (archive-before-delete). They are read only for a
+  # restore or a later Athena query (L6), so after 90 days they move to Standard-IA.
+  # No expiration: the per-table expiry is still to be set (N4), and the archive is the
+  # only copy of the deleted rows. ("archive/" does not match "raw-archive/": S3 prefixes
+  # match from the start of the key.) Objects under 128 KB stay in Standard, the AWS
+  # default transition minimum size, since IA would bill them as 128 KB anyway.
+  rule {
+    id     = "retention-archive-to-ia"
+    status = "Enabled"
+
+    filter {
+      prefix = "archive/"
+    }
+
+    transition {
+      days          = 90
+      storage_class = "STANDARD_IA"
+    }
+  }
 }
 
 # Encryption at rest

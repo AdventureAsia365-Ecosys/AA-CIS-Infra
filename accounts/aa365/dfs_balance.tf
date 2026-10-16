@@ -7,13 +7,21 @@
 #   AA-627  /admin/dfs-balance/check — FREE DFS balance snapshot + low-balance bell.
 #   AA-720  /admin/jev-canary/check  — one real Jev probe; 402 -> credit bell + breaker.
 #   AA-720  /admin/jev/402-sweep     — count decision_log 402s in 24h; bell if any.
+#   AA-727  /admin/waves/check       — open rerun waves; bell on a stuck tour.
+# AA-825 adds a SECOND schedule on the same Lambda (retention_daily, 20:30 UTC) whose
+# event names one path, /admin/job-runner/retention/schedule (enqueue the CIS
+# retention kinds, idempotent per UTC day). Its own hour keeps the retention jobs off
+# the 06:00 ACP ingest / 06:15 probes and out of VN working hours (Deploy Dev guard).
+# Both schedules pass secret_id in the event, so the handler reads X-Admin-Secret from
+# Secrets Manager at run time (the role already has GetSecretValue on it); the
+# deploy-time env value stays as the fallback.
 # Kept as ONE function (name unchanged: renaming the IAM role would destroy+create
 # it, a permission gap — S200). AA-720 only widened the handler's _PATHS; no new
 # AWS resource, role or schedule — the archive_file re-zips on the handler change
 # and updates the existing Lambda in place.
 #
 # Self-contained feature file (same pattern as tripplanner.tf). Zero-dependency
-# handler (stdlib urllib only) packaged inline via archive_file — no dist zip to
+# handler (stdlib urllib + the runtime's bundled boto3) packaged inline via archive_file — no dist zip to
 # pre-build, no CI change.
 # =============================================================================
 
@@ -32,6 +40,16 @@ variable "dfs_balance_schedule_expression" {
   description = "AA-627 — schedule for the daily DFS balance check"
   type        = string
   default     = "cron(15 6 * * ? *)"
+}
+
+# AA-825 — the daily retention enqueue. 20:30 UTC = 03:30 ICT: nobody deploys, no ACP
+# schedule near it (06:00 ingest, 06:15 probes, Wed 18:00 veto, Sun 23:00 export), and
+# the 30 min flexible window still ends before 00:00 UTC, so the UTC day the API keys
+# its idempotency on is the day the schedule meant.
+variable "retention_schedule_expression" {
+  description = "AA-825 — schedule for POST /admin/job-runner/retention/schedule"
+  type        = string
+  default     = "cron(30 20 * * ? *)"
 }
 
 locals {
@@ -200,6 +218,45 @@ resource "aws_scheduler_schedule" "dfs_balance_daily" {
   target {
     arn      = aws_lambda_function.dfs_balance_check.arn
     role_arn = aws_iam_role.dfs_balance_scheduler.arn
+
+    # AA-825: no "paths" -> the handler's default probe set; secret_id -> read the
+    # admin secret at run time (env value is the fallback).
+    input = jsonencode({ secret_id = var.secret_admin_arn })
+
+    retry_policy {
+      maximum_retry_attempts       = 2
+      maximum_event_age_in_seconds = 3600
+    }
+  }
+}
+
+# ── AA-825 — daily retention enqueue (same Lambda, invoke role and group) ────
+# POST /admin/job-runner/retention/schedule enqueues one shared.job per CIS retention
+# kind with idempotency_key retention:<kind>:<UTC day>, so a Scheduler retry or a
+# second call the same day creates nothing new. Whether each kind runs as a DRY RUN,
+# live or held is decided by the kind (DM-7.2), not here.
+resource "aws_scheduler_schedule" "retention_daily" {
+  name        = "${local.name_prefix}-retention-daily"
+  description = "AA-825 — daily POST /admin/job-runner/retention/schedule via the ops-probe Lambda"
+  # Same group as dfs_balance_daily: the CI role's scheduler grants are scoped to it.
+  group_name = module.eventbridge.schedule_group_name
+
+  schedule_expression          = var.retention_schedule_expression
+  schedule_expression_timezone = "UTC"
+
+  flexible_time_window {
+    mode                      = "FLEXIBLE"
+    maximum_window_in_minutes = 30
+  }
+
+  target {
+    arn      = aws_lambda_function.dfs_balance_check.arn
+    role_arn = aws_iam_role.dfs_balance_scheduler.arn
+
+    input = jsonencode({
+      paths     = ["/admin/job-runner/retention/schedule"]
+      secret_id = var.secret_admin_arn
+    })
 
     retry_policy {
       maximum_retry_attempts       = 2
