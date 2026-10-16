@@ -62,7 +62,10 @@ and runs one SQL file with the task's own `DATABASE_URL`:
    `shared.schema_versions` afterwards. Re-running `apply` is a no-op. The runner sets
    `lock_timeout 5s` / `statement_timeout 15min` / `application_name db-migrate`; a file can
    override the timeouts and use `-- migrate: no-transaction` or `-- migrate: destructive` (RDS
-   snapshot first) in its header.
+   snapshot first) in its header. Apply waits (3 x 20 s) and then refuses with exit 7 while any
+   owner job table (`shared.job`, `booking.job`, …) has a queued/running row of a non-exempt kind
+   or a `shared.rerun_wave` is open (AA-751); `check` shows the same report. Input
+   `override_busy_jobs=<reason>` (Nghiệp only) applies anyway.
 4. Merge the app PR that needs the migration.
 5. After the apply, **DB Schema Dump** runs by itself and opens/updates the root PR that
    regenerates `AA-Ecosys/docs/architecture/db-schema-reference.md` (also nightly).

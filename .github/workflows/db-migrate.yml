@@ -14,6 +14,10 @@ name: DB Migrate (shared RDS)
 # `-- migrate: no-transaction` (statements one by one, e.g. CREATE INDEX CONCURRENTLY) and
 # `-- migrate: destructive` (this workflow takes a manual RDS snapshot before apply). The same lint
 # runs here before any AWS call and again in the task.
+# Idle check (AA-751, ADR 0003a decision 5): the task reports every owner job table (`<schema>.job`)
+# and open `shared.rerun_wave` rows on check and apply; apply re-checks 3 x 20 s and then refuses
+# (exit 7) while one has a queued/running row of a non-exempt kind or a wave is open. The input
+# override_busy_jobs (a reason, Nghiệp only) lets one apply proceed anyway, and is logged.
 # After a successful apply, the DB Schema Dump workflow is dispatched (root reference PR, AA-807 N1).
 on:
   workflow_dispatch:
@@ -28,6 +32,11 @@ on:
         type: choice
         options: [check, apply]
         default: check
+      override_busy_jobs:
+        description: "Nghiệp only: reason to apply although a job table is busy or a rerun wave is open (empty = refuse when busy)"
+        required: false
+        type: string
+        default: ""
 
 concurrency:
   group: db-migrate
@@ -53,6 +62,7 @@ jobs:
       DB_INSTANCE: aa-cis-dev-db
       MIGRATION: ${{ inputs.migration }}
       MODE: ${{ inputs.mode }}
+      OVERRIDE_BUSY_JOBS: ${{ inputs.override_busy_jobs }}
     steps:
       - uses: actions/checkout@v5
 
@@ -71,6 +81,13 @@ jobs:
           echo "version=${PREFIX}${BASH_REMATCH[2]}" >> "$GITHUB_OUTPUT"
           echo "sha256=$(sha256sum "db/migrations/$MIGRATION" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
           echo "### $MODE \`$MIGRATION\`" >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "$OVERRIDE_BUSY_JOBS" ]; then
+            if [ "${#OVERRIDE_BUSY_JOBS}" -gt 200 ] || [[ "$OVERRIDE_BUSY_JOBS" == *$'\n'* ]]; then
+              echo "::error::override_busy_jobs must be one line of at most 200 characters"; exit 1
+            fi
+            echo "::warning::idle check override requested: $OVERRIDE_BUSY_JOBS"
+            echo "- **idle check override:** $OVERRIDE_BUSY_JOBS" >> "$GITHUB_STEP_SUMMARY"
+          fi
           # Header directives + lint (same code the task runs). A lint error stops here.
           set +e
           INSPECT=$(python3 db/run_migration.py --inspect "db/migrations/$MIGRATION"); LINT=$?
@@ -130,6 +147,7 @@ jobs:
           OVERRIDES=$(jq -nc \
             --arg runner "$RUNNER_URL" --arg sql "$SQL_URL" --arg file "$MIGRATION" \
             --arg version "$VERSION" --arg sha "$SHA256" --arg mode "$MODE" --arg snap "$SNAPSHOT" \
+            --arg override "$OVERRIDE_BUSY_JOBS" \
             '{containerOverrides: [{name: "api",
               command: ["python3", "-c", "import os,urllib.request;exec(urllib.request.urlopen(os.environ[\"RUNNER_URL\"],timeout=30).read())"],
               environment: [
@@ -137,6 +155,7 @@ jobs:
                 {name: "MIGRATION_FILE", value: $file}, {name: "MIGRATION_VERSION", value: $version},
                 {name: "MIGRATION_SHA256", value: $sha}, {name: "MIGRATION_MODE", value: $mode},
                 {name: "MIGRATION_SNAPSHOT", value: $snap},
+                {name: "MIGRATION_IDLE_OVERRIDE", value: $override},
                 {name: "JOB_WORKER_IN_API", value: "false"}]}]}')
           TASK_ARN=$(aws ecs run-task --cluster "$CLUSTER" --task-definition "$TASK_DEF" \
             --launch-type FARGATE --network-configuration "$NET" --overrides "$OVERRIDES" \
@@ -160,6 +179,10 @@ jobs:
           DESC=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$TASK_ARN" --output json)
           EXIT=$(jq -r '.tasks[0].containers[] | select(.name=="api") | .exitCode' <<<"$DESC")
           echo "exit code: $EXIT  stopped: $(jq -r '.tasks[0].stoppedReason' <<<"$DESC")"
+          if [ "$EXIT" = "7" ]; then
+            echo "::error::apply refused: a job table is busy or a rerun wave is open (see the MIGRATE busy lines). Wait until idle, or re-dispatch with override_busy_jobs=<reason> (Nghiệp only)"
+            exit 1
+          fi
           [ "$EXIT" = "0" ] || { echo "::error::migration task exited with $EXIT"; exit 1; }
 
       # The apply already succeeded: a failed dispatch only warns (the nightly dump catches up).

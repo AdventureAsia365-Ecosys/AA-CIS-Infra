@@ -25,8 +25,17 @@ Safety defaults (AA-807 N5; data standards MIG-9, MIG-10, MIG-12):
     CONCURRENTLY) or VACUUM outside a no-transaction file, destructive statements without the header, transaction control inside a
     no-transaction file. A lint error stops check and apply alike.
 
+Idle check (AA-751, ADR 0003a decision 5, data standards C6.3b): every run reports, per owner job
+table (every `<schema>.job` with a `status` column, found in the catalog) and for open
+`shared.rerun_wave` rows, whether it is busy. Busy = any queued (any run_after) or running row of a
+kind not in IDLE_EXEMPT_KINDS, or an open wave. check only reports. apply (once the version is known
+to be unapplied) re-checks up to IDLE_WAITS times, IDLE_WAIT_S apart, and refuses with exit 7 while
+anything is still busy, unless MIGRATION_IDLE_OVERRIDE carries a reason (workflow input
+override_busy_jobs, Nghiệp only). lock_timeout stays the backstop for the check-then-apply race.
+
 Exit codes: 0 ok · 2 sha256 mismatch · 3 file ran but did not register · 4 lint error ·
-5 destructive apply without a snapshot · 6 PostgreSQL error (lock/statement timeout included).
+5 destructive apply without a snapshot · 6 PostgreSQL error (lock/statement timeout included) ·
+7 apply refused: a job table is busy or a rerun wave is open.
 
 Local, no database and no asyncpg needed (CI lint and the DB Migrate "Validate input" step):
   python3 db/run_migration.py --inspect db/migrations/cis/230_x.sql
@@ -66,6 +75,30 @@ DESTRUCTIVE_RES = (
      "ALTER TABLE … DROP COLUMN"),
 )
 DELETE_RE = re.compile(r"^(WITH\b.*\b)?DELETE FROM\b")
+
+# Idle check (AA-751). Kinds that are always queued or running by design and only run short
+# transactions; a busy row of any other kind blocks apply. Mirrors the owners' registries until X1
+# (owners.yaml): CIS registry `deploy_gate_exempt`, Booking DEPLOY_GATE_EXEMPT. Daily retention
+# kinds are deliberately NOT exempt.
+IDLE_EXEMPT_KINDS = {
+    "shared": frozenset({"ops_rds_role_connections"}),   # enqueued every 5 min (AA-832)
+    "booking": frozenset({"bk_inquiry_pull"}),            # always queued at +60 s (bk-002 intake)
+}
+IDLE_WAITS = 3          # apply re-checks this many times before it refuses …
+IDLE_WAIT_S = 20        # … this many seconds apart
+JOB_TABLES_SQL = """
+SELECT n.nspname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+ WHERE c.relname = 'job' AND c.relkind IN ('r', 'p')
+   AND EXISTS (SELECT 1 FROM pg_attribute a
+                WHERE a.attrelid = c.oid AND a.attname = 'status' AND NOT a.attisdropped)
+ ORDER BY n.nspname"""
+JOB_BUSY_SQL = """
+SELECT kind, status, count(*)::int AS n,
+       count(*) FILTER (WHERE status = 'queued' AND run_after <= now())::int AS due
+  FROM {table} WHERE status IN ('queued', 'running') AND NOT (kind = ANY($1::text[]))
+ GROUP BY kind, status ORDER BY kind, status"""
+WAVE_TABLE_SQL = "SELECT to_regclass('shared.rerun_wave') IS NOT NULL"
+OPEN_WAVES_SQL = "SELECT count(*)::int FROM shared.rerun_wave WHERE status = 'open'"
 
 
 def log(msg: str) -> None:
@@ -257,6 +290,122 @@ def version_pattern(version: str) -> str:
     return f"^{re.escape(prefix)}[0-9]{{3}}$"
 
 
+@dataclass
+class BusyState:
+    """Idle-check result for one owner job table or for shared.rerun_wave."""
+    name: str                           # "booking.job", "shared.rerun_wave"
+    running: int = 0
+    queued: int = 0
+    due: int = 0
+    kinds: list = field(default_factory=list)       # "kind:status=n", non-exempt only
+    exempt: tuple = ()
+    open_waves: int = 0
+    is_wave: bool = False
+    missing: bool = False               # expected but not in the catalog: WARNING, not busy
+    error: str = ""                     # could not be read: counted as busy (fail closed)
+
+    @property
+    def busy(self) -> bool:
+        return bool(self.error or self.running or self.queued or self.open_waves)
+
+    def line(self) -> str:
+        if self.missing:
+            what = "wave check skipped" if self.is_wave else "not checked"
+            return f"WARNING: {self.name} not found ({what})"
+        if self.error:
+            return f"busy: {self.name} unreadable ({self.error}), counted as busy"
+        if self.is_wave:
+            return f"{'busy' if self.busy else 'idle'}: {self.name} open={self.open_waves}"
+        exempt = f" (exempt: {', '.join(self.exempt)})" if self.exempt else ""
+        if not self.busy:
+            return f"idle: {self.name} running=0 queued=0{exempt}"
+        return (f"busy: {self.name} running={self.running} queued={self.queued} due={self.due} "
+                f"kinds=[{', '.join(self.kinds)}]")
+
+    def short(self) -> str:
+        if self.error:
+            return f"{self.name} (unreadable)"
+        if self.is_wave:
+            return f"{self.name} (open={self.open_waves})"
+        parts = [f"{k}={v}" for k, v in (("running", self.running), ("queued", self.queued)) if v]
+        return f"{self.name} ({', '.join(parts)})"
+
+
+def _quote_ident(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _err(e: Exception) -> str:
+    return f"{type(e).__name__}: {e}".strip()
+
+
+async def job_tables_busy(conn) -> list:
+    """Reads every owner job table and shared.rerun_wave; returns one BusyState per object."""
+    report: list = []
+    try:
+        schemas = [r[0] for r in await conn.fetch(JOB_TABLES_SQL)]
+    except Exception as e:                      # fail closed: nothing could be checked
+        return [BusyState("owner job tables", error=_err(e))]
+    for schema in sorted(set(IDLE_EXEMPT_KINDS) - set(schemas)):
+        report.append(BusyState(f"{schema}.job", missing=True))
+    for schema in schemas:
+        exempt = tuple(sorted(IDLE_EXEMPT_KINDS.get(schema, ())))
+        st = BusyState(f"{schema}.job", exempt=exempt)
+        try:
+            rows = await conn.fetch(JOB_BUSY_SQL.format(table=f"{_quote_ident(schema)}.job"), list(exempt))
+        except Exception as e:
+            st.error = _err(e)
+        else:
+            for r in rows:
+                if r["status"] == "running":
+                    st.running += r["n"]
+                else:
+                    st.queued += r["n"]
+                    st.due += r["due"]
+                st.kinds.append(f"{r['kind']}:{r['status']}={r['n']}")
+        report.append(st)
+    wave = BusyState("shared.rerun_wave", is_wave=True)
+    try:
+        if await conn.fetchval(WAVE_TABLE_SQL):
+            wave.open_waves = await conn.fetchval(OPEN_WAVES_SQL) or 0
+        else:
+            wave.missing = True
+    except Exception as e:
+        wave.error = _err(e)
+    report.append(wave)
+    report.sort(key=lambda s: (s.is_wave, s.name))
+    return report
+
+
+def log_report(report: list) -> None:
+    for st in report:
+        log(st.line())
+
+
+def busy_summary(report: list) -> str:
+    return ", ".join(st.short() for st in report if st.busy)
+
+
+async def wait_until_idle(conn, first=None, attempts=IDLE_WAITS, interval_s=IDLE_WAIT_S,
+                          sleep=asyncio.sleep) -> list:
+    """Re-checks up to `attempts` times, `interval_s` apart, while anything is busy.
+
+    `first` is a report taken just before (so an idle start costs no extra query). Returns the
+    last report; the caller refuses when it is still busy."""
+    report = first if first is not None else await job_tables_busy(conn)
+    if first is None:
+        log_report(report)
+    for i in range(1, attempts + 1):
+        if not any(st.busy for st in report):
+            return report
+        log(f"waiting {interval_s}s for idle job tables (re-check {i}/{attempts}), busy: {busy_summary(report)}")
+        await sleep(interval_s)
+        report = await job_tables_busy(conn)
+        still_busy = any(st.busy for st in report)
+        log_report([st for st in report if st.busy] if still_busy else report)   # no repeated idle lines
+    return report
+
+
 def _fetch(url: str) -> bytes:
     return urllib.request.urlopen(url, timeout=30).read()
 
@@ -266,7 +415,7 @@ async def _connect(dsn: str, settings: dict):
     return await asyncpg.connect(dsn, timeout=30, server_settings=settings)
 
 
-async def run_task(env=None, fetch=_fetch, connect=_connect) -> int:
+async def run_task(env=None, fetch=_fetch, connect=_connect, sleep=asyncio.sleep) -> int:
     env = os.environ if env is None else env
     raw = fetch(env["MIGRATION_URL"])
     digest = hashlib.sha256(raw).hexdigest()
@@ -295,11 +444,27 @@ async def run_task(env=None, fetch=_fetch, connect=_connect) -> int:
             version_pattern(version))
         applied = await conn.fetchval("SELECT applied_at FROM shared.schema_versions WHERE version = $1", version)
         log(f"before: latest_registered_same_owner={latest} this_version_applied_at={applied}")
+        report = await job_tables_busy(conn)
+        log_report(report)
+        override = (env.get("MIGRATION_IDLE_OVERRIDE") or "").strip()
         if mode != "apply":
+            if override:
+                log("note: the idle-check override only applies to mode=apply")
             return 0
         if applied:
             log("skip: already applied")
             return 0
+        if override:
+            if any(st.busy for st in report):
+                log(f"WARNING: idle check OVERRIDDEN ({override}), busy: {busy_summary(report)}")
+            else:
+                log(f"note: idle-check override set ({override}) but nothing is busy")
+        else:
+            report = await wait_until_idle(conn, first=report, sleep=sleep)
+            if any(st.busy for st in report):
+                log(f"ERROR: refusing apply — busy: {busy_summary(report)}. Wait until every job table is "
+                    f"idle, or re-dispatch with override_busy_jobs=<reason> (Nghiệp only)")
+                return 7
         if d.destructive:
             snapshot = (env.get("MIGRATION_SNAPSHOT") or "").strip()
             if not snapshot:
