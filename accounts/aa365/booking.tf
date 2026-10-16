@@ -66,7 +66,7 @@ locals {
   # GitHub OIDC subjects for the AA-Booking deploy role. The org has no org-level subject
   # template; the program's repos turn on GitHub's immutable subject at repo level, giving
   #   repo:AdventureAsia365-Ecosys@276539096/<repo>@<repo_id>:<context>
-  # (see cicd.tf local.cicd_oidc_subjects). AA-Booking does not exist yet, so its repo id is
+  # (see cicd_split.tf local.oidc_sub_cis_app). AA-Booking does not exist yet, so its repo id is
   # unknown: until var.booking_github_repo_id is set, both the immutable form (any id, exact repo
   # name, pinned org id) and the plain form are accepted. Once the id is set, only the immutable
   # form with that exact id is trusted (fail closed).
@@ -552,8 +552,8 @@ resource "aws_api_gateway_method_settings" "booking_throttle" {
 # -----------------------------------------------------------------------------
 # App deploy role — assumed via GitHub OIDC by AA-Booking's deploy workflow ONLY. Least privilege:
 # push to this ECR repo, register revisions of THIS task family, point THIS service at them, wait
-# for it and read back the running image. Separate from the broad aa-cis-dev-role (cicd.tf), which
-# AA-Booking never receives.
+# for it and read back the running image. Separate from the broad aa-cis-dev-role (retired in
+# AA-806 step 3), which AA-Booking never received.
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "booking_app_deploy" {
   name                 = "${local.bk_name_prefix}-app-deploy"

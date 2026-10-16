@@ -9,7 +9,7 @@
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# AA-287 — IAM propagation race (run #61). aa-cis-dev-role's inline policy
+# AA-287 — IAM propagation race (run #61). aa-cis-dev-role's (retired S239) inline policy
 # (accounts/aa365/cicd.tf, aws_iam_role_policy.cicd_inline) picked up the
 # Budgets/CloudTrail Sids correctly, but Terraform started creating
 # aws_budgets_budget.total_monthly ~130ms after the policy update API call
@@ -27,14 +27,19 @@
 # this resource re-creates — and re-sleeps — on every future policy change,
 # not just its original creation. Makes this a general fix for any consumer
 # that depends_on it, not a one-off tied to AA-287's original resources.
+#
+# AA-806 step 3 (S239): aa-cis-dev-role and cicd_inline are retired; CI applies
+# as aa-cis-infra-tf-apply, so the gate now follows that role's inline policy.
+# Re-pointing replaces this time_sleep once (new id), which re-tags the three
+# module.eventbridge resources that carry its id as the _iam_gate tag (in place).
 # -----------------------------------------------------------------------------
 
 resource "time_sleep" "wait_for_iam_propagation" {
-  depends_on      = [aws_iam_role_policy.cicd_inline]
+  depends_on      = [aws_iam_role_policy.tf_apply]
   create_duration = "15s"
 
   triggers = {
-    policy_hash = md5(aws_iam_role_policy.cicd_inline.policy)
+    policy_hash = md5(aws_iam_role_policy.tf_apply.policy)
   }
 }
 
