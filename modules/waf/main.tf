@@ -79,8 +79,10 @@ resource "aws_wafv2_web_acl" "main" {
         # Sub-rules kept in COUNT once the group is enforced. These requests never reached the
         # managed rules before S235; the defaults are known to break this API (SizeRestrictions_BODY
         # blocks any body > 8 KB: Excel/file uploads and large admin JSON; CrossSiteScripting_BODY
-        # matches HTML in tour content edits). Review the WAF log (label
-        # awswaf:managed:aws:core-rule-set:*) after a week and tighten.
+        # matches HTML in tour content edits). S239 (AA-806) pre-flip test: GenericLFI_BODY matches any
+        # content save whose first 8 KB holds a relative "../" link (HTML href/src or markdown), on CIS
+        # admin + tenant edits and Booking notes/terms, so it is in COUNT too. Review the WAF log
+        # (label awswaf:managed:aws:core-rule-set:*) and tighten.
         dynamic "rule_action_override" {
           for_each = var.managed_rule_count_overrides
 

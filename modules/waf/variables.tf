@@ -32,8 +32,8 @@ variable "vpc_allow_cidr" {
 
 variable "managed_rule_count_overrides" {
   type        = list(string)
-  description = "AWSManagedRulesCommonRuleSet sub-rules set to COUNT instead of BLOCK (S235: known false positives for this API)"
-  default     = ["SizeRestrictions_BODY", "CrossSiteScripting_BODY"]
+  description = "AWSManagedRulesCommonRuleSet sub-rules set to COUNT instead of BLOCK (S235: known false positives for this API; S239: GenericLFI_BODY matches relative ../ links in content saves)"
+  default     = ["SizeRestrictions_BODY", "CrossSiteScripting_BODY", "GenericLFI_BODY"]
 }
 
 variable "rest_api_stage_arns" {

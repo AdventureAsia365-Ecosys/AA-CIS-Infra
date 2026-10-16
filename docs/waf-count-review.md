@@ -42,3 +42,24 @@ sub-rules.
   (`modules/waf/variables.tf`; those stay COUNT after the group is enforced) first.
 - Then set `waf_common_rules_count_only = false` in a PR, plan, apply, and watch `BlockedRequests`
   plus the app's 4xx for a day.
+
+## Result of the review (AA-806, S239, 16/10/2026)
+
+- Count window 14/10 02:00Z .. 16/10 04:01Z: about 70.7k requests in `aws-waf-logs-aa-cis-dev`,
+  **0** CommonRuleSet matches. The 138 earlier matches (14/10 00:33-01:56Z, NoUserAgent_HEADER and
+  UserAgent_BadBots_HEADER) were scanners hitting the ALB directly before its SG was narrowed to the
+  VPC CIDR, while the group still blocked. Dev has no real users, so no real write was over 8 KB.
+- Pre-flip test with large real content writes (bodies 9.9-19.9 KB, random non-existent ids so the
+  app answers 404 and nothing changes): every body over 8 KB matched `SizeRestrictions_BODY`
+  (in the override list); every body whose first 8 KB holds a relative `../` link (HTML `href`/`src`
+  or markdown) matched **`GenericLFI_BODY`** (not in the list, so it would have blocked). Typical
+  HTML did not match `CrossSiteScripting_BODY`. Evidence: root repo
+  `docs/audits/2026-10-16-S239-in-progress-audit/aa806-waf/`.
+- Decision: `GenericLFI_BODY` added to `managed_rule_count_overrides`, then
+  `waf_common_rules_count_only = false`. After the apply, repeat the test script and check that
+  `BlockedRequests` for `AWSManagedRulesCommonRuleSet` stays 0 for app traffic.
+
+### Re-run the pre-flip test
+
+The scripts live in the audit folder above (`scripts/`). They read the e2e admin, tenant and Booking
+staff credentials from Secrets Manager at run time, never print them, and only PATCH random ids.
