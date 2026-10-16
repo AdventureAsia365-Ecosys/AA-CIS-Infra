@@ -73,6 +73,7 @@ resource "aws_cloudwatch_metric_alarm" "rds_cpu_high" {
   period              = 300
   statistic           = "Average"
   threshold           = 80
+  treat_missing_data  = "notBreaching" # AA-832: data standard C4.1a (was the default "missing")
   alarm_description   = "RDS ${local.name_prefix}-db CPU above 80% for 15 minutes"
   alarm_actions       = [aws_sns_topic.alerts.arn]
   ok_actions          = [aws_sns_topic.alerts.arn]

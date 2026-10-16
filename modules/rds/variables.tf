@@ -7,7 +7,8 @@ variable "environment" {
 }
 
 # AA-824 (decision E5): db.t3.micro (1 GB) -> db.t4g.small (2 GB, Graviton). max_connections =
-# LEAST(DBInstanceClassMemory/9531392, 5000), so roughly 80-110 -> roughly 190-200.
+# LEAST(DBInstanceClassMemory/9531392, 5000), so roughly 80-110 -> 181 (measured 16/10/2026, AA-832;
+# local.rds_max_connections in accounts/aa365/observability_ecosys.tf must follow a resize).
 variable "instance_class" {
   type    = string
   default = "db.t4g.small"

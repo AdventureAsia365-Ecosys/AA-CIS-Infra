@@ -70,8 +70,12 @@ accounts/
     bedrock_satellite_assume.tf   (cross-account Bedrock assume-role trust)
     cost_explorer_satellite_assume.tf (acc2 → acc1/acc3 Cost Explorer read roles, AA-623)
     dfs_balance.tf                (ops-probe Lambda: 06:15 UTC schedule POSTs the admin probes, AA-627/720/727;
-                                   20:30 UTC schedule POSTs /admin/job-runner/retention/schedule, AA-825)
-    observability.tf, observability_ecosys.tf (S235 alarms + log retention), diagnostics.tf
+                                   20:30 UTC schedule POSTs /admin/job-runner/retention/schedule, AA-825;
+                                   every 5 min (rate) POSTs /admin/job-runner/rds-role-connections/schedule
+                                   → CIS job ops_rds_role_connections publishes AA/RDS, AA-832)
+    observability.tf, observability_ecosys.tf (S235 alarms + log retention; RDS alarms per data standard
+                                   C4.1 + per-role AA/RDS RoleConnectionLimitPct alarms and the task-role
+                                   AA/RDS PutMetricData grant, AA-832), diagnostics.tf
     dns.tf                        (Route 53 public zone lumiguides.it.com + records copied from Namecheap, AA-811)
     ses.tf                        (SES domain identity, DKIM/MAIL FROM/DMARC records, configuration sets,
                                    ses:SendEmail grants for the app roles, reputation alarms — AA-811)
@@ -144,6 +148,13 @@ Every new `*.lumiguides.it.com` record goes into this zone, not into the Nameche
 TripPlanner Lambda exec role may `ses:SendEmail` only as that From address (`ses:FromAddress`) and
 only through the transactional set. The account is in the SES sandbox until the production-access
 request (console, human) is granted.
+
+**RDS metrics (AA-832):** the shared CIS task role `aa-cis-dev-ecs-task-role` (api and worker use
+the same role) may also `cloudwatch:PutMetricData` only into namespace `AA/RDS`
+(`observability_ecosys.tf`, condition `cloudwatch:namespace`); the CIS worker job
+`ops_rds_role_connections` publishes per-role connection counts there. That job exists only
+because the ops-probe Lambda enqueues it every 5 minutes, so the Infra schedule depends on the CIS
+endpoint `POST /admin/job-runner/rds-role-connections/schedule` being deployed first.
 
 The **DFS balance alert** (AA-627) is a small in-VPC Lambda `aa-cis-dev-dfs-balance-check`
 triggered daily by EventBridge Scheduler. The schedule must live in the `aa-cis-dev-acp` schedule
