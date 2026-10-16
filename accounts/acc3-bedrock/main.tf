@@ -105,6 +105,26 @@ resource "aws_iam_role_policy" "bedrock_invoker_policy" {
           "arn:aws:bedrock:::foundation-model/openai.gpt-6-luna"
         ]
       },
+      # AA-862 — Cohere Embed v4 as the second hop of the embed chain
+      # (acc2 -> acc3 -> acc1). acc2's global profile quota is 20 rpm; acc3 has
+      # 2,000 rpm on both us. and global. Same model id as acc2
+      # (cohere.embed-v4:0), so vectors stay comparable. A cross-region profile
+      # authorizes InvokeModel against the foundation-model ARN in whichever
+      # member region serves the call (seen live on acc2, us-east-1), hence the
+      # region wildcards — same ARN set as acc2's TripPlanner BedrockEmbedDirect
+      # (accounts/aa365/tripplanner.tf, AA-856). InvokeModel only: embeddings
+      # do not stream. Separate statement so the existing ones stay untouched.
+      {
+        Sid    = "InvokeCohereEmbedV4"
+        Effect = "Allow"
+        Action = ["bedrock:InvokeModel"]
+        Resource = [
+          "arn:aws:bedrock:*:786888028788:inference-profile/global.cohere.embed-v4:0",
+          "arn:aws:bedrock:*:786888028788:inference-profile/us.cohere.embed-v4:0",
+          "arn:aws:bedrock:*::foundation-model/cohere.embed-v4:0",
+          "arn:aws:bedrock:::foundation-model/cohere.embed-v4:0"
+        ]
+      },
       # AA-399 — Bedrock Batch job creation (model-scoped, same resource shape
       # as InvokeModel above, plus the model-invocation-job/* ARN acc1 needed
       # live — see accounts/acc1-bedrock/bedrock_invoker_import.tf's AA-303 note).
