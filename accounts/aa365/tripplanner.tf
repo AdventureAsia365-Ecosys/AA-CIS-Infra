@@ -56,9 +56,20 @@ locals {
   # foundation-model ARN in ANY region (wildcard) plus the inference-profile
   # ARN in any region — same "list every ARN form" discipline as
   # AA3-Bedrock-Invoker, extended to cross-region member regions.
+  #
+  # AA-856 (S239): the GLOBAL cross-region profile as well. The `us.` profile's
+  # requests-per-minute quota (L-EB8C1F30) is fixed at 20; the global one
+  # (L-7089DC7D) is adjustable (increase requested, case 179212369200770), so
+  # CIS migration 238 points shared.llm_model_catalog 'cohere-embed-v4' acc2 at
+  # global.cohere.embed-v4:0. A global profile routes to any commercial region;
+  # its models are the regionless foundation-model ARN (already granted) plus
+  # the source region's. The `us.` grant stays: the Lambdas' built-in route
+  # (used only when the catalog is unreadable) and a rollback of 238 use it.
+  # Apply this BEFORE DB Migrate applies 238.
   tp_embed_model_arns = [
     local.tp_embed_profile_arn,
     "arn:aws:bedrock:*:${var.account_id}:inference-profile/us.cohere.embed-v4:0",
+    "arn:aws:bedrock:*:${var.account_id}:inference-profile/global.cohere.embed-v4:0",
     "arn:aws:bedrock:*::foundation-model/cohere.embed-v4:0",
     "arn:aws:bedrock:::foundation-model/cohere.embed-v4:0",
   ]
