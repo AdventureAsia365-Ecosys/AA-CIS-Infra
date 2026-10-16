@@ -86,7 +86,8 @@ MIGRATE ERROR: refusing apply — busy: booking.job (queued=1). Wait until every
   row of a kind that is not exempt, or an open wave. Same meaning as the deploy gate.
 - **Exempt kinds** (`IDLE_EXEMPT_KINDS` in `run_migration.py`, per owner): `shared.job`
   `ops_rds_role_connections` (enqueued every 5 min, CIS registry `deploy_gate_exempt`) and
-  `booking.job` `bk_inquiry_pull` (always queued at +60 s, Booking `DEPLOY_GATE_EXEMPT`). Both run
+  `booking.job` `bk_inquiry_pull` (always queued at +60 s, Booking `intake.RECURRING` in
+  `backend/app/inquiry/intake.py`; a Booking `DEPLOY_GATE_EXEMPT` registry arrives with B4). Both run
   short transactions, so a running one is safe too; `lock_timeout 5s` is the backstop. Daily
   retention kinds are not exempt. The list mirrors the owners' registries until X1 (`owners.yaml`):
   change it together with them.

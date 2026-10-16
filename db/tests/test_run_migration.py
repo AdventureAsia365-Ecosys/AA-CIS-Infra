@@ -218,8 +218,11 @@ class FakeConn:
         if query == rm.JOB_TABLES_SQL:
             self.checks += 1
             return [(schema,) for schema in sorted(self.state()[0])]
-        self.busy_queries.append(query)
         schema = query.split("FROM ", 1)[1].split(".job", 1)[0].strip('"')
+        # The rows below are filtered in Python, so pin the SQL text: an edit to JOB_BUSY_SQL must
+        # come with a test change (IdleCheckTest.test_busy_sql_predicates_are_pinned).
+        assert query == rm.JOB_BUSY_SQL.format(table=f'"{schema}".job'), query
+        self.busy_queries.append((schema, list(args[0])))
         rows = self.state()[0][schema]
         if isinstance(rows, Exception):
             raise rows
@@ -451,7 +454,27 @@ class IdleCheckTest(unittest.TestCase):
         code, conn, _, log = self.run_task(PLAIN, conn=FakeConn(states=[state]))
         self.assertEqual(code, 7)
         self.assertIn("MIGRATE busy: tripplanner.job running=1 queued=0 due=0 kinds=[tp_redact:running=1]", log)
-        self.assertTrue(any('FROM "tripplanner".job' in q for q in conn.busy_queries))
+        self.assertIn(("tripplanner", []), conn.busy_queries)
+
+    def test_exempt_list_is_passed_per_owner(self):
+        state = ({"booking": [], "shared": [], "tripplanner": []}, 0)
+        _, conn, _, _ = self.run_task(PLAIN, conn=FakeConn(states=[state]))
+        self.assertEqual(conn.busy_queries, [("booking", ["bk_inquiry_pull"]),
+                                             ("shared", ["ops_rds_role_connections"]),
+                                             ("tripplanner", [])])
+
+    def test_busy_sql_predicates_are_pinned(self):
+        # FakeConn filters rows in Python; these pin the real predicates (a too-narrow filter fails
+        # open: apply would go ahead while jobs are queued).
+        where = rm.JOB_BUSY_SQL.split("FROM {table}", 1)[1]
+        self.assertIn("WHERE status IN ('queued', 'running') AND NOT (kind = ANY($1::text[]))", where)
+        self.assertNotIn("run_after", where)       # every queued row counts, due or not
+        self.assertIn("count(*) FILTER (WHERE status = 'queued' AND run_after <= now())", rm.JOB_BUSY_SQL)
+        for part in ("c.relname = 'job'", "c.relkind IN ('r', 'p')", "a.attname = 'status'",
+                     "NOT a.attisdropped"):
+            self.assertIn(part, rm.JOB_TABLES_SQL)
+        self.assertIn("to_regclass('shared.rerun_wave')", rm.WAVE_TABLE_SQL)
+        self.assertIn("WHERE status = 'open'", rm.OPEN_WAVES_SQL)
 
     def test_missing_tables_warn_but_do_not_block(self):
         code, conn, _, log = self.run_task(PLAIN, conn=FakeConn(states=[({"shared": []}, None)]))

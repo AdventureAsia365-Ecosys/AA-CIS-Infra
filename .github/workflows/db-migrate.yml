@@ -81,12 +81,19 @@ jobs:
           echo "version=${PREFIX}${BASH_REMATCH[2]}" >> "$GITHUB_OUTPUT"
           echo "sha256=$(sha256sum "db/migrations/$MIGRATION" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
           echo "### $MODE \`$MIGRATION\`" >> "$GITHUB_STEP_SUMMARY"
-          if [ -n "$OVERRIDE_BUSY_JOBS" ]; then
-            if [ "${#OVERRIDE_BUSY_JOBS}" -gt 200 ] || [[ "$OVERRIDE_BUSY_JOBS" == *$'\n'* ]]; then
+          # Trimmed the same way the runner .strip()s MIGRATION_IDLE_OVERRIDE, so the summary and the
+          # task agree on whether an override is present. A value of only spaces is rejected.
+          OVR="${OVERRIDE_BUSY_JOBS#"${OVERRIDE_BUSY_JOBS%%[![:space:]]*}"}"
+          OVR="${OVR%"${OVR##*[![:space:]]}"}"
+          if [ -n "$OVERRIDE_BUSY_JOBS" ] && [ -z "$OVR" ]; then
+            echo "::error::override_busy_jobs is blank: leave it empty, or give a reason"; exit 1
+          fi
+          if [ -n "$OVR" ]; then
+            if [ "${#OVR}" -gt 200 ] || [[ "$OVR" == *$'\n'* ]]; then
               echo "::error::override_busy_jobs must be one line of at most 200 characters"; exit 1
             fi
-            echo "::warning::idle check override requested: $OVERRIDE_BUSY_JOBS"
-            echo "- **idle check override:** $OVERRIDE_BUSY_JOBS" >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning::idle check override requested: $OVR"
+            echo "- **idle check override:** $OVR" >> "$GITHUB_STEP_SUMMARY"
           fi
           # Header directives + lint (same code the task runs). A lint error stops here.
           set +e

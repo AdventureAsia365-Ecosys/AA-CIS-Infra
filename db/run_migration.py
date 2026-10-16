@@ -77,9 +77,10 @@ DESTRUCTIVE_RES = (
 DELETE_RE = re.compile(r"^(WITH\b.*\b)?DELETE FROM\b")
 
 # Idle check (AA-751). Kinds that are always queued or running by design and only run short
-# transactions; a busy row of any other kind blocks apply. Mirrors the owners' registries until X1
-# (owners.yaml): CIS registry `deploy_gate_exempt`, Booking DEPLOY_GATE_EXEMPT. Daily retention
-# kinds are deliberately NOT exempt.
+# transactions; a busy row of any other kind blocks apply. Mirrors the owners' sources until X1
+# (owners.yaml): CIS registry `deploy_gate_exempt`; Booking backend/app/inquiry/intake.py RECURRING
+# (bk_inquiry_pull, every 60 s) - Booking's DEPLOY_GATE_EXEMPT registry arrives with B4, point here
+# at it then. Daily retention kinds are deliberately NOT exempt.
 IDLE_EXEMPT_KINDS = {
     "shared": frozenset({"ops_rds_role_connections"}),   # enqueued every 5 min (AA-832)
     "booking": frozenset({"bk_inquiry_pull"}),            # always queued at +60 s (bk-002 intake)
