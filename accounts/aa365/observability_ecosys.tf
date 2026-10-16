@@ -520,6 +520,8 @@ resource "aws_cloudwatch_metric_alarm" "rds_role_connections_sampling_stopped" {
 # Cost: in the AA-832 cost block above (6 alarms, 4 metrics of which 1 billable).
 # IAM: CIS via cis_ecs_task_put_metric_aa_rds above (namespace AA/Jobs/CIS); Booking via
 # booking_ecs_task_put_metric_jobs below (namespace AA/Jobs/Booking only).
+# Rollout (split apply, docs/implementation-notes/AA-751.md): IAM first, then the CIS and Booking
+# deploys, then the rest, and the two jobs_sampling_stopped alarms last, once samples exist.
 # -----------------------------------------------------------------------------
 
 locals {
