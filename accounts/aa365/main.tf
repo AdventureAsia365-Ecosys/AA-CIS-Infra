@@ -250,8 +250,8 @@ module "waf" {
   vpc_allow_cidr = var.vpc_cidr
   tags           = local.shared_tags # AA-828: on the ALB and on the CIS + Booking REST API stages
 
-  # S235 Phase 0: CommonRuleSet starts in observe mode (whole group COUNT). Flip
-  # var.waf_common_rules_count_only to false after reviewing 1-2 days of counted matches.
+  # S235 Phase 0: CommonRuleSet started in observe mode (whole group COUNT); enforced since
+  # AA-806 S239 (var.waf_common_rules_count_only = false) after the count review + pre-flip test.
   common_rules_count_only = var.waf_common_rules_count_only
 
   # S235 Phase 0: same web ACL on the CIS and Booking REST API stages (real client IP -> rate + geo

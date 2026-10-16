@@ -116,7 +116,8 @@ and the durable job worker.
 **Edge (S235 Phase 0):** the only way in is API Gateway REST (CIS `4ylo382khg`, Booking
 `9z3xnalp59`) → VPC link → internal NLB → ALB :80. The ALB is still `internet-facing`, but its SG
 admits only :80 from the VPC CIDR (NLB), so it cannot be called directly. The REGIONAL web ACL
-`aa-cis-dev-waf` evaluates CommonRuleSet (COUNT-only until `var.waf_common_rules_count_only = false`)
+`aa-cis-dev-waf` evaluates CommonRuleSet (enforced since AA-806 S239; `SizeRestrictions_BODY`,
+`CrossSiteScripting_BODY` and `GenericLFI_BODY` stay COUNT; credential headers redacted in the WAF log)
 → VpcLinkInternalAllow → RateLimit → GeoBlock; rate and
 geo only bite on REST API stages (`var.waf_protect_rest_api_stages`, needs `apigateway:SetWebACL`
 on the CI role). RDS `aa-cis-dev-db` has deletion protection on.
