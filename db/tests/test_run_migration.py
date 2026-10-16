@@ -11,6 +11,7 @@ import json
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -369,7 +370,7 @@ class IdleCheckTest(unittest.TestCase):
         self.assertEqual(conn.checks, 4)            # the report + one re-check after each wait
         self.assertIn("MIGRATE busy: booking.job running=0 queued=1 due=1 kinds=[bk_x6_probe:queued=1]\n", log)
         self.assertIn(REFUSAL.format("booking.job (queued=1)") + "\n", log)
-        self.assertIn("MIGRATE idle: shared.job running=0 queued=0 (exempt: ops_rds_role_connections)\n", log)
+        self.assertIn("MIGRATE idle: shared.job running=0 queued=0\n", log)   # no CIS exempt kind (AA-751)
         self.assertTrue(conn.closed)
 
     def test_busy_shared_job_refuses_and_names_it(self):
@@ -395,17 +396,28 @@ class IdleCheckTest(unittest.TestCase):
         self.assertNotIn("busy", log)
 
     def test_exempt_kinds_queued_and_running_are_ignored(self):
+        # shared.job has no exempt kind since AA-751; a test-only one keeps the mechanism covered.
         state = ({"booking": [job("bk_inquiry_pull"), job("bk_inquiry_pull", "running")],
-                  "shared": [job("ops_rds_role_connections"), job("ops_rds_role_connections", "running"),
+                  "shared": [job("x_test_recurring"), job("x_test_recurring", "running"),
                              job("a3_atomize", "succeeded"), job("a3_atomize", "failed")]}, 0)
-        code, conn, _, log = self.run_task(PLAIN, conn=FakeConn(states=[state]))
+        with mock.patch.dict(rm.IDLE_EXEMPT_KINDS, {"shared": frozenset({"x_test_recurring"})}):
+            code, conn, _, log = self.run_task(PLAIN, conn=FakeConn(states=[state]))
         self.assertEqual((code, conn.executed, self.sleeps), (0, [PLAIN], []))
         self.assertIn("MIGRATE idle: booking.job running=0 queued=0 (exempt: bk_inquiry_pull)", log)
+        self.assertIn("MIGRATE idle: shared.job running=0 queued=0 (exempt: x_test_recurring)", log)
+
+    def test_removed_ops_rds_role_connections_kind_is_busy(self):
+        # AA-751: the kind is gone from the CIS registry, so a leftover queued row is not exempt.
+        state = ({"booking": [], "shared": [job("ops_rds_role_connections")]}, 0)
+        code, conn, _, log = self.run_task(PLAIN, conn=FakeConn(states=[state]))
+        self.assertEqual((code, conn.executed), (7, []))
+        self.assertIn(REFUSAL.format("shared.job (queued=1)"), log)
 
     def test_exemptions_are_per_owner(self):
         # A CIS-exempt kind name in booking.job is not exempt there (and cannot exist: bk_ CHECK).
-        state = ({"booking": [job("ops_rds_role_connections")], "shared": []}, 0)
-        code, _, _, log = self.run_task(PLAIN, conn=FakeConn(states=[state]))
+        state = ({"booking": [job("x_test_recurring")], "shared": []}, 0)
+        with mock.patch.dict(rm.IDLE_EXEMPT_KINDS, {"shared": frozenset({"x_test_recurring"})}):
+            code, _, _, log = self.run_task(PLAIN, conn=FakeConn(states=[state]))
         self.assertEqual(code, 7)
         self.assertIn(REFUSAL.format("booking.job (queued=1)"), log)
 
@@ -460,7 +472,7 @@ class IdleCheckTest(unittest.TestCase):
         state = ({"booking": [], "shared": [], "tripplanner": []}, 0)
         _, conn, _, _ = self.run_task(PLAIN, conn=FakeConn(states=[state]))
         self.assertEqual(conn.busy_queries, [("booking", ["bk_inquiry_pull"]),
-                                             ("shared", ["ops_rds_role_connections"]),
+                                             ("shared", []),
                                              ("tripplanner", [])])
 
     def test_busy_sql_predicates_are_pinned(self):

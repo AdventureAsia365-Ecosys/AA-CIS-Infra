@@ -12,10 +12,11 @@
 # event names one path, /admin/job-runner/retention/schedule (enqueue the CIS
 # retention kinds, idempotent per UTC day). Its own hour keeps the retention jobs off
 # the 06:00 ACP ingest / 06:15 probes and out of VN working hours (Deploy Dev guard).
-# AA-832 adds a THIRD schedule (rds_role_connections, every 5 minutes) whose event names
-# /admin/job-runner/rds-role-connections/schedule: the API enqueues one ops_rds_role_connections
-# job (no-op while one is queued/running), and the CIS worker publishes AA/RDS per-role
-# connection metrics. Not in the 06:15 default list (_PATHS).
+# AA-832 added a third schedule (rds_role_connections, every 5 minutes) that POSTed
+# /admin/job-runner/rds-role-connections/schedule so the CIS worker published AA/RDS. AA-751 (S240)
+# removed it: the CIS api publishes AA/RDS (and AA/Jobs/CIS) itself from an in-process sampler
+# (api/core/ops_metrics_sampler.py), so the Lambda, API Gateway, WAF and shared.job are no longer
+# in the metrics path; the path is gone from the handler allowlist too.
 # All schedules pass secret_id in the event, so the handler reads X-Admin-Secret from
 # Secrets Manager at run time (the role already has GetSecretValue on it); the
 # deploy-time env value stays as the fallback.
@@ -56,15 +57,6 @@ variable "retention_schedule_expression" {
   default     = "cron(30 20 * * ? *)"
 }
 
-# AA-832 — the per-role connection sample. One sample per 5 minutes is what the per-role alarms
-# (observability_ecosys.tf, period 300, 1 datapoint) expect; a slower rate leaves alarm periods
-# empty (treated as not breaching).
-variable "rds_role_connections_schedule_expression" {
-  description = "AA-832 — schedule for POST /admin/job-runner/rds-role-connections/schedule"
-  type        = string
-  default     = "rate(5 minutes)"
-}
-
 locals {
   dfs_balance_fn_name = "${local.name_prefix}-dfs-balance-check"
 }
@@ -74,6 +66,11 @@ data "archive_file" "dfs_balance" {
   type        = "zip"
   source_dir  = "${path.module}/lambda_src/dfs_balance_check"
   output_path = "${path.module}/lambda_src/dfs_balance_check.zip"
+
+  # S240 lesson: a test that imports handler.py writes __pycache__/ next to it, and archive_file
+  # zips the whole directory, so a local plan/apply showed a source_code_hash drift. Never package
+  # bytecode.
+  excludes = ["__pycache__", "__pycache__/**", "**/*.pyc"]
 
   # AA-806: the zip stores the source file's mode, and the CI checkout writes handler.py as 0600
   # while a local checkout has 0644, so CI and local applies kept re-uploading the same code
@@ -274,43 +271,6 @@ resource "aws_scheduler_schedule" "retention_daily" {
     retry_policy {
       maximum_retry_attempts       = 2
       maximum_event_age_in_seconds = 3600
-    }
-  }
-}
-
-# ── AA-832 — per-role RDS connection metric, every 5 minutes (same Lambda, role, group) ─
-# POST /admin/job-runner/rds-role-connections/schedule enqueues one ops_rds_role_connections job
-# and returns enqueued=false while one is still queued/running, so a slow worker never stacks
-# samples. The job (CIS worker) reads pg_stat_activity per LOGIN role with a CONNECTION LIMIT and
-# publishes AA/RDS RoleConnections + RoleConnectionLimitPct. ~8,640 invocations/month; cost in
-# observability_ecosys.tf (AA-832 block).
-resource "aws_scheduler_schedule" "rds_role_connections" {
-  name        = "${local.name_prefix}-rds-role-connections"
-  description = "AA-832 — every 5 min POST /admin/job-runner/rds-role-connections/schedule via the ops-probe Lambda"
-  # Same group as dfs_balance_daily: the CI role's scheduler grants are scoped to it.
-  group_name = module.eventbridge.schedule_group_name
-
-  schedule_expression          = var.rds_role_connections_schedule_expression
-  schedule_expression_timezone = "UTC"
-
-  # Fixed 5-minute cadence: a flexible window would leave some alarm periods without a sample.
-  flexible_time_window {
-    mode = "OFF"
-  }
-
-  target {
-    arn      = aws_lambda_function.dfs_balance_check.arn
-    role_arn = aws_iam_role.dfs_balance_scheduler.arn
-
-    input = jsonencode({
-      paths     = ["/admin/job-runner/rds-role-connections/schedule"]
-      secret_id = var.secret_admin_arn
-    })
-
-    # A missed tick is covered by the next one 5 minutes later; no retry past that.
-    retry_policy {
-      maximum_retry_attempts       = 0
-      maximum_event_age_in_seconds = 240
     }
   }
 }

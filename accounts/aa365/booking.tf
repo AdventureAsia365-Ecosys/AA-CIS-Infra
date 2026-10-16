@@ -211,8 +211,10 @@ resource "aws_iam_role_policy" "booking_ecs_execution" {
 # Task role (the app process). DATABASE_URL is injected by the execution role. Grants: the SSM channel
 # for ECS Exec (debugging, same access path as CIS, SSM only) below, and SES send as
 # var.ses_from_address through the transactional configuration set (ses.tf
-# aws_iam_role_policy.booking_ecs_task_ses_send, AA-811). No Bedrock, no S3, no CIS secrets: add them
-# only when a feature needs them.
+# aws_iam_role_policy.booking_ecs_task_ses_send, AA-811), and cloudwatch:PutMetricData into namespace
+# AA/Jobs/Booking only (observability_ecosys.tf aws_iam_role_policy.booking_ecs_task_put_metric_jobs,
+# the job backlog sampler, AA-751). No Bedrock, no S3, no CIS secrets: add them only when a feature
+# needs them.
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "booking_ecs_task" {
   name                 = "${local.bk_name_prefix}-ecs-task-role"

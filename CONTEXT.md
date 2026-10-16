@@ -71,11 +71,12 @@ accounts/
     cost_explorer_satellite_assume.tf (acc2 → acc1/acc3 Cost Explorer read roles, AA-623)
     dfs_balance.tf                (ops-probe Lambda: 06:15 UTC schedule POSTs the admin probes, AA-627/720/727;
                                    20:30 UTC schedule POSTs /admin/job-runner/retention/schedule, AA-825;
-                                   every 5 min (rate) POSTs /admin/job-runner/rds-role-connections/schedule
-                                   → CIS job ops_rds_role_connections publishes AA/RDS, AA-832)
+                                   the AA-832 every-5-min schedule was removed in AA-751)
     observability.tf, observability_ecosys.tf (S235 alarms + log retention; RDS alarms per data standard
-                                   C4.1 + per-role AA/RDS RoleConnectionLimitPct alarms and the task-role
-                                   AA/RDS PutMetricData grant, AA-832), diagnostics.tf
+                                   C4.1 + per-role AA/RDS RoleConnectionLimitPct alarms, AA-832; job
+                                   backlog alarms per owner AA/Jobs/CIS + AA/Jobs/Booking and the
+                                   task-role PutMetricData grants, AA-751; every alarm e-mails on
+                                   ALARM only, no ok_actions), diagnostics.tf
     dns.tf                        (Route 53 public zone lumiguides.it.com + records copied from Namecheap, AA-811)
     ses.tf                        (SES domain identity, DKIM/MAIL FROM/DMARC records, configuration sets,
                                    ses:SendEmail grants for the app roles, reputation alarms — AA-811)
@@ -107,7 +108,7 @@ weekly export, Gate C veto window — not the dead AA-180 orchestration), the op
 (`observability.tf`, `observability_ecosys.tf`, `diagnostics.tf`, langfuse/monitoring modules).
 `observability_ecosys.tf` (S235 Phase 0) covers what is not CIS: NAT status check, Booking target
 health / CPU / REST 5XX, TripPlanner Lambda errors + sustained throttles (AA-833: > 5 in 2 of 3
-5-minute periods, no OK notification), shared RDS storage + connections,
+5-minute periods), shared RDS storage + connections, job backlog per owner (AA-751),
 and 14-day retention on the TripPlanner Lambda and CIS API Gateway execution log groups (imported).
 Its resources carry the blueprint tags (`Project = AA-Ecosys`, `App`); TripPlanner and Booking
 resources also carry `App`. Provider `default_tags` are unchanged (re-tagging every resource needs
@@ -149,12 +150,21 @@ TripPlanner Lambda exec role may `ses:SendEmail` only as that From address (`ses
 only through the transactional set. The account is in the SES sandbox until the production-access
 request (console, human) is granted.
 
-**RDS metrics (AA-832):** the shared CIS task role `aa-cis-dev-ecs-task-role` (api and worker use
-the same role) may also `cloudwatch:PutMetricData` only into namespace `AA/RDS`
-(`observability_ecosys.tf`, condition `cloudwatch:namespace`); the CIS worker job
-`ops_rds_role_connections` publishes per-role connection counts there. That job exists only
-because the ops-probe Lambda enqueues it every 5 minutes, so the Infra schedule depends on the CIS
-endpoint `POST /admin/job-runner/rds-role-connections/schedule` being deployed first.
+**RDS + job metrics (AA-832, AA-751):** the CIS api process publishes AA/RDS per-role connection
+counts and AA/Jobs/CIS backlog metrics every 5 minutes from an in-process sampler
+(`api/core/ops_metrics_sampler.py` in AA-CIS-App; api only, not the worker). The shared CIS task role
+`aa-cis-dev-ecs-task-role` (api and worker use the same role) may `cloudwatch:PutMetricData` only
+into those two namespaces (`observability_ecosys.tf` `cis_ecs_task_put_metric_aa_rds`, condition
+`cloudwatch:namespace`). AA-Booking publishes AA/Jobs/Booking from `JobMetricsSampler`
+(`backend/app/jobs/metrics.py`, runs only while its worker is enabled); its task role may write
+only that namespace (`booking_ecs_task_put_metric_jobs`). Each owner has three alarms:
+`<prefix>-jobs-queue-age` (starved due job > 15 min, capacity-aware), `-jobs-overdue-running`
+(a running attempt > 2 x the kind's expected seconds) and `-jobs-sampling-stopped` (no sample for
+45 min, missing = breaching; the Booking one also fires while Booking is scaled to 0 or its worker
+is off). The AA-832 chain (Scheduler every 5 min → ops-probe Lambda → admin POST → `shared.job` →
+worker) is gone. **Alarm notifications:** every alarm on `aws_sns_topic.alerts` has
+`alarm_actions` only (no `ok_actions`, AA-751): e-mail on a transition into ALARM, recovery in the
+console / alarm history.
 
 The **DFS balance alert** (AA-627) is a small in-VPC Lambda `aa-cis-dev-dfs-balance-check`
 triggered daily by EventBridge Scheduler. The schedule must live in the `aa-cis-dev-acp` schedule

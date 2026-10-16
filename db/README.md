@@ -72,7 +72,7 @@ DB Migrate `apply` waits until **every** owner job table is idle. On both modes 
 one line per object, after the `before:` line:
 
 ```
-MIGRATE idle: shared.job running=0 queued=0 (exempt: ops_rds_role_connections)
+MIGRATE idle: shared.job running=0 queued=0
 MIGRATE busy: booking.job running=0 queued=1 due=1 kinds=[bk_x6_probe:queued=1]
 MIGRATE busy: shared.rerun_wave open=1
 MIGRATE ERROR: refusing apply — busy: booking.job (queued=1). Wait until every job table is idle, or re-dispatch with override_busy_jobs=<reason> (Nghiệp only)
@@ -84,12 +84,13 @@ MIGRATE ERROR: refusing apply — busy: booking.job (queued=1). Wait until every
   `shared.rerun_wave`, is a WARNING, not busy. A table the runner cannot read counts as busy.
 - **Busy** = any queued row (any `run_after`; `due` counts the ones already claimable) or running
   row of a kind that is not exempt, or an open wave. Same meaning as the deploy gate.
-- **Exempt kinds** (`IDLE_EXEMPT_KINDS` in `run_migration.py`, per owner): `shared.job`
-  `ops_rds_role_connections` (enqueued every 5 min, CIS registry `deploy_gate_exempt`) and
-  `booking.job` `bk_inquiry_pull` (always queued at +60 s, Booking `intake.RECURRING` in
-  `backend/app/inquiry/intake.py`; a Booking `DEPLOY_GATE_EXEMPT` registry arrives with B4). Both run
-  short transactions, so a running one is safe too; `lock_timeout 5s` is the backstop. Daily
-  retention kinds are not exempt. The list mirrors the owners' registries until X1 (`owners.yaml`):
+- **Exempt kinds** (`IDLE_EXEMPT_KINDS` in `run_migration.py`, per owner): `booking.job`
+  `bk_inquiry_pull` (always queued at +60 s, Booking `intake.RECURRING` in
+  `backend/app/inquiry/intake.py`; a Booking `DEPLOY_GATE_EXEMPT` registry arrives with B4). It runs
+  short transactions, so a running one is safe too; `shared.job` has none since AA-751 (S240): the
+  every-5-minutes `ops_rds_role_connections` kind was removed when the CIS api started publishing
+  its metrics in process (CIS registry `deploy_gate_exempt` lists nothing). `lock_timeout 5s` is
+  the backstop. Daily retention kinds are not exempt. The list mirrors the owners' registries until X1 (`owners.yaml`):
   change it together with them.
 - **check** only reports and exits 0. **apply** (once the version is known to be unapplied, so an
   already-applied file still skips) re-checks 3 times, 20 s apart, and exits **7** while anything
