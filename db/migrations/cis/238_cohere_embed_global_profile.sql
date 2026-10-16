@@ -28,6 +28,12 @@
 -- The in-code fallbacks (CIS embed._CATALOG_FALLBACK, TripPlanner BUILTIN_ROUTES) keep `us.`: they
 -- are used only when the catalog cannot be read, and both roles keep the `us.` grant.
 --
+-- Before apply: `scripts/aa856_global_profile_probe.py preflight --invoke` in the api container must
+-- report gate.apply_238 = true (one real embed on the global profile with the ECS task role, nothing
+-- in shared.job). IAM `*` does not prove an SCP / model-access setting allows the global route, and
+-- CIS embed failures write no llm_call_log row (f10_embed leaves the vector NULL). After apply:
+-- `... post-apply --since <apply time>`.
+--
 -- Idempotent: the UPDATE matches only a row not already on the global profile. Guard: refuses to run
 -- when the row is missing or its acc2 profile is neither the `us.` nor the `global.` id (someone
 -- changed it by hand: a human decision, not a data patch).
