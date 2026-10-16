@@ -47,3 +47,9 @@ variable "common_rules_count_only" {
   description = "true = AWSManagedRulesCommonRuleSet in COUNT for the whole group (observe mode); false = enforce, with managed_rule_count_overrides still in COUNT (S235)"
   default     = true
 }
+
+variable "log_redacted_headers" {
+  type        = list(string)
+  description = "Request headers replaced with REDACTED in the WAF log (AA-806 S239: credentials must not be logged)"
+  default     = ["authorization", "x-admin-secret", "x-api-key", "cookie"]
+}

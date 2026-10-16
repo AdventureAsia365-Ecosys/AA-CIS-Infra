@@ -215,7 +215,21 @@ resource "aws_cloudwatch_log_group" "waf" {
   tags              = var.tags
 }
 
+# AA-806 (S239): WAF logs every request header. Without redaction the log group kept, in plain text,
+# the tenant/staff bearer JWTs (Authorization) and the static BFF -> API service secret
+# (X-Admin-Secret), readable by any principal with logs read in the account (e.g. the PR plan role's
+# ReadOnlyAccess). Header names are matched case-insensitively.
 resource "aws_wafv2_web_acl_logging_configuration" "main" {
   log_destination_configs = [aws_cloudwatch_log_group.waf.arn]
   resource_arn            = aws_wafv2_web_acl.main.arn
+
+  dynamic "redacted_fields" {
+    for_each = var.log_redacted_headers
+
+    content {
+      single_header {
+        name = redacted_fields.value
+      }
+    }
+  }
 }
