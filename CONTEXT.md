@@ -69,7 +69,8 @@ accounts/
                                    existing VPC link, OIDC deploy role — AA-678)
     bedrock_satellite_assume.tf   (cross-account Bedrock assume-role trust)
     cost_explorer_satellite_assume.tf (acc2 → acc1/acc3 Cost Explorer read roles, AA-623)
-    dfs_balance.tf                (daily DFS balance alert Lambda + EventBridge schedule, AA-627)
+    dfs_balance.tf                (ops-probe Lambda: 06:15 UTC schedule POSTs the admin probes, AA-627/720/727;
+                                   20:30 UTC schedule POSTs /admin/job-runner/retention/schedule, AA-825)
     observability.tf, observability_ecosys.tf (S235 alarms + log retention), diagnostics.tf
     dns.tf                        (Route 53 public zone lumiguides.it.com + records copied from Namecheap, AA-811)
     ses.tf                        (SES domain identity, DKIM/MAIL FROM/DMARC records, configuration sets,
