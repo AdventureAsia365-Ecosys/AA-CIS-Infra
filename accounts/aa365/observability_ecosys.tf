@@ -9,6 +9,8 @@
 #      shows "will be imported" + an in-place update (retention + tags), never a create/replace.
 #      Once applied, the import blocks are no-ops and can be deleted in a later PR.
 #   2. Alarms -> the existing SNS topic aws_sns_topic.alerts (aa-cis-dev-acp-alerts, email).
+#      AA-832 completes the RDS rows of data standard C4.1 (latency, disk queue, XID wraparound,
+#      per-role connections) and grants the CIS task role PutMetricData on namespace AA/RDS.
 #
 # TAGS: every resource here carries the blueprint tag set (Project = AA-Ecosys, App, Environment,
 # ManagedBy = terraform). These resource-level tags override the provider default_tags keys of the
@@ -35,6 +37,22 @@ locals {
   # Execution-log group API Gateway creates for the CIS REST API stage (modules/api_gateway,
   # enable_execution_logging = true). ~157 MB stored with no expiry on 14/10/2026.
   cis_apigw_exec_log_group = "API-Gateway-Execution-Logs_${module.api_gateway.api_gateway_id}/${var.environment}"
+
+  # AA-832: `SHOW max_connections` on aa-cis-dev-db (db.t4g.small) measured 16/10/2026 = 181
+  # (LEAST(DBInstanceClassMemory/9531392, 5000); 3 of them are superuser_reserved_connections).
+  # Data standard C4.1b: an instance resize MUST update this value in the same PR; the
+  # rds-connections-high threshold below is derived from it.
+  rds_max_connections = 181
+
+  # AA-832: LOGIN roles with a CONNECTION LIMIT (`ALTER ROLE ... CONNECTION LIMIT n` in the app
+  # migrations, measured from pg_roles 16/10/2026). One RoleConnectionLimitPct alarm per key; the
+  # CIS job ops_rds_role_connections discovers the roles itself, so a new limited role only needs a
+  # row here to get an alarm. aa_cis_admin has no limit (-1) and publishes nothing.
+  rds_role_connection_limits = {
+    tripplanner = 30
+    booking     = 15
+    aa_app_user = 15
+  }
 }
 
 # -----------------------------------------------------------------------------
@@ -244,13 +262,14 @@ resource "aws_cloudwatch_metric_alarm" "rds_free_storage_low" {
   tags = merge(local.ecosys_tags, { App = "shared" })
 }
 
-# max_connections = LEAST(DBInstanceClassMemory/9531392, 5000): roughly 80-110 on db.t3.micro,
-# roughly 190-200 on db.t4g.small (AA-824). 3-day peak on 14/10/2026 was 25. AA-824 tightens the
-# alarm to > 60 for 5 minutes (was > 70 for 10) so a TripPlanner burst shows up before the
-# connection budget (per-role CONNECTION LIMIT, Lambda reserved concurrency) is exhausted.
+# max_connections = LEAST(DBInstanceClassMemory/9531392, 5000) = 181 on db.t4g.small (measured
+# 16/10/2026, local.rds_max_connections). 3-day peak on 14/10/2026 was 25. AA-824 set > 60 for 5
+# minutes, the data standard's t3.micro value (C4.1); AA-832 moves it to the post-resize rule,
+# 60 % of max_connections for 5 minutes = floor(0.6 * 181) = 108. The per-role alarms below catch
+# a single app exhausting its own CONNECTION LIMIT long before the instance total gets here.
 resource "aws_cloudwatch_metric_alarm" "rds_connections_high" {
   alarm_name          = "${local.name_prefix}-rds-connections-high"
-  alarm_description   = "RDS ${module.rds.db_identifier} peak connections above 60 within a 5-minute period (shared by CIS, TripPlanner, Booking)."
+  alarm_description   = "RDS ${module.rds.db_identifier} peak connections above ${floor(local.rds_max_connections * 0.6)} (60% of max_connections ${local.rds_max_connections}) within a 5-minute period (shared by CIS, TripPlanner, Booking)."
   namespace           = "AWS/RDS"
   metric_name         = "DatabaseConnections"
   dimensions          = { DBInstanceIdentifier = module.rds.db_identifier }
@@ -258,7 +277,7 @@ resource "aws_cloudwatch_metric_alarm" "rds_connections_high" {
   period              = 300
   evaluation_periods  = 1
   comparison_operator = "GreaterThanThreshold"
-  threshold           = 60
+  threshold           = floor(local.rds_max_connections * 0.6)
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
   ok_actions          = [aws_sns_topic.alerts.arn]
@@ -266,10 +285,11 @@ resource "aws_cloudwatch_metric_alarm" "rds_connections_high" {
   tags = merge(local.ecosys_tags, { App = "shared" })
 }
 
-# AA-824: db.t4g.small has 2 GB. Below 100 MB the instance starts swapping.
+# AA-824: db.t4g.small has 2 GB. AA-832 aligns the threshold with data standard C4.1 (< 100 MB was
+# the t3.micro row; t4g.small is < 200 MB), so the alarm fires before the instance starts swapping.
 resource "aws_cloudwatch_metric_alarm" "rds_freeable_memory_low" {
   alarm_name          = "${local.name_prefix}-rds-freeable-memory-low"
-  alarm_description   = "RDS ${module.rds.db_identifier} freeable memory below 100 MB for 10 minutes (too many connections or work_mem pressure)."
+  alarm_description   = "RDS ${module.rds.db_identifier} freeable memory below 200 MB for 10 minutes (too many connections or work_mem pressure)."
   namespace           = "AWS/RDS"
   metric_name         = "FreeableMemory"
   dimensions          = { DBInstanceIdentifier = module.rds.db_identifier }
@@ -277,7 +297,7 @@ resource "aws_cloudwatch_metric_alarm" "rds_freeable_memory_low" {
   period              = 300
   evaluation_periods  = 2
   comparison_operator = "LessThanThreshold"
-  threshold           = 104857600 # 100 MiB in bytes
+  threshold           = 209715200 # 200 MiB in bytes
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
   ok_actions          = [aws_sns_topic.alerts.arn]
@@ -300,6 +320,169 @@ resource "aws_cloudwatch_metric_alarm" "rds_cpu_surplus_credits_charged" {
   comparison_operator = "GreaterThanThreshold"
   threshold           = 0
   treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
+
+  tags = merge(local.ecosys_tags, { App = "shared" })
+}
+
+# -----------------------------------------------------------------------------
+# AA-832 — the remaining RDS rows of data standard C4.1 (03-scaling.md), and per-role connections.
+#
+# Cost (us-west-1 list prices, no free tier assumed: the account already has more than 10 alarms):
+#   7 new standard alarms (4 below + 3 per-role)                 7 x $0.10 = $0.70
+#   6 custom metrics (RoleConnections + RoleConnectionLimitPct x 3 roles) 6 x $0.30 = $1.80
+#   ~8,640 PutMetricData calls/month (one per 5 min)            x $0.01/1k = $0.09
+#   ~8,640 Scheduler -> Lambda invocations (dfs_balance.tf): Scheduler $0 (14M free), Lambda ~$0.02,
+#   Secrets Manager read ~$0.04, API GW + WAF requests ~$0.04
+#   + 1 "sampling stopped" alarm (end of file)           1 x $0.10 = $0.10
+#   Total about $2.80/month.
+# -----------------------------------------------------------------------------
+
+# ReadLatency / WriteLatency are published in SECONDS: 0.020 = 20 ms, averaged over 15 minutes.
+resource "aws_cloudwatch_metric_alarm" "rds_read_latency_high" {
+  alarm_name          = "${local.name_prefix}-rds-read-latency-high"
+  alarm_description   = "RDS ${module.rds.db_identifier} average read latency above 20 ms for 15 minutes (storage I/O saturated; shared by CIS, TripPlanner, Booking)."
+  namespace           = "AWS/RDS"
+  metric_name         = "ReadLatency"
+  dimensions          = { DBInstanceIdentifier = module.rds.db_identifier }
+  statistic           = "Average"
+  period              = 300
+  evaluation_periods  = 3
+  comparison_operator = "GreaterThanThreshold"
+  threshold           = 0.020 # seconds
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
+
+  tags = merge(local.ecosys_tags, { App = "shared" })
+}
+
+resource "aws_cloudwatch_metric_alarm" "rds_write_latency_high" {
+  alarm_name          = "${local.name_prefix}-rds-write-latency-high"
+  alarm_description   = "RDS ${module.rds.db_identifier} average write latency above 20 ms for 15 minutes (storage I/O saturated; shared by CIS, TripPlanner, Booking)."
+  namespace           = "AWS/RDS"
+  metric_name         = "WriteLatency"
+  dimensions          = { DBInstanceIdentifier = module.rds.db_identifier }
+  statistic           = "Average"
+  period              = 300
+  evaluation_periods  = 3
+  comparison_operator = "GreaterThanThreshold"
+  threshold           = 0.020 # seconds
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
+
+  tags = merge(local.ecosys_tags, { App = "shared" })
+}
+
+resource "aws_cloudwatch_metric_alarm" "rds_disk_queue_depth_high" {
+  alarm_name          = "${local.name_prefix}-rds-disk-queue-depth-high"
+  alarm_description   = "RDS ${module.rds.db_identifier} average disk queue depth above 10 for 15 minutes (I/O requests waiting on gp storage)."
+  namespace           = "AWS/RDS"
+  metric_name         = "DiskQueueDepth"
+  dimensions          = { DBInstanceIdentifier = module.rds.db_identifier }
+  statistic           = "Average"
+  period              = 300
+  evaluation_periods  = 3
+  comparison_operator = "GreaterThanThreshold"
+  threshold           = 10
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
+
+  tags = merge(local.ecosys_tags, { App = "shared" })
+}
+
+# Transaction ID wraparound guard. PostgreSQL forces a shutdown near 2^31 (~2.1 billion) used XIDs;
+# 1 billion means autovacuum is not freezing some table and leaves weeks of headroom to find it.
+resource "aws_cloudwatch_metric_alarm" "rds_max_used_xid_high" {
+  alarm_name          = "${local.name_prefix}-rds-max-used-xid-high"
+  alarm_description   = "RDS ${module.rds.db_identifier} MaximumUsedTransactionIDs above 1,000,000,000 (wraparound guard: check autovacuum / age(datfrozenxid))."
+  namespace           = "AWS/RDS"
+  metric_name         = "MaximumUsedTransactionIDs"
+  dimensions          = { DBInstanceIdentifier = module.rds.db_identifier }
+  statistic           = "Maximum"
+  period              = 300
+  evaluation_periods  = 1
+  comparison_operator = "GreaterThanThreshold"
+  threshold           = 1000000000
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
+
+  tags = merge(local.ecosys_tags, { App = "shared" })
+}
+
+# Per-role connections against each role's CONNECTION LIMIT. Custom metric AA/RDS
+# RoleConnectionLimitPct{Role}, published by the CIS job ops_rds_role_connections (one sample per
+# role every 5 minutes, enqueued by aws_scheduler_schedule.rds_role_connections in dfs_balance.tf).
+# One sample per period, so one datapoint above 80 % alarms (1 of 2 periods); the 2-period window
+# means one late or missing sample does not flip an ALARM back to OK (no OK/ALARM email pairs on the
+# shared topic, the AA-833 lesson). Missing data does not alarm: if the
+# schedule or the job stops, these stay OK (check GET /admin/job-runner/summary for the kind).
+# The kind is NOT a background kind on the CIS side, so the worker's background-lane cap
+# (BACKGROUND_MAX_RUNNING) does not hold it behind place_geocode / retention_*; it still waits for
+# a free worker slot, so while a wave fills every slot a sample can be late and that 5-minute
+# period stays empty (= not breaching). The endpoint returns already_pending meanwhile, no stacking.
+resource "aws_cloudwatch_metric_alarm" "rds_role_connections_high" {
+  for_each = local.rds_role_connection_limits
+
+  alarm_name          = "${local.name_prefix}-rds-role-connections-${each.key}"
+  alarm_description   = "RDS ${module.rds.db_identifier} role ${each.key} above 80% of its CONNECTION LIMIT ${each.value} (more than ${floor(each.value * 0.8)} sessions) in a 5-minute sample. New connections for this role fail at ${each.value}."
+  namespace           = "AA/RDS"
+  metric_name         = "RoleConnectionLimitPct"
+  dimensions          = { Role = each.key }
+  statistic           = "Maximum"
+  period              = 300
+  evaluation_periods  = 2
+  datapoints_to_alarm = 1
+  comparison_operator = "GreaterThanThreshold"
+  threshold           = 80
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
+
+  tags = merge(local.ecosys_tags, { App = "shared" })
+}
+
+# The job above runs on the CIS worker. The api and worker task definitions share one task role
+# (modules/ecs aws_iam_role.ecs_task, aa-cis-dev-ecs-task-role), so the grant goes on that role.
+# PutMetricData has no resource ARN; the namespace condition limits it to AA/RDS (the module's own
+# statement covers the older "acp" namespace).
+resource "aws_iam_role_policy" "cis_ecs_task_put_metric_aa_rds" {
+  name = "aa-cis-${var.environment}-ecs-put-metric-aa-rds"
+  role = module.ecs.task_role_name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid       = "PutMetricDataAaRds"
+      Effect    = "Allow"
+      Action    = "cloudwatch:PutMetricData"
+      Resource  = "*"
+      Condition = { StringEquals = { "cloudwatch:namespace" = "AA/RDS" } }
+    }]
+  })
+}
+
+# The per-role alarms treat missing data as OK, so a stopped schedule, a failing job (IAM, worker
+# down) or a sample stuck behind a wave backlog would leave them silently green. This alarm makes
+# that gap visible: no RoleConnections sample for the always-present aa_app_user role in 3 x 15
+# minutes = ALARM (missing data = breaching). The job publishes every limited role in one call, so
+# one role stands for all of them. +$0.10/month (total for AA-832 about $2.80/month).
+resource "aws_cloudwatch_metric_alarm" "rds_role_connections_sampling_stopped" {
+  alarm_name          = "${local.name_prefix}-rds-role-connections-sampling-stopped"
+  alarm_description   = "No AA/RDS RoleConnections sample for 45 minutes: the ops_rds_role_connections schedule or job (CIS worker) is not publishing, so the per-role connection alarms are blind. Check /admin/job-runner for the kind and the ops-probe Lambda logs."
+  namespace           = "AA/RDS"
+  metric_name         = "RoleConnections"
+  dimensions          = { Role = "aa_app_user" }
+  statistic           = "SampleCount"
+  period              = 900
+  evaluation_periods  = 3
+  comparison_operator = "LessThanThreshold"
+  threshold           = 1
+  treat_missing_data  = "breaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
   ok_actions          = [aws_sns_topic.alerts.arn]
 
