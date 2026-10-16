@@ -1,4 +1,4 @@
-"""AA-627 + AA-720 + AA-825 + AA-832 — ops-probe trigger.
+"""AA-627 + AA-720 + AA-825 — ops-probe trigger.
 
 EventBridge Scheduler -> this Lambda -> a short list of secret-gated admin POSTs. Each backend
 endpoint does its own work (read a balance, probe a vendor, sweep a log, enqueue jobs) and raises its
@@ -19,9 +19,8 @@ Called by their own schedules (the event names the path):
           idempotent per UTC day (shared.job idempotency_key retention:<kind>:<day>); each kind
           decides itself whether it runs as a DRY RUN, live or held. Nothing is enqueued while a
           rerun wave is open.
-  AA-832  POST /admin/job-runner/rds-role-connections/schedule — every 5 minutes: enqueue one
-          ops_rds_role_connections job (none while one is queued/running); the CIS worker publishes
-          the AA/RDS per-role connection metrics.
+  (AA-832's every-5-minutes /admin/job-runner/rds-role-connections/schedule path was removed in
+  AA-751: the CIS api publishes those metrics from an in-process sampler.)
 
 Event (the Scheduler target input; every key optional):
   {"paths": ["/admin/..."], "secret_id": "<Secrets Manager ARN or name>"}
@@ -63,8 +62,7 @@ _PATHS = (
 
 # Paths a schedule may name in its event. Anything else is refused.
 RETENTION_SCHEDULE_PATH = "/admin/job-runner/retention/schedule"   # AA-825
-RDS_ROLE_CONNECTIONS_SCHEDULE_PATH = "/admin/job-runner/rds-role-connections/schedule"   # AA-832
-_ALLOWED_PATHS = frozenset(_PATHS + (RETENTION_SCHEDULE_PATH, RDS_ROLE_CONNECTIONS_SCHEDULE_PATH))
+_ALLOWED_PATHS = frozenset(_PATHS + (RETENTION_SCHEDULE_PATH,))
 
 
 def _read_secret(secret_id):
