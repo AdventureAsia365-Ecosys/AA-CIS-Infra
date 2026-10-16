@@ -418,6 +418,10 @@ resource "aws_cloudwatch_metric_alarm" "rds_max_used_xid_high" {
 # role every 5 minutes, enqueued by aws_scheduler_schedule.rds_role_connections in dfs_balance.tf).
 # One sample per period, so one datapoint above 80 % alarms. Missing data does not alarm: if the
 # schedule or the job stops, these stay OK (check GET /admin/job-runner/summary for the kind).
+# The kind is NOT a background kind on the CIS side, so the worker's background-lane cap
+# (BACKGROUND_MAX_RUNNING) does not hold it behind place_geocode / retention_*; it still waits for
+# a free worker slot, so while a wave fills every slot a sample can be late and that 5-minute
+# period stays empty (= not breaching). The endpoint returns already_pending meanwhile, no stacking.
 resource "aws_cloudwatch_metric_alarm" "rds_role_connections_high" {
   for_each = local.rds_role_connection_limits
 
