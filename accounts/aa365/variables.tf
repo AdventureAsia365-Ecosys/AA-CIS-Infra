@@ -194,9 +194,12 @@ variable "waf_protect_rest_api_stages" {
 # managed group runs in COUNT: matches show up in the WAF log (terminatingRuleMatchDetails is empty,
 # look at nonTerminatingMatchingRules / labels) and in AWS/WAFV2 CountedRequests, nothing is
 # blocked. Set false to enforce once the counted matches have been reviewed.
+# AA-806 (S239): reviewed. Count window 14/10 02:00Z..16/10 04:01Z had 0 CommonRuleSet matches on
+# ~70.7k requests; the pre-flip test (large real content writes) matched only SizeRestrictions_BODY
+# and GenericLFI_BODY, both kept in COUNT by modules/waf managed_rule_count_overrides.
 variable "waf_common_rules_count_only" {
   type    = bool
-  default = true
+  default = false
 }
 
 # AA-806: phase 3 of the CI role split (docs/ci-role-split.md). When true, the Terraform apply
