@@ -49,14 +49,21 @@ resource "aws_db_parameter_group" "main" {
     value = "60000"
   }
 
+  # AA-832: track_io_timing and rds.force_ssl equal the engine defaults, so RDS stores them as
+  # Source = system and always reads them back with apply_method "pending-reboot", whatever was sent.
+  # With the provider default ("immediate") every plan showed a permanent in-place diff on this group.
+  # Declaring what RDS returns makes the plan clean; both are dynamic and their values do not change,
+  # so nothing waits for a reboot (instance ParameterApplyStatus stayed in-sync, checked 16/10/2026).
   parameter {
-    name  = "track_io_timing"
-    value = "1"
+    name         = "track_io_timing"
+    value        = "1"
+    apply_method = "pending-reboot"
   }
 
   parameter {
-    name  = "rds.force_ssl"
-    value = "1"
+    name         = "rds.force_ssl"
+    value        = "1"
+    apply_method = "pending-reboot"
   }
 
   parameter {
