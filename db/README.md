@@ -25,8 +25,9 @@ Version key registered in `shared.schema_versions`: `cis` → `NNN`, `tripplanne
    (or `--all`; without a token GitHub allows 60 anonymous requests/hour); tests:
    `python3 -m unittest discover -s db/tests`.
 2. Merge to `main`.
-3. Run **DB Migrate** on `main` with `mode=check` (prints whether the version is registered and
-   the latest key of the same owner), then `mode=apply`. The job fails unless the task exits 0 and
+3. Run **DB Migrate** on `main` with `mode=check` (prints whether the version is registered, the
+   latest key of the same owner and the idle state of every job table, see "Idle check" below),
+   then `mode=apply`. The job fails unless the task exits 0 and
    the version is in `shared.schema_versions` afterwards. Re-running `apply` is a no-op.
 4. **DB Schema Dump** (`.github/workflows/db-schema-dump.yml`) is dispatched by a successful apply
    (and runs nightly): it regenerates `AA-Ecosys/docs/architecture/db-schema-reference.md` and
@@ -63,7 +64,41 @@ line (a directive after the first statement is an error):
 - **Unique numbers** (MIG-3): `db/check_migration_files.py` fails when two files in one owner dir
   share a number (CI job "Migration lint and unique numbers").
 - Exit codes: 2 sha256 mismatch, 3 not registered, 4 lint error, 5 destructive without snapshot,
-  6 PostgreSQL error (lock or statement timeout prints a hint).
+  6 PostgreSQL error (lock or statement timeout prints a hint), 7 apply refused because a job
+  table is busy or a rerun wave is open.
+
+## Idle check (AA-751, ADR 0003a decision 5, data standards C6.3b)
+DB Migrate `apply` waits until **every** owner job table is idle. On both modes the task logs
+one line per object, after the `before:` line:
+
+```
+MIGRATE idle: shared.job running=0 queued=0 (exempt: ops_rds_role_connections)
+MIGRATE busy: booking.job running=0 queued=1 due=1 kinds=[bk_x6_probe:queued=1]
+MIGRATE busy: shared.rerun_wave open=1
+MIGRATE ERROR: refusing apply — busy: booking.job (queued=1). Wait until every job table is idle, or re-dispatch with override_busy_jobs=<reason> (Nghiệp only)
+```
+
+- **Which tables:** every `<schema>.job` with a `status` column, read from the catalog
+  (`shared.job` CIS, `booking.job` Booking, a future `tripplanner.job` without a code change), plus
+  `shared.rerun_wave` rows with `status = 'open'`. `shared.job` or `booking.job` missing, or no
+  `shared.rerun_wave`, is a WARNING, not busy. A table the runner cannot read counts as busy.
+- **Busy** = any queued row (any `run_after`; `due` counts the ones already claimable) or running
+  row of a kind that is not exempt, or an open wave. Same meaning as the deploy gate.
+- **Exempt kinds** (`IDLE_EXEMPT_KINDS` in `run_migration.py`, per owner): `shared.job`
+  `ops_rds_role_connections` (enqueued every 5 min, CIS registry `deploy_gate_exempt`) and
+  `booking.job` `bk_inquiry_pull` (always queued at +60 s, Booking `intake.RECURRING` in
+  `backend/app/inquiry/intake.py`; a Booking `DEPLOY_GATE_EXEMPT` registry arrives with B4). Both run
+  short transactions, so a running one is safe too; `lock_timeout 5s` is the backstop. Daily
+  retention kinds are not exempt. The list mirrors the owners' registries until X1 (`owners.yaml`):
+  change it together with them.
+- **check** only reports and exits 0. **apply** (once the version is known to be unapplied, so an
+  already-applied file still skips) re-checks 3 times, 20 s apart, and exits **7** while anything
+  is still busy. Run `check` first: a destructive apply takes its RDS snapshot before the task
+  starts, so a refusal wastes one snapshot.
+- **Override:** the workflow input `override_busy_jobs` (one line, at most 200 characters, a
+  reason; Nghiệp only, dispatch stays behind `environment: prod`) reaches the task as
+  `MIGRATION_IDLE_OVERRIDE`. The run then logs `MIGRATE WARNING: idle check OVERRIDDEN (<reason>)`
+  with the busy list and applies without waiting. The reason is also in the job summary.
 
 ## Schema reference (AA-807 N1)
 `schema_dump.py` runs in a one-off ECS task like the runner, read-only (`default_transaction_read_only`

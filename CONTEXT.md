@@ -254,7 +254,9 @@ makes CI Terraform Plan fail with 403.
   **Migration Copy Guard** workflow (AA-807) checks each copy byte for byte against the owner
   repo's `main` on every PR and nightly, so the owner's migration-only PR merges first; a second
   job lints every copy and checks numbers are unique per owner. The runner applies safe session
-  defaults and `-- migrate:` header directives (no-transaction, destructive → RDS snapshot first).
+  defaults and `-- migrate:` header directives (no-transaction, destructive → RDS snapshot first),
+  and `apply` refuses (exit 7) while any owner job table is busy or a rerun wave is open (AA-751,
+  ADR 0003a decision 5; exempt kinds and the `override_busy_jobs` input in `db/README.md`).
   **DB Schema Dump** (`db-schema-dump.yml`, AA-807 N1) runs a read-only catalog dump in a one-off ECS
   task nightly and after every apply, and opens a PR on the root repo that regenerates
   `docs/architecture/db-schema-reference.md`. Owners and version keys:

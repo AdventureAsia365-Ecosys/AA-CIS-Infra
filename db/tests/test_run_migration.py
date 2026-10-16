@@ -196,14 +196,53 @@ class LintTest(unittest.TestCase):
         self.assertEqual(rm.version_pattern("tp-010"), "^tp\\-[0-9]{3}$")
 
 
+def job(kind, status="queued", due=True):
+    return {"kind": kind, "status": status, "due": due}
+
+
 class FakeConn:
-    def __init__(self, applied=None, registers=True, fail=None):
+    """`states` is one (jobs, waves) pair per idle check, the last one repeating: jobs maps an owner
+    schema to its job rows (job()), or to an Exception raised on read; waves is the number of open
+    shared.rerun_wave rows, or None when the table does not exist."""
+
+    def __init__(self, applied=None, registers=True, fail=None, states=None):
         self.applied, self.registers, self.fail = applied, registers, fail
         self.executed, self.closed, self.ran = [], False, False
+        self.states = states or [({"booking": [], "shared": []}, 0)]
+        self.checks, self.busy_queries = 0, []
+
+    def state(self):
+        return self.states[min(self.checks, len(self.states)) - 1]
+
+    async def fetch(self, query, *args):
+        if query == rm.JOB_TABLES_SQL:
+            self.checks += 1
+            return [(schema,) for schema in sorted(self.state()[0])]
+        schema = query.split("FROM ", 1)[1].split(".job", 1)[0].strip('"')
+        # The rows below are filtered in Python, so pin the SQL text: an edit to JOB_BUSY_SQL must
+        # come with a test change (IdleCheckTest.test_busy_sql_predicates_are_pinned).
+        assert query == rm.JOB_BUSY_SQL.format(table=f'"{schema}".job'), query
+        self.busy_queries.append((schema, list(args[0])))
+        rows = self.state()[0][schema]
+        if isinstance(rows, Exception):
+            raise rows
+        groups = {}
+        for r in rows:
+            if r["kind"] in args[0] or r["status"] not in ("queued", "running"):
+                continue
+            g = groups.setdefault((r["kind"], r["status"]), {"kind": r["kind"], "status": r["status"],
+                                                             "n": 0, "due": 0})
+            g["n"] += 1
+            g["due"] += int(r["status"] == "queued" and r["due"])
+        return [groups[k] for k in sorted(groups)]
 
     async def fetchval(self, query, *args):
         if "ORDER BY version DESC" in query:
             return "230"
+        if query == rm.WAVE_TABLE_SQL:
+            return self.state()[1] is not None
+        if query == rm.OPEN_WAVES_SQL:
+            return self.state()[1]
         return self.applied
 
     async def execute(self, sql):
@@ -237,9 +276,14 @@ class RunTaskTest(unittest.TestCase):
             seen["settings"] = settings
             return conn
 
+        self.sleeps = []
+
+        async def sleep(s):
+            self.sleeps.append(s)
+
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            code = asyncio.run(rm.run_task(env, fetch=lambda url: raw, connect=connect))
+            code = asyncio.run(rm.run_task(env, fetch=lambda url: raw, connect=connect, sleep=sleep))
         return code, conn, seen.get("settings"), out.getvalue()
 
     def test_apply_sends_whole_file_with_defaults(self):
@@ -305,6 +349,145 @@ class RunTaskTest(unittest.TestCase):
         self.assertEqual(code, 6)
         self.assertIn("lock_timeout (5s) hit", log)
         self.assertTrue(conn.closed)
+
+
+BUSY_BOOKING = ({"booking": [job("bk_x6_probe")], "shared": []}, 0)
+IDLE = ({"booking": [], "shared": []}, 0)
+REFUSAL = ("MIGRATE ERROR: refusing apply — busy: {}. Wait until every job table is idle, or "
+           "re-dispatch with override_busy_jobs=<reason> (Nghiệp only)")
+
+
+class IdleCheckTest(unittest.TestCase):
+    """AA-751: DB Migrate refuses apply while any owner job table is busy (plan §4)."""
+
+    run_task = RunTaskTest.run_task
+
+    def test_busy_booking_job_refuses_apply_after_three_waits(self):
+        code, conn, _, log = self.run_task(PLAIN, conn=FakeConn(states=[BUSY_BOOKING]))
+        self.assertEqual((code, conn.executed), (7, []))
+        self.assertEqual(self.sleeps, [20, 20, 20])
+        self.assertEqual(conn.checks, 4)            # the report + one re-check after each wait
+        self.assertIn("MIGRATE busy: booking.job running=0 queued=1 due=1 kinds=[bk_x6_probe:queued=1]\n", log)
+        self.assertIn(REFUSAL.format("booking.job (queued=1)") + "\n", log)
+        self.assertIn("MIGRATE idle: shared.job running=0 queued=0 (exempt: ops_rds_role_connections)\n", log)
+        self.assertTrue(conn.closed)
+
+    def test_busy_shared_job_refuses_and_names_it(self):
+        state = ({"booking": [], "shared": [job("a3_atomize", "running"), job("a3_atomize", due=False),
+                                            job("place_extract")]}, 0)
+        code, conn, _, log = self.run_task(PLAIN, conn=FakeConn(states=[state]))
+        self.assertEqual((code, conn.executed), (7, []))
+        self.assertIn("MIGRATE busy: shared.job running=1 queued=2 due=1 kinds=[a3_atomize:queued=1, "
+                      "a3_atomize:running=1, place_extract:queued=1]", log)
+        self.assertIn(REFUSAL.format("shared.job (running=1, queued=2)"), log)
+        self.assertIn("MIGRATE idle: booking.job running=0 queued=0 (exempt: bk_inquiry_pull)", log)
+
+    def test_check_mode_reports_busy_and_returns_0(self):
+        code, conn, _, log = self.run_task(PLAIN, mode="check", conn=FakeConn(states=[BUSY_BOOKING]))
+        self.assertEqual((code, conn.executed, self.sleeps), (0, [], []))
+        self.assertIn("MIGRATE busy: booking.job", log)
+        self.assertNotIn("refusing", log)
+
+    def test_idle_tables_pass_without_waiting(self):
+        code, conn, _, log = self.run_task(PLAIN, conn=FakeConn(states=[IDLE]))
+        self.assertEqual((code, conn.executed, self.sleeps, conn.checks), (0, [PLAIN], [], 1))
+        self.assertIn("MIGRATE idle: shared.rerun_wave open=0", log)
+        self.assertNotIn("busy", log)
+
+    def test_exempt_kinds_queued_and_running_are_ignored(self):
+        state = ({"booking": [job("bk_inquiry_pull"), job("bk_inquiry_pull", "running")],
+                  "shared": [job("ops_rds_role_connections"), job("ops_rds_role_connections", "running"),
+                             job("a3_atomize", "succeeded"), job("a3_atomize", "failed")]}, 0)
+        code, conn, _, log = self.run_task(PLAIN, conn=FakeConn(states=[state]))
+        self.assertEqual((code, conn.executed, self.sleeps), (0, [PLAIN], []))
+        self.assertIn("MIGRATE idle: booking.job running=0 queued=0 (exempt: bk_inquiry_pull)", log)
+
+    def test_exemptions_are_per_owner(self):
+        # A CIS-exempt kind name in booking.job is not exempt there (and cannot exist: bk_ CHECK).
+        state = ({"booking": [job("ops_rds_role_connections")], "shared": []}, 0)
+        code, _, _, log = self.run_task(PLAIN, conn=FakeConn(states=[state]))
+        self.assertEqual(code, 7)
+        self.assertIn(REFUSAL.format("booking.job (queued=1)"), log)
+
+    def test_override_logs_reason_and_proceeds(self):
+        code, conn, _, log = self.run_task(PLAIN, conn=FakeConn(states=[BUSY_BOOKING]),
+                                           MIGRATION_IDLE_OVERRIDE="  hotfix AA-999, probe row is harmless ")
+        self.assertEqual((code, conn.executed, self.sleeps), (0, [PLAIN], []))
+        self.assertIn("MIGRATE busy: booking.job", log)
+        self.assertIn("MIGRATE WARNING: idle check OVERRIDDEN (hotfix AA-999, probe row is harmless), "
+                      "busy: booking.job (queued=1)\n", log)
+
+    def test_override_when_idle_and_in_check_mode_is_only_noted(self):
+        code, conn, _, log = self.run_task(PLAIN, conn=FakeConn(states=[IDLE]), MIGRATION_IDLE_OVERRIDE="x")
+        self.assertEqual((code, conn.executed), (0, [PLAIN]))
+        self.assertIn("but nothing is busy", log)
+        code, _, _, log = self.run_task(PLAIN, mode="check", conn=FakeConn(states=[BUSY_BOOKING]),
+                                        MIGRATION_IDLE_OVERRIDE="x")
+        self.assertEqual(code, 0)
+        self.assertIn("only applies to mode=apply", log)
+
+    def test_open_rerun_wave_refuses(self):
+        code, conn, _, log = self.run_task(PLAIN, conn=FakeConn(states=[({"booking": [], "shared": []}, 1)]))
+        self.assertEqual((code, conn.executed), (7, []))
+        self.assertIn("MIGRATE busy: shared.rerun_wave open=1\n", log)
+        self.assertIn(REFUSAL.format("shared.rerun_wave (open=1)"), log)
+
+    def test_wait_loop_passes_when_idle_on_second_check(self):
+        conn = FakeConn(states=[BUSY_BOOKING, IDLE])
+        code, conn, _, log = self.run_task(PLAIN, conn=conn)
+        self.assertEqual((code, conn.executed, self.sleeps, conn.checks), (0, [PLAIN], [20], 2))
+        self.assertIn("MIGRATE waiting 20s for idle job tables (re-check 1/3), busy: booking.job (queued=1)", log)
+        self.assertIn("MIGRATE idle: booking.job running=0 queued=0", log)
+
+    def test_already_applied_skips_before_the_wait(self):
+        code, conn, _, log = self.run_task(PLAIN, conn=FakeConn(applied="2026-10-01", states=[BUSY_BOOKING]))
+        self.assertEqual((code, conn.executed, self.sleeps), (0, [], []))
+        self.assertIn("skip: already applied", log)
+        self.assertNotIn("refusing", log)
+
+    def test_destructive_refusal_comes_before_the_snapshot_check(self):
+        code, conn, _, _ = self.run_task(DESTRUCTIVE, version="bk-012", conn=FakeConn(states=[BUSY_BOOKING]))
+        self.assertEqual((code, conn.executed), (7, []))
+
+    def test_any_owner_job_table_is_found_in_the_catalog(self):
+        state = ({"booking": [], "shared": [], "tripplanner": [job("tp_redact", "running")]}, 0)
+        code, conn, _, log = self.run_task(PLAIN, conn=FakeConn(states=[state]))
+        self.assertEqual(code, 7)
+        self.assertIn("MIGRATE busy: tripplanner.job running=1 queued=0 due=0 kinds=[tp_redact:running=1]", log)
+        self.assertIn(("tripplanner", []), conn.busy_queries)
+
+    def test_exempt_list_is_passed_per_owner(self):
+        state = ({"booking": [], "shared": [], "tripplanner": []}, 0)
+        _, conn, _, _ = self.run_task(PLAIN, conn=FakeConn(states=[state]))
+        self.assertEqual(conn.busy_queries, [("booking", ["bk_inquiry_pull"]),
+                                             ("shared", ["ops_rds_role_connections"]),
+                                             ("tripplanner", [])])
+
+    def test_busy_sql_predicates_are_pinned(self):
+        # FakeConn filters rows in Python; these pin the real predicates (a too-narrow filter fails
+        # open: apply would go ahead while jobs are queued).
+        where = rm.JOB_BUSY_SQL.split("FROM {table}", 1)[1]
+        self.assertIn("WHERE status IN ('queued', 'running') AND NOT (kind = ANY($1::text[]))", where)
+        self.assertNotIn("run_after", where)       # every queued row counts, due or not
+        self.assertIn("count(*) FILTER (WHERE status = 'queued' AND run_after <= now())", rm.JOB_BUSY_SQL)
+        for part in ("c.relname = 'job'", "c.relkind IN ('r', 'p')", "a.attname = 'status'",
+                     "NOT a.attisdropped"):
+            self.assertIn(part, rm.JOB_TABLES_SQL)
+        self.assertIn("to_regclass('shared.rerun_wave')", rm.WAVE_TABLE_SQL)
+        self.assertIn("WHERE status = 'open'", rm.OPEN_WAVES_SQL)
+
+    def test_missing_tables_warn_but_do_not_block(self):
+        code, conn, _, log = self.run_task(PLAIN, conn=FakeConn(states=[({"shared": []}, None)]))
+        self.assertEqual((code, conn.executed), (0, [PLAIN]))
+        self.assertIn("MIGRATE WARNING: booking.job not found (not checked)", log)
+        self.assertIn("MIGRATE WARNING: shared.rerun_wave not found (wave check skipped)", log)
+
+    def test_unreadable_table_counts_as_busy(self):
+        state = ({"booking": PgError("42501", "permission denied for table job"), "shared": []}, 0)
+        code, conn, _, log = self.run_task(PLAIN, conn=FakeConn(states=[state]))
+        self.assertEqual((code, conn.executed), (7, []))
+        self.assertIn("MIGRATE busy: booking.job unreadable (PgError: permission denied for table job)", log)
+        self.assertIn(REFUSAL.format("booking.job (unreadable)"), log)
 
 
 class CheckFilesTest(unittest.TestCase):
