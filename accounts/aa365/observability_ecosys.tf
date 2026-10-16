@@ -416,7 +416,9 @@ resource "aws_cloudwatch_metric_alarm" "rds_max_used_xid_high" {
 # Per-role connections against each role's CONNECTION LIMIT. Custom metric AA/RDS
 # RoleConnectionLimitPct{Role}, published by the CIS job ops_rds_role_connections (one sample per
 # role every 5 minutes, enqueued by aws_scheduler_schedule.rds_role_connections in dfs_balance.tf).
-# One sample per period, so one datapoint above 80 % alarms. Missing data does not alarm: if the
+# One sample per period, so one datapoint above 80 % alarms (1 of 2 periods); the 2-period window
+# means one late or missing sample does not flip an ALARM back to OK (no OK/ALARM email pairs on the
+# shared topic, the AA-833 lesson). Missing data does not alarm: if the
 # schedule or the job stops, these stay OK (check GET /admin/job-runner/summary for the kind).
 # The kind is NOT a background kind on the CIS side, so the worker's background-lane cap
 # (BACKGROUND_MAX_RUNNING) does not hold it behind place_geocode / retention_*; it still waits for
@@ -432,7 +434,8 @@ resource "aws_cloudwatch_metric_alarm" "rds_role_connections_high" {
   dimensions          = { Role = each.key }
   statistic           = "Maximum"
   period              = 300
-  evaluation_periods  = 1
+  evaluation_periods  = 2
+  datapoints_to_alarm = 1
   comparison_operator = "GreaterThanThreshold"
   threshold           = 80
   treat_missing_data  = "notBreaching"
