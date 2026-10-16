@@ -70,6 +70,24 @@ resource "aws_iam_role_policy" "bedrock_invoker_policy" {
           "arn:aws:bedrock:::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0"
         ]
       },
+      # AA-862 — Cohere Embed v4 as the last account hop of the embed chain
+      # (acc2 -> acc3 -> acc1). Additive statement; the live statements around
+      # it are unchanged. Same ARN set as acc3's InvokeCohereEmbedV4 (region
+      # wildcards because a cross-region profile authorizes against the member
+      # region's foundation-model ARN). acc1's Cohere quotas/model access are
+      # NOT verified yet (SSO expired at S239): the catalog row stays disabled
+      # until a probe through this role passes.
+      {
+        Sid    = "InvokeCohereEmbedV4"
+        Effect = "Allow"
+        Action = ["bedrock:InvokeModel"]
+        Resource = [
+          "arn:aws:bedrock:*:867490540162:inference-profile/global.cohere.embed-v4:0",
+          "arn:aws:bedrock:*:867490540162:inference-profile/us.cohere.embed-v4:0",
+          "arn:aws:bedrock:*::foundation-model/cohere.embed-v4:0",
+          "arn:aws:bedrock:::foundation-model/cohere.embed-v4:0"
+        ]
+      },
       # New — AA-302 carryover: Bedrock Batch job creation (model-scoped,
       # same resource shape as InvokeModel above).
       # AA-303 live verify (2026-07-17): AccessDeniedException on real
