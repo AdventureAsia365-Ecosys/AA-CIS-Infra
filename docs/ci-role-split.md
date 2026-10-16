@@ -1,8 +1,11 @@
 # CI role split — cut-over plan (AA-806)
 
-`aa-cis-dev-role` (`accounts/aa365/cicd.tf`) is assumed by AA-CIS-App and AA-CIS-Infra for three
-jobs that need very different rights. AA-806 adds one role per job (`accounts/aa365/cicd_split.tf`)
-and retires the shared role in a later step.
+`aa-cis-dev-role` (formerly `accounts/aa365/cicd.tf`) was assumed by AA-CIS-App and AA-CIS-Infra
+for three jobs that need very different rights. AA-806 adds one role per job
+(`accounts/aa365/cicd_split.tf`) and retires the shared role in step 3.
+
+Status (S239): steps 1, 2 and 4 applied (S236-S237). Step 3 + phase 3 are in the step-3 PR
+(branch `chore/aa806-retire-legacy-ci-role`), applied locally, see step 3 below.
 
 | Role | Caller (OIDC sub context) | Rights |
 |---|---|---|
@@ -23,8 +26,8 @@ A sub carries either the environment or the ref, never both, so "main only" for 
   - no role create/change/tag/pass outside `aa-*-dev-*` (+ NAT role), so the `aa-cis-infra-tf-*`
     roles and other systems' roles are out of reach;
   - inside the pattern, no write or PassRole at all on `aa-cis-dev-app-deploy` and
-    `aa-cis-dev-agent-session`; on the legacy `aa-cis-dev-role` only `DeleteRole` /
-    `DetachRolePolicy` / `DeleteRolePolicy` (step 3), never PassRole or a trust/policy edit;
+    `aa-cis-dev-agent-session`; on the retired `aa-cis-dev-role` nothing at all, CreateRole included
+    (a tombstone, since step 3: AA-CIS-App's repo-level `AWS_ROLE_ARN` may still name it);
   - no OIDC or SAML provider writes (the GitHub OIDC provider is a bootstrap object);
   - `CreateRole` / `PutRolePermissionsBoundary` only with `aa-workload-boundary`;
   - no `DeleteRolePermissionsBoundary`, no edits to either boundary policy;
@@ -81,6 +84,30 @@ local apply too), plus the plan role's secret list (`local.tf_plan_secret_arns` 
    it (`observability.tf`; re-point it at `aws_iam_role_policy.tf_apply`). Keep the
    `local.cicd_inline_statements` list (the apply role uses it). CloudTrail check before removing:
    no `AssumeRoleWithWebIdentity` on `aa-cis-dev-role` since the switch.
+
+   Done in the step-3 PR (S239). Evidence: `RoleLastUsed` 2026-10-14T10:43:21Z, last
+   `AssumeRoleWithWebIdentity` on it 14/10 ~10:39Z (CloudTrail); since then CI uses only the new
+   roles. No workflow in AA-CIS-App, AA-CIS-Infra, AA-TripPlanner-Web or AA-Booking reads a
+   repo-level `AWS_ROLE_ARN` that points at it (every App job that assumes a role runs in `dev`;
+   Infra `terraform-plan.yml` reads the Infra repo-level secret, which is `aa-cis-infra-tf-plan`).
+   The same PR also turns phase 3 on (`tf_apply_require_boundary_on_role_policy_writes = true`)
+   and makes the boundary deny every write on the retired name (tombstone, CreateRole included).
+
+   **Apply locally, targeted** (the boundary policy is a bootstrap object, so a CI apply fails on
+   it; the time_sleep replacement re-tags the three eventbridge resources that carry its id):
+   ```
+   export $(aws configure export-credentials --profile aa365-admin --format env | xargs) && unset AWS_PROFILE
+   terraform -chdir=accounts/aa365 plan -target=aws_iam_role.cicd -target=aws_iam_role_policy.cicd_inline -target=aws_iam_role_policy_attachment.cicd_managed -target=time_sleep.wait_for_iam_propagation -target=aws_iam_policy.tf_apply_boundary -target=module.eventbridge.aws_cloudwatch_event_bus.acp_events -target=module.eventbridge.aws_iam_role.scheduler -target=module.eventbridge.aws_scheduler_schedule_group.acp -out=aa806-step3.tfplan
+   terraform -chdir=accounts/aa365 apply aa806-step3.tfplan
+   ```
+   Expected: **1 add / 4 change / 13 destroy** — destroy `aws_iam_role.cicd`,
+   `aws_iam_role_policy.cicd_inline` and the 10 `aws_iam_role_policy_attachment.cicd_managed[...]`;
+   replace `time_sleep.wait_for_iam_propagation` (trigger now hashes `tf_apply.policy`); in place
+   `aws_iam_policy.tf_apply_boundary` (+ `DenyRolePolicyWritesWithoutWorkloadBoundary`, tombstone
+   deny) and the `_iam_gate` tag on `module.eventbridge` bus / scheduler role / schedule group.
+   After the apply: remove (or repoint) AA-CIS-App's repo-level `AWS_ROLE_ARN` secret (human, gh
+   secret), then prove the paths once more (Infra PR plan, `terraform-apply.yml` "No changes" on a
+   targeted run or after AA-846, DB Migrate `check`, CIS Deploy Dev).
 4. **Boundary on existing roles** (separate PR, CI apply): add
    `permissions_boundary = aws_iam_policy.workload_boundary.arn` to every CI-managed workload role.
    13 roles, all in-place updates (`iam:PutRolePermissionsBoundary`, which the apply role may call
@@ -109,7 +136,8 @@ local apply too), plus the plan role's secret list (`local.tf_plan_secret_arns` 
    statement denies `DetachRolePolicy` / `DeleteRolePolicy` on any role without the workload
    boundary, which includes the legacy `aa-cis-dev-role` that step 3 dismantles through CI. Flip it
    in the step-3 PR or after it. Only steps 3 + 4 + phase 3 together close the escalation path
-   below.
+   below. (S239: flipped in the step-3 PR, which is applied locally, so the deny never meets the
+   legacy role.)
 
    After step 4 is applied, every **local admin apply** (bootstrap PRs such as the agent-session
    boundary) must run from a branch that already contains step 4. The admin profile is not bound by
