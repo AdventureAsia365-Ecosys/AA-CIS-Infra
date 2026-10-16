@@ -528,7 +528,7 @@ output "tripplanner_lambda_exec_role_arn" {
 # App deploy role — assumed via GitHub OIDC by the AA-TripPlanner-Web repo's
 # deploy workflow ONLY. Least-privilege: put the build zip in the artifacts
 # bucket + update the two Lambdas' code. Nothing else. Separate from the
-# aa-cis-dev-role CI/CD role (which is broad); this keeps the app repo's
+# CIS CI/CD roles (cicd_split.tf); this keeps the app repo's
 # blast radius to exactly "ship TripPlanner Lambda code".
 #
 # Trust is pinned to ONE exact OIDC subject (S235 Phase 0): this repo by immutable

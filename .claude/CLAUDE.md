@@ -5,7 +5,8 @@
   `~/projects/aa-cis/AA-CIS-Infra`). Multi-repo, mỗi repo `.git` riêng.
 - **Org GitHub đổi tên:** `AdventureAsia365-CIS` → **`AdventureAsia365-Ecosys`** (redirect còn
   chạy). Tên repo giữ nguyên. Remote origin đã trỏ org mới. Lệnh gh: `--repo AdventureAsia365-Ecosys/AA-CIS-Infra`.
-- **OIDC transitional (đã apply 15/09/2026):** 2 role trong `accounts/aa365/` (`cicd.tf` →
+- **OIDC transitional (đã apply 15/09/2026, LỊCH SỬ — `aa-cis-dev-role` đã gỡ ở AA-806 bước 3, S239;
+  role CI hiện tại: `cicd_split.tf`):** 2 role trong `accounts/aa365/` (`cicd.tf` →
   `aa-cis-dev-role`; `tripplanner.tf` → `aa-tripplanner-dev-app-deploy`) đã mở rộng `sub` nhận CẢ
   `repo:AdventureAsia365-CIS...` VÀ `repo:AdventureAsia365-Ecosys...` (apply: 0 add/4 change/0 destroy).
   `cicd.tf` dùng dạng phẳng `repo:<org>/*:*`; `tripplanner.tf` dùng `@id`-wildcard (repo

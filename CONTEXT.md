@@ -60,7 +60,8 @@ accounts/
   aa365/          ← main stack root (acc2 005097885195, us-west-1) — the big one
     main.tf                       (wires all modules for the dev stack)
     versions.tf                   (providers + S3 state backend)
-    cicd.tf                       (GitHub Actions OIDC provider + legacy shared CI role aa-cis-dev-role)
+    cicd.tf                       (GitHub Actions OIDC provider + the apply role's grant lists;
+                                   legacy shared CI role aa-cis-dev-role retired in AA-806 step 3)
     cicd_split.tf                 (AA-806: aa-cis-dev-app-deploy, aa-cis-infra-tf-plan/-apply,
                                    permissions boundaries; bootstrap, applied by a human)
     tripplanner.tf                (TripPlanner OIDC deploy role + TripPlanner-specific resources)
@@ -163,19 +164,21 @@ makes CI Terraform Plan fail with 403.
 
 ## CI/CD and OIDC
 
-- App repos deploy via **GitHub Actions OIDC**, assuming IAM roles defined in `cicd.tf`
-  (`aa-cis-dev-role`, CIS app deploy + this repo's own Terraform/DB Migrate workflows) and
-  `tripplanner.tf` (`aa-tripplanner-dev-app-deploy`) and `booking.tf` (`aa-booking-dev-app-deploy`).
-  Each app repo gets its **own** deploy role; a new repo is never added to `aa-cis-dev-role`.
+- App repos deploy via **GitHub Actions OIDC**, assuming IAM roles defined in `cicd_split.tf`
+  (`aa-cis-dev-app-deploy` for AA-CIS-App, `aa-cis-infra-tf-plan` / `aa-cis-infra-tf-apply` for this
+  repo's own Terraform / DB Migrate / schema-dump workflows), `tripplanner.tf`
+  (`aa-tripplanner-dev-app-deploy`) and `booking.tf` (`aa-booking-dev-app-deploy`). Each app repo
+  and each job type gets its **own** role. The old shared `aa-cis-dev-role` is retired (AA-806
+  step 3); the apply boundary denies every write on that name so it cannot come back.
 - **OIDC subject fact (learned AA-588, re-verified AA-678):** the repos have GitHub's immutable
   subject claim **on** (`use_immutable_subject: true` from
   `GET /repos/{owner}/{repo}/actions/oidc/customization/sub`), so the real OIDC subject is
   `repo:AdventureAsia365-Ecosys@<orgid>/<repo>@<repoid>:<context>`. A plain
   `repo:AdventureAsia365-Ecosys/<repo>:*` subject fails with AccessDenied.
-  - `aa-cis-dev-role` trusts **only** AA-CIS-App and AA-CIS-Infra by their exact immutable prefix
-    (org id `276539096`, repo ids `1212291079` / `1212290412`), context `*`
-    (`environment:dev`, `environment:prod`, `pull_request`). See `local.cicd_oidc_subjects`. Before
-    AA-678 it trusted every org repo (`repo:AdventureAsia365-Ecosys*/*:*`).
+  - The three CIS roles trust AA-CIS-App / AA-CIS-Infra by their exact immutable prefix
+    (org id `276539096`, repo ids `1212291079` / `1212290412`, `local.oidc_sub_cis_app` /
+    `local.oidc_sub_cis_infra` in `cicd_split.tf`), each with one exact context. Before AA-678 the
+    legacy `aa-cis-dev-role` trusted every org repo (`repo:AdventureAsia365-Ecosys*/*:*`).
   - `aa-tripplanner-dev-app-deploy` trusts one exact subject (S235 Phase 0, `StringEquals`):
     `repo:AdventureAsia365-Ecosys@276539096/AA-TripPlanner-Web@1365222661:ref:refs/heads/main`
     (only `deploy-lambdas.yml` on main assumes it). Before S235 it used the name-wildcard form
@@ -189,17 +192,18 @@ makes CI Terraform Plan fail with 403.
 - **AA-806 role split** (`cicd_split.tf`, cut-over plan `docs/ci-role-split.md`):
   `aa-cis-dev-app-deploy` (AA-CIS-App, `environment:dev`, CIS ECR/task families/services only),
   `aa-cis-infra-tf-plan` (`pull_request`, read only) and `aa-cis-infra-tf-apply`
-  (`environment:prod`, boundary `aa-cis-infra-tf-apply-boundary`). `aa-cis-dev-role` stays until
-  the workflows have switched. Once the apply role is in use, **every new `aws_iam_role` must set
+  (`environment:prod`, boundary `aa-cis-infra-tf-apply-boundary`). `aa-cis-dev-role` was removed in
+  step 3 (S239), together with phase 3 (`tf_apply_require_boundary_on_role_policy_writes = true`:
+  role policy writes only on roles that carry the workload boundary). **Every new `aws_iam_role` must set
   `permissions_boundary = aws_iam_policy.workload_boundary.arn`** and keep an `aa-*-dev-*` name, or
   CI apply is denied. Changes to the bootstrap objects (the three roles, both boundaries, the GitHub
-  OIDC provider, `aa-cis-dev-role`, `aa-cis-dev-agent-session`) are applied locally. Step 4
+  OIDC provider, `local.cicd_managed_policies` / `local.cicd_inline_statements` in `cicd.tf` (the
+  apply role's grants), `aa-cis-dev-agent-session`) are applied locally. Step 4
   sets `aa-workload-boundary` on every existing CI-managed workload role (CIS ECS execution/task
   via `modules/ecs` `permissions_boundary_arn`, the ACP scheduler via `modules/eventbridge`, the NAT
   instance role via `modules/vpc`, Booking/TripPlanner roles, DFS balance Lambda + scheduler,
-  diagnostics roles); `aa-cis-dev-agent-session` gets it in a local bootstrap apply. Until step 3
-  (legacy role removed) and the phase-3 flag, the apply role can still edit a role's policy and
-  pass it, but the role it passes is capped at the workload boundary (no IAM writes; see the doc).
+  diagnostics roles); `aa-cis-dev-agent-session` gets it in a local bootstrap apply. With phase 3
+  on, a role without the workload boundary cannot have its policies changed by CI apply at all.
 - **TripPlanner HTTP API throttling** (AA-806, Dev placeholders): generous stage default 500 rps /
   burst 1000 **per route** (`default_route_settings`; each route gets its own bucket, it is not one
   stage-wide cap; must stay generous because the map fetches one tile per 1-degree cell in a single

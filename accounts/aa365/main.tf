@@ -216,7 +216,7 @@ module "eventbridge" {
   alerts_topic_arn = aws_sns_topic.alerts.arn
 
   # AA-402: same IAM propagation race as AA-287 — this module's event bus,
-  # scheduler role, and schedule group need aa-cis-dev-role's newly-added
+  # scheduler role, and schedule group needed aa-cis-dev-role's (retired, AA-806) newly-added
   # events:*/scheduler:*/iam:TagRole statements to actually be authorized
   # before they're created. A module-level depends_on was tried first but
   # cascaded to every resource/data-source inside the module (including the

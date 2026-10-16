@@ -1,26 +1,27 @@
 # =============================================================================
-# AA-806 — split the shared CI role (aa-cis-dev-role, cicd.tf) by job.
+# AA-806 — split the shared CI role (aa-cis-dev-role, formerly in cicd.tf) by job.
 #
-# aa-cis-dev-role is assumed by two repos for three very different jobs: AA-CIS-App deploys an
+# aa-cis-dev-role was assumed by two repos for three very different jobs: AA-CIS-App deploys an
 # image, AA-CIS-Infra plans on every PR, and AA-CIS-Infra applies Terraform / runs DB Migrate. All
-# three get the same RDS/Secrets/ECS/S3/Lambda full access plus iam:CreateRole/PassRole on "*".
-# This file adds one role per job:
+# three got the same RDS/Secrets/ECS/S3/Lambda full access plus iam:CreateRole/PassRole on "*".
+# This file adds one role per job (step 3, S239: the legacy role is removed from Terraform):
 #
 #   aa-cis-dev-app-deploy   AA-CIS-App deploy-dev.yml + eval-regression.yml (environment:dev).
 #                           Push to the CIS ECR repo, add revisions to the CIS task families, point
 #                           the CIS services at them, PassRole on the CIS task/execution roles only.
 #   aa-cis-infra-tf-plan    AA-CIS-Infra terraform-plan.yml (pull_request). Read only.
 #   aa-cis-infra-tf-apply   AA-CIS-Infra terraform-apply.yml + db-migrate.yml (environment:prod).
-#                           Same grants as aa-cis-dev-role (so the cut-over is a drop-in), capped by
-#                           the permissions boundary aa-cis-infra-tf-apply-boundary.
+#                           Same grants as aa-cis-dev-role had (so the cut-over was a drop-in),
+#                           capped by the permissions boundary aa-cis-infra-tf-apply-boundary.
 #
 # Bootstrap objects, which the apply role cannot change (a CI apply of a change to them fails with
 # AccessDenied by design; a human applies them with the MFA admin profile, like the acc1/acc3 roots):
 #   - aa-cis-infra-tf-plan / -apply: names outside aa-*-dev-*;
 #   - aa-cis-dev-app-deploy, aa-cis-dev-agent-session: inside the pattern, so explicitly denied
 #     (local.tf_apply_protected_role_arns);
-#   - aa-cis-dev-role (legacy, cicd.tf): explicitly denied except DeleteRole / DetachRolePolicy /
-#     DeleteRolePolicy (retirement only), never PassRole;
+#   - aa-cis-dev-role (legacy, retired in step 3): every role write and PassRole denied, including
+#     CreateRole, so CI cannot bring the name back (AA-CIS-App's repo-level AWS_ROLE_ARN secret may
+#     still name it);
 #   - both boundary policies, and the GitHub OIDC provider (no OIDC/SAML provider writes at all).
 #
 # What the apply boundary does NOT stop yet (closed only by steps 3 + 4 of docs/ci-role-split.md;
@@ -29,14 +30,22 @@
 # boundary. The apply role may rewrite its inline policy or trust and PassRole it to an ECS task or
 # Lambda it can start, so code running under that role gets whatever IAM rights the apply role
 # wrote into it - including rights the boundary denies the apply role itself. The sts:AssumeRole deny does not help there (no
-# AssumeRole call is involved). Phase 3 (var.tf_apply_require_boundary_on_role_policy_writes) after
-# step 4 caps such roles at the workload boundary (no IAM writes).
+# AssumeRole call is involved). Phase 3 (var.tf_apply_require_boundary_on_role_policy_writes,
+# on since step 3) caps such roles at the workload boundary (no IAM writes).
 #
-# aa-cis-dev-role stays until both repos have switched (cut-over plan: docs/ci-role-split.md).
+# Cut-over plan: docs/ci-role-split.md (steps 1, 2 and 4 applied S236-S237, step 3 + phase 3 S239).
 # =============================================================================
 
 locals {
-  # Immutable OIDC subject prefixes (see local.cicd_oidc_subjects in cicd.tf for how they were read).
+  # Immutable OIDC subject prefixes. Both repos have GitHub's immutable subject claim ON
+  # ("use_immutable_subject": true, read 14/10/2026 via
+  # GET /repos/{owner}/{repo}/actions/oidc/customization/sub), so the sub is
+  #   repo:<org>@<org_id>/<repo>@<repo_id>:<context>
+  # e.g. repo:AdventureAsia365-Ecosys@276539096/AA-CIS-Infra@1212290412:pull_request (also seen in
+  # CloudTrail, AA-588). A plain "repo:<org>/<repo>:*" pattern does NOT match that form. Pinning the
+  # numeric org + repo ids means a renamed or re-created repo cannot inherit these roles. If a repo
+  # turns the immutable subject off, or is renamed or re-created, the roles stop trusting it (fail
+  # closed): re-read the sub prefix with the API call above and update these two values.
   oidc_sub_cis_app   = "repo:AdventureAsia365-Ecosys@276539096/AA-CIS-App@1212291079"
   oidc_sub_cis_infra = "repo:AdventureAsia365-Ecosys@276539096/AA-CIS-Infra@1212290412"
 
@@ -55,8 +64,8 @@ locals {
 
   # Roles that match tf_managed_role_arns but that the apply role must not write or pass: the app
   # deploy role created here (its permissions are the whole point of the split) and the agent
-  # session role (humans' agent shells). The legacy aa-cis-dev-role is handled separately (it may be
-  # dismantled, never edited upward or passed).
+  # session role (humans' agent shells). The retired aa-cis-dev-role is handled separately (a
+  # tombstone deny, DenyLegacyCiRoleWrites).
   tf_apply_protected_role_arns = [
     "arn:aws:iam::${var.account_id}:role/${local.app_deploy_role_name}",
     "arn:aws:iam::${var.account_id}:role/${local.name_prefix}-agent-session",
@@ -170,15 +179,14 @@ data "aws_iam_policy_document" "tf_apply_boundary" {
     resources = local.tf_apply_protected_role_arns
   }
 
-  # Legacy aa-cis-dev-role: no boundary and IAM rights on "*", so editing its trust or passing it
-  # would be a direct escalation. Only the actions that take it apart (step 3) stay possible.
+  # Retired aa-cis-dev-role (step 3, S239): a tombstone. The name matches aa-*-dev-*, and
+  # AA-CIS-App's repo-level AWS_ROLE_ARN secret may still point at it, so a role re-created under
+  # this name with a GitHub trust would silently become usable again by any AA-CIS-App job without
+  # an environment (pull_request included). Every role write and PassRole on it is denied.
   statement {
-    sid    = "DenyLegacyCiRoleWrites"
-    effect = "Deny"
-    actions = [
-      for a in local.iam_role_write_actions : a
-      if !contains(["iam:DeleteRole", "iam:DetachRolePolicy", "iam:DeleteRolePolicy"], a)
-    ]
+    sid       = "DenyLegacyCiRoleWrites"
+    effect    = "Deny"
+    actions   = local.iam_role_write_actions
     resources = [local.legacy_cicd_role_arn]
   }
 
@@ -211,10 +219,10 @@ data "aws_iam_policy_document" "tf_apply_boundary" {
     }
   }
 
-  # Phase 3 switch (docs/ci-role-split.md): once every aa-*-dev-* role carries the workload
-  # boundary, also require it on policy writes to existing roles. Off by default: step 4 bounds
-  # the CI-managed roles, but the legacy aa-cis-dev-role stays unbounded until step 3 removes it,
-  # and this deny would block that removal (Detach/DeleteRolePolicy). Turn it on in or after step 3.
+  # Phase 3 switch (docs/ci-role-split.md): every aa-*-dev-* role the apply role may write carries
+  # the workload boundary (step 4), so also require it on policy writes to existing roles. On since
+  # step 3 (S239), which removed the last unbounded role in the pattern (aa-cis-dev-role). The agent
+  # session role is still unbounded but protected (DenyProtectedRoleWrites denies every write).
   # UpdateAssumeRolePolicy and PassRole cannot be conditioned on iam:PermissionsBoundary (AWS does
   # not populate that key for them), so they are not in this statement: once every role carries
   # the workload boundary, passing or re-trusting one only ever yields bounded rights.
@@ -515,8 +523,8 @@ resource "aws_iam_role" "tf_apply" {
   })
 }
 
-# Same managed policies as aa-cis-dev-role (10, the default per-role quota), so the apply role can
-# refresh and change everything the old role could.
+# Same managed policies as the retired aa-cis-dev-role (10, the default per-role quota), so the
+# apply role can refresh and change everything the old role could.
 resource "aws_iam_role_policy_attachment" "tf_apply_managed" {
   for_each   = toset(local.cicd_managed_policies)
   role       = aws_iam_role.tf_apply.name

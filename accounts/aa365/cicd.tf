@@ -8,56 +8,16 @@ resource "aws_iam_openid_connect_provider" "github_actions" {
   thumbprint_list = [data.tls_certificate.github_actions.certificates[0].sha1_fingerprint]
 }
 
-locals {
-  # GitHub OIDC subjects allowed to assume aa-cis-dev-role (AA-678, S235).
-  #
-  # Both repos have GitHub's immutable subject claim ON ("use_immutable_subject": true, read
-  # 14/10/2026 via GET /repos/{owner}/{repo}/actions/oidc/customization/sub), so the sub is
-  #   repo:<org>@<org_id>/<repo>@<repo_id>:<context>
-  # e.g. repo:AdventureAsia365-Ecosys@276539096/AA-CIS-Infra@1212290412:pull_request (also seen in
-  # CloudTrail, AA-588). A plain "repo:<org>/<repo>:*" pattern does NOT match that form (the
-  # AA-588 AccessDenied). Pinning the numeric org + repo ids means no org/repo-name wildcard is
-  # needed and a renamed or re-created repo cannot inherit this role. The trailing "*" is the
-  # context, which must stay open because the callers use three forms:
-  #   AA-CIS-App   deploy-dev.yml (build-and-push, deploy) + eval-regression.yml -> environment:dev
-  #   AA-CIS-Infra terraform-plan.yml                                            -> pull_request
-  #   AA-CIS-Infra terraform-apply.yml + db-migrate.yml                          -> environment:prod
-  # AA-TripPlanner-Web uses its own aa-tripplanner-dev-app-deploy role (tripplanner.tf), and
-  # AA-Booking will get its own aa-booking-dev-app-deploy role (booking.tf). Do NOT add them here.
-  # If a repo turns the immutable subject off, or is renamed or re-created, this role stops
-  # trusting it (fail closed): re-read the sub prefix with the API call above and update the list.
-  cicd_oidc_subjects = [
-    "repo:AdventureAsia365-Ecosys@276539096/AA-CIS-App@1212291079:*",
-    "repo:AdventureAsia365-Ecosys@276539096/AA-CIS-Infra@1212290412:*",
-  ]
-}
-
-resource "aws_iam_role" "cicd" {
-  name = "aa-cis-dev-role"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect    = "Allow"
-      Principal = { Federated = aws_iam_openid_connect_provider.github_actions.arn }
-      Action    = "sts:AssumeRoleWithWebIdentity"
-      Condition = {
-        StringEquals = {
-          "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
-        }
-        # AA-678 (S235, 14/10/2026): trust ONLY the two repos that assume this role. It used to
-        # trust "repo:AdventureAsia365-Ecosys*/*:*" (every repo in the org), so any new org repo
-        # (AA-Booking next) would have inherited RDS/Secrets/ECS full access and iam:CreateRole/
-        # PassRole on "*". Each repo now gets its exact immutable subject prefix, see
-        # local.cicd_oidc_subjects above.
-        StringLike = {
-          "token.actions.githubusercontent.com:sub" = local.cicd_oidc_subjects
-        }
-      }
-    }]
-  })
-}
-
+# AA-806 step 3 (S239): the legacy shared CI role aa-cis-dev-role (aws_iam_role.cicd, its 10
+# managed attachments, the CISDevInlinePolicy inline policy, local.cicd_oidc_subjects and output
+# cicd_role_arn) is retired. Its last AssumeRoleWithWebIdentity was 14/10/2026 (CloudTrail); every
+# CI job now uses a per-job role from cicd_split.tf, tripplanner.tf or booking.tf.
+#
+# The two lists below are no longer attached to any role in this file: they are the grant set of
+# the Terraform apply role aa-cis-infra-tf-apply (cicd_split.tf), which takes
+# local.cicd_managed_policies as-is and local.cicd_inline_statements minus
+# local.tf_apply_superseded_sids. Editing either list changes a bootstrap object (the apply role
+# cannot rewrite its own policy), so such a change is applied locally with the MFA admin profile.
 locals {
   cicd_managed_policies = [
     "arn:aws:iam::aws:policy/AmazonRDSFullAccess",
@@ -73,15 +33,8 @@ locals {
   ]
 }
 
-resource "aws_iam_role_policy_attachment" "cicd_managed" {
-  for_each   = toset(local.cicd_managed_policies)
-  role       = aws_iam_role.cicd.name
-  policy_arn = each.value
-}
-
-# AA-806: the statement list lives in a local so the new Terraform apply role (cicd_split.tf) can
-# reuse it (minus the statements it replaces with name-scoped versions). The rendered policy of
-# aa-cis-dev-role is unchanged apart from the IAMPolicyRead statement added at the end.
+# AA-806: statement list of the apply role (see above). Sids that the apply role replaces with
+# name-scoped versions are listed in local.tf_apply_superseded_sids and dropped there.
 locals {
   cicd_inline_statements = [
     {
@@ -457,7 +410,7 @@ locals {
     {
       # AA-806: the permissions-boundary policies in cicd_split.tf are customer managed policies.
       # Refreshing them during plan needs these read verbs (no IAM policy existed in this stack
-      # before, so this role never had them).
+      # before AA-806).
       Sid    = "IAMPolicyRead"
       Effect = "Allow"
       Action = [
@@ -470,18 +423,4 @@ locals {
       Resource = "*"
     },
   ]
-}
-
-resource "aws_iam_role_policy" "cicd_inline" {
-  name = "CISDevInlinePolicy"
-  role = aws_iam_role.cicd.id
-
-  policy = jsonencode({
-    Version   = "2012-10-17"
-    Statement = local.cicd_inline_statements
-  })
-}
-
-output "cicd_role_arn" {
-  value = aws_iam_role.cicd.arn
 }

@@ -201,9 +201,11 @@ variable "waf_common_rules_count_only" {
 
 # AA-806: phase 3 of the CI role split (docs/ci-role-split.md). When true, the Terraform apply
 # role's boundary also requires the workload boundary on role policy writes (Put/Delete/Attach/
-# DetachRolePolicy), not only on CreateRole. Leave false until every aa-*-dev-* role carries
-# aws_iam_policy.workload_boundary, or every policy change to an existing role is denied.
+# DetachRolePolicy), not only on CreateRole. Requires every aa-*-dev-* role the apply role writes to
+# carry aws_iam_policy.workload_boundary (step 4, S237), or every policy change to such a role is
+# denied. Turned on in step 3 (S239), together with the removal of the unbounded aa-cis-dev-role.
+# The boundary policy is a bootstrap object: flipping this is a local MFA admin apply.
 variable "tf_apply_require_boundary_on_role_policy_writes" {
   type    = bool
-  default = false
+  default = true
 }
