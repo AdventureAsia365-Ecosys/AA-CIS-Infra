@@ -335,7 +335,8 @@ resource "aws_cloudwatch_metric_alarm" "rds_cpu_surplus_credits_charged" {
 #   ~8,640 PutMetricData calls/month (one per 5 min)            x $0.01/1k = $0.09
 #   ~8,640 Scheduler -> Lambda invocations (dfs_balance.tf): Scheduler $0 (14M free), Lambda ~$0.02,
 #   Secrets Manager read ~$0.04, API GW + WAF requests ~$0.04
-#   Total about $2.70/month.
+#   + 1 "sampling stopped" alarm (end of file)           1 x $0.10 = $0.10
+#   Total about $2.80/month.
 # -----------------------------------------------------------------------------
 
 # ReadLatency / WriteLatency are published in SECONDS: 0.020 = 20 ms, averaged over 15 minutes.
@@ -463,4 +464,27 @@ resource "aws_iam_role_policy" "cis_ecs_task_put_metric_aa_rds" {
       Condition = { StringEquals = { "cloudwatch:namespace" = "AA/RDS" } }
     }]
   })
+}
+
+# The per-role alarms treat missing data as OK, so a stopped schedule, a failing job (IAM, worker
+# down) or a sample stuck behind a wave backlog would leave them silently green. This alarm makes
+# that gap visible: no RoleConnections sample for the always-present aa_app_user role in 3 x 15
+# minutes = ALARM (missing data = breaching). The job publishes every limited role in one call, so
+# one role stands for all of them. +$0.10/month (total for AA-832 about $2.80/month).
+resource "aws_cloudwatch_metric_alarm" "rds_role_connections_sampling_stopped" {
+  alarm_name          = "${local.name_prefix}-rds-role-connections-sampling-stopped"
+  alarm_description   = "No AA/RDS RoleConnections sample for 45 minutes: the ops_rds_role_connections schedule or job (CIS worker) is not publishing, so the per-role connection alarms are blind. Check /admin/job-runner for the kind and the ops-probe Lambda logs."
+  namespace           = "AA/RDS"
+  metric_name         = "RoleConnections"
+  dimensions          = { Role = "aa_app_user" }
+  statistic           = "SampleCount"
+  period              = 900
+  evaluation_periods  = 3
+  comparison_operator = "LessThanThreshold"
+  threshold           = 1
+  treat_missing_data  = "breaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
+
+  tags = merge(local.ecosys_tags, { App = "shared" })
 }
