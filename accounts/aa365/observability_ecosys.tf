@@ -328,10 +328,12 @@ resource "aws_cloudwatch_metric_alarm" "rds_cpu_surplus_credits_charged" {
 # AA-832 — the remaining RDS rows of data standard C4.1 (03-scaling.md), and per-role connections.
 #
 # Cost (us-west-1 list prices; re-counted in S240 for AA-751, which replaced the sampling chain):
-#   Custom metrics: the first 10 per account are free. acc2 had 7 before AA-751 (AA/RDS 6 =
-#   RoleConnections + RoleConnectionLimitPct x 3 roles, ACP/Pipeline 1); AA-751 adds 4
-#   (AA/Jobs/CIS + AA/Jobs/Booking, 2 metrics each, no dimensions) -> 11, so 1 is billable:
-#                                                                1 x $0.30 = $0.30
+#   Custom metrics: the first 10 per account are free. acc2 publishes AA/RDS 6 (RoleConnections +
+#   RoleConnectionLimitPct x 3 roles) + AA-751's 4 (AA/Jobs/CIS + AA/Jobs/Booking, 2 metrics each, no
+#   dimensions) = 10. The old console-made log metric filter ACP/Pipeline T3FallbackUsedCount (AA-296,
+#   never fired, alarm with no actions) was deleted on 16/10/2026, so all 10 are free: $0. A metric is
+#   billed only while it receives data; the aa-cis/ops log-write-failure filters have no default value,
+#   so they cost nothing until a write actually fails.
 #   Alarms: acc2 already has more than the 10 free (42 on 16/10/2026), so every one is $0.10:
 #   AA-832 8 (4 below + 3 per-role + "sampling stopped")         8 x $0.10 = $0.80
 #   AA-751 6 (3 job backlog alarms x 2 owners, end of file)      6 x $0.10 = $0.60
@@ -340,7 +342,7 @@ resource "aws_cloudwatch_metric_alarm" "rds_cpu_surplus_credits_charged" {
 #   Sampling runs in process (CIS api ops_metrics_sampler, Booking JobMetricsSampler), so there is
 #   no Scheduler -> Lambda -> API Gateway / WAF / Secrets Manager traffic for it any more (the
 #   AA-832 every-5-minutes schedule is gone from dfs_balance.tf).
-#   Total about $1.75/month for the AA-832 + AA-751 alarms and metrics.
+#   Total about $1.40/month for the AA-832 + AA-751 alarms (metrics free).
 # -----------------------------------------------------------------------------
 
 # ReadLatency / WriteLatency are published in SECONDS: 0.020 = 20 ms, averaged over 15 minutes.
@@ -517,7 +519,7 @@ resource "aws_cloudwatch_metric_alarm" "rds_role_connections_sampling_stopped" {
 # The Booking sampling-stopped alarm ALSO fires whenever Booking is scaled to 0 (its normal Dev
 # state, booking.tf desired_count 0) or its worker is off (WORKER_ENABLED false): that is expected,
 # not an incident. The CIS one fires while the CIS api is scaled to 0.
-# Cost: in the AA-832 cost block above (6 alarms, 4 metrics of which 1 billable).
+# Cost: in the AA-832 cost block above (6 alarms x $0.10; the 4 metrics are inside the free 10).
 # IAM: CIS via cis_ecs_task_put_metric_aa_rds above (namespace AA/Jobs/CIS); Booking via
 # booking_ecs_task_put_metric_jobs below (namespace AA/Jobs/Booking only).
 # Rollout (split apply, docs/implementation-notes/AA-751.md): IAM first, then the CIS and Booking
