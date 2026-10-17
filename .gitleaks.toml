@@ -49,6 +49,7 @@ keywords = ["password", "passwd", "api_key", "apikey", "access_key", "secret_key
     '''(?i)^(?:replace_me|change_?me|placeholder|redacted|example|dummy|test|xxx+|\*+|\.\.\.)$''',
     '''\$\{''',  # any HCL interpolation, e.g. creation_token = "${local.name_prefix}-efs"
     '''^<[^>]*>$''',
+    '''^(?:seconds|minutes|hours|days)$''',  # Cognito token_validity_units (access_token = "minutes")
   ]
 
 # Global allowlist: binary build outputs and provider lock files (hashes, not secrets).
