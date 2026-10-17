@@ -1,0 +1,217 @@
+"""Static checks of the Infra-native role bootstrap files, db/migrations/roles/ (X1 plan S3, MIG-6, DM-8.1).
+
+They run as the RDS master, so review is the only gate besides these checks:
+  * no password in git, ever (SEC-2): passwords are written in the Console and set by DB Migrate
+    mode=set-password (X1 S17/S20);
+  * no SUPERUSER / BYPASSRLS / REPLICATION granted (only the NO… forms);
+  * memberships scoped by grantee (X1 plan §1.4: a policy TO r also applies to the members of r;
+    lesson S236; X1 review S241): aa_app_user is granted to no role at all, catalog_owner only to
+    db_migrator (the S22 login, which needs it for the catalog recipe: SET ROLE checks the session
+    user). Never to the master, cis_owner, cis_app, booking, tripplanner or any *_owner role;
+  * db_migrator's memberships equal db/owners.yaml migrator_member_of, which covers every owner role
+    and every set_local_roles target (the roles a file can be switched to after S22);
+  * rl-001 creates exactly the roles S3 lists, and restates the N3 limits with the values of CIS 234.
+
+Run: python3 -m unittest discover -s db/tests -v
+"""
+import re
+import sys
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(ROOT / "db"))
+
+import run_migration as rm  # noqa: E402
+
+ROLES = ROOT / "db" / "migrations" / "roles"
+RL001 = ROLES / "001_x1_owner_roles.sql"
+CIS234 = ROOT / "db" / "migrations" / "cis" / "234_connection_limits_pg_stat_statements.sql"
+# Granted role -> the only grantees allowed in a roles/ file (X1 plan §1.4, review S241). aa_app_user:
+# nobody (the tenant pool's policies would reach the member). catalog_owner: only db_migrator, whose
+# query results are never tenant evidence (the probe uses each runtime role's own login).
+MEMBERSHIP_GRANTEES = {"AA_APP_USER": frozenset(), "CATALOG_OWNER": frozenset({"DB_MIGRATOR"})}
+MEMBERSHIP_RE = re.compile(r"\bGRANT\b(?P<roles>[^;]*?)\bTO\b(?P<to>[^;]*)")
+# X1 plan S20: rl-002's membership line (kept here so the plan and the registry cannot drift apart).
+PLANNED_RL002 = """BEGIN;
+CREATE ROLE db_migrator LOGIN NOCREATEROLE NOCREATEDB NOBYPASSRLS CONNECTION LIMIT 5;
+GRANT bk_owner, tp_owner, cis_owner, catalog_owner, cis_app TO db_migrator;
+GRANT pg_read_all_stats TO db_migrator;
+COMMIT;
+"""
+
+
+def code_view(sql: str) -> str:
+    """Comments dropped, string literals replaced by '#<n>', DO bodies lexed as code, upper case."""
+    return rm._role_view(sql, [])
+
+
+def statements(view: str) -> list:
+    return [s.strip() for s in view.split(";") if s.strip()]
+
+
+def membership_grants(view: str) -> list:
+    """GRANT r[, …] TO x statements (role membership: no ON clause)."""
+    return [s for s in statements(view) if re.match(r"^GRANT\b", s) and not re.search(r"\bON\b", s)]
+
+
+def memberships(view: str) -> list:
+    """[(granted roles, grantees)] of every membership GRANT (no ON clause) in a code view, DO blocks
+    included (the lexer reads their bodies as code); WITH … / GRANTED BY … options dropped."""
+    out = []
+    for m in MEMBERSHIP_RE.finditer(view):
+        if re.search(r"\bON\b", m.group("roles")) or view[max(0, m.start() - 5):m.start()].rstrip().endswith("WITH"):
+            continue
+        to = re.split(r"\b(?:WITH|GRANTED)\b", m.group("to"), maxsplit=1)[0]
+        out.append(([r.strip() for r in m.group("roles").split(",") if r.strip()],
+                    [g.strip() for g in to.split(",") if g.strip()]))
+    return out
+
+
+def membership_violations(view: str) -> list:
+    bad = []
+    for granted, grantees in memberships(view):
+        for role in granted:
+            allowed = MEMBERSHIP_GRANTEES.get(role)
+            if allowed is None:
+                continue
+            for g in grantees:
+                if g not in allowed:
+                    bad.append(f"GRANT {role} TO {g}")
+    return bad
+
+
+def connection_limits(view: str) -> dict:
+    return {m.group(1).lower(): int(m.group(2))
+            for m in re.finditer(r"\bALTER ROLE (\w+)\b[^;]*?\bCONNECTION LIMIT (-?\d+)", view)}
+
+
+class EveryRolesFileTest(unittest.TestCase):
+    def files(self):
+        files = sorted(ROLES.glob("*.sql"))
+        self.assertTrue(files, "db/migrations/roles/ has no file")
+        return files
+
+    def test_no_password(self):
+        for f in self.files():
+            with self.subTest(file=f.name):
+                self.assertNotRegex(code_view(f.read_text(encoding="utf-8")), r"\bPASSWORD\b")
+
+    def test_no_superuser_bypassrls_or_replication(self):
+        for f in self.files():
+            with self.subTest(file=f.name):
+                # \b keeps NOSUPERUSER / NOBYPASSRLS / NOREPLICATION out of the match.
+                self.assertNotRegex(code_view(f.read_text(encoding="utf-8")),
+                                    r"\b(SUPERUSER|BYPASSRLS|REPLICATION)\b")
+
+    def test_memberships_scoped_by_grantee(self):
+        for f in self.files():
+            with self.subTest(file=f.name):
+                self.assertEqual(membership_violations(code_view(f.read_text(encoding="utf-8"))), [])
+
+
+class MembershipRuleTest(unittest.TestCase):
+    """The grantee-scoped rule itself (X1 review S241: the planned rl-002 must pass, the S236 cases fail)."""
+
+    def test_planned_rl002_passes(self):
+        self.assertEqual(membership_violations(code_view(PLANNED_RL002)), [])
+
+    def test_forbidden_grantees(self):
+        cases = {
+            "GRANT catalog_owner TO aa_cis_admin;": ["GRANT CATALOG_OWNER TO AA_CIS_ADMIN"],
+            "GRANT catalog_owner TO CURRENT_USER;": ["GRANT CATALOG_OWNER TO CURRENT_USER"],
+            "GRANT cis_owner, catalog_owner TO tp_owner;": ["GRANT CATALOG_OWNER TO TP_OWNER"],
+            "GRANT catalog_owner TO cis_app WITH ADMIN OPTION;": ["GRANT CATALOG_OWNER TO CIS_APP"],
+            "GRANT catalog_owner TO db_migrator, cis_owner;": ["GRANT CATALOG_OWNER TO CIS_OWNER"],
+            "GRANT aa_app_user TO db_migrator;": ["GRANT AA_APP_USER TO DB_MIGRATOR"],
+            "GRANT aa_app_user TO booking GRANTED BY aa_cis_admin;": ["GRANT AA_APP_USER TO BOOKING"],
+            "DO $$ BEGIN IF true THEN GRANT catalog_owner TO tripplanner; END IF; END $$;":
+                ["GRANT CATALOG_OWNER TO TRIPPLANNER"],
+        }
+        for sql, expected in cases.items():
+            with self.subTest(sql=sql):
+                self.assertEqual(membership_violations(code_view(sql)), expected)
+
+    def test_object_grants_are_not_memberships(self):
+        sql = ("GRANT SELECT ON catalog.v_tour TO catalog_owner;\nGRANT USAGE ON SCHEMA catalog TO aa_app_user;\n"
+               "GRANT SELECT ON ALL TABLES IN SCHEMA shared TO cis_app WITH GRANT OPTION;")
+        self.assertEqual(memberships(code_view(sql)), [])
+
+
+try:
+    import yaml
+except ImportError:                                  # optional outside CI (owners.yaml needs PyYAML)
+    yaml = None
+
+
+@unittest.skipIf(yaml is None, "PyYAML is not installed: migrator registry checks skipped")
+class MigratorMembershipTest(unittest.TestCase):
+    """db_migrator (X1 S20/S22) must reach every role a file can be switched to (X1 review S241):
+    SET ROLE checks the session user, so a missing membership is 42501 at apply."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.reg = yaml.safe_load((ROOT / "db" / "owners.yaml").read_text(encoding="utf-8"))
+        cls.members = set(cls.reg["migrator_member_of"])
+        cls.schema_owners = {k: v for k, v in cls.reg["owners"].items() if not v.get("native")}
+
+    def test_registry_covers_every_switch_target(self):
+        self.assertEqual(self.reg["migrator_role"], "db_migrator")
+        self.assertEqual(self.reg["migrator_member_of"], sorted(self.members))
+        for name, o in self.schema_owners.items():
+            with self.subTest(owner=name):
+                self.assertIn(o["owner_role"], self.members)
+                self.assertLessEqual(set(o["set_local_roles"]), self.members)
+        self.assertIn("pg_read_all_stats", self.members)
+        # Never the tenant pool, the master or the bypass roles (X1 plan §1.4, SEC-1).
+        self.assertFalse(self.members & {"aa_app_user", self.reg["master_role"], "rds_superuser",
+                                         "pg_read_all_data", "pg_write_all_data"})
+
+    def test_planned_rl002_grants_exactly_the_registry(self):
+        granted = {r.lower() for roles, to in memberships(code_view(PLANNED_RL002)) if to == ["DB_MIGRATOR"]
+                   for r in roles}
+        self.assertEqual(granted, self.members)
+
+    def test_roles_files_grant_db_migrator_exactly_the_registry(self):
+        views = [code_view(f.read_text(encoding="utf-8")) for f in sorted(ROLES.glob("*.sql"))]
+        created = any(re.search(r"\bCREATE ROLE DB_MIGRATOR\b", v) for v in views)
+        granted = {r.lower() for v in views for roles, to in memberships(v) if "DB_MIGRATOR" in to for r in roles}
+        if created:
+            self.assertEqual(granted, self.members)
+        else:
+            self.assertEqual(granted, set())            # rl-002 (X1 S20) not written yet
+
+
+class Rl001Test(unittest.TestCase):
+    view = code_view(RL001.read_text(encoding="utf-8"))
+
+    def test_creates_the_s3_roles(self):
+        self.assertRegex(self.view, r"\bCREATE ROLE BK_OWNER NOLOGIN\b")
+        self.assertRegex(self.view, r"\bCREATE ROLE TP_OWNER NOLOGIN\b")
+        self.assertRegex(self.view, r"\bCREATE ROLE CIS_APP LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS "
+                                    r"CONNECTION LIMIT 90\b")
+        self.assertNotRegex(self.view, r"\bCREATE ROLE (CIS_OWNER|DB_MIGRATOR)\b")    # rl-002, S20
+
+    def test_memberships(self):
+        grants = membership_grants(self.view)
+        self.assertIn("GRANT BK_OWNER, TP_OWNER TO AA_CIS_ADMIN", grants)
+        self.assertIn("GRANT CIS_APP TO AA_CIS_ADMIN", grants)
+        self.assertEqual(len(grants), 2, grants)
+
+    def test_n3_limits_match_cis_234(self):
+        n3 = connection_limits(code_view(CIS234.read_text(encoding="utf-8")))
+        self.assertEqual(set(n3), {"tripplanner", "booking", "aa_app_user"})
+        limits = connection_limits(self.view)
+        for role, limit in n3.items():
+            self.assertEqual(limits.get(role), limit, role)
+        self.assertEqual(limits.get("cis_app"), 90)
+
+    def test_registers_rl_001(self):
+        self.assertRegex(RL001.read_text(encoding="utf-8"),
+                         r"INSERT INTO shared\.schema_versions \(version, applied_at, description\)\s+"
+                         r"VALUES \('rl-001',")
+        self.assertRegex(self.view, r"ON CONFLICT \(VERSION\) DO NOTHING")
+
+
+if __name__ == "__main__":
+    unittest.main()

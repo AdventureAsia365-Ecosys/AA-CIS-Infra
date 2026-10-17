@@ -239,6 +239,9 @@ class FakeConn:
         return self.states[min(self.checks, len(self.states)) - 1]
 
     async def fetch(self, query, *args):
+        if query == rm.SET_ROLE_REACH_SQL:
+            self.reach_queries = getattr(self, "reach_queries", []) + [list(args[0])]
+            return [{"role": r} for r in args[0] if r not in self.members and r != self.login]
         if query == rm.OBJECTS_SQL:
             self.postchecks.append((list(args[0]), args[1]))
             if len(self.postchecks) == 1:
@@ -1111,6 +1114,112 @@ class CheckFilesTest(unittest.TestCase):
         out = io.StringIO()
         self.assertEqual(files.run(files.all_copies(root), root, out=out), 1)
         self.assertIn("DROP TABLE needs", out.getvalue())
+
+
+CATALOG_RECIPE_246 = """-- Migration 246: X1 S22 probe + one catalog view through the recipe.
+BEGIN;
+GRANT CREATE ON SCHEMA catalog TO catalog_owner;
+SET LOCAL ROLE catalog_owner;
+CREATE OR REPLACE VIEW catalog.v_x AS SELECT 1 AS x;
+SET LOCAL ROLE cis_owner;
+REVOKE CREATE ON SCHEMA catalog FROM catalog_owner;
+INSERT INTO shared.schema_versions (version, applied_at, description)
+VALUES ('246', now(), 'X1 probe') ON CONFLICT (version) DO NOTHING;
+COMMIT;
+"""
+
+GUARD_244 = """-- Migration 244: X1 cis_app guard block.
+BEGIN;
+INSERT INTO shared.schema_versions (version, applied_at, description)
+VALUES ('244', now(), 'X1 cis_app') ON CONFLICT (version) DO NOTHING;
+DO $$ BEGIN SET LOCAL ROLE cis_app; PERFORM 1; END $$;
+COMMIT;
+"""
+
+
+class CatalogFreezeLintTest(unittest.TestCase):
+    """X1 review (S241): catalog.* view DDL only as catalog_owner (S22 recipe); frozen until then."""
+
+    lint = RoleLintTest.lint
+    body = RoleLintTest.body
+
+    def test_recipe_passes(self):
+        self.assertEqual(self.lint(CATALOG_RECIPE_246, "cis/246_x1_set_role_probe.sql"), [])
+        self.assertEqual(rm.set_local_role_targets(CATALOG_RECIPE_246), ["catalog_owner", "cis_owner"])
+
+    def test_catalog_view_ddl_outside_the_recipe_is_refused(self):
+        for path, stmt in (
+                ("cis/246_x.sql", "CREATE OR REPLACE VIEW catalog.v_tour AS SELECT 1;"),
+                ("cis/246_x.sql", 'CREATE VIEW "catalog".v_new AS SELECT 1;'),
+                ("cis/246_x.sql", "DROP VIEW IF EXISTS catalog.v_tour;"),
+                ("cis/246_x.sql", "ALTER MATERIALIZED VIEW catalog.m RENAME TO m2;"),
+                ("cis/246_x.sql", "SET LOCAL ROLE catalog_owner;\nSET LOCAL ROLE cis_owner;\n"
+                                  "CREATE OR REPLACE VIEW catalog.v_tour AS SELECT 1;"),
+                ("booking/015_x.sql", "CREATE OR REPLACE VIEW catalog.v_tour AS SELECT 1;")):
+            with self.subTest(path=path, stmt=stmt):
+                errors = self.lint(self.body(stmt), path)
+                self.assertTrue(any("catalog.* view changes are frozen from X1 S1 until X1 S22" in e for e in errors),
+                                errors)
+
+    def test_old_catalog_dance_names_the_freeze(self):
+        errors = self.lint(self.body("GRANT catalog_owner TO CURRENT_USER;"), "cis/246_x.sql")
+        self.assertTrue(any("belongs in db/migrations/roles/" in e and "frozen from X1 S1 until X1 S22" in e
+                            for e in errors), errors)
+
+    def test_files_at_or_below_the_head_are_not_linted(self):
+        self.assertEqual(self.lint(self.body("CREATE OR REPLACE VIEW catalog.v_tour AS SELECT 1;"),
+                                   "cis/235_catalog_v_tour_place_lateral_day_text.sql"), [])
+
+
+class SetRoleReachTest(unittest.TestCase):
+    """X1 review (S241): every SET LOCAL ROLE target must be reachable from the login role (PostgreSQL
+    checks the session user), found at `check` time, not as 42501 at apply."""
+
+    run_task = RunTaskTest.run_task
+
+    def test_reach_sql_shape_is_pinned(self):
+        q = rm.SET_ROLE_REACH_SQL
+        self.assertIn("pg_catalog.pg_has_role(session_user, r.oid, 'MEMBER')", q)
+        self.assertIn("r.oid IS NULL", q)          # a missing role is reported, pg_has_role never sees its name
+
+    def test_catalog_recipe_refused_while_the_login_is_the_master(self):
+        for mode in ("check", "apply"):
+            with self.subTest(mode=mode):
+                conn = FakeConn(owners={**TODAY_OWNERS, "shared": "cis_owner"}, members={"cis_owner"})
+                code, conn, _, log = self.run_task(CATALOG_RECIPE_246, mode=mode, file="cis/246_x1_set_role_probe.sql",
+                                                   version="246", conn=conn)
+                self.assertEqual((code, conn.executed), (8, []), log)
+                self.assertIn("SET LOCAL ROLE catalog_owner` but the login role aa_cis_admin is not a member", log)
+                self.assertIn("catalog.* view changes are frozen from X1 S1 until X1 S22", log)
+
+    def test_catalog_recipe_runs_as_db_migrator(self):
+        conn = FakeConn(login="db_migrator", owners={**TODAY_OWNERS, "shared": "cis_owner"},
+                        members={"cis_owner", "catalog_owner"})
+        code, conn, _, log = self.run_task(CATALOG_RECIPE_246, mode="check", file="cis/246_x1_set_role_probe.sql",
+                                           version="246", conn=conn)
+        self.assertEqual(code, 0, log)
+        self.assertEqual(conn.reach_queries, [["catalog_owner", "cis_owner"]])
+
+    def test_cis_app_guard_needs_cis_app_membership(self):
+        # Before S22 the master is a member of cis_app (rl-001); from S22 db_migrator must be (rl-002).
+        conn = FakeConn(members={"cis_app"})
+        self.assertEqual(self.run_task(GUARD_244, mode="check", file="cis/244_x1_cis_app_runtime.sql",
+                                       version="244", conn=conn)[0], 0)
+        conn = FakeConn(login="db_migrator", owners={**TODAY_OWNERS, "shared": "cis_owner"}, members={"cis_owner"})
+        code, conn, _, log = self.run_task(GUARD_244, mode="check", file="cis/247_x.sql", version="247", conn=conn)
+        self.assertEqual(code, 8, log)
+        self.assertIn("SET LOCAL ROLE cis_app` but the login role db_migrator is not a member", log)
+        self.assertIn("migrator_member_of", log)
+
+    def test_not_checked_below_the_head_or_without_targets(self):
+        conn = FakeConn(applied="2026-10-10")
+        code, conn, _, log = self.run_task(CATALOG_RECIPE_246, mode="check", conn=conn, version="235",
+                                           file="cis/235_catalog_v_tour_place_lateral_day_text.sql")
+        self.assertEqual(code, 0, log)
+        self.assertFalse(hasattr(conn, "reach_queries"))
+        code, conn, _, log = self.run_task(PLAIN, mode="check", file="cis/246_x.sql", version="246")
+        self.assertEqual(code, 0, log)
+        self.assertFalse(hasattr(conn, "reach_queries"))
 
 
 if __name__ == "__main__":
