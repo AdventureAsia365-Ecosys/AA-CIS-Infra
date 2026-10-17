@@ -63,18 +63,24 @@ names included), role switches in dynamic SQL (EXECUTE: every string piece of th
 pieces joined, format() filled in, and half-keyword pieces such as 'RESET ' || 'ROLE'),
 `CREATE/ALTER/DROP EXTENSION` or `ROLE` (→ `roles/`), no role membership GRANT/REVOKE; `SET LOCAL
 ROLE` only to the dir's allowlist (cis: catalog_owner, cis_owner, cis_app; booking/tripplanner:
-none); no DEFERRABLE / INITIALLY DEFERRED constraint trigger and no `SET CONSTRAINTS … DEFERRED` (also
+none); DDL on a catalog.* view only after `SET LOCAL ROLE catalog_owner` (the S22 catalog recipe);
+no DEFERRABLE / INITIALLY DEFERRED constraint trigger and no `SET CONSTRAINTS … DEFERRED` (also
 inside string literals: '…' function bodies, dynamic SQL). Such a file is also one BEGIN … COMMIT
 block, or a `-- migrate: no-transaction` file whose last statement is a plain literal
 `INSERT INTO shared.schema_versions … VALUES (…)`, the shapes the switch needs, so a wrong shape fails
 in the PR rather than with exit 8 at apply. Obfuscated dynamic
 SQL (chr(), reverse(), …) is beyond a lint; the post-check is the backstop.
+Before running such a file (check and apply), the login role must be a member of every `SET LOCAL
+ROLE` target (PostgreSQL checks the session user), else exit 8: this is where the catalog.* view
+freeze from S1 to S22 bites (the master is not a member of catalog_owner and never becomes one; from
+S22 db_migrator is), and where a db_migrator without cis_app would show up.
 
 Exit codes: 0 ok · 2 sha256 mismatch · 3 file ran but did not register · 4 lint error ·
 5 destructive apply without a snapshot · 6 PostgreSQL error (lock/statement timeout included) ·
 7 apply refused: a job table is busy or a rerun wave is open · 8 role refused (roles/ under a
 non-master login, login not a member of the live owner, the owner cannot register the version,
-unknown dir, or a file that cannot run under the switch) · 9 ownership post-check failed (rolled
+unknown dir, a file that cannot run under the switch, or a `SET LOCAL ROLE` target the login role
+is not a member of) · 9 ownership post-check failed (rolled
 back; for a no-transaction file the statements before the registration stay committed and the
 version is not registered), or the check after COMMIT found something that ran at COMMIT (committed
 and registered: clean up by hand).
@@ -182,6 +188,12 @@ IS_MEMBER_SQL = "SELECT pg_has_role(session_user, $1, 'MEMBER')"
 # (plan S4: 243 grants USAGE on shared + SELECT, INSERT on shared.schema_versions to bk_owner/tp_owner).
 CAN_REGISTER_SQL = ("SELECT pg_catalog.has_schema_privilege($1, 'shared', 'USAGE') "
                     "AND pg_catalog.has_table_privilege($1, 'shared.schema_versions', 'INSERT')")
+# `SET LOCAL ROLE r` inside a file: PostgreSQL checks the SESSION user's membership in r, not the role
+# the runner switched to. The roles of $1 the login role cannot SET ROLE to (missing or not a member).
+SET_ROLE_REACH_SQL = ("SELECT t.role FROM pg_catalog.unnest($1::text[]) AS t(role) "
+                      "LEFT JOIN pg_catalog.pg_roles r ON r.rolname OPERATOR(pg_catalog.=) t.role "
+                      "WHERE r.oid IS NULL OR NOT pg_catalog.pg_has_role(session_user, r.oid, 'MEMBER') "
+                      "ORDER BY 1")
 # Ownership post-check (plan S1 item 5, hardened after review). Snapshot of everything that has an
 # owner (every schema but pg_catalog, information_schema, pg_toast and temp schemas) plus the role
 # catalog, taken before the file (as the login role) and again after the runner's RESET ROLE.
@@ -315,6 +327,19 @@ SWITCH_FRAGMENT_RE = re.compile(
     r"^\s*(?:ROLE|SESSION(?:\s+|_)AUTHORIZATION)\b|\b(?:SET|RESET)\s*$|%[0-9$]*[SIL]\s+(?:ROLE|SESSION)\b",
     re.IGNORECASE)
 GRANT_RE = re.compile(r"\b(GRANT|REVOKE)\b")
+# catalog.* views belong to catalog_owner (CIS 225). DDL on one runs only as catalog_owner (the S22
+# catalog recipe), and only once the DB Migrate login is a member of catalog_owner (db_migrator, X1
+# S22). The master is not a member since 225 and must never become one (X1 plan §1.4), so from S1 to
+# S22 catalog.* view changes are frozen (X1 review, S241): the lint asks for the recipe, the runner's
+# membership pre-check (SET_ROLE_REACH_SQL) refuses it at `check` time while the login is the master.
+CATALOG_VIEW_DDL_RE = re.compile(
+    r"\b(?:CREATE(?:\s+OR\s+REPLACE)?(?:\s+(?:TEMP|TEMPORARY|RECURSIVE))*|ALTER|DROP)\s+(?:MATERIALIZED\s+)?"
+    r"VIEW\s+(?:IF\s+(?:NOT\s+)?EXISTS\s+)?CATALOG\s*\.")
+CATALOG_FREEZE = ("catalog.* view changes are frozen from X1 S1 until X1 S22: a cis/ file changes a catalog view "
+                  "only with the catalog recipe (GRANT CREATE ON SCHEMA catalog TO catalog_owner; SET LOCAL ROLE "
+                  "catalog_owner; …; SET LOCAL ROLE cis_owner; REVOKE CREATE …), which needs the DB Migrate login "
+                  "to be a member of catalog_owner — db_migrator from S22; the master never is (X1 plan §1.4, "
+                  "AA-CIS-App CONTEXT.md)")
 # Work queued for COMMIT runs after the post-check, as whatever role is current then (review S241,
 # round 2). The runner settles it under the owner role before RESET ROLE (SETTLE_ROUNDS); the lint
 # refuses the deferral itself in files that may run under the switch (belt and braces).
@@ -664,31 +689,56 @@ def registration_error(sql: str) -> str:
             f"call, subquery or cast (X1)")
 
 
+def _set_role_matches(code: str, strings: list) -> list:
+    """[(position, scope, role name lower case)] of the SET [SESSION|LOCAL] ROLE statements of a code
+    view; `UPDATE … SET role = …` (a column) is not one."""
+    found = []
+    for m in SET_ROLE_RE.finditer(code):
+        segment = code[:m.start()].rsplit(";", 1)[-1]
+        if re.search(r"\bUPDATE\b", segment):              # UPDATE … SET role = … (a column)
+            continue
+        raw = m.group(2) or ""
+        name = strings[int(raw[2:-1])] if raw.startswith("'#") else raw.strip('"')
+        found.append((m.start(), m.group(1), name.lower()))
+    return found
+
+
+def set_local_role_targets(sql: str) -> list:
+    """Every role a file switches to with `SET LOCAL ROLE` (literal targets; the lint refuses the rest)."""
+    names = set()
+    for s in split_statements(sql):
+        strings: list = []
+        names.update(n for _p, scope, n in _set_role_matches(_role_view(s.text, strings), strings)
+                     if scope == "LOCAL" and n)
+    return sorted(names)
+
+
 def role_lint(sql: str, owner_dir: str) -> list:
     """X1 role rules for one file of an owner dir (cis/, booking/, tripplanner/), plan S1 item 6."""
     allowed = OWNER_DIRS[owner_dir].set_local_roles
     allowed_txt = ", ".join(sorted(allowed)) or "none"
     errors = []
+    current = None                         # the last SET LOCAL ROLE target, in file order
     for s in split_statements(sql):
         strings: list = []
         code = _role_view(s.text, strings)
         here = f"line {s.line}"
-        for m in SET_ROLE_RE.finditer(code):
-            segment = code[:m.start()].rsplit(";", 1)[-1]
-            if re.search(r"\bUPDATE\b", segment):          # UPDATE … SET role = … (a column)
+        events = [(pos, "set", scope, name) for pos, scope, name in _set_role_matches(code, strings)]
+        events += [(m.start(), "ddl", None, None) for m in CATALOG_VIEW_DDL_RE.finditer(code)]
+        for _pos, what, scope, name in sorted(events, key=lambda e: e[0]):
+            if what == "ddl":
+                if current != "catalog_owner":
+                    errors.append(f"{here}: DDL on a catalog.* view runs only as catalog_owner, after `SET LOCAL "
+                                  f"ROLE catalog_owner` — {CATALOG_FREEZE}")
                 continue
-            scope, raw = m.group(1), (m.group(2) or "")
-            if raw.startswith("'#"):
-                name = strings[int(raw[2:-1])]
-            else:
-                name = raw.strip('"')
-            name = name.lower()
             if scope != "LOCAL":
                 errors.append(f"{here}: `SET {scope + ' ' if scope else ''}ROLE` outlives the transaction: only "
                               f"`SET LOCAL ROLE` is allowed in a migration (X1)")
             elif name not in allowed:
                 errors.append(f"{here}: `SET LOCAL ROLE {name or '?'}` is not allowed in {owner_dir}/ "
                               f"(allowed: {allowed_txt}; db/owners.yaml set_local_roles)")
+            if scope == "LOCAL":
+                current = name
         for rx, why in ROLE_SWITCH_RES:
             if rx.search(code):
                 errors.append(f"{here}: {why}")
@@ -700,7 +750,8 @@ def role_lint(sql: str, owner_dir: str) -> list:
                 errors.append(f"{here}: set_config('{strings[int(m.group(1))].strip()}', …) switches the role: "
                               f"not allowed in a migration")
         for g in _membership_grants(code):
-            errors.append(f"{here}: role membership `{g[:80]}` belongs in db/migrations/roles/ (DM-8.1)")
+            hint = f" — {CATALOG_FREEZE}" if re.search(r"\bCATALOG_OWNER\b", g) else ""
+            errors.append(f"{here}: role membership `{g[:80]}` belongs in db/migrations/roles/ (DM-8.1){hint}")
         errors.extend(_dynamic_errors(code, strings, here))
         errors.extend(_deferral_errors(code, strings, here))
     return errors
@@ -928,6 +979,33 @@ async def resolve_role(conn, owner_dir: str) -> RolePlan:
     return plan
 
 
+async def set_role_reach_error(conn, sql: str, file: str, plan: RolePlan) -> str:
+    """'' when the login role may `SET LOCAL ROLE` to every target of the file (linted owner-dir files
+    only: at or above role_lint_from). PostgreSQL checks the session user's membership, so a target
+    the login role is not a member of fails at apply with 42501 "permission denied to set role" — found
+    here instead, in `check` mode too (X1 review, S241): catalog_owner while the login is the master
+    (catalog view freeze until S22), cis_app once the login is db_migrator (rl-002 must grant it)."""
+    owner_dir, number = migration_path(file)
+    od = OWNER_DIRS.get(owner_dir)
+    if od is None or number is None or number < od.role_lint_from:
+        return ""
+    targets = set_local_role_targets(sql)
+    if not targets:
+        return ""
+    missing = [r["role"] for r in await conn.fetch(SET_ROLE_REACH_SQL, targets)]
+    if not missing:
+        return ""
+    hints = []
+    if "catalog_owner" in missing:
+        hints.append(CATALOG_FREEZE)
+    if set(missing) - {"catalog_owner"}:
+        hints.append("memberships of the DB Migrate login come from db/migrations/roles/ (db/owners.yaml "
+                     "migrator_member_of: rl-001 for the master, rl-002 for db_migrator)")
+    return (f"the file runs `SET LOCAL ROLE {', '.join(missing)}` but the login role {plan.login} is not a member "
+            f"(SET ROLE checks the session user): it would fail at apply with 42501; nothing ran. "
+            + "; ".join(hints))
+
+
 def transaction_parts(sql: str) -> tuple:
     """(begin, body, commit, error) of a file that is exactly one BEGIN … COMMIT block. The switched
     path needs it: the runner's SET LOCAL ROLE goes right after BEGIN and its RESET ROLE + post-check
@@ -1116,6 +1194,10 @@ async def run_task(env=None, fetch=_fetch, connect=_connect, sleep=asyncio.sleep
             if shape_error:
                 log(f"ERROR: role: {shape_error}")
                 return 8
+        reach_error = await set_role_reach_error(conn, sql, file, plan)
+        if reach_error:
+            log(f"ERROR: role: {reach_error}")
+            return 8
         log(f"ran as: {plan.run_as}{' (check mode: the role apply uses)' if mode != 'apply' else ''} — {plan.why}")
         latest = await conn.fetchval(
             "SELECT version FROM shared.schema_versions WHERE version ~ $1 ORDER BY version DESC LIMIT 1",

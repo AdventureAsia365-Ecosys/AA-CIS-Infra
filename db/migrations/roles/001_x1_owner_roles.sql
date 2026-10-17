@@ -29,9 +29,14 @@
 -- Cross-owner roles (tripplanner, booking, aa_app_user) are not guarded by IF EXISTS (schema-ownership
 -- rule 5): they exist on Dev and in every CI that replays CIS 234. Idempotent: re-running changes nothing.
 --
--- Rollback (only before the S8 train moves any ownership): a later roles/ file with
---   DROP ROLE IF EXISTS cis_app, tp_owner, bk_owner;
--- and the N3 limits stay (they are 234's values). No down migration (MIG-14).
+-- Rollback: a forward roles/ file (MIG-14, no down migration), prepared in AA-Ecosys
+-- docs/audits/2026-10-17-S241-x1/s3-undo/0NN_x1_rl001_undo.sql. A bare DROP ROLE fails ("some objects depend
+-- on it") once CIS 243 has granted USAGE on shared + SELECT, INSERT on shared.schema_versions to bk_owner /
+-- tp_owner (right after this file in the S8 train), and once CIS 244 has policies, grants and default
+-- privileges naming cis_app. The undo refuses while any of the three roles owns an object (after bk-014 /
+-- tp-013 their own undo files run first) or cis_app has a session, drops 243's key-guard trigger and
+-- function, then DROP OWNED BY cis_app, tp_owner, bk_owner (revokes their privileges, default-privilege
+-- entries and policy role references in this database) and DROP ROLE. The N3 limits stay (234's values).
 
 BEGIN;
 
