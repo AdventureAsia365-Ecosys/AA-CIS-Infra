@@ -209,7 +209,7 @@ resource "aws_iam_role_policy" "booking_ecs_execution" {
 
 # -----------------------------------------------------------------------------
 # Task role (the app process). DATABASE_URL is injected by the execution role. Grants: the SSM channel
-# for ECS Exec (debugging, same access path as CIS, SSM only) below, and SES send as
+# for ECS Exec (debugging, same access path as CIS, SSM only) and the exec session log writes below, and SES send as
 # var.ses_from_address through the transactional configuration set (ses.tf
 # aws_iam_role_policy.booking_ecs_task_ses_send, AA-811), and cloudwatch:PutMetricData into namespace
 # AA/Jobs/Booking only (observability_ecosys.tf aws_iam_role_policy.booking_ecs_task_put_metric_jobs,
@@ -243,6 +243,21 @@ resource "aws_iam_role_policy" "booking_ecs_task" {
           "ssmmessages:OpenDataChannel",
         ]
         Resource = "*"
+      },
+      {
+        # S241 D-07: the cluster sends ECS Exec session logs to one group (modules/ecs
+        # aws_cloudwatch_log_group.exec_sessions, logging OVERRIDE); the SSM agent in the task
+        # uploads them with this role. DescribeLogGroups takes no log group ARN (AWS ECS Exec guide).
+        Sid      = "EcsExecSessionLogDescribeGroups"
+        Effect   = "Allow"
+        Action   = ["logs:DescribeLogGroups"]
+        Resource = "*"
+      },
+      {
+        Sid      = "EcsExecSessionLogWrite"
+        Effect   = "Allow"
+        Action   = ["logs:CreateLogStream", "logs:DescribeLogStreams", "logs:PutLogEvents"]
+        Resource = "${module.ecs.exec_session_log_group_arn}:*"
       },
     ]
   })
