@@ -136,7 +136,9 @@ jobs:
 
       # MIG-12: the only undo for a destructive file that does not roll back all three apps. Taken on
       # every destructive apply dispatch (also when the version turns out to be applied already).
-      # Delete the snapshot by hand once the contract is confirmed (>= 14 days).
+      # AA-869: tagged aa:retain-until = today + 30 days (UTC); the daily rds-snapshot-expiry Lambda
+      # (accounts/aa365/rds_snapshot_expiry.tf) deletes it after that date. To keep it longer, move the
+      # tag forward or set aa:retain=keep.
       - name: Snapshot RDS before a destructive migration
         id: snapshot
         if: steps.file.outputs.destructive == 'true' && inputs.mode == 'apply'
@@ -145,12 +147,15 @@ jobs:
         run: |
           # run_attempt too: "Re-run jobs" keeps the run id, and a reused id fails create-db-snapshot.
           SNAP="db-migrate-${VERSION}-${{ github.run_id }}-${{ github.run_attempt }}"
+          RETAIN_UNTIL=$(date -u -d '+30 days' +%Y-%m-%d)
           aws rds create-db-snapshot --db-instance-identifier "$DB_INSTANCE" --db-snapshot-identifier "$SNAP" \
             --tags Key=purpose,Value=db-migrate-destructive Key=migration,Value="$MIGRATION" Key=run,Value="${{ github.run_id }}" \
+              Key=aa:retain-until,Value="$RETAIN_UNTIL" Key=aa:purpose,Value="db-migrate pre-apply $MIGRATION" \
+              Key=aa:source,Value=db-migrate \
             --query 'DBSnapshot.Status' --output text
           aws rds wait db-snapshot-available --db-snapshot-identifier "$SNAP"
           echo "id=$SNAP" >> "$GITHUB_OUTPUT"
-          echo "- snapshot \`$SNAP\` available (delete by hand after the contract is confirmed)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- snapshot \`$SNAP\` available (aa:retain-until $RETAIN_UNTIL, then expired automatically)" >> "$GITHUB_STEP_SUMMARY"
 
       # Presigned URLs (15 min) are created and used in this one step — a masked value in a
       # step output can be dropped by Actions, so they are never passed between steps.
