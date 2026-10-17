@@ -99,6 +99,16 @@ owners:
       - {grantee: tripplanner, privilege: SELECT,          object: "acp_contract.tour_atoms, acp_contract.v_active_tour_atoms (columns)", status: grandfathered, source: "180, 216"}
       - {grantee: tripplanner, privilege: SELECT,          object: "shared.destinations, shared.v_destination_photos, shared.v_tour_photos", status: grandfathered, source: "201"}
       - {grantee: tripplanner, privilege: SELECT,          object: gold_aa_internal.published_tours,     status: grandfathered, source: "tenant RLS read"}
+    # Grants to other owners' NOLOGIN owner roles (input for the X2 grant guard and the S2 probe's owner-role
+    # cell; not enforced yet). CIS 243 (X1 S4): what DB Migrate needs to register a Booking / TripPlanner file
+    # as its owner role (MIG-2) and what booking.v_schema_versions reads with its owner's rights. No grant
+    # option, no other privilege. The BEFORE INSERT key guard on the registry lets bk_owner insert only bk-
+    # keys and tp_owner only tp- keys; members of the registry owner insert any key, every other role none.
+    owner_grants:
+      - {grantee: bk_owner, privilege: USAGE,          object: "shared (schema)",      status: contract, source: "243 (MIG-2 self-registration)"}
+      - {grantee: bk_owner, privilege: "SELECT, INSERT", object: shared.schema_versions, status: contract, source: "243 (MIG-2 self-registration; bk- keys only, key guard)"}
+      - {grantee: tp_owner, privilege: USAGE,          object: "shared (schema)",      status: contract, source: "243 (MIG-2 self-registration)"}
+      - {grantee: tp_owner, privilege: "SELECT, INSERT", object: shared.schema_versions, status: contract, source: "243 (MIG-2 self-registration; tp- keys only, key guard)"}
 
   booking:
     repo: AA-Booking
