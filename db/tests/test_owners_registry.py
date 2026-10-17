@@ -34,7 +34,7 @@ OWNER_KEYS = {"repo", "path", "key_prefix", "anchor_schema", "schemas", "owner_r
               "owner_transfer_key", "runtime_roles", "runtime_roles_today", "runtime_secrets",
               "runtime_privileges", "job_table", "job_kind_prefix", "idle_exempt_kinds", "set_local_roles",
               "role_lint_from", "consumer_grants"}
-OPTIONAL_KEYS = {"view_owner_roles", "rls_enable_only_allowlist", "runtime_privileges_from"}
+OPTIONAL_KEYS = {"view_owner_roles", "rls_enable_only_allowlist", "runtime_privileges_from", "owner_grants"}
 
 
 def validate_step():
@@ -109,6 +109,25 @@ class RegistryShapeTest(unittest.TestCase):
                     self.assertIn(g["status"], ("contract", "grandfathered"))
                     self.assertIn(g["grantee"], runtime)
                     self.assertNotEqual(runtime[g["grantee"]], name)
+
+    def test_owner_grants_name_other_owners_owner_roles(self):
+        # Cross-owner grants to NOLOGIN owner roles (CIS 243: what DB Migrate needs to register a file run as
+        # bk_owner / tp_owner). Never to a runtime role (those are consumer_grants) or to the dir's own owner.
+        owner_roles = {o["owner_role"]: n for n, o in SCHEMA_OWNERS.items()}
+        for name, o in SCHEMA_OWNERS.items():
+            for g in o.get("owner_grants", []):
+                with self.subTest(owner=name, grant=g):
+                    self.assertEqual(set(g), {"grantee", "privilege", "object", "status", "source"})
+                    self.assertEqual(g["status"], "contract")
+                    self.assertIn(g["grantee"], owner_roles)
+                    self.assertNotEqual(owner_roles[g["grantee"]], name)
+                    self.assertNotIn("GRANT OPTION", g["privilege"].upper())
+
+    def test_cis_243_owner_grants(self):
+        grants = {(g["grantee"], g["object"]): g["privilege"] for g in OWNERS["cis"]["owner_grants"]}
+        for role in ("bk_owner", "tp_owner"):
+            self.assertEqual(grants[(role, "shared (schema)")], "USAGE")
+            self.assertEqual(grants[(role, "shared.schema_versions")], "SELECT, INSERT")
 
     def test_roles_entry(self):
         r = OWNERS["roles"]
