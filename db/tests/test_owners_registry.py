@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT / "db"))
 
 import check_migration_copies as guard  # noqa: E402
+import isolation_probe as probe  # noqa: E402
 import run_migration as rm  # noqa: E402
 
 REGISTRY = yaml.safe_load((ROOT / "db" / "owners.yaml").read_text(encoding="utf-8"))
@@ -30,9 +31,10 @@ WORKFLOW = yaml.safe_load((ROOT / ".github" / "workflows" / "db-migrate.yml").re
 ROLE_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
 OWNER_KEYS = {"repo", "path", "key_prefix", "anchor_schema", "schemas", "owner_role", "owner_role_today",
-              "runtime_roles", "runtime_roles_today", "job_table", "job_kind_prefix", "idle_exempt_kinds",
-              "set_local_roles", "role_lint_from", "consumer_grants"}
-OPTIONAL_KEYS = {"view_owner_roles"}
+              "owner_transfer_key", "runtime_roles", "runtime_roles_today", "runtime_secrets",
+              "runtime_privileges", "job_table", "job_kind_prefix", "idle_exempt_kinds", "set_local_roles",
+              "role_lint_from", "consumer_grants"}
+OPTIONAL_KEYS = {"view_owner_roles", "rls_enable_only_allowlist", "runtime_privileges_from"}
 
 
 def validate_step():
@@ -72,6 +74,17 @@ class RegistryShapeTest(unittest.TestCase):
                 for kind in o["idle_exempt_kinds"]:
                     self.assertTrue(kind.startswith(o["job_kind_prefix"]), kind)
                 self.assertIsInstance(o["role_lint_from"], int)
+                key = o["owner_transfer_key"]
+                self.assertRegex(str(key), rf"^{re.escape(o['key_prefix'])}[0-9]{{3}}$")
+                self.assertEqual(set(o["runtime_secrets"]), set(o["runtime_roles"]))   # the probe logs in as each
+                self.assertLessEqual(set(o["runtime_privileges"]), set(o["runtime_roles"]))
+                for role, rp in o["runtime_privileges"].items():
+                    self.assertEqual(set(rp), {"schemas", "objects", "default_acl"}, role)
+                    self.assertLessEqual(set(rp["schemas"]), set(o["schemas"]), role)
+                    self.assertEqual(set(rp["objects"]), set(probe.OBJECT_KINDS), role)
+                    self.assertLessEqual(set(rp["default_acl"]), set(probe.DEFACL_OBJTYPE), role)
+                if "runtime_privileges_from" in o:
+                    self.assertIn(str(o["runtime_privileges_from"]), probe.VERSION_KEYS)
 
     def test_schemas_belong_to_one_owner(self):
         seen = {}
@@ -117,6 +130,34 @@ class MirrorsAgreeTest(unittest.TestCase):
                 self.assertEqual(d.role_lint_from, o["role_lint_from"])
                 self.assertEqual(d.view_owner_roles, frozenset(o.get("view_owner_roles", [])))
         self.assertEqual(set(rm.OWNER_SCHEMAS), {s for o in SCHEMA_OWNERS.values() for s in o["schemas"]})
+
+    def test_isolation_probe_constants(self):
+        self.assertEqual(probe.MASTER_ROLE, REGISTRY["master_role"])
+        self.assertEqual(set(probe.OWNERS), set(SCHEMA_OWNERS))
+        for name, o in SCHEMA_OWNERS.items():
+            with self.subTest(owner=name):
+                p = probe.OWNERS[name]
+                self.assertEqual(list(p.schemas), o["schemas"])
+                self.assertEqual(p.owner_role, o["owner_role"])
+                self.assertEqual(p.transfer_key, str(o["owner_transfer_key"]))
+                self.assertEqual(dict(p.runtime_secrets), o["runtime_secrets"])
+                self.assertEqual(p.view_owner_roles, frozenset(o.get("view_owner_roles", [])))
+                self.assertEqual(p.anchor_schema, o["anchor_schema"])
+                self.assertEqual(p.runtime_privileges_from, str(o.get("runtime_privileges_from", "")))
+                self.assertEqual({rp.role: {"schemas": list(rp.schemas),
+                                            "objects": {k: list(v) for k, v in rp.objects},
+                                            "default_acl": {k: list(v) for k, v in rp.default_acl}}
+                                  for rp in p.runtime_privileges}, o["runtime_privileges"])
+        # Contract consumer grants on one named object (wildcards such as catalog.* are left to the dump).
+        single = re.compile(r"^[a-z_]+\.[a-z_]+(\([a-z, ]*\))?$")
+        expected = {(g["grantee"], tuple(x.strip() for x in g["privilege"].split(",")), g["object"])
+                    for o in SCHEMA_OWNERS.values() for g in o["consumer_grants"]
+                    if g["status"] == "contract" and single.match(g["object"])}
+        self.assertEqual(set(probe.CONSUMER_GRANTS), expected)
+        self.assertEqual(probe.RLS_ENABLE_ONLY_ALLOWLIST,
+                         frozenset(OWNERS["cis"].get("rls_enable_only_allowlist", [])))
+        for v in (str(o["owner_transfer_key"]) for o in SCHEMA_OWNERS.values()):
+            self.assertIn(v, probe.VERSION_KEYS)
 
     def test_idle_exempt_kinds(self):
         expected = {o["job_table"].split(".")[0]: frozenset(o["idle_exempt_kinds"])

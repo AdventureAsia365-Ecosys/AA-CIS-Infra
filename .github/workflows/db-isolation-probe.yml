@@ -1,0 +1,179 @@
+name: DB Isolation Probe (shared RDS)
+# X1 plan S2 (roadmap U-16, SDLC review P0-9): proves, read-only, that each app's DB roles are isolated.
+#
+# A one-off ECS Fargate task (CIS api task definition until X1 S12 moves it to the migrator task
+# definition) runs db/isolation_probe.py: READ ONLY transactions, rolled back, no row values. It logs in
+# AS EACH RUNTIME ROLE WITH ITS OWN DSN SECRET (aa_app_user, booking, tripplanner, cis_app from X1 S17,
+# and the CIS runtime = the secret the running api task definition injects), never through the
+# master's memberships; the task's own database login reads the catalog only. Cells: runtime role
+# attributes (incl. CREATEROLE) / memberships / owned objects / connection limit, cross-app reads
+# (42501), ownership of each owner's schemas, runtime grants + default privileges of each runtime role
+# in its own schemas, contract consumer grants, owner-role registry grants, the standing "ENABLE-only
+# RLS table has a policy TO cis_app" check, the aa_app_user tenant matrix, master and db_migrator
+# sessions.
+#
+# Cells that cannot pass until a later X1 step are keyed to LIVE state (shared.schema_versions rows, the
+# live owner of each anchor schema, the running api task definition's database secret, the cis_app
+# secret and its set-password marker, the catalog login), so the
+# probe stays green between the applies of a train: such a cell is `pending` until its key is true,
+# then expected. The job fails on any expected cell that fails (task exit 1) or when the probe cannot
+# run (exit 2). Output: probe.json (artifact) + a step-summary table.
+#
+# Triggers: nightly 04:13 UTC (30 min after the schema dump, so the two never hold db_migrator
+# sessions together, X1 S20), manual, and DB Migrate after every successful apply.
+# No new environment variable reaches the task: its configuration is one JSON argument.
+on:
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "Why this run (DB Migrate sets it after an apply)"
+        required: false
+        type: string
+        default: manual
+  schedule:
+    - cron: "13 4 * * *"   # nightly, 04:13 UTC (schema dump: 03:43)
+
+# Own group: never queued behind or ahead of DB Migrate or the schema dump (a pending run in a shared
+# group would cancel a pending migration).
+concurrency:
+  group: db-isolation-probe
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  probe:
+    name: Isolation probe
+    runs-on: ubuntu-latest
+    # Same OIDC subject as DB Migrate and the schema dump (environment:prod -> aa-cis-infra-tf-apply).
+    environment: prod
+    if: github.ref == 'refs/heads/main'
+    timeout-minutes: 30
+    env:
+      AWS_REGION: us-west-1
+      CLUSTER: aa-cis-dev-cluster
+      SERVICE: aa-cis-dev-api
+      BUCKET: aa-cis-bronze-005097885195
+      LOG_GROUP: /ecs/aa-cis-dev
+      REASON: ${{ github.event_name == 'schedule' && 'nightly' || inputs.reason || 'manual' }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Unit tests (probe, runner, registry)
+        run: |
+          python -m pip install --quiet pyyaml==6.0.2
+          python -m unittest discover -s db/tests
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-west-1
+
+      # Presigned URL created and used in this one step (a masked step output can be dropped).
+      - name: Upload the probe, run one-off ECS task
+        id: task
+        run: |
+          PREFIX="db-isolation-probe/${{ github.run_id }}"
+          echo "prefix=$PREFIX" >> "$GITHUB_OUTPUT"
+          aws s3 cp db/isolation_probe.py "s3://$BUCKET/$PREFIX/isolation_probe.py" --only-show-errors
+          URL=$(aws s3 presign "s3://$BUCKET/$PREFIX/isolation_probe.py" --expires-in 900)
+          echo "::add-mask::$URL"
+
+          SVC=$(aws ecs describe-services --cluster "$CLUSTER" --services "$SERVICE" --output json)
+          APITD=$(jq -r '.services[0].taskDefinition' <<<"$SVC")
+          NET=$(jq -c '.services[0].networkConfiguration' <<<"$SVC")
+          # State key of the CIS runtime cells (X1 S18): which secret the RUNNING api revision injects as
+          # its database URL. Only the secret's ARN is read here, never its value.
+          CISSECRET=$(aws ecs describe-task-definition --task-definition "$APITD" --output json \
+            | jq -r '[.taskDefinition.containerDefinitions[] | select(.name == "api") | .secrets[]?
+                      | select(.name == "DATABASE_URL") | .valueFrom][0] // ""')
+          [ -n "$CISSECRET" ] || { echo "::error::api task definition $APITD has no database secret"; exit 1; }
+          # The probe runs from the api task definition until X1 S12 (then: aa-cis-dev-db-migrate, container migrate).
+          RUNTD="$APITD"
+          echo "api task definition: $APITD (runtime secret: ${CISSECRET##*:secret:})"
+          echo "probe task definition: $RUNTD"
+          CONFIG=$(jq -nc --arg s "$CISSECRET" --arg td "$APITD" \
+            '{cis_runtime_secret: $s, api_task_definition: $td, region: "us-west-1", ssl: "require"}')
+          OVERRIDES=$(jq -nc --arg url "$URL" --arg cfg "$CONFIG" \
+            '{containerOverrides: [{name: "api",
+              command: ["python3", "-c", "import sys,urllib.request;exec(urllib.request.urlopen(sys.argv[1],timeout=30).read())", $url, $cfg]}]}')
+          TASK_ARN=$(aws ecs run-task --cluster "$CLUSTER" --task-definition "$RUNTD" \
+            --launch-type FARGATE --network-configuration "$NET" --overrides "$OVERRIDES" \
+            --started-by "gh-db-isolation-probe-${{ github.run_id }}" \
+            --query 'tasks[0].taskArn' --output text)
+          [ -n "$TASK_ARN" ] && [ "$TASK_ARN" != "None" ] || { echo "::error::run-task returned no task"; exit 1; }
+          echo "task: $TASK_ARN"
+          echo "arn=$TASK_ARN" >> "$GITHUB_OUTPUT"
+          # The waiter gives up after 10 min; retry it so a slow start does not fail the step.
+          for i in 1 2 3; do aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$TASK_ARN" && break; done
+
+      - name: Task log, probe.json, summary
+        if: always() && steps.task.outputs.arn != ''
+        env:
+          TASK_ARN: ${{ steps.task.outputs.arn }}
+        run: |
+          TASKID="${TASK_ARN##*/}"
+          STREAM="api/api/$TASKID"
+          : > task.log
+          TOKEN=""
+          for page in $(seq 1 50); do
+            if [ -z "$TOKEN" ]; then
+              R=$(aws logs get-log-events --log-group-name "$LOG_GROUP" --log-stream-name "$STREAM" --start-from-head --output json) || break
+            else
+              R=$(aws logs get-log-events --log-group-name "$LOG_GROUP" --log-stream-name "$STREAM" --next-token "$TOKEN" --output json) || break
+            fi
+            jq -r '.events[].message' <<<"$R" >> task.log
+            NEXT=$(jq -r '.nextForwardToken' <<<"$R")
+            [ "$NEXT" = "$TOKEN" ] && break
+            TOKEN="$NEXT"
+          done
+          grep -v '^PROBE ' task.log || true
+          # One JSON document from the PROBE records.
+          grep '^PROBE ' task.log | cut -d' ' -f2- | jq -Rn --arg reason "$REASON" '
+            [inputs | (index(" ")) as $i | {kind: .[:$i], body: (.[$i+1:] | fromjson)}] as $r
+            | {reason: $reason,
+               header: ([$r[] | select(.kind == "header") | .body][0]),
+               fatal: ([$r[] | select(.kind == "fatal") | .body][0]),
+               summary: ([$r[] | select(.kind == "summary") | .body][0]),
+               cells: [$r[] | select(.kind == "cell") | .body],
+               matrix: [$r[] | select(.kind == "matrix") | .body]}' > probe.json || echo '{}' > probe.json
+          {
+            echo "### Isolation probe ($REASON)"
+            jq -r 'if .summary then "- **\(.summary.FAIL // 0) failing**, \(.summary.pass // 0) pass, \(.summary.pending // 0) pending, \(.summary.ready // 0) ready (pending cell already passing), \(.summary.cells) cells" else "- no summary line: the probe did not finish (see the task log)" end' probe.json
+            jq -r 'if .header then "- catalog login: `\(.header.catalog_login)`, CIS runtime: `\(.header.cis_runtime.user)` from `\(.header.cis_runtime.secret)`, registered: \(.header.registered | join(", "))" else empty end' probe.json
+            jq -r 'if .fatal then "- **fatal:** \(.fatal.error)" else empty end' probe.json
+            echo
+            echo "| status | cell | expected when | detail |"
+            echo "|---|---|---|---|"
+            jq -r '.cells[] | "| \(if .status == "FAIL" then "**FAIL**" else .status end) | `\(.id)` \(.title) | \(if (.when | length) == 0 then "always" else (.when | join("; ")) end) | \(((.error // "") + " " + (.detail | tostring)) | gsub("\\|"; "/") | .[:300]) |"' probe.json
+          } >> "$GITHUB_STEP_SUMMARY"
+          jq -r '.cells[] | select(.status == "FAIL") | "::error::isolation probe: \(.id) failed — \(.title)"' probe.json
+          jq -r '.cells[] | select(.warn == true) | "::warning::isolation probe: \(.id) pending — \(.detail | tostring | .[:200])"' probe.json
+          DESC=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$TASK_ARN" --output json)
+          EXIT=$(jq -r '.tasks[0].containers[] | select(.name=="api") | .exitCode' <<<"$DESC")
+          echo "exit code: $EXIT  stopped: $(jq -r '.tasks[0].stoppedReason' <<<"$DESC")"
+          if [ "$EXIT" = "1" ]; then echo "::error::isolation probe: at least one expected cell failed (table above)"; exit 1; fi
+          if [ "$EXIT" = "2" ]; then echo "::error::isolation probe could not run (catalog login or state keys unreadable)"; exit 1; fi
+          [ "$EXIT" = "0" ] || { echo "::error::isolation probe task exited with $EXIT"; exit 1; }
+          jq -e '.summary.exit == 0' probe.json >/dev/null || { echo "::error::probe exited 0 but its summary is missing or not 0"; exit 1; }
+
+      - name: Keep probe.json + task log as an artifact
+        if: always() && steps.task.outputs.arn != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: db-isolation-probe-${{ github.run_id }}
+          path: |
+            probe.json
+            task.log
+          retention-days: 30
+
+      - name: Remove the probe from S3
+        if: always() && steps.task.outputs.prefix != ''
+        run: aws s3 rm "s3://$BUCKET/${{ steps.task.outputs.prefix }}/" --recursive --only-show-errors
