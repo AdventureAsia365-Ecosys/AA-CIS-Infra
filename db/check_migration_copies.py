@@ -4,10 +4,13 @@ db/migrations/<owner>/ holds copies of migrations that the owner repo reviewed a
 (AA-Ecosys docs/database/schema-ownership.md rule 3). This guard fails when a copy:
   * has a path DB Migrate would refuse (owner dir + NNN_name.sql, same rule as db-migrate.yml);
   * does not register its own version key in shared.schema_versions, or registers a key outside
-    its owner's prefix (CIS `NNN`, TripPlanner `tp-NNN`, Booking `bk-NNN`, rule 4);
+    its owner's prefix (CIS `NNN`, TripPlanner `tp-NNN`, Booking `bk-NNN`, roles `rl-NNN`, rule 4);
   * is not on the owner repo's main yet (migration flow D8: the migration-only PR merges in the
     owner repo first, then the Infra copy);
   * differs from the owner's main by even one byte.
+db/migrations/roles/ (X1 role bootstrap, extensions, undo files; key `rl-NNN`) is Infra-native: no
+owner repo to compare with, so only the path and the registration are checked. The registry of
+owners is db/owners.yaml; OWNERS and PATH_RE mirror it (db/tests/test_owners_registry.py).
 
 Usage:
   python3 db/check_migration_copies.py db/migrations/cis/228_x.sql [...]   # given files
@@ -44,17 +47,19 @@ class Owner:
     repo: str            # GitHub repo under ORG
     source_dir: str      # migrations folder inside the owner repo
     key_prefix: str      # shared.schema_versions key prefix
+    native: bool = False  # Infra-native (roles/): no owner repo copy to compare
 
 
-# docs/database/schema-ownership.md rule 4; db-migrate.yml computes the same prefixes.
+# db/owners.yaml (dir, repo, path, key_prefix); db-migrate.yml computes the same prefixes.
 OWNERS: dict[str, Owner] = {
     "cis": Owner("AA-CIS-App", "api/migrations", ""),
     "tripplanner": Owner("AA-TripPlanner-Web", "migrations", "tp-"),
     "booking": Owner("AA-Booking", "migrations", "bk-"),
+    "roles": Owner("AA-CIS-Infra", "db/migrations/roles", "rl-", native=True),
 }
 
 # Same shape db-migrate.yml accepts at dispatch time.
-PATH_RE = re.compile(r"^db/migrations/(cis|tripplanner|booking)/([0-9]{3})_[a-z0-9_]+\.sql$")
+PATH_RE = re.compile(r"^db/migrations/(cis|tripplanner|booking|roles)/([0-9]{3})_[a-z0-9_]+\.sql$")
 INSERT_RE = re.compile(r"INSERT\s+INTO\s+shared\.schema_versions\b(.*?);", re.IGNORECASE | re.DOTALL)
 KEY_RE = re.compile(r"\(\s*'([^']*)'\s*,")
 
@@ -106,7 +111,7 @@ def check_file(rel_path: str, repo_root: Path, fetch: Fetcher) -> list[str]:
     m = PATH_RE.match(rel_path)
     if not m:
         return [
-            "path must be db/migrations/<cis|tripplanner|booking>/NNN_lowercase_name.sql "
+            "path must be db/migrations/<cis|tripplanner|booking|roles>/NNN_lowercase_name.sql "
             "(the shape DB Migrate accepts)"
         ]
     owner_name, number = m.group(1), m.group(2)
@@ -117,6 +122,8 @@ def check_file(rel_path: str, repo_root: Path, fetch: Fetcher) -> list[str]:
         errors = check_registration(owner_name, number, local.decode("utf-8"))
     except UnicodeDecodeError:
         errors = ["is not valid UTF-8"]
+    if owner.native:
+        return errors        # Infra-native: reviewed in this repo, nothing upstream to compare
 
     source_path = f"{owner.source_dir}/{Path(rel_path).name}"
     where = f"{ORG}/{owner.repo}@{BRANCH}:{source_path}"

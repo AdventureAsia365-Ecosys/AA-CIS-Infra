@@ -159,6 +159,27 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(self.check(rel, fetch), [])
         self.assertEqual(guard.registered_keys(TP_007.decode()), ["tp-001", "tp-007"])
 
+    # ── roles/ (X1, Infra-native) ──────────────────────────────────────────────
+
+    def test_roles_file_is_native_no_owner_fetch(self):
+        body = CIS_228.replace(b"'228'", b"'rl-001'")
+        rel = self.write("db/migrations/roles/001_x1_owner_roles.sql", body)
+        fetch = FakeOwnerRepos()
+        self.assertEqual(self.check(rel, fetch), [])
+        self.assertEqual(fetch.calls, [])
+
+    def test_roles_file_needs_its_rl_key(self):
+        rel = self.write("db/migrations/roles/002_x1_cis_owner.sql", CIS_228.replace(b"'228'", b"'rl-001'"))
+        errors = self.check(rel, FakeOwnerRepos())
+        self.assertIn("does not register its version 'rl-002'", errors[0])
+        rel = self.write("db/migrations/roles/003_x.sql", CIS_228.replace(b"'228'", b"'003'"))
+        errors = self.check(rel, FakeOwnerRepos())
+        self.assertTrue(any("outside the roles key prefix rl-NNN" in e for e in errors), errors)
+
+    def test_roles_path_shape(self):
+        rel = self.write("db/migrations/roles/01_x.sql", CIS_228)
+        self.assertIn("<cis|tripplanner|booking|roles>", self.check(rel, FakeOwnerRepos())[0])
+
     # ── GitHub errors ───────────────────────────────────────────────────────────
 
     def test_fetch_error_is_a_fail_and_the_run_continues(self):

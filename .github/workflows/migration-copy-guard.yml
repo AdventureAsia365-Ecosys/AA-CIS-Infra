@@ -13,7 +13,10 @@ name: Migration Copy Guard
 # Second job (AA-807 N5, no network): unique migration number per owner (MIG-3) and the
 # run_migration.py lint on every copy — `-- migrate:` directives parse, CONCURRENTLY only in a
 # `-- migrate: no-transaction` file, DROP TABLE/SCHEMA/COLUMN and TRUNCATE only with
-# `-- migrate: destructive` (MIG-9, MIG-10, MIG-12). DB Migrate runs the same lint before apply.
+# `-- migrate: destructive` (MIG-9, MIG-10, MIG-12), plus the X1 role lint for owner files above
+# today's heads (db/owners.yaml role_lint_from) and the role switch's shape rule for them (one
+# BEGIN … COMMIT block, or no-transaction). DB Migrate runs the same lint before apply.
+# db/migrations/roles/ (key rl-NNN) is Infra-native: path, registration and lint only, no owner compare.
 on:
   pull_request:
     branches: [main]
@@ -23,6 +26,8 @@ on:
       - "db/check_migration_files.py"
       - "db/run_migration.py"
       - "db/tests/**"
+      - "db/owners.yaml"
+      - ".github/workflows/db-migrate.yml"
       - ".github/workflows/migration-copy-guard.yml"
   schedule:
     - cron: "17 2 * * *"   # nightly, 02:17 UTC
@@ -45,8 +50,16 @@ jobs:
         with:
           fetch-depth: 0
 
+      # PyYAML only for the registry test (db/tests/test_owners_registry.py reads db/owners.yaml and
+      # the workflow); the guards and the runner stay standard-library only.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Guard unit tests
-        run: python3 -m unittest discover -s db/tests -v
+        run: |
+          python -m pip install --quiet pyyaml==6.0.2
+          python -m unittest discover -s db/tests -v
 
       - name: Compare copies with owner main
         env:
