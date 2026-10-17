@@ -36,26 +36,40 @@ override_busy_jobs, Nghiệp only). lock_timeout stays the backstop for the chec
 Role per file (X1, plan S1 / XD8; registry db/owners.yaml): before anything else the task reads the
 **live owner of the dir's anchor schema** (`cis/` → `shared`, `booking/` → `booking`, `tripplanner/`
 → `tripplanner`). Owner = login role (today, for every dir) → the file runs exactly as before, no
-switch. Owner ≠ login role → the login role must be a member of the owner (else exit 8) and the file
-runs as the owner: `SET LOCAL ROLE <owner>` right after the file's `BEGIN`, then, still inside the
-transaction, `RESET ROLE` and the ownership post-check (no object in an owners.yaml schema may be
-owned by the login role where it should not be, else ROLLBACK and exit 9), then the file's `COMMIT`.
+switch. Owner ≠ login role → the login role must be a member of the owner and the owner must be able to
+register the version (USAGE on shared + INSERT on shared.schema_versions, CIS 243), else exit 8 before
+anything runs; the file then runs as the owner: right after the file's `BEGIN` a snapshot of every
+owned object and of the role catalog, `SET LOCAL ROLE <owner>`, the body (registration included, as
+the owner), then, still inside the transaction, `RESET ROLE`, a pinned search_path and the ownership
+post-check, then the file's `COMMIT`. Post-check (any schema, any object kind with an owner, default
+privileges): an object created or re-owned during the file must belong to the owner (or the dir's
+view owner, catalog_owner), the login role may own nothing in a transferred owner's schemas, and
+roles / memberships / role settings must not change — else ROLLBACK and exit 9. A no-transaction
+file runs statement by statement under `SET ROLE <owner>`; the post-check runs before its last
+statement (the registration), so a failed check leaves the version unregistered.
 The switch follows an owner transfer (bk-014, tp-013, 245) on the very next file, with no flip PR.
 `roles/` files (Infra-native, key `rl-NNN`: role bootstrap, extensions, undo files) always run as
 the RDS master and are refused under any other login. The idle check and the registry reads run as
 the login role. Every run logs `ran as: <role>`.
 
-Role lint (files above today's heads, ROLE_LINT_FROM; applied files never re-run): in an owner dir no
-`RESET ROLE`, `SET ROLE` without `LOCAL`, `SET SESSION AUTHORIZATION`, `set_config('role', …)`,
-role switches in dynamic SQL strings, `CREATE/ALTER/DROP EXTENSION` or `ROLE` (→ `roles/`), no role
-membership GRANT/REVOKE; `SET LOCAL ROLE` only to the dir's allowlist (cis: catalog_owner,
-cis_owner, cis_app; booking/tripplanner: none).
+Role lint (files above today's heads, role_lint_from; applied files never re-run): in an owner dir no
+`RESET ROLE`, `SET ROLE` without `LOCAL` (quoted "role" too), SESSION AUTHORIZATION in any form,
+`set_config('role', …)` or a set_config() whose name is not a plain literal (E'', U&'' and quoted
+names included), role switches in dynamic SQL (EXECUTE: every string piece of the statement, the
+pieces joined, format() filled in, and half-keyword pieces such as 'RESET ' || 'ROLE'),
+`CREATE/ALTER/DROP EXTENSION` or `ROLE` (→ `roles/`), no role membership GRANT/REVOKE; `SET LOCAL
+ROLE` only to the dir's allowlist (cis: catalog_owner, cis_owner, cis_app; booking/tripplanner:
+none). Such a file is also one BEGIN … COMMIT block (or `-- migrate: no-transaction`), the shape the
+switch needs, so a wrong shape fails in the PR rather than with exit 8 at apply. Obfuscated dynamic
+SQL (chr(), reverse(), …) is beyond a lint; the post-check is the backstop.
 
 Exit codes: 0 ok · 2 sha256 mismatch · 3 file ran but did not register · 4 lint error ·
 5 destructive apply without a snapshot · 6 PostgreSQL error (lock/statement timeout included) ·
 7 apply refused: a job table is busy or a rerun wave is open · 8 role refused (roles/ under a
-non-master login, login not a member of the live owner, unknown dir, or a file that cannot run
-under the switch) · 9 ownership post-check failed (rolled back; committed for a no-transaction file).
+non-master login, login not a member of the live owner, the owner cannot register the version,
+unknown dir, or a file that cannot run under the switch) · 9 ownership post-check failed (rolled
+back; for a no-transaction file the statements before the registration stay committed and the
+version is not registered).
 
 Local, no database and no asyncpg needed (CI lint and the DB Migrate "Validate input" step):
   python3 db/run_migration.py --inspect db/migrations/cis/230_x.sql
@@ -81,6 +95,7 @@ DOLLAR_TAG_RE = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)?\$")
 # Statement shapes, matched on the statement's code (comments removed, string bodies blanked,
 # whitespace collapsed, upper case).
 TX_CONTROL_RE = re.compile(r"^(BEGIN|START TRANSACTION|COMMIT|END|ROLLBACK|ABORT)\b")
+PREPARE_TX_RE = re.compile(r"^PREPARE TRANSACTION\b")      # ends the transaction too (two-phase commit)
 CONCURRENTLY_RE = re.compile(r"\bCONCURRENTLY\b")
 # REFRESH MATERIALIZED VIEW CONCURRENTLY is allowed inside a transaction block; the other
 # CONCURRENTLY forms (CREATE/DROP INDEX, REINDEX, DETACH PARTITION) are not.
@@ -137,6 +152,7 @@ class OwnerDir:
     schemas: tuple                # every schema of the owner (ownership post-check, 244/245 lists)
     set_local_roles: frozenset    # the only `SET LOCAL ROLE` targets the lint allows in the dir
     role_lint_from: int           # first file number the role lint applies to (> today's head)
+    view_owner_roles: frozenset = frozenset()   # may own objects a switched file creates, besides the owner
 
 
 OWNER_DIRS = {
@@ -144,7 +160,7 @@ OWNER_DIRS = {
                     ("acp_contract", "acp_deliver", "acp_gold_output", "acp_shared", "acp_silver_s2",
                      "acp_silver_s3", "acp_silver_s4", "catalog", "geo", "gold_aa_internal", "shared",
                      "silver_aa_internal"),
-                    frozenset({"catalog_owner", "cis_owner", "cis_app"}), 243),
+                    frozenset({"catalog_owner", "cis_owner", "cis_app"}), 243, frozenset({"catalog_owner"})),
     "booking": OwnerDir("booking", ("booking",), frozenset(), 14),
     "tripplanner": OwnerDir("tripplanner", ("tripplanner",), frozenset(), 13),
 }
@@ -154,49 +170,130 @@ MIGRATION_PATH_RE = re.compile(r"(?:^|/)([a-z]+)/([0-9]{3})_[^/]*\.sql$")
 SESSION_USER_SQL = "SELECT session_user::text"
 SCHEMA_OWNER_SQL = "SELECT pg_get_userbyid(nspowner)::text FROM pg_namespace WHERE nspname = $1"
 IS_MEMBER_SQL = "SELECT pg_has_role(session_user, $1, 'MEMBER')"
-# Ownership post-check (plan S1 item 5), run after the runner's RESET ROLE and before COMMIT. Flags
-# an object in an owners.yaml schema owned by the login role when (a) its schema is owned by someone
-# else (a transferred owner: nothing in it may belong to the login role) or (b) this transaction
-# wrote its catalog row (created or altered it as the login role, e.g. after a stray role reset).
-# (a) alone would flag every CIS object while the master still owns CIS and runs a booking/ file.
-OWNED_BY_LOGIN_SQL = """
-WITH s AS (SELECT oid, nspname, nspowner FROM pg_namespace WHERE nspname = ANY($1::text[])),
-     me AS (SELECT oid FROM pg_roles WHERE rolname = session_user),
-     o AS (
-       SELECT 'relation' AS kind, s.nspname || '.' || c.relname AS name, c.relowner AS owner,
-              s.nspowner, c.xmin AS x
-         FROM pg_class c JOIN s ON s.oid = c.relnamespace
-       UNION ALL
-       SELECT 'function', s.nspname || '.' || p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')',
-              p.proowner, s.nspowner, p.xmin
-         FROM pg_proc p JOIN s ON s.oid = p.pronamespace
-       UNION ALL
-       SELECT 'type', s.nspname || '.' || t.typname, t.typowner, s.nspowner, t.xmin
-         FROM pg_type t JOIN s ON s.oid = t.typnamespace
-        WHERE t.typrelid = 0 AND t.typcategory <> 'A')
-SELECT o.kind, o.name FROM o, me
- WHERE o.owner = me.oid AND (o.nspowner <> me.oid OR o.x = pg_current_xact_id()::xid)
- ORDER BY o.kind, o.name LIMIT 50"""
+# Registration under the switch: the file's INSERT INTO shared.schema_versions runs as the owner
+# (plan S4: 243 grants USAGE on shared + SELECT, INSERT on shared.schema_versions to bk_owner/tp_owner).
+CAN_REGISTER_SQL = ("SELECT pg_catalog.has_schema_privilege($1, 'shared', 'USAGE') "
+                    "AND pg_catalog.has_table_privilege($1, 'shared.schema_versions', 'INSERT')")
+# Ownership post-check (plan S1 item 5, hardened after review). Snapshot of everything that has an
+# owner (every schema but pg_catalog, information_schema, pg_toast and temp schemas) plus the role
+# catalog, taken before the file (as the login role) and again after the runner's RESET ROLE.
+# A row is identified by (kind, id, owner), so a new object and an ownership change both show up.
+# Rows owned by the role the file runs as ($2) are left out: they are always fine. All catalog
+# names are schema-qualified and the runner pins search_path first, so a file cannot shadow them.
+OBJECTS_SQL = """
+WITH s AS (
+  SELECT n.oid, n.nspname, n.nspowner, n.nspname = ANY($1::text[]) AS mine
+    FROM pg_catalog.pg_namespace n
+   WHERE n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+     AND n.nspname !~ '^pg_(toast_)?temp_'),
+o AS (
+  SELECT 'relation' AS kind, c.oid::text AS id, s.nspname || '.' || c.relname AS name, c.relowner AS owner,
+         s.mine, s.nspowner
+    FROM pg_catalog.pg_class c JOIN s ON s.oid = c.relnamespace
+  UNION ALL
+  SELECT 'function', p.oid::text,
+         s.nspname || '.' || p.proname || '(' || pg_catalog.pg_get_function_identity_arguments(p.oid) || ')',
+         p.proowner, s.mine, s.nspowner
+    FROM pg_catalog.pg_proc p JOIN s ON s.oid = p.pronamespace
+  UNION ALL
+  SELECT 'type', t.oid::text, s.nspname || '.' || t.typname, t.typowner, s.mine, s.nspowner
+    FROM pg_catalog.pg_type t JOIN s ON s.oid = t.typnamespace
+   WHERE t.typrelid = 0 AND t.typcategory <> 'A'
+  UNION ALL
+  SELECT 'schema', s.oid::text, s.nspname, s.nspowner, s.mine, s.nspowner FROM s
+  UNION ALL
+  SELECT 'operator', x.oid::text, s.nspname || '.' || x.oprname, x.oprowner, s.mine, s.nspowner
+    FROM pg_catalog.pg_operator x JOIN s ON s.oid = x.oprnamespace
+  UNION ALL
+  SELECT 'operator class', x.oid::text, s.nspname || '.' || x.opcname, x.opcowner, s.mine, s.nspowner
+    FROM pg_catalog.pg_opclass x JOIN s ON s.oid = x.opcnamespace
+  UNION ALL
+  SELECT 'operator family', x.oid::text, s.nspname || '.' || x.opfname, x.opfowner, s.mine, s.nspowner
+    FROM pg_catalog.pg_opfamily x JOIN s ON s.oid = x.opfnamespace
+  UNION ALL
+  SELECT 'collation', x.oid::text, s.nspname || '.' || x.collname, x.collowner, s.mine, s.nspowner
+    FROM pg_catalog.pg_collation x JOIN s ON s.oid = x.collnamespace
+  UNION ALL
+  SELECT 'conversion', x.oid::text, s.nspname || '.' || x.conname, x.conowner, s.mine, s.nspowner
+    FROM pg_catalog.pg_conversion x JOIN s ON s.oid = x.connamespace
+  UNION ALL
+  SELECT 'text search dictionary', x.oid::text, s.nspname || '.' || x.dictname, x.dictowner, s.mine, s.nspowner
+    FROM pg_catalog.pg_ts_dict x JOIN s ON s.oid = x.dictnamespace
+  UNION ALL
+  SELECT 'text search configuration', x.oid::text, s.nspname || '.' || x.cfgname, x.cfgowner, s.mine, s.nspowner
+    FROM pg_catalog.pg_ts_config x JOIN s ON s.oid = x.cfgnamespace
+  UNION ALL
+  SELECT 'statistics', x.oid::text, s.nspname || '.' || x.stxname, x.stxowner, s.mine, s.nspowner
+    FROM pg_catalog.pg_statistic_ext x JOIN s ON s.oid = x.stxnamespace
+  UNION ALL
+  SELECT 'default privileges', d.oid::text || ':' || COALESCE(d.defaclacl::text, ''),
+         COALESCE(s.nspname, '(all schemas)') || ' ' || d.defaclobjtype::text, d.defaclrole, COALESCE(s.mine, false),
+         s.nspowner
+    FROM pg_catalog.pg_default_acl d LEFT JOIN s ON s.oid = d.defaclnamespace
+  UNION ALL
+  SELECT 'extension', x.oid::text, x.extname::text, x.extowner, false, NULL FROM pg_catalog.pg_extension x
+  UNION ALL
+  SELECT 'language', x.oid::text, x.lanname::text, x.lanowner, false, NULL FROM pg_catalog.pg_language x
+  UNION ALL
+  SELECT 'foreign data wrapper', x.oid::text, x.fdwname::text, x.fdwowner, false, NULL
+    FROM pg_catalog.pg_foreign_data_wrapper x
+  UNION ALL
+  SELECT 'foreign server', x.oid::text, x.srvname::text, x.srvowner, false, NULL FROM pg_catalog.pg_foreign_server x
+  UNION ALL
+  SELECT 'publication', x.oid::text, x.pubname::text, x.pubowner, false, NULL FROM pg_catalog.pg_publication x
+  UNION ALL
+  SELECT 'event trigger', x.oid::text, x.evtname::text, x.evtowner, false, NULL FROM pg_catalog.pg_event_trigger x
+  UNION ALL
+  SELECT 'large object', x.oid::text, x.oid::text, x.lomowner, false, NULL FROM pg_catalog.pg_largeobject_metadata x
+  UNION ALL
+  SELECT 'database', x.oid::text, x.datname::text, x.datdba, false, NULL FROM pg_catalog.pg_database x
+  UNION ALL
+  SELECT 'role', pg_catalog.md5(r::text), r.rolname::text, NULL, false, NULL FROM pg_catalog.pg_roles r
+  UNION ALL
+  SELECT 'role membership', pg_catalog.md5(m::text),
+         pg_catalog.pg_get_userbyid(m.member)::text || ' in ' || pg_catalog.pg_get_userbyid(m.roleid)::text,
+         NULL, false, NULL
+    FROM pg_catalog.pg_auth_members m
+  UNION ALL
+  SELECT 'role setting', pg_catalog.md5(x::text),
+         COALESCE(pg_catalog.pg_get_userbyid(NULLIF(x.setrole, 0))::text, 'every role') || ' ' || x.setconfig::text,
+         NULL, false, NULL
+    FROM pg_catalog.pg_db_role_setting x)
+SELECT o.kind, o.id, o.name, pg_catalog.pg_get_userbyid(o.owner)::text AS owner, o.mine,
+       pg_catalog.pg_get_userbyid(o.nspowner)::text AS schema_owner
+  FROM o
+ WHERE o.owner IS NULL OR o.owner IS DISTINCT FROM (SELECT r.oid FROM pg_catalog.pg_roles r WHERE r.rolname = $2)"""
+ROLE_KINDS = ("role", "role membership", "role setting")
+PIN_SEARCH_PATH_SQL = "SET {scope}search_path TO pg_catalog, pg_temp"
 
 # Role lint (plan S1 item 6), matched on the code view of _role_view(): comments removed, string
-# literals replaced by '#<n>' placeholders, dollar-quoted bodies (DO blocks, functions) lexed as code.
+# literals (E'', U&'' included) replaced by '#<n>' placeholders, plain quoted names unquoted ("role"
+# is the GUC role), dollar-quoted bodies (DO blocks, functions) lexed as code.
+PLAIN_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*$")
 SET_ROLE_RE = re.compile(r"\bSET\s+(?:(SESSION|LOCAL)\s+)?ROLE\b(?:\s+TO\b|\s*=)?\s*(\"[^\"]*\"|'#[0-9]+'|[A-Z0-9_$]+)?")
 ROLE_SWITCH_RES = (
     (re.compile(r"\bRESET\s+ROLE\b"), "RESET ROLE returns to the login role (after X1 S22 that is "
                                       "db_migrator): go back with `SET LOCAL ROLE <dir owner>` instead"),
-    (re.compile(r"\b(?:SET|RESET)\s+(?:(?:SESSION|LOCAL)\s+)?SESSION\s+AUTHORIZATION\b"),
+    (re.compile(r"\b(?:SET|RESET)\s+(?:(?:SESSION|LOCAL)\s+)?(?:SESSION\s+AUTHORIZATION|SESSION_AUTHORIZATION)\b"),
      "SET/RESET SESSION AUTHORIZATION is not allowed in a migration"),
     (re.compile(r"\b(?:CREATE|ALTER|DROP)\s+EXTENSION\b"),
      "CREATE/ALTER/DROP EXTENSION belongs in db/migrations/roles/ (runs as the master)"),
     (re.compile(r"\b(?:CREATE|ALTER|DROP)\s+(?:ROLE|USER|GROUP)\b(?!\s+MAPPING\b)"),
      "CREATE/ALTER/DROP ROLE belongs in db/migrations/roles/ (role bootstrap, MIG-6, DM-8.1)"),
 )
-SET_CONFIG_RE = re.compile(r"\bSET_CONFIG\s*\(\s*'#([0-9]+)'")
-# plpgsql dynamic SQL: the first string literal after EXECUTE (or EXECUTE format()).
-EXECUTE_STRING_RE = re.compile(r"\bEXECUTE\s+(?:FORMAT\s*\(\s*)?'#([0-9]+)'")
-DYNAMIC_SWITCH_RE = re.compile(
-    r"^\s*(?:SET\s+(?:(?:SESSION|LOCAL)\s+)?(?:ROLE|SESSION\s+AUTHORIZATION)|RESET\s+(?:ROLE|SESSION\s+AUTHORIZATION)"
-    r"|(?:CREATE|ALTER|DROP)\s+(?:ROLE|USER|GROUP|EXTENSION))\b", re.IGNORECASE)
+# set_config(name, …): name must be a plain string literal, so the lint can see it is not role.
+SET_CONFIG_RE = re.compile(r"\bSET_CONFIG\s*\(\s*(?:'#([0-9]+)'\s*(?=,))?")
+ROLE_GUCS = ("role", "session_authorization")
+# plpgsql dynamic SQL: EXECUTE <expression> (not GRANT EXECUTE ON …, EXECUTE FUNCTION/PROCEDURE in a
+# trigger). The expression runs to the end of the statement, or to USING / INTO.
+DYNAMIC_EXECUTE_RE = re.compile(r"\bEXECUTE\b(?!\s+(?:ON|FUNCTION|PROCEDURE)\b)")
+EXPRESSION_END_RE = re.compile(r"\b(?:USING|INTO)\b|;")
+FORMAT_SPEC_RE = re.compile(r"%(?:[0-9]+\$)?-?[0-9]*([sIL%])")
+# A role switch assembled from pieces: a piece that starts with ROLE / SESSION AUTHORIZATION or ends
+# with SET / RESET, or a format() placeholder right before ROLE.
+SWITCH_FRAGMENT_RE = re.compile(
+    r"^\s*(?:ROLE|SESSION(?:\s+|_)AUTHORIZATION)\b|\b(?:SET|RESET)\s*$|%[0-9$]*[SIL]\s+(?:ROLE|SESSION)\b",
+    re.IGNORECASE)
 GRANT_RE = re.compile(r"\b(GRANT|REVOKE)\b")
 
 
@@ -376,6 +473,13 @@ def _role_view(sql: str, strings: list) -> str:
             i = j
             out.append(" ")
             continue
+        word_start = not (i > 0 and (sql[i - 1].isalnum() or sql[i - 1] in "_$"))
+        if word_start and c in "eE" and nxt == "'":           # E'…' string: drop the prefix
+            i += 1
+            continue
+        if word_start and c in "uU" and nxt == "&" and i + 2 < n and sql[i + 2] in "'\"":   # U&'…' / U&"…"
+            i += 2
+            continue
         if c == "'":
             backslash = i > 0 and sql[i - 1] in "eE" and not (i > 1 and (sql[i - 2].isalnum() or sql[i - 2] == "_"))
             j, buf = i + 1, []
@@ -405,7 +509,10 @@ def _role_view(sql: str, strings: list) -> str:
                         continue
                     break
                 j += 1
-            out.append(sql[i:j + 1])
+            ident = sql[i + 1:j]
+            # "role", "set_config": a plain quoted name is the same keyword or GUC to PostgreSQL
+            # (GUC names are case-insensitive), so the lint sees it unquoted.
+            out.append(f" {ident} " if PLAIN_IDENT_RE.match(ident) else sql[i:j + 1])
             i = j + 1
             continue
         if c == "$" and not (i > 0 and (sql[i - 1].isalnum() or sql[i - 1] == "_")):
@@ -432,6 +539,63 @@ def _membership_grants(code: str) -> list:
         if stop and not re.search(r"\bON\b", rest[:stop.start()]):
             found.append(f"{m.group(1)}{rest[:stop.end()]}".strip())
     return found
+
+
+def _switches(code: str, strings: list) -> bool:
+    """True when a code view switches or defines a role (any SET ROLE, RESET ROLE, SESSION
+    AUTHORIZATION, set_config('role') or a non-literal set_config name, EXTENSION/ROLE DDL)."""
+    for m in SET_ROLE_RE.finditer(code):
+        if not re.search(r"\bUPDATE\b", code[:m.start()].rsplit(";", 1)[-1]):
+            return True
+    if any(rx.search(code) for rx, _ in ROLE_SWITCH_RES):
+        return True
+    return any(m.group(1) is None or strings[int(m.group(1))].strip().lower() in ROLE_GUCS
+               for m in SET_CONFIG_RE.finditer(code))
+
+
+def _format_text(expr: str, strings: list) -> str:
+    """format('…', args) of an EXECUTE expression with its literal args filled in ('?' when an
+    arg is not a literal), so `format('%s ROLE', 'RESET')` reads as `RESET ROLE`."""
+    m = re.search(r"\bFORMAT\s*\(\s*'#([0-9]+)'", expr)
+    if not m:
+        return ""
+    args = iter(strings[int(k)] for k in re.findall(r"'#([0-9]+)'", expr[m.end():]))
+    return FORMAT_SPEC_RE.sub(lambda f: "%" if f.group(1) == "%" else next(args, "?"), strings[int(m.group(1))])
+
+
+def _dynamic_errors(code: str, strings: list, here: str) -> list:
+    """Role switches in plpgsql dynamic SQL (EXECUTE): every string piece of the statement, the
+    pieces of each EXECUTE expression joined, and its format() text are linted as SQL, and a piece
+    that is half of a role keyword is refused. The pieces of the whole statement are used because the
+    SQL often reaches EXECUTE through a variable. Obfuscation (chr(), reverse(), decode()) is out of
+    reach of a lint: the ownership post-check is the backstop."""
+    executes = list(DYNAMIC_EXECUTE_RE.finditer(code))
+    if not executes:
+        return []
+    candidates = list(strings) + ["".join(strings), " ".join(strings)]
+    for m in executes:
+        rest = code[m.end():]
+        stop = EXPRESSION_END_RE.search(rest)
+        expr = rest[:stop.start()] if stop else rest
+        pieces = [strings[int(k)] for k in re.findall(r"'#([0-9]+)'", expr)]
+        candidates += ["".join(pieces), " ".join(pieces), _format_text(expr, strings)]
+    errors, switch, member = [], None, None
+    for text in candidates:
+        if not text.strip():
+            continue
+        sub: list = []
+        view = _role_view(text, sub)
+        if switch is None and (_switches(view, sub) or SWITCH_FRAGMENT_RE.search(text)):
+            switch = text
+        if member is None and re.match(r"\s*(GRANT|REVOKE)\b", view) and _membership_grants(view):
+            member = text
+    if switch is not None:
+        errors.append(f"{here}: dynamic SQL {switch.strip()[:60]!r} switches or defines a role: not allowed "
+                      f"in a migration (roles/ or a literal `SET LOCAL ROLE`)")
+    if member is not None:
+        errors.append(f"{here}: dynamic SQL {member.strip()[:60]!r} grants a role membership: "
+                      f"belongs in db/migrations/roles/")
+    return errors
 
 
 def role_lint(sql: str, owner_dir: str) -> list:
@@ -463,20 +627,15 @@ def role_lint(sql: str, owner_dir: str) -> list:
             if rx.search(code):
                 errors.append(f"{here}: {why}")
         for m in SET_CONFIG_RE.finditer(code):
-            if strings[int(m.group(1))].strip().lower() in ("role", "session_authorization"):
+            if m.group(1) is None:
+                errors.append(f"{here}: set_config() whose parameter name is not a plain string literal: the "
+                              f"lint cannot tell it is not 'role' — write the name as a literal")
+            elif strings[int(m.group(1))].strip().lower() in ROLE_GUCS:
                 errors.append(f"{here}: set_config('{strings[int(m.group(1))].strip()}', …) switches the role: "
                               f"not allowed in a migration")
         for g in _membership_grants(code):
             errors.append(f"{here}: role membership `{g[:80]}` belongs in db/migrations/roles/ (DM-8.1)")
-        for m in EXECUTE_STRING_RE.finditer(code):
-            text = strings[int(m.group(1))]
-            norm = " ".join(text.split()).upper()
-            if DYNAMIC_SWITCH_RE.search(text):
-                errors.append(f"{here}: dynamic SQL {text.strip()[:60]!r} switches or defines a role: not allowed "
-                              f"in a migration (roles/ or a literal `SET LOCAL ROLE`)")
-            elif re.match(r"(GRANT|REVOKE)\b", norm) and _membership_grants(norm):
-                errors.append(f"{here}: dynamic SQL {text.strip()[:60]!r} grants a role membership: "
-                              f"belongs in db/migrations/roles/")
+        errors.extend(_dynamic_errors(code, strings, here))
     return errors
 
 
@@ -490,11 +649,19 @@ def lint(sql: str, d: Directives, path: str = None) -> tuple:
     """Returns (errors, warnings) for one migration file, given its parsed directives.
 
     With `path` (…/<dir>/<NNN>_name.sql) the X1 role lint runs too, for owner-dir files numbered at
-    or above the dir's role_lint_from."""
+    or above the dir's role_lint_from, plus the switch's shape rule: such a file is one BEGIN … COMMIT
+    block, or a `-- migrate: no-transaction` file."""
     errors, warnings = list(d.errors), []
     owner_dir, number = migration_path(path)
     if owner_dir in OWNER_DIRS and number >= OWNER_DIRS[owner_dir].role_lint_from:
         errors.extend(role_lint(sql, owner_dir))
+        if not d.no_transaction:
+            # It may run under the role switch (XD8), which needs one BEGIN … COMMIT block: caught
+            # here, in the PR, instead of exit 8 at apply time.
+            shape_error = transaction_parts(sql)[3]
+            if shape_error:
+                errors.append(f"{shape_error} (X1: a file above the {owner_dir}/ head may run under the role "
+                              f"switch — SET LOCAL ROLE after BEGIN, ownership post-check before COMMIT)")
     stmts = split_statements(sql)
     for s in stmts:
         if (CONCURRENTLY_RE.search(s.code) and not TX_SAFE_CONCURRENTLY_RE.search(s.code)
@@ -696,49 +863,93 @@ def transaction_parts(sql: str) -> tuple:
     right before COMMIT, inside the file's own transaction."""
     stmts = split_statements(sql)
     if len(stmts) < 2 or not re.match(r"^(BEGIN|START TRANSACTION)\b", stmts[0].code) \
-            or not re.match(r"^(COMMIT|END)\b", stmts[-1].code):
+            or not re.match(r"^(COMMIT|END)\b", stmts[-1].code) or re.search(r"\bAND\s+CHAIN\b", stmts[-1].code):
         return None, None, None, "file does not start with BEGIN and end with COMMIT"
-    inner = [s for s in stmts[1:-1] if TX_CONTROL_RE.search(s.code)]
+    inner = [s for s in stmts[1:-1] if TX_CONTROL_RE.search(s.code) or PREPARE_TX_RE.search(s.code)]
     if inner:
         return None, None, None, (f"line {inner[0].line}: transaction control inside the file; one "
                                   f"BEGIN … COMMIT block is required to run under a role switch")
     return stmts[0], stmts[1:-1], stmts[-1], ""
 
 
-async def owned_by_login(conn) -> list:
-    rows = await conn.fetch(OWNED_BY_LOGIN_SQL, list(OWNER_SCHEMAS))
-    return [f"{r['kind']} {r['name']}" for r in rows]
+async def object_snapshot(conn, plan: RolePlan) -> list:
+    return list(await conn.fetch(OBJECTS_SQL, list(OWNER_SCHEMAS), plan.run_as))
 
 
-async def run_switched(conn, sql: str, d: Directives, plan: RolePlan) -> int:
-    """Runs the file as plan.run_as; returns 0, or 9 when the ownership post-check fails."""
+def ownership_findings(before: list, after: list, plan: RolePlan, owner_dir: str) -> list:
+    """What the file left behind that the switch forbids (plan S1 item 5, hardened):
+      * an object created or re-owned during the file, owned by anyone but the role the file ran as
+        (or the dir's view owner, catalog_owner): the login role after a stray role reset, a runtime
+        role after `SET LOCAL ROLE cis_app`, … — in any schema, any object kind, default privileges;
+      * an object in an owners.yaml schema whose schema is owned by someone else but that the login
+        role owns, even from before the file (a transferred owner: nothing in it may belong to the
+        login role);
+      * any change to roles, role memberships or role settings (roles/ only, DM-8.1)."""
+    allowed = {plan.run_as} | set(OWNER_DIRS[owner_dir].view_owner_roles)
+    key = lambda r: (r["kind"], r["id"], r["owner"])            # noqa: E731
+    seen = {key(r) for r in before}
+    now = {key(r) for r in after}
+    found = []
+    for r in after:
+        if r["kind"] in ROLE_KINDS:
+            if key(r) not in seen:
+                found.append(f"{r['kind']} {r['name']} added or changed")
+        elif key(r) not in seen and r["owner"] not in allowed:
+            found.append(f"{r['kind']} {r['name']} (owner {r['owner']})")
+        elif (r["owner"] == plan.login and r["mine"] and r["schema_owner"] != plan.login
+              and r["kind"] != "default privileges"):     # leftover FOR ROLE <login> rows are revoked by the transfer
+            found.append(f"{r['kind']} {r['name']} (owner {r['owner']}, in a schema owned by {r['schema_owner']})")
+    for r in before:
+        if r["kind"] in ROLE_KINDS and key(r) not in now:
+            found.append(f"{r['kind']} {r['name']} removed or changed")
+    return sorted(set(found))[:50]
+
+
+async def run_switched(conn, sql: str, d: Directives, plan: RolePlan, owner_dir: str) -> int:
+    """Runs the file as plan.run_as; returns 0, or 9 when the ownership post-check fails.
+
+    Transactional file: BEGIN, snapshot, SET LOCAL ROLE, the body, RESET ROLE + pinned search_path,
+    post-check, then COMMIT (or ROLLBACK). No-transaction file: snapshot, SET ROLE, every statement
+    but the last, RESET ROLE, post-check, and only when it passes the last statement (the
+    shared.schema_versions INSERT, lint rule) as the owner too — a failed post-check leaves the
+    version unregistered, so the file is retried after the clean-up instead of being marked applied."""
     role = _quote_ident(plan.run_as)
     if d.no_transaction:
         stmts = split_statements(sql)
+        before = await object_snapshot(conn, plan)
         await conn.execute(f"SET ROLE {role}")
-        for k, s in enumerate(stmts, 1):
+        for k, s in enumerate(stmts[:-1], 1):
             log(f"statement {k}/{len(stmts)} (line {s.line}) …")
             await conn.execute(s.text)
         await conn.execute("RESET ROLE")
-        stray = await owned_by_login(conn)
+        await conn.execute(PIN_SEARCH_PATH_SQL.format(scope=""))
+        stray = ownership_findings(before, await object_snapshot(conn, plan), plan, owner_dir)
+        await conn.execute("RESET search_path")
         if stray:
-            log(f"ERROR: ownership post-check: {len(stray)} object(s) owned by the login role {plan.login}: "
-                f"{', '.join(stray)}. The no-transaction file is committed: give them to {plan.run_as} by hand "
-                f"(roles/ file) and fix the migration")
+            log(f"ERROR: ownership post-check (ran as {plan.run_as}, login {plan.login}): {', '.join(stray)}. "
+                f"The statements before the registration are committed (no-transaction file) and the version "
+                f"is NOT registered: give the objects to {plan.run_as} or drop them (roles/ file), fix the "
+                f"migration, then re-run")
             return 9
+        await conn.execute(f"SET ROLE {role}")
+        log(f"statement {len(stmts)}/{len(stmts)} (line {stmts[-1].line}) … (registration, as {plan.run_as})")
+        await conn.execute(stmts[-1].text)
+        await conn.execute("RESET ROLE")
         return 0
     begin, body, commit, _ = transaction_parts(sql)
     await conn.execute(begin.text)
+    before = await object_snapshot(conn, plan)
     await conn.execute(f"SET LOCAL ROLE {role}")
     if body:
         await conn.execute("\n".join(s.text for s in body))
     await conn.execute("RESET ROLE")
-    stray = await owned_by_login(conn)
+    await conn.execute(PIN_SEARCH_PATH_SQL.format(scope="LOCAL "))
+    stray = ownership_findings(before, await object_snapshot(conn, plan), plan, owner_dir)
     if stray:
         await conn.execute("ROLLBACK")
-        log(f"ERROR: ownership post-check: {len(stray)} object(s) owned by the login role {plan.login} "
-            f"instead of {plan.run_as}: {', '.join(stray)}. Rolled back. A RESET ROLE or SET ROLE back to the "
-            f"login role inside the file is the usual cause (use SET LOCAL ROLE {plan.run_as})")
+        log(f"ERROR: ownership post-check (ran as {plan.run_as}, login {plan.login}): {', '.join(stray)}. "
+            f"Rolled back. A RESET ROLE or SET ROLE back to the login role inside the file is the usual cause "
+            f"(use SET LOCAL ROLE {plan.run_as}); roles and memberships belong in roles/")
         return 9
     await conn.execute(commit.text)
     return 0
@@ -777,8 +988,9 @@ async def run_task(env=None, fetch=_fetch, connect=_connect, sleep=asyncio.sleep
         return 4
 
     conn = await connect(env["DATABASE_URL"], d.settings)
+    owner_dir = file.split("/", 1)[0]
     try:
-        plan = await resolve_role(conn, file.split("/", 1)[0])
+        plan = await resolve_role(conn, owner_dir)
         if plan.error:
             log(f"ERROR: role: {plan.error}")
             return 8
@@ -803,6 +1015,10 @@ async def run_task(env=None, fetch=_fetch, connect=_connect, sleep=asyncio.sleep
         if applied:
             log("skip: already applied")
             return 0
+        if plan.switch and not await conn.fetchval(CAN_REGISTER_SQL, plan.run_as):
+            log(f"ERROR: role: {plan.run_as} cannot register the version (needs USAGE on schema shared and INSERT "
+                f"on shared.schema_versions, X1 plan S4 / CIS 243): nothing ran")
+            return 8
         if override:
             if any(st.busy for st in report):
                 log(f"WARNING: idle check OVERRIDDEN ({override}), busy: {busy_summary(report)}")
@@ -823,7 +1039,7 @@ async def run_task(env=None, fetch=_fetch, connect=_connect, sleep=asyncio.sleep
             log(f"snapshot taken before apply: {snapshot}")
         try:
             if plan.switch:
-                code = await run_switched(conn, sql, d, plan)
+                code = await run_switched(conn, sql, d, plan, owner_dir)
                 if code:
                     return code
             elif d.no_transaction:

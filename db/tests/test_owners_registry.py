@@ -2,7 +2,9 @@
 DB Migrate workflow keep their own copies of the facts they need (standard library only, no YAML in the
 ECS task); this test fails as soon as one of them disagrees with the registry.
 
-Needs PyYAML (CI installs it in the Migration Copy Guard "Guard unit tests" step).
+Needs PyYAML: the Migration Copy Guard "Guard unit tests" step (the PR gate) and the DB Schema Dump
+"Unit tests" step install it. Without PyYAML (a local run, another caller) the module is skipped,
+not failed. The DB Migrate ECS task never runs these tests (it gets only run_migration.py + the SQL).
 Run: python3 -m unittest discover -s db/tests -v
 """
 import re
@@ -10,7 +12,10 @@ import sys
 import unittest
 from pathlib import Path
 
-import yaml
+try:
+    import yaml
+except ImportError:                                  # optional outside CI: skip, do not error
+    raise unittest.SkipTest("PyYAML is not installed (pip install pyyaml==6.0.2): owners.yaml mirror test skipped")
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT / "db"))
@@ -110,6 +115,7 @@ class MirrorsAgreeTest(unittest.TestCase):
                 self.assertEqual(list(d.schemas), o["schemas"])
                 self.assertEqual(d.set_local_roles, frozenset(o["set_local_roles"]))
                 self.assertEqual(d.role_lint_from, o["role_lint_from"])
+                self.assertEqual(d.view_owner_roles, frozenset(o.get("view_owner_roles", [])))
         self.assertEqual(set(rm.OWNER_SCHEMAS), {s for o in SCHEMA_OWNERS.values() for s in o["schemas"]})
 
     def test_idle_exempt_kinds(self):

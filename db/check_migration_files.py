@@ -6,7 +6,8 @@
     `-- migrate: no-transaction` file, DROP TABLE/SCHEMA/COLUMN and TRUNCATE only with
     `-- migrate: destructive` (MIG-9, MIG-10, MIG-12), and the X1 role lint for owner-dir files
     above today's heads (no RESET ROLE, SET LOCAL ROLE only to the dir's allowlist, EXTENSION and
-    ROLE statements only in roles/). Same code DB Migrate runs before apply.
+    ROLE statements only in roles/; one BEGIN … COMMIT block or a no-transaction file, the shape
+    the role switch needs). Same code DB Migrate runs before apply.
   * roles/ (Infra-native, key rl-NNN) is numbered and linted like every owner dir.
 
 Usage:

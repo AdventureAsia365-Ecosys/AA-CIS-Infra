@@ -4,7 +4,7 @@
 # X1 plan S1 (AA-Ecosys docs/audits/2026-10-17-S241-x1/x1-plan.md). One entry per migration dir of
 # db/migrations/. Change it in the same PR as the code that mirrors it:
 #   * db/run_migration.py      MASTER_ROLE, OWNER_DIRS (anchor schema, schemas, set_local_roles,
-#                              role_lint_from), IDLE_EXEMPT_KINDS
+#                              role_lint_from, view_owner_roles), IDLE_EXEMPT_KINDS
 #   * db/check_migration_copies.py  OWNERS (repo, path, key prefix, native), PATH_RE
 #   * .github/workflows/db-migrate.yml  input regex, key prefix case, environment choices
 # db/tests/test_owners_registry.py fails when any of them disagrees with this file. The runner and
@@ -39,6 +39,7 @@ owners:
     runtime_roles: [cis_app, aa_app_user]          # cis_app from X1 S18 (api + worker), aa_app_user = tenant pool
     runtime_roles_today: [aa_cis_admin, aa_app_user]
     # catalog.* views are owned by catalog_owner (NOLOGIN, CIS 225); the schema itself goes to cis_owner.
+    # The ownership post-check accepts new objects owned by these roles besides the dir's live owner.
     view_owner_roles: [catalog_owner]
     job_table: shared.job
     job_kind_prefix: ""                  # CIS keeps unprefixed kind names (ADR 0003a decision 3)

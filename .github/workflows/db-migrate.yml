@@ -24,7 +24,8 @@ name: DB Migrate (shared RDS)
 # the live owner of the dir's anchor schema and runs the file as that role (SET LOCAL ROLE inside the
 # file's transaction, then an ownership post-check before COMMIT); while the login role owns the
 # anchor schema (today, every dir) nothing changes. roles/ files run only as the RDS master. The step
-# summary shows `ran as: <role>`. Exit 8 = role refused, 9 = ownership post-check failed (rolled back).
+# summary shows `ran as: <role>`. Exit 8 = role refused (incl. an owner that cannot register the
+# version), 9 = ownership post-check failed (rolled back; a no-transaction file is left unregistered).
 on:
   workflow_dispatch:
     inputs:
@@ -211,11 +212,11 @@ jobs:
             exit 1
           fi
           if [ "$EXIT" = "8" ]; then
-            echo "::error::role refused (see the MIGRATE ERROR: role line): roles/ runs only as the master, the login role must be a member of the anchor schema's live owner, and a switched file must be one BEGIN … COMMIT block"
+            echo "::error::role refused (see the MIGRATE ERROR: role line): roles/ runs only as the master, the login role must be a member of the anchor schema's live owner, the owner needs USAGE on shared + INSERT on shared.schema_versions (CIS 243), and a switched file must be one BEGIN … COMMIT block"
             exit 1
           fi
           if [ "$EXIT" = "9" ]; then
-            echo "::error::ownership post-check failed: the file created objects owned by the login role (see the MIGRATE ERROR line); a transactional file was rolled back"
+            echo "::error::ownership post-check failed: the file created or re-owned objects for a role other than the owner it ran as, or changed roles (see the MIGRATE ERROR line); a transactional file was rolled back, a no-transaction file is not registered"
             exit 1
           fi
           [ "$EXIT" = "0" ] || { echo "::error::migration task exited with $EXIT"; exit 1; }

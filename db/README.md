@@ -81,12 +81,19 @@ line (a directive after the first statement is an error):
 - **Role lint** (X1, owner files numbered at or above `role_lint_from`: CIS 243, bk-014, tp-013;
   applied files never re-run and 225/229/235/237/239/241 use the pre-X1 patterns): no `RESET ROLE`
   (it returns to the login role, which after X1 S22 is `db_migrator`), no `SET ROLE` / `SET SESSION
-  ROLE` / `ALTER FUNCTION … SET role` (only `SET LOCAL ROLE`), no `SET SESSION AUTHORIZATION`, no
-  `set_config('role', …)`, no role switch or role DDL in `EXECUTE` strings, no
-  `CREATE/ALTER/DROP EXTENSION` or `ROLE` and no role membership `GRANT r TO x` / `REVOKE r FROM x`
-  (all → `roles/`). `SET LOCAL ROLE` only to the dir's `set_local_roles`: `cis/` `catalog_owner`,
-  `cis_owner` (the way back), `cis_app` (guard blocks); `booking/`, `tripplanner/` none. Checked in
-  DO blocks and function bodies too; comments and ordinary string literals are ignored.
+  ROLE` / `ALTER FUNCTION … SET role` (only `SET LOCAL ROLE`; `"role"` quoted counts), no SESSION
+  AUTHORIZATION in any form, no `set_config('role', …)` and no `set_config()` whose name is not a
+  plain literal (`E''`/`U&''` literals are read), no role switch or role DDL in dynamic SQL (`EXECUTE`:
+  each string piece of the statement, the pieces joined, `format()` filled in, and half-keyword pieces
+  like `'RESET ' || 'ROLE'` are refused), no `CREATE/ALTER/DROP EXTENSION` or `ROLE` and no role
+  membership `GRANT r TO x` / `REVOKE r FROM x` (all → `roles/`). `SET LOCAL ROLE` only to the dir's
+  `set_local_roles`: `cis/` `catalog_owner`, `cis_owner` (the way back), `cis_app` (guard blocks);
+  `booking/`, `tripplanner/` none. Checked in DO blocks and function bodies too; comments and ordinary
+  string literals are ignored. Deliberately obfuscated SQL (`chr()`, `reverse()`) is out of a lint's
+  reach: the ownership post-check is the backstop.
+- **Switch shape** (same files): one `BEGIN … COMMIT` block (no inner `COMMIT`/`ROLLBACK`/`PREPARE
+  TRANSACTION`, no `COMMIT AND CHAIN`), or a `-- migrate: no-transaction` file. Such a file may run
+  under the role switch, which needs that shape; the lint fails the PR instead of exit 8 at apply.
 - **Unique numbers** (MIG-3): `db/check_migration_files.py` fails when two files in one owner dir
   share a number, `roles/` included (CI job "Migration lint and unique numbers").
 - Exit codes: 2 sha256 mismatch, 3 not registered, 4 lint error, 5 destructive without snapshot,
@@ -100,13 +107,29 @@ Before each file (check and apply) the task reads the **live owner of the dir's 
 
 - Owner = login role (today, for every dir): no switch, the file is sent exactly as before.
 - Owner ≠ login role (after bk-014 / tp-013 / CIS 245 commit): the login role must be a member of the
-  owner, else exit 8. The file must be one `BEGIN … COMMIT` block (else exit 8). The runner sends
-  the file's `BEGIN`, `SET LOCAL ROLE <owner>`, the body, then `RESET ROLE` and the **ownership
-  post-check**, then the file's `COMMIT`. The post-check lists every relation, function and
-  non-array type in an `owners.yaml` schema owned by the login role where its schema is owned by
-  someone else, or whose catalog row this transaction wrote; any hit → `ROLLBACK`, exit 9, with the
-  object names. A no-transaction file runs under a session `SET ROLE` and is post-checked after its
-  last statement (a hit is reported, but those statements are already committed).
+  owner, and on apply the owner must be able to register the version (USAGE on `shared`, INSERT on
+  `shared.schema_versions`, CIS 243), else exit 8 before anything runs. The file must be one
+  `BEGIN … COMMIT` block (else exit 8; the lint already refuses other shapes above the heads). The
+  runner sends the file's `BEGIN`, takes a **snapshot** of every owned object and of the role catalog
+  (as the login role), `SET LOCAL ROLE <owner>`, the body (its registration runs as the owner), then
+  `RESET ROLE`, pins `search_path` to `pg_catalog, pg_temp`, takes the snapshot again and runs the
+  **ownership post-check**, then the file's `COMMIT`. Any hit → `ROLLBACK`, exit 9, with the names:
+  - an object created or re-owned during the file whose owner is not the owner it ran as (or the
+    dir's `view_owner_roles`, `catalog_owner` for `cis/`) — any schema but `pg_catalog`,
+    `information_schema`, `pg_toast` and temp schemas, every catalog with an owner (relations incl.
+    sequences/views/matviews, functions/procedures, types, schemas, operators and their classes and
+    families, collations, conversions, text search, extended statistics, default privileges,
+    extensions, languages, FDWs/servers, publications, event triggers, large objects, databases);
+  - an object the login role owns in an `owners.yaml` schema whose schema the login role no longer
+    owns (a transferred owner), even from before the file;
+  - any added, changed or removed role, role membership or role setting (`roles/` only).
+  The snapshot compares (kind, oid, owner), so subtransactions, schema creation, a transfer back to
+  the login role and catalog shadowing through `search_path` do not hide anything. A concurrent DDL
+  by another session during the file can trip it too (rolled back; re-run).
+  A no-transaction file runs statement by statement under a session `SET ROLE <owner>`; the post-check
+  runs before its **last** statement (the registration, a lint rule), which then runs as the owner only
+  if the check passed. A hit → exit 9, the earlier statements stay committed (no transaction), the
+  version is **not** registered, so the file is retried once the objects are fixed.
 - `roles/` files run only when the login role is the master (`master_role`), else exit 8.
 - The idle check and the `shared.schema_versions` reads run as the login role.
 

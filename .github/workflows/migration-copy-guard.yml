@@ -14,7 +14,8 @@ name: Migration Copy Guard
 # run_migration.py lint on every copy — `-- migrate:` directives parse, CONCURRENTLY only in a
 # `-- migrate: no-transaction` file, DROP TABLE/SCHEMA/COLUMN and TRUNCATE only with
 # `-- migrate: destructive` (MIG-9, MIG-10, MIG-12), plus the X1 role lint for owner files above
-# today's heads (db/owners.yaml role_lint_from). DB Migrate runs the same lint before apply.
+# today's heads (db/owners.yaml role_lint_from) and the role switch's shape rule for them (one
+# BEGIN … COMMIT block, or no-transaction). DB Migrate runs the same lint before apply.
 # db/migrations/roles/ (key rl-NNN) is Infra-native: path, registration and lint only, no owner compare.
 on:
   pull_request:

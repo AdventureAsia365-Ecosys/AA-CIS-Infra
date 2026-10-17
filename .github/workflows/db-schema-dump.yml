@@ -71,8 +71,16 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # PyYAML for the owners.yaml mirror test (db/tests/test_owners_registry.py); same pin as the
+      # Migration Copy Guard. Without it that module is skipped, not failed.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Unit tests (runner, dump assembly, generator)
-        run: python3 -m unittest discover -s db/tests
+        run: |
+          python -m pip install --quiet pyyaml==6.0.2
+          python -m unittest discover -s db/tests
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v6
