@@ -132,7 +132,7 @@ resource "aws_iam_role_policy" "dfs_balance_perms" {
 
 resource "aws_cloudwatch_log_group" "dfs_balance" {
   name              = "/aws/lambda/${local.dfs_balance_fn_name}"
-  retention_in_days = 14
+  retention_in_days = 30 # AA-872 (S241 D-09): app logs 30 days
   tags              = local.common_tags
 }
 

@@ -13,11 +13,11 @@
 #      per-role connections) and grants the CIS task role PutMetricData on namespace AA/RDS.
 #      AA-751 adds the job backlog alarms per owner (AA/Jobs/CIS, AA/Jobs/Booking, end of file).
 #
-# NOTIFICATIONS: ALARM ONLY (AA-751, S240). No alarm in this file, observability.tf, ses.tf or
-# modules/eventbridge has ok_actions: the topic e-mails only on a transition INTO ALARM. The way
-# back to OK is visible in the console and in `aws cloudwatch describe-alarm-history
-# --history-item-type StateUpdate`. Do not add ok_actions to a new alarm (each flip would cost two
-# e-mails on the shared topic, the AA-833 lesson).
+# NOTIFICATIONS: ALARM and OK (S241 D-20, AA-872; AA-751 had made them alarm-only). Every alarm in
+# this file, observability.tf, ses.tf, identity.tf and modules/eventbridge has alarm_actions AND
+# ok_actions on the shared topic: Nghiệp wants the recovery e-mail too. A flapping alarm therefore
+# costs two e-mails per flip (the AA-833 lesson) — fix the threshold/evaluation, not the actions.
+# A new alarm without ok_actions is a review finding.
 #
 # TAGS: every resource here carries the blueprint tag set (Project = AA-Ecosys, App, Environment,
 # ManagedBy = terraform). These resource-level tags override the provider default_tags keys of the
@@ -81,7 +81,7 @@ resource "aws_cloudwatch_log_group" "tripplanner_lambda" {
   for_each = local.tp_functions
 
   name              = "/aws/lambda/${each.value}"
-  retention_in_days = 14
+  retention_in_days = 30 # AA-872 (S241 D-09): app logs 30 days
 
   tags = merge(local.ecosys_tags, { App = "tripplanner" })
 }
@@ -93,7 +93,7 @@ import {
 
 resource "aws_cloudwatch_log_group" "cis_apigw_execution" {
   name              = local.cis_apigw_exec_log_group
-  retention_in_days = 14
+  retention_in_days = 30 # AA-872 (S241 D-09): app logs 30 days
 
   tags = merge(local.ecosys_tags, { App = "cis" })
 }
@@ -118,6 +118,7 @@ resource "aws_cloudwatch_metric_alarm" "nat_status_check_failed" {
   threshold           = 1
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
 
   tags = merge(local.ecosys_tags, { App = "shared" })
 }
@@ -139,6 +140,7 @@ resource "aws_cloudwatch_metric_alarm" "booking_no_healthy_task" {
   threshold           = 1
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
 
   tags = merge(local.ecosys_tags, { App = "booking" })
 }
@@ -156,6 +158,7 @@ resource "aws_cloudwatch_metric_alarm" "booking_unhealthy_hosts" {
   threshold           = 0
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
 
   tags = merge(local.ecosys_tags, { App = "booking" })
 }
@@ -173,6 +176,7 @@ resource "aws_cloudwatch_metric_alarm" "booking_cpu_high" {
   threshold           = 85
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
 
   tags = merge(local.ecosys_tags, { App = "booking" })
 }
@@ -192,6 +196,7 @@ resource "aws_cloudwatch_metric_alarm" "booking_api_5xx" {
   threshold           = 5
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
 
   tags = merge(local.ecosys_tags, { App = "booking" })
 }
@@ -212,6 +217,7 @@ resource "aws_cloudwatch_metric_alarm" "tripplanner_lambda_errors" {
   threshold           = 3
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
 
   tags = merge(local.ecosys_tags, { App = "tripplanner" })
 }
@@ -220,8 +226,8 @@ resource "aws_cloudwatch_metric_alarm" "tripplanner_lambda_errors" {
 # prefetch fan-out after a deploy or ISR expiry) flipped browse OK -> ALARM -> OK 7 times in two
 # days, 14 emails on the topic that also carries the RDS, NAT and Booking alarms. It now pages only
 # on sustained throttling: more than 5 throttles in at least 2 of 3 consecutive 5-minute periods.
-# No ok_actions (AA-833 first, every alarm since AA-751): each flip would still cost 2 emails,
-# and the recovery is visible in the console / describe-alarm-history.
+# ok_actions since AA-872 (S241 D-20): a flip costs 2 e-mails, which is why the evaluation above is
+# strict (2 of 3 periods) rather than the actions being cut.
 resource "aws_cloudwatch_metric_alarm" "tripplanner_lambda_throttles" {
   for_each = local.tp_functions
 
@@ -238,6 +244,7 @@ resource "aws_cloudwatch_metric_alarm" "tripplanner_lambda_throttles" {
   threshold           = 5
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
 
   tags = merge(local.ecosys_tags, { App = "tripplanner" })
 }
@@ -259,6 +266,7 @@ resource "aws_cloudwatch_metric_alarm" "rds_free_storage_low" {
   threshold           = module.rds.allocated_storage * 1073741824 * 0.5 # 50% of base GB, in bytes
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
 
   tags = merge(local.ecosys_tags, { App = "shared" })
 }
@@ -281,6 +289,7 @@ resource "aws_cloudwatch_metric_alarm" "rds_connections_high" {
   threshold           = floor(local.rds_max_connections * 0.6)
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
 
   tags = merge(local.ecosys_tags, { App = "shared" })
 }
@@ -300,6 +309,7 @@ resource "aws_cloudwatch_metric_alarm" "rds_freeable_memory_low" {
   threshold           = 209715200 # 200 MiB in bytes
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
 
   tags = merge(local.ecosys_tags, { App = "shared" })
 }
@@ -320,6 +330,7 @@ resource "aws_cloudwatch_metric_alarm" "rds_cpu_surplus_credits_charged" {
   threshold           = 0
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
 
   tags = merge(local.ecosys_tags, { App = "shared" })
 }
@@ -359,6 +370,7 @@ resource "aws_cloudwatch_metric_alarm" "rds_read_latency_high" {
   threshold           = 0.020 # seconds
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
 
   tags = merge(local.ecosys_tags, { App = "shared" })
 }
@@ -376,6 +388,7 @@ resource "aws_cloudwatch_metric_alarm" "rds_write_latency_high" {
   threshold           = 0.020 # seconds
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
 
   tags = merge(local.ecosys_tags, { App = "shared" })
 }
@@ -393,6 +406,7 @@ resource "aws_cloudwatch_metric_alarm" "rds_disk_queue_depth_high" {
   threshold           = 10
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
 
   tags = merge(local.ecosys_tags, { App = "shared" })
 }
@@ -412,6 +426,7 @@ resource "aws_cloudwatch_metric_alarm" "rds_max_used_xid_high" {
   threshold           = 1000000000
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
 
   tags = merge(local.ecosys_tags, { App = "shared" })
 }
@@ -441,6 +456,7 @@ resource "aws_cloudwatch_metric_alarm" "rds_role_connections_high" {
   threshold           = 80
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
 
   tags = merge(local.ecosys_tags, { App = "shared" })
 }
@@ -485,6 +501,7 @@ resource "aws_cloudwatch_metric_alarm" "rds_role_connections_sampling_stopped" {
   threshold           = 1
   treat_missing_data  = "breaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
 
   tags = merge(local.ecosys_tags, { App = "shared" })
 }
@@ -509,7 +526,7 @@ resource "aws_cloudwatch_metric_alarm" "rds_role_connections_sampling_stopped" {
 #                           started_at (CIS registry expected_seconds, default 600; Booking
 #                           app/jobs/kinds.py EXPECTED_SECONDS, default 300).
 #
-# Alarms per owner (SNS on ALARM only, see the header):
+# Alarms per owner (SNS on ALARM and OK, see the header):
 #   <prefix>-jobs-queue-age          Maximum > 900 s in 1 of 2 5-minute periods, missing = OK.
 #   <prefix>-jobs-overdue-running    Maximum > 0 in 1 of 2 5-minute periods, missing = OK.
 #   <prefix>-jobs-sampling-stopped   SampleCount of OldestQueuedAgeSeconds < 1 for 3 x 15 minutes,
@@ -562,6 +579,7 @@ resource "aws_cloudwatch_metric_alarm" "jobs_queue_age" {
   threshold           = 900 # seconds
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
 
   tags = merge(local.ecosys_tags, { App = each.value.app })
 }
@@ -581,6 +599,7 @@ resource "aws_cloudwatch_metric_alarm" "jobs_overdue_running" {
   threshold           = 0
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
 
   tags = merge(local.ecosys_tags, { App = each.value.app })
 }
@@ -599,6 +618,7 @@ resource "aws_cloudwatch_metric_alarm" "jobs_sampling_stopped" {
   threshold           = 1
   treat_missing_data  = "breaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
 
   tags = merge(local.ecosys_tags, { App = each.value.app })
 }
