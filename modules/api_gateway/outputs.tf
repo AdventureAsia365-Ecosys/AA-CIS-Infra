@@ -17,3 +17,13 @@ output "stage_arn" {
   description = "ARN of the REST API stage (WAF web ACL association target, S235)"
   value       = aws_api_gateway_stage.dev.arn
 }
+
+output "api_name" {
+  description = "Name of the REST API (ApiName dimension of AWS/ApiGateway metrics, AA-870)"
+  value       = aws_api_gateway_rest_api.this.name
+}
+
+output "stage_name" {
+  description = "Stage name (Stage dimension of AWS/ApiGateway metrics, AA-870)"
+  value       = aws_api_gateway_stage.dev.stage_name
+}
