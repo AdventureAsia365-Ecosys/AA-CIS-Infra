@@ -15,12 +15,38 @@ locals {
   ]
 }
 
+# ── ECS Exec session log (S241 D-07) ──────────────────────────
+# Every ECS Exec session on this cluster (CIS api, CIS worker, Booking api) is recorded here: the
+# SSM agent in the task uploads the session transcript when the session ends. No KMS key: no other
+# log group in this stack uses a CMK, and CloudWatch Logs encrypts at rest with its own key anyway.
+# The transcript holds whatever the session printed, so ad-hoc scripts must not print secrets.
+resource "aws_cloudwatch_log_group" "exec_sessions" {
+  name              = "/ecs/${local.name_prefix}/exec-sessions"
+  retention_in_days = 30
+
+  tags = var.tags
+}
+
 # ── ECS Cluster ───────────────────────────────────────────────
 resource "aws_ecs_cluster" "main" {
   name = "${local.name_prefix}-cluster"
   setting {
     name  = "containerInsights"
     value = "disabled"
+  }
+
+  # S241 D-07: OVERRIDE sends exec session logs to the group above (DEFAULT would only follow each
+  # task definition's awslogs driver, which records nothing for exec). Each task role needs the
+  # logs grant to write there (CIS: aws_iam_role_policy.ecs_task_exec_logging
+  # below; Booking: accounts/aa365/booking.tf).
+  configuration {
+    execute_command_configuration {
+      logging = "OVERRIDE"
+      log_configuration {
+        cloud_watch_log_group_name     = aws_cloudwatch_log_group.exec_sessions.name
+        cloud_watch_encryption_enabled = false
+      }
+    }
   }
   # AA-828: the cluster also runs aws_ecs_service.booking (accounts/aa365/booking.tf), so the root
   # passes cluster_tags = { App = "shared" }. A cluster has no cost line of its own; task cost is
@@ -100,6 +126,33 @@ resource "aws_iam_role" "ecs_task" {
 resource "aws_iam_role_policy_attachment" "ecs_task_ssm" {
   role       = aws_iam_role.ecs_task.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
+# S241 D-07: what the SSM agent in a task needs to upload an ECS Exec session log. CreateLogStream,
+# DescribeLogStreams and PutLogEvents are scoped to the exec log group; DescribeLogGroups is a list
+# call that takes no log group ARN (as in the AWS ECS Exec guide) and only returns names. The broad
+# logs:* grant in ecs_task_policy already covers part of this; this policy keeps the exec path
+# working if that grant is ever narrowed.
+resource "aws_iam_role_policy" "ecs_task_exec_logging" {
+  name = "${local.name_prefix}-ecs-task-exec-logging"
+  role = aws_iam_role.ecs_task.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "ExecSessionLogDescribeGroups"
+        Effect   = "Allow"
+        Action   = ["logs:DescribeLogGroups"]
+        Resource = "*"
+      },
+      {
+        Sid      = "ExecSessionLogWrite"
+        Effect   = "Allow"
+        Action   = ["logs:CreateLogStream", "logs:DescribeLogStreams", "logs:PutLogEvents"]
+        Resource = "${aws_cloudwatch_log_group.exec_sessions.arn}:*"
+      },
+    ]
+  })
 }
 
 resource "aws_iam_role_policy" "ecs_task_policy" {
