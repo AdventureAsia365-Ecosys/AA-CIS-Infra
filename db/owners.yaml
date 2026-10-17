@@ -1,0 +1,109 @@
+# Owner registry of the shared RDS aa-cis-dev-db (acc2 005097885195, us-west-1).
+#
+# Data standards DM-1.2 / DM-1.3 / DM-8.1 / DM-8.2, ADR 0008 playbook step 2, ADR 0003a decision 3,
+# X1 plan S1 (AA-Ecosys docs/audits/2026-10-17-S241-x1/x1-plan.md). One entry per migration dir of
+# db/migrations/. Change it in the same PR as the code that mirrors it:
+#   * db/run_migration.py      MASTER_ROLE, OWNER_DIRS (anchor schema, schemas, set_local_roles,
+#                              role_lint_from), IDLE_EXEMPT_KINDS
+#   * db/check_migration_copies.py  OWNERS (repo, path, key prefix, native), PATH_RE
+#   * .github/workflows/db-migrate.yml  input regex, key prefix case, environment choices
+# db/tests/test_owners_registry.py fails when any of them disagrees with this file. The runner and
+# the guards keep their own constants on purpose: they run with the standard library only (the
+# ECS task gets just the runner and the SQL through presigned URLs).
+#
+# Roles: `owner_role` is the NOLOGIN target owner of the schemas (X1). Until the transfer of that
+# owner (bk-014, tp-013, CIS 245) the objects are still owned by `owner_role_today`. DB Migrate never
+# reads either field to pick a role: it reads the LIVE owner of `anchor_schema` before every file
+# (XD8) and runs the file as that role, so the switch follows the transfer with no registry change.
+# Runtime role names are kept as they are (XD1): `booking`, `tripplanner`, `aa_app_user`.
+
+version: 1
+
+# DB Migrate `environment` input (DM-8.2). Only dev exists; a prod entry comes with the prod blueprint.
+environments: [dev]
+
+# RDS master. Runs roles/ files and DB Migrate mode=set-password; break-glass only after X1 S22
+# (DM-8.9). Owns the public extensions (vector, pg_stat_statements) and the public.* leftovers.
+master_role: aa_cis_admin
+
+owners:
+  cis:
+    repo: AA-CIS-App
+    path: api/migrations
+    key_prefix: ""                       # plain NNN (kept for history)
+    anchor_schema: shared
+    schemas: [acp_contract, acp_deliver, acp_gold_output, acp_shared, acp_silver_s2, acp_silver_s3,
+              acp_silver_s4, catalog, geo, gold_aa_internal, shared, silver_aa_internal]
+    owner_role: cis_owner                # X1 S20 (rl-002) + S21 (245)
+    owner_role_today: aa_cis_admin
+    runtime_roles: [cis_app, aa_app_user]          # cis_app from X1 S18 (api + worker), aa_app_user = tenant pool
+    runtime_roles_today: [aa_cis_admin, aa_app_user]
+    # catalog.* views are owned by catalog_owner (NOLOGIN, CIS 225); the schema itself goes to cis_owner.
+    view_owner_roles: [catalog_owner]
+    job_table: shared.job
+    job_kind_prefix: ""                  # CIS keeps unprefixed kind names (ADR 0003a decision 3)
+    idle_exempt_kinds: []                # none since AA-751 (S240)
+    # SET LOCAL ROLE targets the role lint allows in cis/ (X1 plan S1 item 6): catalog_owner (catalog
+    # view recipe), cis_owner (the way back from catalog_owner, never RESET ROLE), cis_app (behavioural
+    # guard blocks, 244/245).
+    set_local_roles: [catalog_owner, cis_owner, cis_app]
+    role_lint_from: 243                  # applied files <= 242 never re-run; 225/235 use the old catalog dance
+    # Grants to other apps' roles (input for the X2 grant guard; not enforced yet). contract = the
+    # intended reads (schema-ownership.md rule 2); grandfathered = removed by X4 (TripPlanner decoupling).
+    consumer_grants:
+      - {grantee: booking,     privilege: "USAGE, SELECT", object: "catalog.* (schema + views)",         status: contract,      source: "225, 228"}
+      - {grantee: tripplanner, privilege: "USAGE, SELECT", object: "catalog.* (schema + views)",         status: contract,      source: "225, 228"}
+      - {grantee: booking,     privilege: EXECUTE,         object: "geo.name_norm(text)",                status: contract,      source: "228"}
+      - {grantee: tripplanner, privilege: EXECUTE,         object: "geo.name_norm(text)",                status: contract,      source: "228"}
+      - {grantee: tripplanner, privilege: INSERT,          object: shared.llm_call_log,                  status: contract,      source: "173 (standing write exception)"}
+      - {grantee: tripplanner, privilege: SELECT,          object: "shared.llm_role_config, shared.llm_model_catalog", status: grandfathered, source: "173"}
+      - {grantee: tripplanner, privilege: SELECT,          object: "silver_aa_internal.raw_tours (tour_id, country)",  status: grandfathered, source: "179"}
+      - {grantee: tripplanner, privilege: SELECT,          object: "acp_contract.tour_atoms, acp_contract.v_active_tour_atoms (columns)", status: grandfathered, source: "180, 216"}
+      - {grantee: tripplanner, privilege: SELECT,          object: "shared.destinations, shared.v_destination_photos, shared.v_tour_photos", status: grandfathered, source: "201"}
+      - {grantee: tripplanner, privilege: SELECT,          object: gold_aa_internal.published_tours,     status: grandfathered, source: "tenant RLS read"}
+
+  booking:
+    repo: AA-Booking
+    path: migrations
+    key_prefix: bk-
+    anchor_schema: booking
+    schemas: [booking]
+    owner_role: bk_owner                 # X1 S3 (rl-001) + S6 (bk-014)
+    owner_role_today: aa_cis_admin
+    runtime_roles: [booking]             # API + in-process booking.job worker
+    runtime_roles_today: [booking]
+    job_table: booking.job
+    job_kind_prefix: bk_
+    idle_exempt_kinds: [bk_inquiry_pull] # always queued at +60 s (bk-002 intake, Booking intake.RECURRING)
+    set_local_roles: []
+    role_lint_from: 14
+    consumer_grants: []
+
+  tripplanner:
+    repo: AA-TripPlanner-Web
+    path: migrations
+    key_prefix: tp-
+    anchor_schema: tripplanner
+    schemas: [tripplanner]
+    owner_role: tp_owner                 # X1 S3 (rl-001) + S7 (tp-013)
+    owner_role_today: aa_cis_admin
+    runtime_roles: [tripplanner]         # browse + assembly Lambdas
+    runtime_roles_today: [tripplanner]
+    job_table: null                      # tripplanner.job comes with AA-861 (job template)
+    job_kind_prefix: tp_
+    idle_exempt_kinds: []
+    set_local_roles: []
+    role_lint_from: 13
+    consumer_grants:
+      - {grantee: booking, privilege: "USAGE, SELECT", object: tripplanner.v_inquiry_outbox, status: contract, source: "tp-009"}
+
+  roles:
+    # Infra-native (no owner repo): role bootstrap (LOGIN/NOLOGIN roles, attributes, memberships,
+    # connection limits, MIG-6), CREATE/ALTER/DROP EXTENSION, public.* leftovers, and the prepared
+    # undo files of the X1 ownership transfers. Always runs as master_role; DB Migrate refuses a
+    # roles/ file under any other login.
+    repo: AA-CIS-Infra
+    path: db/migrations/roles
+    key_prefix: rl-
+    native: true
+    runs_as: master

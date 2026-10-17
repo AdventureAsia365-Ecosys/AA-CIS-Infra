@@ -6,17 +6,33 @@ definition, which downloads `run_migration.py` and the SQL via presigned S3 URLs
 with the task's own `DATABASE_URL`.
 
 ```
-db/migrations/<owner>/<NNN>_<name>.sql   # owner = cis | tripplanner | booking
+db/migrations/<owner>/<NNN>_<name>.sql   # owner = cis | tripplanner | booking | roles
+db/owners.yaml                           # owner registry (X1, DM-1.2)
 ```
 
 Version key registered in `shared.schema_versions`: `cis` → `NNN`, `tripplanner` → `tp-NNN`,
-`booking` → `bk-NNN` (ownership rules: `AA-Ecosys/docs/database/schema-ownership.md`).
+`booking` → `bk-NNN`, `roles` → `rl-NNN` (ownership rules: `AA-Ecosys/docs/database/schema-ownership.md`).
+
+## Owner registry (`owners.yaml`, X1 plan S1)
+One entry per migration dir: repo, path, key prefix, anchor schema, schemas, owner role (target and
+today), runtime roles, job table, job-kind prefix, idle-exempt kinds, allowed `SET LOCAL ROLE`
+targets, the first file number the role lint applies to, and the allowed consumer grants (input for
+the X2 grant guard, not enforced yet). `roles/` is the Infra-native dir: role bootstrap (roles,
+attributes, memberships, connection limits), `CREATE/ALTER/DROP EXTENSION`, `public.*` leftovers and
+the prepared undo files of the X1 ownership transfers; it always runs as the RDS master.
+
+The runner, the copy guard and the workflow keep their own constants (standard library only, the ECS
+task gets just the runner and the SQL); `db/tests/test_owners_registry.py` fails when any of
+`run_migration.py` (`MASTER_ROLE`, `OWNER_DIRS`, `IDLE_EXEMPT_KINDS`), `check_migration_copies.py`
+(`OWNERS`, `PATH_RE`) or `db-migrate.yml` (dir regex, key prefixes, `environment` choices) disagrees
+with `owners.yaml`. Change them in the same PR.
 
 ## Flow
 0. The owner repo merges a **migration-file-only** PR to its `main` first (S237 D8). Code that
    reads the new objects comes in a later PR, after the apply.
 1. PR adds the SQL here as a byte-identical copy (`cp` the owner file; human review = the
-   approval). **Migration Copy Guard** (`.github/workflows/migration-copy-guard.yml`, AA-807)
+   approval). A `roles/` file is written here (Infra-native): the guard checks only its path and its
+   `rl-NNN` registration. **Migration Copy Guard** (`.github/workflows/migration-copy-guard.yml`, AA-807)
    compares each added/changed file with the owner's `main` through the GitHub API and fails on:
    a path DB Migrate would refuse, a missing or wrongly prefixed `shared.schema_versions` key, a
    file not on the owner's `main` yet ("merge the migration-only PR in the owner repo first"), or
@@ -25,8 +41,9 @@ Version key registered in `shared.schema_versions`: `cis` → `NNN`, `tripplanne
    (or `--all`; without a token GitHub allows 60 anonymous requests/hour); tests:
    `python3 -m unittest discover -s db/tests`.
 2. Merge to `main`.
-3. Run **DB Migrate** on `main` with `mode=check` (prints whether the version is registered, the
-   latest key of the same owner and the idle state of every job table, see "Idle check" below),
+3. Run **DB Migrate** on `main` with `mode=check` and `environment=dev` (prints the role the file
+   runs as, whether the version is registered, the latest key of the same owner and the idle state
+   of every job table, see "Role per file" and "Idle check" below),
    then `mode=apply`. The job fails unless the task exits 0 and
    the version is in `shared.schema_versions` afterwards. Re-running `apply` is a no-op.
 4. **DB Schema Dump** (`.github/workflows/db-schema-dump.yml`) is dispatched by a successful apply
@@ -61,11 +78,41 @@ line (a directive after the first statement is an error):
   without no-transaction, destructive statements without the
   header and transaction control in a no-transaction file are errors; `DELETE` without the header
   is a warning. Local: `python3 db/run_migration.py --inspect db/migrations/cis/241_x.sql`.
+- **Role lint** (X1, owner files numbered at or above `role_lint_from`: CIS 243, bk-014, tp-013;
+  applied files never re-run and 225/229/235/237/239/241 use the pre-X1 patterns): no `RESET ROLE`
+  (it returns to the login role, which after X1 S22 is `db_migrator`), no `SET ROLE` / `SET SESSION
+  ROLE` / `ALTER FUNCTION … SET role` (only `SET LOCAL ROLE`), no `SET SESSION AUTHORIZATION`, no
+  `set_config('role', …)`, no role switch or role DDL in `EXECUTE` strings, no
+  `CREATE/ALTER/DROP EXTENSION` or `ROLE` and no role membership `GRANT r TO x` / `REVOKE r FROM x`
+  (all → `roles/`). `SET LOCAL ROLE` only to the dir's `set_local_roles`: `cis/` `catalog_owner`,
+  `cis_owner` (the way back), `cis_app` (guard blocks); `booking/`, `tripplanner/` none. Checked in
+  DO blocks and function bodies too; comments and ordinary string literals are ignored.
 - **Unique numbers** (MIG-3): `db/check_migration_files.py` fails when two files in one owner dir
-  share a number (CI job "Migration lint and unique numbers").
+  share a number, `roles/` included (CI job "Migration lint and unique numbers").
 - Exit codes: 2 sha256 mismatch, 3 not registered, 4 lint error, 5 destructive without snapshot,
   6 PostgreSQL error (lock or statement timeout prints a hint), 7 apply refused because a job
-  table is busy or a rerun wave is open.
+  table is busy or a rerun wave is open, 8 role refused, 9 ownership post-check failed.
+
+## Role per file (X1 plan S1, XD8)
+Before each file (check and apply) the task reads the **live owner of the dir's anchor schema**
+(`cis/` → `shared`, `booking/` → `booking`, `tripplanner/` → `tripplanner`) and logs
+`MIGRATE ran as: <role> — <why>` (also in the job summary).
+
+- Owner = login role (today, for every dir): no switch, the file is sent exactly as before.
+- Owner ≠ login role (after bk-014 / tp-013 / CIS 245 commit): the login role must be a member of the
+  owner, else exit 8. The file must be one `BEGIN … COMMIT` block (else exit 8). The runner sends
+  the file's `BEGIN`, `SET LOCAL ROLE <owner>`, the body, then `RESET ROLE` and the **ownership
+  post-check**, then the file's `COMMIT`. The post-check lists every relation, function and
+  non-array type in an `owners.yaml` schema owned by the login role where its schema is owned by
+  someone else, or whose catalog row this transaction wrote; any hit → `ROLLBACK`, exit 9, with the
+  object names. A no-transaction file runs under a session `SET ROLE` and is post-checked after its
+  last statement (a hit is reported, but those statements are already committed).
+- `roles/` files run only when the login role is the master (`master_role`), else exit 8.
+- The idle check and the `shared.schema_versions` reads run as the login role.
+
+So the very next file after an ownership transfer runs as the new owner, with no runner change and
+no window in which the login role creates objects no default privilege covers. The undo of a transfer
+is a `roles/` file (`rl-NNN`), because a file in the transferred dir would run as the new owner.
 
 ## Idle check (AA-751, ADR 0003a decision 5, data standards C6.3b)
 DB Migrate `apply` waits until **every** owner job table is idle. On both modes the task logs
@@ -123,6 +170,6 @@ statistics alone never open a PR. Local render: `python3 db/gen_schema_reference
 - The owner repo keeps the identical original (`AA-CIS-App/api/migrations/`,
   `AA-TripPlanner-Web/migrations/`, `AA-Booking/migrations/`); this folder holds the copy the
   workflow applies, checked byte for byte against the owner's `main`. Infra itself
-  owns no schema. Apply the migration **before** merging app
-  code that depends on it.
+  owns no schema: its only own SQL is `roles/` (roles, extensions, undo files of X1 transfers, DM-1.7).
+  Apply the migration **before** merging app code that depends on it.
 - Destructive changes follow the DRY RUN procedure (`skill/aa-cis-schema/references/destructive-ops.md`).

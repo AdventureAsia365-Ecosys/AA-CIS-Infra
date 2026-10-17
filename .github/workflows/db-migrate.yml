@@ -19,13 +19,25 @@ name: DB Migrate (shared RDS)
 # (exit 7) while one has a queued/running row of a non-exempt kind or a wave is open. The input
 # override_busy_jobs (a reason, Nghiệp only) lets one apply proceed anyway, and is logged.
 # After a successful apply, the DB Schema Dump workflow is dispatched (root reference PR, AA-807 N1).
+# Owners (X1, db/owners.yaml): dirs cis/ (key NNN), tripplanner/ (tp-NNN), booking/ (bk-NNN) and the
+# Infra-native roles/ (rl-NNN: role bootstrap, extensions, undo files). Before each file the task reads
+# the live owner of the dir's anchor schema and runs the file as that role (SET LOCAL ROLE inside the
+# file's transaction, then an ownership post-check before COMMIT); while the login role owns the
+# anchor schema (today, every dir) nothing changes. roles/ files run only as the RDS master. The step
+# summary shows `ran as: <role>`. Exit 8 = role refused, 9 = ownership post-check failed (rolled back).
 on:
   workflow_dispatch:
     inputs:
       migration:
-        description: "Path under db/migrations/, e.g. cis/215_publish_log_idempotency.sql or tripplanner/007_register_versions.sql"
+        description: "Path under db/migrations/, e.g. cis/215_publish_log_idempotency.sql, tripplanner/007_register_versions.sql or roles/001_x1_owner_roles.sql"
         required: true
         type: string
+      environment:
+        description: "Target database (db/owners.yaml environments; only dev exists)"
+        required: true
+        type: choice
+        options: [dev]
+        default: dev
       mode:
         description: "check = report only; apply = run the file"
         required: true
@@ -49,7 +61,7 @@ permissions:
 
 jobs:
   migrate:
-    name: Migrate (${{ inputs.mode }} ${{ inputs.migration }})
+    name: Migrate (${{ inputs.environment }} ${{ inputs.mode }} ${{ inputs.migration }})
     runs-on: ubuntu-latest
     environment: prod
     if: github.ref == 'refs/heads/main'
@@ -62,6 +74,7 @@ jobs:
       DB_INSTANCE: aa-cis-dev-db
       MIGRATION: ${{ inputs.migration }}
       MODE: ${{ inputs.mode }}
+      ENVIRONMENT: ${{ inputs.environment }}
       OVERRIDE_BUSY_JOBS: ${{ inputs.override_busy_jobs }}
     steps:
       - uses: actions/checkout@v5
@@ -69,18 +82,25 @@ jobs:
       - name: Validate input
         id: file
         run: |
-          if ! [[ "$MIGRATION" =~ ^(cis|tripplanner|booking)/([0-9]{3})_[a-z0-9_]+\.sql$ ]]; then
-            echo "::error::migration must look like <cis|tripplanner|booking>/215_name.sql"; exit 1
+          # The resources below (cluster, service, bucket, instance) are the dev ones; a second
+          # environment needs its own values before it is added to the choice list and owners.yaml.
+          if [ "$ENVIRONMENT" != "dev" ]; then
+            echo "::error::environment must be dev (db/owners.yaml environments)"; exit 1
+          fi
+          if ! [[ "$MIGRATION" =~ ^(cis|tripplanner|booking|roles)/([0-9]{3})_[a-z0-9_]+\.sql$ ]]; then
+            echo "::error::migration must look like <cis|tripplanner|booking|roles>/215_name.sql"; exit 1
           fi
           test -f "db/migrations/$MIGRATION" || { echo "::error::db/migrations/$MIGRATION not found on main"; exit 1; }
           # shared.schema_versions key per owner (AA-684, docs/database/schema-ownership.md rule 4):
           # CIS keeps plain numbers; other owners are prefixed so their 007 cannot collide with CIS 007.
+          # roles/ = Infra-native role bootstrap (X1, db/owners.yaml), key rl-NNN.
           case "${BASH_REMATCH[1]}" in
-            cis) PREFIX="" ;; tripplanner) PREFIX="tp-" ;; booking) PREFIX="bk-" ;;
+            cis) PREFIX="" ;; tripplanner) PREFIX="tp-" ;; booking) PREFIX="bk-" ;; roles) PREFIX="rl-" ;;
           esac
           echo "version=${PREFIX}${BASH_REMATCH[2]}" >> "$GITHUB_OUTPUT"
           echo "sha256=$(sha256sum "db/migrations/$MIGRATION" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
-          echo "### $MODE \`$MIGRATION\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "### $MODE \`$MIGRATION\` ($ENVIRONMENT)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- environment: $ENVIRONMENT" >> "$GITHUB_STEP_SUMMARY"
           # Trimmed the same way the runner .strip()s MIGRATION_IDLE_OVERRIDE, so the summary and the
           # task agree on whether an override is present. A value of only spaces is rejected.
           OVR="${OVERRIDE_BUSY_JOBS#"${OVERRIDE_BUSY_JOBS%%[![:space:]]*}"}"
@@ -188,6 +208,14 @@ jobs:
           echo "exit code: $EXIT  stopped: $(jq -r '.tasks[0].stoppedReason' <<<"$DESC")"
           if [ "$EXIT" = "7" ]; then
             echo "::error::apply refused: a job table is busy or a rerun wave is open (see the MIGRATE busy lines). Wait until idle, or re-dispatch with override_busy_jobs=<reason> (Nghiệp only)"
+            exit 1
+          fi
+          if [ "$EXIT" = "8" ]; then
+            echo "::error::role refused (see the MIGRATE ERROR: role line): roles/ runs only as the master, the login role must be a member of the anchor schema's live owner, and a switched file must be one BEGIN … COMMIT block"
+            exit 1
+          fi
+          if [ "$EXIT" = "9" ]; then
+            echo "::error::ownership post-check failed: the file created objects owned by the login role (see the MIGRATE ERROR line); a transactional file was rolled back"
             exit 1
           fi
           [ "$EXIT" = "0" ] || { echo "::error::migration task exited with $EXIT"; exit 1; }

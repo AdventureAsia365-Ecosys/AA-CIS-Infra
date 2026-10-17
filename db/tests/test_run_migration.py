@@ -201,21 +201,34 @@ def job(kind, status="queued", due=True):
     return {"kind": kind, "status": status, "due": due}
 
 
+TODAY_OWNERS = {"shared": "aa_cis_admin", "booking": "aa_cis_admin", "tripplanner": "aa_cis_admin"}
+
+
 class FakeConn:
     """`states` is one (jobs, waves) pair per idle check, the last one repeating: jobs maps an owner
     schema to its job rows (job()), or to an Exception raised on read; waves is the number of open
-    shared.rerun_wave rows, or None when the table does not exist."""
+    shared.rerun_wave rows, or None when the table does not exist.
 
-    def __init__(self, applied=None, registers=True, fail=None, states=None):
+    X1: `login` is session_user, `owners` the live owner per anchor schema (missing = no schema),
+    `members` the roles the login role is a member of, `stray` the rows of the ownership post-check."""
+
+    def __init__(self, applied=None, registers=True, fail=None, states=None, login="aa_cis_admin",
+                 owners=None, members=(), stray=()):
         self.applied, self.registers, self.fail = applied, registers, fail
         self.executed, self.closed, self.ran = [], False, False
         self.states = states or [({"booking": [], "shared": []}, 0)]
         self.checks, self.busy_queries = 0, []
+        self.login, self.members, self.stray = login, set(members), list(stray)
+        self.owners = dict(TODAY_OWNERS if owners is None else owners)
+        self.postchecks = []
 
     def state(self):
         return self.states[min(self.checks, len(self.states)) - 1]
 
     async def fetch(self, query, *args):
+        if query == rm.OWNED_BY_LOGIN_SQL:
+            self.postchecks.append(list(args[0]))
+            return [{"kind": k, "name": n} for k, n in self.stray]
         if query == rm.JOB_TABLES_SQL:
             self.checks += 1
             return [(schema,) for schema in sorted(self.state()[0])]
@@ -238,6 +251,12 @@ class FakeConn:
         return [groups[k] for k in sorted(groups)]
 
     async def fetchval(self, query, *args):
+        if query == rm.SESSION_USER_SQL:
+            return self.login
+        if query == rm.SCHEMA_OWNER_SQL:
+            return self.owners.get(args[0])
+        if query == rm.IS_MEMBER_SQL:
+            return args[0] in self.members
         if "ORDER BY version DESC" in query:
             return "230"
         if query == rm.WAVE_TABLE_SQL:
@@ -265,10 +284,10 @@ class PgError(Exception):
 
 
 class RunTaskTest(unittest.TestCase):
-    def run_task(self, sql, mode="apply", conn=None, version="240", **extra):
+    def run_task(self, sql, mode="apply", conn=None, version="240", file="cis/x.sql", **extra):
         raw = sql.encode()
         env = {"MIGRATION_URL": "u", "MIGRATION_SHA256": hashlib.sha256(raw).hexdigest(),
-               "MIGRATION_VERSION": version, "MIGRATION_MODE": mode, "MIGRATION_FILE": "cis/x.sql",
+               "MIGRATION_VERSION": version, "MIGRATION_MODE": mode, "MIGRATION_FILE": file,
                "DATABASE_URL": "postgresql://x", **extra}
         conn = conn or FakeConn()
         seen = {}
@@ -291,6 +310,7 @@ class RunTaskTest(unittest.TestCase):
         code, conn, settings, log = self.run_task(PLAIN)
         self.assertEqual(code, 0)
         self.assertEqual(conn.executed, [PLAIN])
+        self.assertEqual(conn.postchecks, [])          # no switch, no post-check (X1 no-op today)
         self.assertEqual(settings, {"lock_timeout": "5s", "statement_timeout": "15min",
                                     "application_name": "db-migrate"})
         self.assertIn("latest_registered_same_owner=230", log)
@@ -502,6 +522,290 @@ class IdleCheckTest(unittest.TestCase):
         self.assertIn(REFUSAL.format("booking.job (unreadable)"), log)
 
 
+BK_FILE = """-- Migration bk-015: X1 probe.
+BEGIN;
+DO $$ BEGIN
+  IF current_user <> 'bk_owner' THEN RAISE EXCEPTION 'bk-015 ran as %', current_user; END IF;
+END $$;
+INSERT INTO shared.schema_versions (version, applied_at, description)
+VALUES ('bk-015', now(), 'X1 probe') ON CONFLICT (version) DO NOTHING;
+COMMIT;
+"""
+
+ROLES_FILE = """-- Migration rl-001: X1 owner roles.
+BEGIN;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'bk_owner') THEN CREATE ROLE bk_owner NOLOGIN; END IF;
+END $$;
+GRANT bk_owner TO aa_cis_admin;
+CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
+INSERT INTO shared.schema_versions (version, applied_at, description)
+VALUES ('rl-001', now(), 'X1 owner roles') ON CONFLICT (version) DO NOTHING;
+COMMIT;
+"""
+
+
+class RoleSwitchTest(unittest.TestCase):
+    """X1 plan S1 item 4 (XD8): the live owner of the anchor schema decides the role."""
+
+    run_task = RunTaskTest.run_task
+
+    def test_today_every_dir_runs_as_the_login_role_unchanged(self):
+        for file, version in (("cis/242_job_table_template_conformance.sql", "242"),
+                              ("booking/013_job_template_catch_up.sql", "bk-013"),
+                              ("tripplanner/012_retire_plaintext_guest_token.sql", "tp-012")):
+            with self.subTest(file=file):
+                code, conn, _, log = self.run_task(PLAIN, file=file, version=version)
+                self.assertEqual((code, conn.executed, conn.postchecks), (0, [PLAIN], []))
+                self.assertIn("MIGRATE ran as: aa_cis_admin — login role owns anchor schema ", log)
+
+    def test_check_mode_reports_the_role(self):
+        code, conn, _, log = self.run_task(PLAIN, mode="check", file="cis/242_job_table_template_conformance.sql",
+                                           version="242", conn=FakeConn(applied="2026-10-16"))
+        self.assertEqual((code, conn.executed), (0, []))
+        self.assertIn("MIGRATE ran as: aa_cis_admin (check mode: the role apply uses) — login role owns "
+                      "anchor schema shared, no role switch", log)
+
+    def test_switch_picks_bk_owner_from_the_catalog(self):
+        conn = FakeConn(owners={**TODAY_OWNERS, "booking": "bk_owner"}, members={"bk_owner"})
+        code, conn, _, log = self.run_task(BK_FILE, file="booking/015_x1_set_role_probe.sql",
+                                           version="bk-015", conn=conn)
+        self.assertEqual(code, 0, log)
+        stmts = rm.split_statements(BK_FILE)
+        self.assertEqual(conn.executed, [stmts[0].text, 'SET LOCAL ROLE "bk_owner"',
+                                         "\n".join(s.text for s in stmts[1:-1]), "RESET ROLE", stmts[-1].text])
+        self.assertTrue(conn.executed[0].startswith("-- Migration bk-015") and conn.executed[0].endswith("BEGIN;"))
+        self.assertEqual(conn.executed[-1], "COMMIT;")
+        self.assertEqual(conn.postchecks, [list(rm.OWNER_SCHEMAS)])
+        self.assertIn("MIGRATE ran as: bk_owner — login aa_cis_admin, anchor schema booking owned by bk_owner", log)
+
+    def test_cis_after_245_runs_as_cis_owner_under_db_migrator(self):
+        conn = FakeConn(login="db_migrator", members={"cis_owner", "bk_owner", "tp_owner", "catalog_owner"},
+                        owners={"shared": "cis_owner", "booking": "bk_owner", "tripplanner": "tp_owner"})
+        code, conn, _, log = self.run_task(PLAIN, file="cis/246_x1_set_role_probe.sql", version="246", conn=conn)
+        self.assertEqual(code, 0)
+        self.assertIn('SET LOCAL ROLE "cis_owner"', conn.executed)
+        self.assertIn("MIGRATE ran as: cis_owner", log)
+
+    def test_login_not_member_of_the_owner_is_refused(self):
+        conn = FakeConn(owners={**TODAY_OWNERS, "booking": "bk_owner"})
+        for mode in ("check", "apply"):
+            with self.subTest(mode=mode):
+                code, c, _, log = self.run_task(BK_FILE, mode=mode, file="booking/015_x.sql", version="bk-015",
+                                                conn=FakeConn(owners=conn.owners))
+                self.assertEqual((code, c.executed), (8, []))
+                self.assertIn("MIGRATE ERROR: role: anchor schema booking is owned by bk_owner and the login "
+                              "role aa_cis_admin is not a member of it", log)
+                self.assertTrue(c.closed)
+
+    def test_postcheck_failure_rolls_back_before_commit(self):
+        conn = FakeConn(owners={**TODAY_OWNERS, "booking": "bk_owner"}, members={"bk_owner"},
+                        stray=[("relation", "booking.oops")])
+        code, conn, _, log = self.run_task(BK_FILE, file="booking/015_x.sql", version="bk-015", conn=conn)
+        self.assertEqual(code, 9)
+        self.assertEqual(conn.executed[-2:], ["RESET ROLE", "ROLLBACK"])
+        self.assertNotIn("COMMIT;", conn.executed)
+        self.assertIn("ownership post-check: 1 object(s) owned by the login role aa_cis_admin instead of "
+                      "bk_owner: relation booking.oops. Rolled back.", log)
+
+    def test_switched_file_must_be_one_transaction_block(self):
+        two_blocks = "BEGIN;\nSELECT 1;\nCOMMIT;\nBEGIN;\nINSERT INTO shared.schema_versions VALUES ('tp-014');\nCOMMIT;\n"
+        conn = FakeConn(owners={**TODAY_OWNERS, "tripplanner": "tp_owner"}, members={"tp_owner"})
+        code, conn, _, log = self.run_task(two_blocks, file="tripplanner/014_x.sql", version="tp-014", conn=conn)
+        self.assertEqual((code, conn.executed), (8, []))
+        self.assertIn("line 3: transaction control inside the file", log)
+        # Not switched (today): the same file still runs as it always did.
+        code, conn, _, _ = self.run_task(two_blocks, file="tripplanner/014_x.sql", version="tp-014")
+        self.assertEqual((code, conn.executed), (0, [two_blocks]))
+
+    def test_switched_no_transaction_file_uses_a_session_role(self):
+        conn = FakeConn(owners={**TODAY_OWNERS, "shared": "cis_owner"}, members={"cis_owner"})
+        code, conn, _, _ = self.run_task(NO_TX, file="cis/247_x.sql", version="247", conn=conn)
+        self.assertEqual(code, 0)
+        self.assertEqual(conn.executed[0], 'SET ROLE "cis_owner"')
+        self.assertEqual(conn.executed[-1], "RESET ROLE")
+        self.assertEqual(len(conn.executed), 5)
+        self.assertEqual(len(conn.postchecks), 1)
+
+    def test_switched_no_transaction_postcheck_failure_reports_committed(self):
+        conn = FakeConn(owners={**TODAY_OWNERS, "shared": "cis_owner"}, members={"cis_owner"},
+                        stray=[("relation", "shared.ix_a")])
+        code, _, _, log = self.run_task(NO_TX, file="cis/247_x.sql", version="247", conn=conn)
+        self.assertEqual(code, 9)
+        self.assertIn("The no-transaction file is committed", log)
+
+    def test_roles_dir_runs_only_as_the_master(self):
+        code, conn, _, log = self.run_task(ROLES_FILE, file="roles/001_x1_owner_roles.sql", version="rl-001")
+        self.assertEqual((code, conn.executed), (0, [ROLES_FILE]))
+        self.assertIn("MIGRATE ran as: aa_cis_admin — roles/ file, runs as the master", log)
+        code, conn, _, log = self.run_task(ROLES_FILE, file="roles/001_x1_owner_roles.sql", version="rl-001",
+                                           conn=FakeConn(login="db_migrator"))
+        self.assertEqual((code, conn.executed), (8, []))
+        self.assertIn("roles/ files run only as the RDS master aa_cis_admin (login is db_migrator)", log)
+
+    def test_unknown_dir_is_refused_and_missing_anchor_does_not_switch(self):
+        code, conn, _, log = self.run_task(PLAIN, file="crm/001_x.sql", version="crm-001")
+        self.assertEqual((code, conn.executed), (8, []))
+        self.assertIn("unknown migration dir 'crm'", log)
+        code, conn, _, log = self.run_task(PLAIN, file="tripplanner/013_x.sql", version="tp-013",
+                                           conn=FakeConn(owners={"shared": "aa_cis_admin"}))
+        self.assertEqual((code, conn.executed), (0, [PLAIN]))
+        self.assertIn("anchor schema tripplanner does not exist yet, no role switch", log)
+
+    def test_postcheck_sql_shape_is_pinned(self):
+        q = rm.OWNED_BY_LOGIN_SQL
+        for part in ("nspname = ANY($1::text[])", "rolname = session_user", "FROM pg_class c",
+                     "FROM pg_proc p", "FROM pg_type t", "t.typrelid = 0 AND t.typcategory <> 'A'",
+                     "o.nspowner <> me.oid OR o.x = pg_current_xact_id()::xid"):
+            self.assertIn(part, q)
+        self.assertEqual(rm.SCHEMA_OWNER_SQL,
+                         "SELECT pg_get_userbyid(nspowner)::text FROM pg_namespace WHERE nspname = $1")
+        self.assertEqual(rm.IS_MEMBER_SQL, "SELECT pg_has_role(session_user, $1, 'MEMBER')")
+
+
+# Shapes of the planned X1 files (plan S16 = 244, S21 = 245 + S22 catalog recipe), trimmed.
+DRAFT_244 = """-- Migration 244: X1 cis_app runtime grants.
+-- migrate: lock_timeout=5s
+BEGIN;
+GRANT USAGE ON SCHEMA shared, geo TO cis_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA shared TO cis_app;
+GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA shared TO cis_app;
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA geo TO cis_app;
+REVOKE INSERT, UPDATE, DELETE ON shared.schema_versions FROM cis_app;
+ALTER DEFAULT PRIVILEGES FOR ROLE aa_cis_admin IN SCHEMA shared GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO cis_app;
+CREATE POLICY content_piece_cis_app_all ON acp_shared.content_piece AS PERMISSIVE FOR ALL TO cis_app USING (true) WITH CHECK (true);
+INSERT INTO shared.schema_versions (version, applied_at, description)
+VALUES ('244', now(), 'X1 cis_app') ON CONFLICT (version) DO NOTHING;
+DO $$
+DECLARE n bigint;
+BEGIN
+  IF pg_has_role('cis_app', 'aa_app_user', 'MEMBER') THEN RAISE EXCEPTION 'cis_app must not SET ROLE aa_app_user'; END IF;
+  SET LOCAL ROLE cis_app;
+  PERFORM set_config('app.tenant_id', '00000000-0000-0000-0000-000000000001', true);
+  SELECT count(*) INTO n FROM gold_aa_internal.published_tours;
+  BEGIN
+    PERFORM 1 FROM booking.customers LIMIT 1;
+    RAISE EXCEPTION 'cis_app reads booking.customers';
+  EXCEPTION WHEN insufficient_privilege THEN NULL;
+  END;
+  UPDATE shared.tenant_members SET role = role WHERE false;
+END $$;
+COMMIT;
+"""
+
+DRAFT_245 = """-- Migration 245: X1 CIS objects to cis_owner.
+BEGIN;
+ALTER SCHEMA shared OWNER TO cis_owner;
+ALTER TABLE shared.job OWNER TO cis_owner;
+ALTER FUNCTION geo.name_norm(text) OWNER TO cis_owner;
+ALTER DEFAULT PRIVILEGES FOR ROLE cis_owner IN SCHEMA shared GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO cis_app;
+ALTER DEFAULT PRIVILEGES FOR ROLE aa_cis_admin IN SCHEMA shared REVOKE SELECT, INSERT, UPDATE, DELETE ON TABLES FROM cis_app;
+GRANT CREATE ON SCHEMA catalog TO catalog_owner;
+SET LOCAL ROLE catalog_owner;
+CREATE OR REPLACE VIEW catalog.v_x AS SELECT 1 AS x;
+SET LOCAL ROLE cis_owner;        -- the way back; never RESET ROLE
+REVOKE CREATE ON SCHEMA catalog FROM catalog_owner;
+INSERT INTO shared.schema_versions (version, applied_at, description)
+VALUES ('245', now(), 'X1 cis_owner') ON CONFLICT (version) DO NOTHING;
+COMMIT;
+"""
+
+
+class RoleLintTest(unittest.TestCase):
+    """X1 plan S1 item 6: role statements in owner files above today's heads."""
+
+    def lint(self, sql, path):
+        return rm.lint(sql, rm.parse_directives(sql), path)[0]
+
+    def body(self, stmt):
+        return f"BEGIN;\n{stmt}\nINSERT INTO shared.schema_versions VALUES ('x');\nCOMMIT;\n"
+
+    def test_planned_244_and_245_pass(self):
+        self.assertEqual(self.lint(DRAFT_244, "db/migrations/cis/244_x1_cis_app_runtime.sql"), [])
+        self.assertEqual(self.lint(DRAFT_245, "db/migrations/cis/245_x1_cis_owner.sql"), [])
+
+    def test_refused_statements(self):
+        cases = [
+            ("booking/015_x.sql", "DO $$ BEGIN RESET ROLE; END $$;", "RESET ROLE returns to the login role"),
+            ("cis/246_x.sql", "RESET ROLE;", "RESET ROLE returns"),
+            ("cis/246_x.sql", "CREATE EXTENSION IF NOT EXISTS vector;", "EXTENSION belongs in db/migrations/roles/"),
+            ("tripplanner/013_x.sql", "DROP EXTENSION x;", "EXTENSION belongs"),
+            ("cis/246_x.sql", "DO $$ BEGIN SET LOCAL ROLE aa_app_user; END $$;",
+             "`SET LOCAL ROLE aa_app_user` is not allowed in cis/ (allowed: catalog_owner, cis_app, cis_owner"),
+            ("booking/015_x.sql", "SET LOCAL ROLE bk_owner;", "is not allowed in booking/ (allowed: none"),
+            ("cis/246_x.sql", "SET LOCAL ROLE NONE;", "`SET LOCAL ROLE none` is not allowed"),
+            ("cis/246_x.sql", "SET ROLE cis_app;", "only `SET LOCAL ROLE` is allowed"),
+            ("cis/246_x.sql", "SET SESSION ROLE cis_app;", "only `SET LOCAL ROLE` is allowed"),
+            ("cis/246_x.sql", "set role = 'cis_owner';", "only `SET LOCAL ROLE` is allowed"),
+            ("cis/246_x.sql", "ALTER FUNCTION f() SET role TO cis_owner;", "only `SET LOCAL ROLE` is allowed"),
+            ("cis/246_x.sql", "SET SESSION AUTHORIZATION cis_app;", "SESSION AUTHORIZATION is not allowed"),
+            ("cis/246_x.sql", "SELECT set_config('role', 'cis_app', true);", "set_config('role', …) switches"),
+            ("cis/246_x.sql", "DO $$ BEGIN EXECUTE format('SET LOCAL ROLE %I', 'x'); END $$;",
+             "dynamic SQL 'SET LOCAL ROLE %I' switches or defines a role"),
+            ("cis/246_x.sql", "CREATE ROLE cis_reader NOLOGIN;", "ROLE belongs in db/migrations/roles/"),
+            ("booking/015_x.sql", "DO $$ BEGIN IF true THEN CREATE ROLE x; END IF; END $$;", "ROLE belongs"),
+            ("cis/246_x.sql", "ALTER ROLE cis_app CONNECTION LIMIT 120;", "ROLE belongs"),
+            ("cis/246_x.sql", "GRANT catalog_owner TO CURRENT_USER;", "role membership `GRANT CATALOG_OWNER TO`"),
+            ("cis/246_x.sql", "REVOKE catalog_owner FROM aa_cis_admin;", "role membership"),
+            ("cis/246_x.sql", "DO $$ BEGIN EXECUTE format('GRANT aa_app_user TO %I', current_user); END $$;",
+             "grants a role membership"),
+        ]
+        for path, stmt, needle in cases:
+            with self.subTest(stmt=stmt):
+                errors = self.lint(self.body(stmt), path)
+                self.assertTrue(any(needle in e for e in errors), errors)
+                self.assertTrue(errors[0].startswith("line 2: "), errors)
+
+    def test_allowed_look_alikes(self):
+        for stmt in (
+            "UPDATE shared.tenant_members SET role = 'admin' WHERE false;",
+            "INSERT INTO t (a, role) VALUES (1, 'x') ON CONFLICT (a) DO UPDATE SET role = EXCLUDED.role;",
+            "-- never RESET ROLE here; CREATE EXTENSION lives in roles/",
+            "DO $$ BEGIN RAISE EXCEPTION 'must be able to SET ROLE catalog_owner (GRANT catalog_owner TO x)'; END $$;",
+            "COMMENT ON TABLE t IS 'RESET ROLE is forbidden';",
+            "GRANT SELECT ON booking.v_x TO tripplanner WITH GRANT OPTION;",
+            "REVOKE ALL ON SCHEMA booking FROM PUBLIC;",
+            "ALTER DEFAULT PRIVILEGES FOR ROLE bk_owner IN SCHEMA booking GRANT EXECUTE ON FUNCTIONS TO booking;",
+            "ALTER TABLE booking.customers OWNER TO bk_owner;",
+            "SELECT set_config('app.tenant_id', '', true);",
+            "CREATE USER MAPPING FOR x SERVER y;",
+            "CREATE TABLE booking.role_x (role text);",
+        ):
+            with self.subTest(stmt=stmt):
+                self.assertEqual(self.lint(self.body(stmt), "booking/015_x.sql"), [])
+
+    def test_only_files_above_the_heads_and_owner_dirs(self):
+        sql = self.body("DO $$ BEGIN SET LOCAL ROLE aa_app_user; RESET ROLE; END $$;")
+        self.assertEqual(self.lint(sql, "cis/242_x.sql"), [])
+        self.assertEqual(self.lint(sql, "booking/013_x.sql"), [])
+        self.assertEqual(self.lint(sql, "tripplanner/012_x.sql"), [])
+        self.assertNotEqual(self.lint(sql, "cis/243_x.sql"), [])
+        self.assertNotEqual(self.lint(sql, "booking/014_x.sql"), [])
+        self.assertNotEqual(self.lint(sql, "tripplanner/013_x.sql"), [])
+        self.assertEqual(self.lint(ROLES_FILE, "db/migrations/roles/001_x1_owner_roles.sql"), [])
+        self.assertEqual(self.lint(sql, None), [])                  # no path: legacy callers
+
+    def test_real_copies_still_pass(self):
+        root = Path(__file__).resolve().parent.parent.parent
+        out = io.StringIO()
+        self.assertEqual(files.run(files.all_copies(root), root, out=out), 0, out.getvalue())
+
+    def test_inspect_applies_the_role_lint(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "booking" / "015_x.sql"
+            p.parent.mkdir()
+            p.write_text(self.body("RESET ROLE;"), encoding="utf-8")
+            out = io.StringIO()
+            self.assertEqual(rm.inspect(str(p), out=out), 1)
+            self.assertIn("RESET ROLE returns", json.loads(out.getvalue())["errors"][0])
+
+    def test_run_task_lints_with_the_migration_file(self):
+        code, conn, settings, log = RunTaskTest.run_task(self, self.body("RESET ROLE;"),
+                                                         file="booking/015_x.sql", version="bk-015")
+        self.assertEqual((code, settings), (4, None))
+        self.assertIn("MIGRATE ERROR: line 2: RESET ROLE returns", log)
+
+
 class CheckFilesTest(unittest.TestCase):
     def make_repo(self, layout):
         tmp = tempfile.TemporaryDirectory()
@@ -520,6 +824,20 @@ class CheckFilesTest(unittest.TestCase):
         self.assertIn("db/migrations/cis: number 232", errors[0])
         out = io.StringIO()
         self.assertEqual(files.run(files.all_copies(root), root, out=out), 1)
+
+    def test_roles_dir_numbers_are_unique_and_linted(self):
+        root = self.make_repo({"roles/001_a.sql": PLAIN, "roles/001_b.sql": PLAIN, "cis/001_c.sql": PLAIN})
+        errors = files.duplicate_numbers(root)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("db/migrations/roles: number 001", errors[0])
+
+    def test_role_lint_runs_on_new_owner_copies(self):
+        root = self.make_repo({"booking/014_x.sql": "BEGIN;\nRESET ROLE;\nCOMMIT;\n",
+                               "roles/001_x.sql": ROLES_FILE})
+        out = io.StringIO()
+        self.assertEqual(files.run(files.all_copies(root), root, out=out), 1)
+        self.assertIn("FAIL  db/migrations/booking/014_x.sql: line 2: RESET ROLE returns", out.getvalue())
+        self.assertIn("ok    db/migrations/roles/001_x.sql", out.getvalue())
 
     def test_clean_repo_passes_and_lint_errors_fail(self):
         root = self.make_repo({"cis/240_a.sql": PLAIN, "tripplanner/011_b.sql": NO_TX})

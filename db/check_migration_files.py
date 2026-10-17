@@ -4,7 +4,10 @@
     DB Migrate keys a run by the number and the second file would be "already applied";
   * the run_migration.py lint on every file: `-- migrate:` directives parse, CONCURRENTLY only in a
     `-- migrate: no-transaction` file, DROP TABLE/SCHEMA/COLUMN and TRUNCATE only with
-    `-- migrate: destructive` (MIG-9, MIG-10, MIG-12). Same code DB Migrate runs before apply.
+    `-- migrate: destructive` (MIG-9, MIG-10, MIG-12), and the X1 role lint for owner-dir files
+    above today's heads (no RESET ROLE, SET LOCAL ROLE only to the dir's allowlist, EXTENSION and
+    ROLE statements only in roles/). Same code DB Migrate runs before apply.
+  * roles/ (Infra-native, key rl-NNN) is numbered and linted like every owner dir.
 
 Usage:
   python3 db/check_migration_files.py            # every copy (CI, PR and nightly)
@@ -47,12 +50,12 @@ def duplicate_numbers(repo_root: Path) -> list[str]:
     return errors
 
 
-def lint_file(path: Path) -> tuple[list[str], list[str]]:
+def lint_file(path: Path, rel: str = "") -> tuple[list[str], list[str]]:
     try:
         sql = path.read_text(encoding="utf-8")
     except UnicodeDecodeError:
         return ["is not valid UTF-8"], []
-    return run_migration.lint(sql, run_migration.parse_directives(sql))
+    return run_migration.lint(sql, run_migration.parse_directives(sql), rel or path.as_posix())
 
 
 def all_copies(repo_root: Path) -> list[str]:
@@ -74,7 +77,7 @@ def run(paths: list[str], repo_root: Path, out=sys.stdout) -> int:
         if not rel or not (repo_root / rel).is_file():
             continue
         checked += 1
-        errors, warnings = lint_file(repo_root / rel)
+        errors, warnings = lint_file(repo_root / rel, rel)
         for w in warnings:
             print(f"warn  {rel}: {w}", file=out)
             if annotate:
