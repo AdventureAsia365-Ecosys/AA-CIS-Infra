@@ -18,7 +18,8 @@ name: DB Migrate (shared RDS)
 # and open `shared.rerun_wave` rows on check and apply; apply re-checks 3 x 20 s and then refuses
 # (exit 7) while one has a queued/running row of a non-exempt kind or a wave is open. The input
 # override_busy_jobs (a reason, Nghiệp only) lets one apply proceed anyway, and is logged.
-# After a successful apply, the DB Schema Dump workflow is dispatched (root reference PR, AA-807 N1).
+# After a successful apply, the DB Schema Dump workflow is dispatched (root reference PR, AA-807 N1),
+# and the DB Isolation Probe (X1 S2): its pending cells follow the new shared.schema_versions rows.
 # Owners (X1, db/owners.yaml): dirs cis/ (key NNN), tripplanner/ (tp-NNN), booking/ (bk-NNN) and the
 # Infra-native roles/ (rl-NNN: role bootstrap, extensions, undo files). Before each file the task reads
 # the live owner of the dir's anchor schema and runs the file as that role (SET LOCAL ROLE inside the
@@ -59,7 +60,7 @@ concurrency:
 permissions:
   id-token: write
   contents: read
-  actions: write     # dispatch db-schema-dump.yml after an apply
+  actions: write     # dispatch db-schema-dump.yml and db-isolation-probe.yml after an apply
 
 jobs:
   migrate:
@@ -232,6 +233,19 @@ jobs:
           gh workflow run db-schema-dump.yml --repo "${{ github.repository }}" --ref main \
             -f reason="after DB Migrate apply of $MIGRATION (run ${{ github.run_id }})"
           echo "- dispatched DB Schema Dump (root reference PR if the structure changed)" >> "$GITHUB_STEP_SUMMARY"
+
+      # X1 S2: re-check role isolation after every apply (its pending cells follow the new
+      # shared.schema_versions rows). Same rule as the dump: the apply already succeeded, so a failed
+      # dispatch only warns (the nightly probe catches up).
+      - name: Re-run the isolation probe (DB Isolation Probe)
+        if: success() && inputs.mode == 'apply'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run db-isolation-probe.yml --repo "${{ github.repository }}" --ref main \
+            -f reason="after DB Migrate apply of $MIGRATION (run ${{ github.run_id }})"
+          echo "- dispatched DB Isolation Probe (X1 S2)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Remove S3 objects
         if: always() && steps.task.outputs.prefix != ''
