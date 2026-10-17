@@ -101,7 +101,7 @@ def test_token_denied(attrs, groups):
 
 
 def test_breakglass_token_logs_alarm_line(capsys):
-    attrs = {"email": "breakglass@adventure.asia", "email_verified": "true"}
+    attrs = {"email": "admin@adventure.asia", "email_verified": "true"}
     workforce.pre_token_generation(token_event(attrs, ["cis-admin", "booking-admin"], client_id="bg"))
     lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     assert {"event": "breakglass_token_issued", "client_id": "bg",

@@ -14,7 +14,7 @@ variable "identity_staff_email_domain" {
 variable "identity_breakglass_email" {
   description = "Break-glass WORKFORCE user's email (ADR 0006 decision 11). Every token issued to it raises an alarm. Must be inside identity_staff_email_domain."
   type        = string
-  default     = "breakglass@adventure.asia"
+  default     = "admin@adventure.asia"
 }
 
 # ── Prefix domains (Dev) and optional custom domains ─────────────────────────

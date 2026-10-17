@@ -103,7 +103,7 @@ def trigger_env(monkeypatch):
     monkeypatch.setenv("ALLOWED_EMAIL_DOMAIN", "adventure.asia")
     monkeypatch.setenv("GOOGLE_PROVIDER_NAME", "Google")
     monkeypatch.setenv("FACEBOOK_PROVIDER_NAME", "Facebook")
-    monkeypatch.setenv("BREAKGLASS_EMAIL", "breakglass@adventure.asia")
+    monkeypatch.setenv("BREAKGLASS_EMAIL", "admin@adventure.asia")
     monkeypatch.setenv("PORTAL_CLIENT_NAMES", "aa-external-dev-cis-portal")
     monkeypatch.setenv(
         "TRAVELLER_CLIENT_NAMES", "aa-external-dev-tripplanner,aa-external-dev-booking-customer"
