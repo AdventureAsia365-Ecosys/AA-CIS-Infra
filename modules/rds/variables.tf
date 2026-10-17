@@ -27,8 +27,8 @@ variable "max_allocated_storage" {
 
 variable "log_retention_days" {
   type        = number
-  description = "Retention of the exported postgresql log group (AA-824)."
-  default     = 14
+  description = "Retention of the exported postgresql log group (AA-824). Connection logs = security class (AA-872, S241 D-09)."
+  default     = 365
 }
 
 variable "apply_immediately" {

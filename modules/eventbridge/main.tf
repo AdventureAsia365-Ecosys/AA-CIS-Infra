@@ -235,7 +235,7 @@ resource "aws_sqs_queue_policy" "acp_events_dlq" {
 # topic (identical computed name, same account/region) and collided at apply
 # time; reusing the existing topic avoids the duplicate and keeps the one
 # already-confirmed email subscription as the single source of alerting.
-# ALARM-only (no ok_actions, AA-751): the topic e-mails only on a transition into ALARM.
+# ALARM and OK notifications (AA-872, S241 D-20), like every alarm on the topic.
 
 resource "aws_cloudwatch_metric_alarm" "acp_dlq_depth" {
   alarm_name          = "${local.name_prefix}-acp-dlq-depth"
@@ -254,6 +254,7 @@ resource "aws_cloudwatch_metric_alarm" "acp_dlq_depth" {
   }
 
   alarm_actions = [var.alerts_topic_arn]
+  ok_actions    = [var.alerts_topic_arn]
 
   tags = merge(var.tags, {
     Name    = "${local.name_prefix}-acp-dlq-depth"

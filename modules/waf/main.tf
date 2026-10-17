@@ -213,7 +213,7 @@ resource "aws_wafv2_web_acl_association" "rest_api_stage" {
 # CloudWatch Log Group for WAF
 resource "aws_cloudwatch_log_group" "waf" {
   name              = "aws-waf-logs-${local.name_prefix}"
-  retention_in_days = 30
+  retention_in_days = 365 # AA-872 (S241 D-09): security/audit logs 365 days
   tags              = var.tags
 }
 

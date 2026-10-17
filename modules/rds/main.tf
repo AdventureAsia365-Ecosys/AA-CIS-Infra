@@ -92,7 +92,7 @@ resource "aws_db_parameter_group" "main" {
 }
 
 # RDS creates /aws/rds/instance/<id>/postgresql on the first export with no expiry; creating it
-# first lets Terraform own the 14-day retention.
+# first lets Terraform own the retention (365 days, security log class, AA-872).
 resource "aws_cloudwatch_log_group" "postgresql" {
   name              = "/aws/rds/instance/${local.name_prefix}-db/postgresql"
   retention_in_days = var.log_retention_days

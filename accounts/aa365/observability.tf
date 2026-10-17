@@ -7,9 +7,8 @@
 # account 1 (867490540162, decommissioned). That resource is gone with the
 # account — this is a fresh build on account 2, not an import/fix.
 #
-# NOTIFICATIONS: ALARM ONLY (AA-751, S240). The alarms below have alarm_actions and no ok_actions:
-# the topic e-mails only on a transition INTO ALARM; the way back to OK is in the console and in
-# describe-alarm-history. Same rule for every alarm on the topic (observability_ecosys.tf header).
+# NOTIFICATIONS: ALARM and OK (S241 D-20, AA-872, reversing AA-751's alarm-only rule). Every alarm
+# on the topic has alarm_actions and ok_actions, so the recovery is e-mailed too (observability_ecosys.tf header).
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -80,6 +79,7 @@ resource "aws_cloudwatch_metric_alarm" "rds_cpu_high" {
   treat_missing_data  = "notBreaching" # AA-832: data standard C4.1a (was the default "missing")
   alarm_description   = "RDS ${local.name_prefix}-db CPU above 80% for 15 minutes"
   alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
 
   dimensions = {
     DBInstanceIdentifier = "${local.name_prefix}-db"
@@ -106,6 +106,7 @@ resource "aws_cloudwatch_metric_alarm" "ecs_task_count_low" {
   alarm_description   = "ECS ${local.name_prefix}-api running task count below desired (requires Container Insights)"
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
 
   dimensions = {
     ClusterName = "${local.name_prefix}-cluster"
@@ -180,6 +181,7 @@ resource "aws_cloudwatch_metric_alarm" "acp_piece_held_rate_high" {
   }
 
   alarm_actions = [aws_sns_topic.alerts.arn]
+  ok_actions    = [aws_sns_topic.alerts.arn]
 
   tags = merge(local.common_tags, { Issue = "AA-362" })
 }
@@ -203,6 +205,7 @@ resource "aws_cloudwatch_metric_alarm" "acp_grounding_score_floor" {
   alarm_description   = "N7 F1 grounding gate failed on at least 1 piece (HARD FLOOR = 1.0) — fabrication risk, investigate immediately"
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
 
   tags = merge(local.common_tags, { Issue = "AA-362" })
 }
@@ -223,6 +226,7 @@ resource "aws_cloudwatch_metric_alarm" "acp_repair_count_high" {
   alarm_description   = "N7 average repair_count per piece above 1.0 for 3 consecutive hours (UNVERIFIED placeholder threshold) — possible prompt/gate drift"
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
 
   tags = merge(local.common_tags, { Issue = "AA-362" })
 }
@@ -509,6 +513,7 @@ resource "aws_cloudwatch_metric_alarm" "log_write_failed" {
   alarm_description   = "${each.value} logged in /ecs/${local.name_prefix} — a billed call/decision was not recorded (cost under-reported; for decision_log the Jev cache entry is lost too). Check the ECS logs for the error."
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
 
   tags = merge(local.common_tags, { Issue = "AA-756" })
 }

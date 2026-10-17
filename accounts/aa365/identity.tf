@@ -787,8 +787,8 @@ resource "aws_secretsmanager_secret" "identity_breakglass" {
 # Alarms (ADR 0006 decisions 5 and 11). A denial is raised as an exception, so Lambda `Errors`
 # also counts refusals: the Errors alarm uses a burst threshold, while unexpected exceptions are
 # caught exactly by the `*_error` log metric.
-# Notifications: alarm_actions AND ok_actions (S241 D-20 "e-mail on OK too", reversing AA-751's
-# ALARM-only rule that the other alarms on the topic still follow until the D-20 lane lands).
+# Notifications: alarm_actions AND ok_actions (S241 D-20 "e-mail on OK too"), like every alarm on
+# the topic since AA-872.
 # =============================================================================
 resource "aws_cloudwatch_log_metric_filter" "identity_trigger_unexpected" {
   for_each       = local.id_triggers

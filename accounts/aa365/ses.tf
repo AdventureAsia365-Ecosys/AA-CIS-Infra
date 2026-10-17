@@ -231,7 +231,7 @@ resource "aws_iam_role_policy" "tripplanner_lambda_ses_send" {
 # Alarms (account-level reputation; 2 standard alarms, about $0.20/month). AWS puts an account
 # under review at a 5% bounce rate / 0.1% complaint rate and may pause sending at 10% / 0.5%; a
 # pause would also stop the Cognito email codes. Alarm at half the review thresholds.
-# ALARM-only notifications (no ok_actions), like every alarm on the topic (AA-751, observability_ecosys.tf).
+# ALARM and OK notifications, like every alarm on the topic (AA-872, observability_ecosys.tf header).
 # -----------------------------------------------------------------------------
 resource "aws_cloudwatch_metric_alarm" "ses_bounce_rate" {
   alarm_name          = "aa-email-${var.environment}-bounce-rate"
@@ -245,6 +245,7 @@ resource "aws_cloudwatch_metric_alarm" "ses_bounce_rate" {
   threshold           = 0.025
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
 
   tags = local.ses_tags
 }
@@ -261,6 +262,7 @@ resource "aws_cloudwatch_metric_alarm" "ses_complaint_rate" {
   threshold           = 0.0005
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
 
   tags = local.ses_tags
 }

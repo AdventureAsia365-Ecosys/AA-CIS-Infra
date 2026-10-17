@@ -19,12 +19,12 @@ locals {
 # Every ECS Exec session on this cluster (CIS api, CIS worker, Booking api) is recorded here: the
 # SSM agent in the task uploads the session transcript when the session ends. No KMS key: no other
 # log group in this stack uses a CMK, and CloudWatch Logs encrypts at rest with its own key anyway.
-# The transcript holds whatever the session printed (kept 30 days, readable by anyone with
+# The transcript holds whatever the session printed (kept 365 days, AA-872, readable by anyone with
 # logs:GetLogEvents on the account): never run env/printenv in an exec session, and scripts print
 # counts and ids only, never DSNs or secret values.
 resource "aws_cloudwatch_log_group" "exec_sessions" {
   name              = "/ecs/${local.name_prefix}/exec-sessions"
-  retention_in_days = 30
+  retention_in_days = 365 # AA-872 (S241 D-09): security/audit logs 365 days
 
   tags = var.tags
 }
@@ -310,7 +310,7 @@ resource "aws_iam_role_policy" "ecs_task_infra_status_readonly" {
 # ── CloudWatch Log Group ──────────────────────────────────────
 resource "aws_cloudwatch_log_group" "ecs" {
   name              = "/ecs/${local.name_prefix}"
-  retention_in_days = 14
+  retention_in_days = 30 # AA-872 (S241 D-09): app logs 30 days
 
   tags = var.tags
 }
