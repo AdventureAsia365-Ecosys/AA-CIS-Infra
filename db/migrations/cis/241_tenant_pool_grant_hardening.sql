@@ -116,11 +116,13 @@
 -- PR regenerate docs/architecture/db-schema-reference.md.
 --
 -- Rollback (through DB Migrate, Nghiệp approves):
---   STEP 0, before the SQL: DEL every Redis flag that depends on 241, then confirm in Logs Insights q3
---   that they see no new traffic. Today: aa859:angle_gate_decide_pool (W3 choose / reopen) and
---   aa859:integration_connect_pool (W9 connect / test), plus any later flag marked "depends on 241" in
---   the AA-859 plan D7. Otherwise choose / connect / test fail with 42501 -> 500 the moment the grants
---   go.
+--   STEP 0, before the SQL: turn OFF every flag that depends on 241 -- `SET <key> false` in Redis (NOT
+--   DEL: since S241 D-12 a missing key means ON, the tenant pool) and, so it survives a Redis restart,
+--   list the keys in the api env var TENANT_POOL_FORCE_ADMIN_FLAGS -- then confirm in Logs Insights q3
+--   that their requests log used_tenant_pool=False. Today: aa859:angle_gate_decide_pool (W3 choose /
+--   reopen) and aa859:integration_connect_pool (W9 connect / test), plus any later flag marked "needs
+--   241" in api/core/aa544_tenant_pool.py. Otherwise choose / reopen / connect / test fail with
+--   42501 -> 500 the moment the grants go.
 --   BEGIN;
 --   DROP POLICY IF EXISTS tenant_isolation ON acp_shared.angle_gate_option;
 --   ALTER TABLE acp_shared.angle_gate_option DISABLE ROW LEVEL SECURITY;
