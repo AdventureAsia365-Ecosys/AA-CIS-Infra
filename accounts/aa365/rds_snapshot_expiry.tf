@@ -33,7 +33,9 @@
 variable "rds_snapshot_expiry_dry_run" {
   description = "AA-869 — \"false\" (exact string) lets the expiry Lambda delete; anything else only reports"
   type        = string
-  default     = "true"
+  # Live since 17/10/2026 (S241): Nghiệp reviewed the dry-run list (1 would-delete: the 31-day-old
+  # aa-cis-dev-db-g0-audit-20260916) and approved real deletion. Set "true" to go back to report-only.
+  default = "false"
 
   validation {
     condition     = contains(["true", "false"], var.rds_snapshot_expiry_dry_run)
