@@ -201,6 +201,48 @@ resource "aws_cloudwatch_metric_alarm" "booking_api_5xx" {
   tags = merge(local.ecosys_tags, { App = "booking" })
 }
 
+# CIS REST API (4ylo382khg) — AA-870. 5XX by count, like Booking above: at Dev traffic (3,641 requests
+# and 3 5XX in the week to 17/10/2026) a rate alarm would fire on 1 error in 2 requests. Latency: the p95
+# of IntegrationLatency per 15-minute window had a median of 290 ms and a max of 6.9 s that week, so the
+# alarm wants p95 above 5 s for 3 consecutive 5-minute periods (sustained, not one slow pipeline call).
+# 2 standard alarms, about 0.20 USD/month (D-19).
+resource "aws_cloudwatch_metric_alarm" "cis_api_5xx" {
+  alarm_name          = "${local.name_prefix}-api-5xx"
+  alarm_description   = "AA-CIS REST API ${module.api_gateway.api_name} stage ${module.api_gateway.stage_name}: 5 or more 5XX responses in 5 minutes."
+  namespace           = "AWS/ApiGateway"
+  metric_name         = "5XXError"
+  dimensions          = { ApiName = module.api_gateway.api_name, Stage = module.api_gateway.stage_name }
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  threshold           = 5
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
+
+  tags = merge(local.ecosys_tags, { App = "cis" })
+}
+
+resource "aws_cloudwatch_metric_alarm" "cis_api_latency_p95" {
+  alarm_name          = "${local.name_prefix}-api-latency-p95"
+  alarm_description   = "AA-CIS REST API ${module.api_gateway.api_name}: IntegrationLatency p95 above 5 s for 15 minutes."
+  namespace           = "AWS/ApiGateway"
+  metric_name         = "IntegrationLatency"
+  dimensions          = { ApiName = module.api_gateway.api_name, Stage = module.api_gateway.stage_name }
+  extended_statistic  = "p95"
+  period              = 300
+  evaluation_periods  = 3
+  datapoints_to_alarm = 3
+  comparison_operator = "GreaterThanThreshold"
+  threshold           = 5000
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
+
+  tags = merge(local.ecosys_tags, { App = "cis" })
+}
+
 # TripPlanner Lambdas — errors (3+ in 5 minutes) and sustained throttling (see below).
 resource "aws_cloudwatch_metric_alarm" "tripplanner_lambda_errors" {
   for_each = local.tp_functions
