@@ -337,6 +337,23 @@ locals {
       Resource = "arn:aws:ecr:${var.aws_region}:${var.account_id}:repository/aa-booking-${var.environment}-*"
     },
     {
+      # AA-869 (S241) — the CIS repo (modules/ecs, aa-cis-<env>-api) became IaC-managed for its
+      # settings: tag mutability, lifecycle policy (a policy change is a delete + create) and scan
+      # config. Configuration verbs only: no CreateRepository, DeleteRepository or BatchDeleteImage,
+      # so CI can neither recreate nor empty the repo that every CIS task definition pulls from.
+      Sid    = "CisEcrRepoConfigure"
+      Effect = "Allow"
+      Action = [
+        "ecr:PutLifecyclePolicy",
+        "ecr:DeleteLifecyclePolicy",
+        "ecr:PutImageScanningConfiguration",
+        "ecr:PutImageTagMutability",
+        "ecr:TagResource",
+        "ecr:UntagResource",
+      ]
+      Resource = "arn:aws:ecr:${var.aws_region}:${var.account_id}:repository/${local.name_prefix}-api"
+    },
+    {
       # AA-678 — booking.tf adds an aws_lb_listener_rule (/booking/*) on the CIS ALB's HTTP
       # listener (module.alb http_listener_arn output). No statement on this role grants the
       # listener-rule verbs explicitly (ELBManageVpcLinkNLB covers listeners/target groups only),
