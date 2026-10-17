@@ -512,8 +512,11 @@ resource "aws_iam_role" "tf_apply" {
       Action    = "sts:AssumeRoleWithWebIdentity"
       Condition = {
         # terraform-apply.yml and db-migrate.yml both run in the `prod` environment ->
-        # `environment:prod`. The environment's deployment-branch rule (main) and required reviewer
-        # are what keep it to reviewed main; they must stay set in the AA-CIS-Infra repo settings.
+        # `environment:prod`. Correction (AA-866, S241): the repo is private on GitHub Free, so `prod`
+        # has NO deployment-branch rule and NO required reviewer (the API returns none). Today the
+        # only main-only gate is the job-level `if: github.ref == 'refs/heads/main'` in both
+        # workflows; a branch that edits the workflow can drop it. AA-866 adds the IAM
+        # `token.actions.githubusercontent.com:ref` condition here after a scratch-role trial.
         StringEquals = {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
           "token.actions.githubusercontent.com:sub" = ["${local.oidc_sub_cis_infra}:environment:prod"]
