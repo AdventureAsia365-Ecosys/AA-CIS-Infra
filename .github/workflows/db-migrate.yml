@@ -25,7 +25,8 @@ name: DB Migrate (shared RDS)
 # file's transaction, then an ownership post-check before COMMIT); while the login role owns the
 # anchor schema (today, every dir) nothing changes. roles/ files run only as the RDS master. The step
 # summary shows `ran as: <role>`. Exit 8 = role refused (incl. an owner that cannot register the
-# version), 9 = ownership post-check failed (rolled back; a no-transaction file is left unregistered).
+# version), 9 = ownership post-check failed (rolled back; a no-transaction file is left unregistered),
+# or the check after COMMIT found something that ran at COMMIT (committed: clean up by hand).
 on:
   workflow_dispatch:
     inputs:
@@ -216,7 +217,7 @@ jobs:
             exit 1
           fi
           if [ "$EXIT" = "9" ]; then
-            echo "::error::ownership post-check failed: the file created or re-owned objects for a role other than the owner it ran as, or changed roles (see the MIGRATE ERROR line); a transactional file was rolled back, a no-transaction file is not registered"
+            echo "::error::ownership post-check failed: the file created or re-owned objects for a role other than the owner it ran as, or changed roles (see the MIGRATE ERROR line); a transactional file was rolled back, a no-transaction file is not registered; if the line says 'after COMMIT' the file is committed and registered: clean up by hand"
             exit 1
           fi
           [ "$EXIT" = "0" ] || { echo "::error::migration task exited with $EXIT"; exit 1; }

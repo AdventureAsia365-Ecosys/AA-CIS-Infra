@@ -40,13 +40,17 @@ switch. Owner ≠ login role → the login role must be a member of the owner an
 register the version (USAGE on shared + INSERT on shared.schema_versions, CIS 243), else exit 8 before
 anything runs; the file then runs as the owner: right after the file's `BEGIN` a snapshot of every
 owned object and of the role catalog, `SET LOCAL ROLE <owner>`, the body (registration included, as
-the owner), then, still inside the transaction, `RESET ROLE`, a pinned search_path and the ownership
-post-check, then the file's `COMMIT`. Post-check (any schema, any object kind with an owner, default
+the owner), then, still inside the transaction and as the owner, the settle step (`SET CONSTRAINTS ALL
+IMMEDIATE` in savepoint rounds until a round writes nothing, `CLOSE ALL`: deferred trigger events and
+WITH HOLD cursors would otherwise run at COMMIT, after the check, as the login role), `RESET ROLE`, a
+pinned search_path and the ownership post-check, then the file's `COMMIT`. Post-check (any schema, any object kind with an owner, default
 privileges): an object created or re-owned during the file must belong to the owner (or the dir's
 view owner, catalog_owner), the login role may own nothing in a transferred owner's schemas, and
 roles / memberships / role settings must not change — else ROLLBACK and exit 9. A no-transaction
-file runs statement by statement under `SET ROLE <owner>`; the post-check runs before its last
-statement (the registration), so a failed check leaves the version unregistered.
+file runs statement by statement under `SET ROLE <owner>`, except its last statement (the
+registration, a plain literal INSERT): that one runs as the owner in the runner's own transaction,
+settled and post-checked before its COMMIT, so a failed check leaves the version unregistered. Both
+paths snapshot once more after COMMIT (exit 9 if anything still ran at COMMIT).
 The switch follows an owner transfer (bk-014, tp-013, 245) on the very next file, with no flip PR.
 `roles/` files (Infra-native, key `rl-NNN`: role bootstrap, extensions, undo files) always run as
 the RDS master and are refused under any other login. The idle check and the registry reads run as
@@ -59,8 +63,11 @@ names included), role switches in dynamic SQL (EXECUTE: every string piece of th
 pieces joined, format() filled in, and half-keyword pieces such as 'RESET ' || 'ROLE'),
 `CREATE/ALTER/DROP EXTENSION` or `ROLE` (→ `roles/`), no role membership GRANT/REVOKE; `SET LOCAL
 ROLE` only to the dir's allowlist (cis: catalog_owner, cis_owner, cis_app; booking/tripplanner:
-none). Such a file is also one BEGIN … COMMIT block (or `-- migrate: no-transaction`), the shape the
-switch needs, so a wrong shape fails in the PR rather than with exit 8 at apply. Obfuscated dynamic
+none); no DEFERRABLE / INITIALLY DEFERRED constraint trigger and no `SET CONSTRAINTS … DEFERRED` (also
+inside string literals: '…' function bodies, dynamic SQL). Such a file is also one BEGIN … COMMIT
+block, or a `-- migrate: no-transaction` file whose last statement is a plain literal
+`INSERT INTO shared.schema_versions … VALUES (…)`, the shapes the switch needs, so a wrong shape fails
+in the PR rather than with exit 8 at apply. Obfuscated dynamic
 SQL (chr(), reverse(), …) is beyond a lint; the post-check is the backstop.
 
 Exit codes: 0 ok · 2 sha256 mismatch · 3 file ran but did not register · 4 lint error ·
@@ -69,7 +76,8 @@ Exit codes: 0 ok · 2 sha256 mismatch · 3 file ran but did not register · 4 li
 non-master login, login not a member of the live owner, the owner cannot register the version,
 unknown dir, or a file that cannot run under the switch) · 9 ownership post-check failed (rolled
 back; for a no-transaction file the statements before the registration stay committed and the
-version is not registered).
+version is not registered), or the check after COMMIT found something that ran at COMMIT (committed
+and registered: clean up by hand).
 
 Local, no database and no asyncpg needed (CI lint and the DB Migrate "Validate input" step):
   python3 db/run_migration.py --inspect db/migrations/cis/230_x.sql
@@ -265,6 +273,18 @@ SELECT o.kind, o.id, o.name, pg_catalog.pg_get_userbyid(o.owner)::text AS owner,
  WHERE o.owner IS NULL OR o.owner IS DISTINCT FROM (SELECT r.oid FROM pg_catalog.pg_roles r WHERE r.rolname = $2)"""
 ROLE_KINDS = ("role", "role membership", "role setting")
 PIN_SEARCH_PATH_SQL = "SET {scope}search_path TO pg_catalog, pg_temp"
+# Settle (review S241, round 2), run while the owner role is still current, right before RESET ROLE:
+# SET CONSTRAINTS ALL IMMEDIATE fires every pending deferred trigger event (DEFERRABLE constraint
+# triggers, deferred FK / unique checks) now instead of at COMMIT, and CLOSE ALL closes every cursor (a
+# WITH HOLD cursor's query runs at COMMIT). A fired trigger can re-defer (SET CONSTRAINTS … DEFERRED + a
+# row write queues a new event), so each round runs in a savepoint and is repeated until a round writes
+# nothing: queueing an event takes a row write, a write assigns the savepoint a transaction id, and the
+# backend holds a lock on each id it has assigned (count by XACT_IDS_SQL, no search_path lookup).
+SETTLE_ROUNDS = 10
+SETTLE_SAVEPOINT = "x1_settle"
+XACT_IDS_SQL = ("SELECT pg_catalog.count(*) FROM pg_catalog.pg_locks l "
+                "WHERE l.locktype OPERATOR(pg_catalog.=) 'transactionid' "
+                "AND l.pid OPERATOR(pg_catalog.=) pg_catalog.pg_backend_pid()")
 
 # Role lint (plan S1 item 6), matched on the code view of _role_view(): comments removed, string
 # literals (E'', U&'' included) replaced by '#<n>' placeholders, plain quoted names unquoted ("role"
@@ -295,6 +315,24 @@ SWITCH_FRAGMENT_RE = re.compile(
     r"^\s*(?:ROLE|SESSION(?:\s+|_)AUTHORIZATION)\b|\b(?:SET|RESET)\s*$|%[0-9$]*[SIL]\s+(?:ROLE|SESSION)\b",
     re.IGNORECASE)
 GRANT_RE = re.compile(r"\b(GRANT|REVOKE)\b")
+# Work queued for COMMIT runs after the post-check, as whatever role is current then (review S241,
+# round 2). The runner settles it under the owner role before RESET ROLE (SETTLE_ROUNDS); the lint
+# refuses the deferral itself in files that may run under the switch (belt and braces).
+DEFERRAL_RES = (
+    (re.compile(r"\bCREATE\s+(?:OR\s+REPLACE\s+)?CONSTRAINT\s+TRIGGER\b[^;]*?"
+                r"(?:(?<!NOT )\bDEFERRABLE\b|\bINITIALLY\s+DEFERRED\b)"),
+     "a DEFERRABLE / INITIALLY DEFERRED constraint trigger fires at COMMIT, after the role switch's "
+     "post-check: make it NOT DEFERRABLE (X1)"),
+    (re.compile(r"\bSET\s+CONSTRAINTS\b[^;]*\bDEFERRED\b"),
+     "SET CONSTRAINTS … DEFERRED postpones trigger work to COMMIT, after the role switch's post-check (X1)"),
+)
+# The registration of a no-transaction file under the switch runs in the runner's own transaction,
+# checked like the rest; the lint keeps it a plain literal INSERT so no code hides in it.
+REGISTRATION_LITERAL = r"(?:E?''|[0-9]+(?:\.[0-9]+)?|NULL|TRUE|FALSE|DEFAULT|NOW\s*\(\s*\)|CURRENT_TIMESTAMP)"
+REGISTRATION_RE = re.compile(
+    r"^INSERT\s+INTO\s+SHARED\.SCHEMA_VERSIONS\s*(?:\(\s*[A-Z_]+(?:\s*,\s*[A-Z_]+)*\s*\)\s*)?"
+    rf"VALUES\s*\(\s*{REGISTRATION_LITERAL}(?:\s*,\s*{REGISTRATION_LITERAL})*\s*\)"
+    r"(?:\s*ON\s+CONFLICT(?:\s*\(\s*VERSION\s*\))?\s+DO\s+NOTHING)?$")
 
 
 def log(msg: str) -> None:
@@ -598,6 +636,34 @@ def _dynamic_errors(code: str, strings: list, here: str) -> list:
     return errors
 
 
+def _deferral_errors(code: str, strings: list, here: str) -> list:
+    """Work deferred to COMMIT (DEFERRAL_RES) in the statement or in its string literals, nested ones
+    included: function and DO bodies written as '…' strings and dynamic SQL are not lexed as code
+    otherwise. Each level's pieces are also read joined ('SET CONSTRAINTS ALL ' || 'DEFERRED')."""
+    views, level = [code], strings
+    for _ in range(3):                                   # string in a string in a string
+        texts = [t for t in level + [" ".join(level)] if t.strip()]
+        level = []
+        for text in texts:
+            views.append(_role_view(text, level))
+    return [f"{here}: {why}" for rx, why in DEFERRAL_RES if any(rx.search(v) for v in views)]
+
+
+def registration_error(sql: str) -> str:
+    """'' when the last statement of a no-transaction file is a plain literal registration
+    (REGISTRATION_RE). Under the role switch it runs in the runner's transaction, right before the
+    post-check: a function call or subquery there could run code as the owner the check never sees
+    a statement for (review S241, round 2)."""
+    stmts = split_statements(sql)
+    if stmts and REGISTRATION_RE.match(stmts[-1].code):
+        return ""
+    line = stmts[-1].line if stmts else 1
+    return (f"line {line}: under the role switch the last statement of a no-transaction file must be a plain "
+            f"`INSERT INTO shared.schema_versions [(version, …)] VALUES (<literals>) [ON CONFLICT (version) DO "
+            f"NOTHING]`: string/number literals, NULL, DEFAULT, now() or CURRENT_TIMESTAMP only — no function "
+            f"call, subquery or cast (X1)")
+
+
 def role_lint(sql: str, owner_dir: str) -> list:
     """X1 role rules for one file of an owner dir (cis/, booking/, tripplanner/), plan S1 item 6."""
     allowed = OWNER_DIRS[owner_dir].set_local_roles
@@ -636,6 +702,7 @@ def role_lint(sql: str, owner_dir: str) -> list:
         for g in _membership_grants(code):
             errors.append(f"{here}: role membership `{g[:80]}` belongs in db/migrations/roles/ (DM-8.1)")
         errors.extend(_dynamic_errors(code, strings, here))
+        errors.extend(_deferral_errors(code, strings, here))
     return errors
 
 
@@ -650,12 +717,16 @@ def lint(sql: str, d: Directives, path: str = None) -> tuple:
 
     With `path` (…/<dir>/<NNN>_name.sql) the X1 role lint runs too, for owner-dir files numbered at
     or above the dir's role_lint_from, plus the switch's shape rule: such a file is one BEGIN … COMMIT
-    block, or a `-- migrate: no-transaction` file."""
+    block, or a `-- migrate: no-transaction` file whose last statement is a plain literal registration."""
     errors, warnings = list(d.errors), []
     owner_dir, number = migration_path(path)
     if owner_dir in OWNER_DIRS and number >= OWNER_DIRS[owner_dir].role_lint_from:
         errors.extend(role_lint(sql, owner_dir))
-        if not d.no_transaction:
+        if d.no_transaction:
+            reg_error = registration_error(sql)
+            if reg_error:
+                errors.append(reg_error)
+        else:
             # It may run under the role switch (XD8), which needs one BEGIN … COMMIT block: caught
             # here, in the PR, instead of exit 8 at apply time.
             shape_error = transaction_parts(sql)[3]
@@ -905,14 +976,55 @@ def ownership_findings(before: list, after: list, plan: RolePlan, owner_dir: str
     return sorted(set(found))[:50]
 
 
+async def _settle_and_check(conn, before: list, plan: RolePlan, owner_dir: str) -> list:
+    """Inside the open transaction, the owner role still current: settle the work queued for COMMIT
+    (SETTLE_ROUNDS), then RESET ROLE, pin search_path and run the ownership post-check."""
+    stuck = []
+    for _ in range(SETTLE_ROUNDS):
+        await conn.execute(f"SAVEPOINT {SETTLE_SAVEPOINT}")
+        ids = await conn.fetchval(XACT_IDS_SQL)
+        await conn.execute("SET CONSTRAINTS ALL IMMEDIATE")
+        wrote = await conn.fetchval(XACT_IDS_SQL) != ids
+        await conn.execute(f"RELEASE SAVEPOINT {SETTLE_SAVEPOINT}")
+        if not wrote:
+            break
+    else:
+        stuck = [f"deferred trigger work still queues more after {SETTLE_ROUNDS} rounds of SET CONSTRAINTS "
+                 f"ALL IMMEDIATE (it would run at COMMIT, after this check)"]
+    await conn.execute("CLOSE ALL")
+    await conn.execute("RESET ROLE")
+    await conn.execute(PIN_SEARCH_PATH_SQL.format(scope="LOCAL "))
+    return stuck + ownership_findings(before, await object_snapshot(conn, plan), plan, owner_dir)
+
+
+async def _post_commit_findings(conn, before: list, plan: RolePlan, owner_dir: str) -> list:
+    """The snapshot once more after COMMIT: anything that still ran at COMMIT (after the post-check)
+    shows up here. Settled work leaves nothing to run, so a hit means a way past the settle step."""
+    await conn.execute(PIN_SEARCH_PATH_SQL.format(scope=""))
+    found = ownership_findings(before, await object_snapshot(conn, plan), plan, owner_dir)
+    await conn.execute("RESET search_path")
+    return found
+
+
+def _log_post_commit(found: list, plan: RolePlan) -> None:
+    log(f"ERROR: ownership check after COMMIT (ran as {plan.run_as}, login {plan.login}): {', '.join(found)}. "
+        f"Something ran at COMMIT, after the post-check passed: the file is COMMITTED and its version "
+        f"registered. Give the objects to {plan.run_as} or drop them (roles/ file), delete the version row "
+        f"by hand and fix the migration (no deferred triggers / WITH HOLD cursors under the switch)")
+
+
 async def run_switched(conn, sql: str, d: Directives, plan: RolePlan, owner_dir: str) -> int:
     """Runs the file as plan.run_as; returns 0, or 9 when the ownership post-check fails.
 
-    Transactional file: BEGIN, snapshot, SET LOCAL ROLE, the body, RESET ROLE + pinned search_path,
-    post-check, then COMMIT (or ROLLBACK). No-transaction file: snapshot, SET ROLE, every statement
-    but the last, RESET ROLE, post-check, and only when it passes the last statement (the
-    shared.schema_versions INSERT, lint rule) as the owner too — a failed post-check leaves the
-    version unregistered, so the file is retried after the clean-up instead of being marked applied."""
+    Transactional file: BEGIN, snapshot, SET LOCAL ROLE, the body, then — owner still current —
+    SET CONSTRAINTS ALL IMMEDIATE + CLOSE ALL (deferred triggers and WITH HOLD cursors would run at
+    COMMIT, after the check, as the login role), RESET ROLE + pinned search_path, post-check, then
+    COMMIT (or ROLLBACK). No-transaction file: snapshot, SET ROLE, every statement but the last,
+    RESET ROLE; then the registration (the last statement, a plain literal INSERT by the lint) in the
+    runner's own transaction: BEGIN, SET LOCAL ROLE, pinned search_path, the registration, settle,
+    RESET ROLE, post-check, COMMIT — a failed post-check rolls the registration back, so the file is
+    retried after the clean-up instead of being marked applied. Both paths take the snapshot once more
+    after COMMIT (exit 9 if anything ran at COMMIT)."""
     role = _quote_ident(plan.run_as)
     if d.no_transaction:
         stmts = split_statements(sql)
@@ -922,36 +1034,40 @@ async def run_switched(conn, sql: str, d: Directives, plan: RolePlan, owner_dir:
             log(f"statement {k}/{len(stmts)} (line {s.line}) …")
             await conn.execute(s.text)
         await conn.execute("RESET ROLE")
-        await conn.execute(PIN_SEARCH_PATH_SQL.format(scope=""))
-        stray = ownership_findings(before, await object_snapshot(conn, plan), plan, owner_dir)
-        await conn.execute("RESET search_path")
+        log(f"statement {len(stmts)}/{len(stmts)} (line {stmts[-1].line}) … (registration, as {plan.run_as}, "
+            f"in a transaction with the post-check)")
+        await conn.execute("BEGIN")
+        await conn.execute(f"SET LOCAL ROLE {role}")
+        await conn.execute(PIN_SEARCH_PATH_SQL.format(scope="LOCAL "))
+        await conn.execute(stmts[-1].text)
+        stray = await _settle_and_check(conn, before, plan, owner_dir)
         if stray:
+            await conn.execute("ROLLBACK")
             log(f"ERROR: ownership post-check (ran as {plan.run_as}, login {plan.login}): {', '.join(stray)}. "
                 f"The statements before the registration are committed (no-transaction file) and the version "
                 f"is NOT registered: give the objects to {plan.run_as} or drop them (roles/ file), fix the "
                 f"migration, then re-run")
             return 9
-        await conn.execute(f"SET ROLE {role}")
-        log(f"statement {len(stmts)}/{len(stmts)} (line {stmts[-1].line}) … (registration, as {plan.run_as})")
-        await conn.execute(stmts[-1].text)
-        await conn.execute("RESET ROLE")
-        return 0
-    begin, body, commit, _ = transaction_parts(sql)
-    await conn.execute(begin.text)
-    before = await object_snapshot(conn, plan)
-    await conn.execute(f"SET LOCAL ROLE {role}")
-    if body:
-        await conn.execute("\n".join(s.text for s in body))
-    await conn.execute("RESET ROLE")
-    await conn.execute(PIN_SEARCH_PATH_SQL.format(scope="LOCAL "))
-    stray = ownership_findings(before, await object_snapshot(conn, plan), plan, owner_dir)
-    if stray:
-        await conn.execute("ROLLBACK")
-        log(f"ERROR: ownership post-check (ran as {plan.run_as}, login {plan.login}): {', '.join(stray)}. "
-            f"Rolled back. A RESET ROLE or SET ROLE back to the login role inside the file is the usual cause "
-            f"(use SET LOCAL ROLE {plan.run_as}); roles and memberships belong in roles/")
+        await conn.execute("COMMIT")
+    else:
+        begin, body, commit, _ = transaction_parts(sql)
+        await conn.execute(begin.text)
+        before = await object_snapshot(conn, plan)
+        await conn.execute(f"SET LOCAL ROLE {role}")
+        if body:
+            await conn.execute("\n".join(s.text for s in body))
+        stray = await _settle_and_check(conn, before, plan, owner_dir)
+        if stray:
+            await conn.execute("ROLLBACK")
+            log(f"ERROR: ownership post-check (ran as {plan.run_as}, login {plan.login}): {', '.join(stray)}. "
+                f"Rolled back. A RESET ROLE or SET ROLE back to the login role inside the file is the usual cause "
+                f"(use SET LOCAL ROLE {plan.run_as}); roles and memberships belong in roles/")
+            return 9
+        await conn.execute(commit.text)
+    late = await _post_commit_findings(conn, before, plan, owner_dir)
+    if late:
+        _log_post_commit(late, plan)
         return 9
-    await conn.execute(commit.text)
     return 0
 
 
@@ -994,8 +1110,9 @@ async def run_task(env=None, fetch=_fetch, connect=_connect, sleep=asyncio.sleep
         if plan.error:
             log(f"ERROR: role: {plan.error}")
             return 8
-        if plan.switch and not d.no_transaction:
-            shape_error = transaction_parts(sql)[3]
+        if plan.switch:
+            # Files at or below the head are not linted; the switch still needs these shapes.
+            shape_error = registration_error(sql) if d.no_transaction else transaction_parts(sql)[3]
             if shape_error:
                 log(f"ERROR: role: {shape_error}")
                 return 8

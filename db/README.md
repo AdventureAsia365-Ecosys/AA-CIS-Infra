@@ -89,16 +89,23 @@ line (a directive after the first statement is an error):
   membership `GRANT r TO x` / `REVOKE r FROM x` (all → `roles/`). `SET LOCAL ROLE` only to the dir's
   `set_local_roles`: `cis/` `catalog_owner`, `cis_owner` (the way back), `cis_app` (guard blocks);
   `booking/`, `tripplanner/` none. Checked in DO blocks and function bodies too; comments and ordinary
-  string literals are ignored. Deliberately obfuscated SQL (`chr()`, `reverse()`) is out of a lint's
-  reach: the ownership post-check is the backstop.
+  string literals are ignored. No `DEFERRABLE` / `INITIALLY DEFERRED` constraint trigger and no
+  `SET CONSTRAINTS … DEFERRED` (they postpone work to COMMIT, after the post-check); these two are
+  also looked for inside string literals (`'…'` function and DO bodies, dynamic SQL). Deliberately
+  obfuscated SQL (`chr()`, `reverse()`) is out of a lint's reach: the ownership post-check is the
+  backstop.
 - **Switch shape** (same files): one `BEGIN … COMMIT` block (no inner `COMMIT`/`ROLLBACK`/`PREPARE
-  TRANSACTION`, no `COMMIT AND CHAIN`), or a `-- migrate: no-transaction` file. Such a file may run
-  under the role switch, which needs that shape; the lint fails the PR instead of exit 8 at apply.
+  TRANSACTION`, no `COMMIT AND CHAIN`), or a `-- migrate: no-transaction` file whose last statement
+  is a plain literal registration: `INSERT INTO shared.schema_versions [(version, …)] VALUES (…)
+  [ON CONFLICT [(version)] DO NOTHING]` with string/number literals, `NULL`, `DEFAULT`, `now()` or
+  `CURRENT_TIMESTAMP` only (no function call, subquery or cast). Such a file may run under the role
+  switch, which needs that shape; the lint fails the PR instead of exit 8 at apply.
 - **Unique numbers** (MIG-3): `db/check_migration_files.py` fails when two files in one owner dir
   share a number, `roles/` included (CI job "Migration lint and unique numbers").
 - Exit codes: 2 sha256 mismatch, 3 not registered, 4 lint error, 5 destructive without snapshot,
   6 PostgreSQL error (lock or statement timeout prints a hint), 7 apply refused because a job
-  table is busy or a rerun wave is open, 8 role refused, 9 ownership post-check failed.
+  table is busy or a rerun wave is open, 8 role refused, 9 ownership post-check failed (or the
+  check after COMMIT found something that ran at COMMIT).
 
 ## Role per file (X1 plan S1, XD8)
 Before each file (check and apply) the task reads the **live owner of the dir's anchor schema**
@@ -112,8 +119,12 @@ Before each file (check and apply) the task reads the **live owner of the dir's 
   `BEGIN … COMMIT` block (else exit 8; the lint already refuses other shapes above the heads). The
   runner sends the file's `BEGIN`, takes a **snapshot** of every owned object and of the role catalog
   (as the login role), `SET LOCAL ROLE <owner>`, the body (its registration runs as the owner), then
-  `RESET ROLE`, pins `search_path` to `pg_catalog, pg_temp`, takes the snapshot again and runs the
-  **ownership post-check**, then the file's `COMMIT`. Any hit → `ROLLBACK`, exit 9, with the names:
+  — still as the owner — **settles** the work queued for COMMIT: `SET CONSTRAINTS ALL IMMEDIATE` fires
+  pending deferred trigger events (deferrable constraint triggers, deferred FK / unique checks), in a
+  savepoint, repeated while a round writes (a fired trigger can re-defer; > 10 rounds → exit 9), and
+  `CLOSE ALL` drops cursors (a `WITH HOLD` cursor's query runs at COMMIT). Then `RESET ROLE`, pins
+  `search_path` to `pg_catalog, pg_temp`, takes the snapshot again and runs the **ownership
+  post-check**, then the file's `COMMIT`. Any hit → `ROLLBACK`, exit 9, with the names:
   - an object created or re-owned during the file whose owner is not the owner it ran as (or the
     dir's `view_owner_roles`, `catalog_owner` for `cis/`) — any schema but `pg_catalog`,
     `information_schema`, `pg_toast` and temp schemas, every catalog with an owner (relations incl.
@@ -126,10 +137,15 @@ Before each file (check and apply) the task reads the **live owner of the dir's 
   The snapshot compares (kind, oid, owner), so subtransactions, schema creation, a transfer back to
   the login role and catalog shadowing through `search_path` do not hide anything. A concurrent DDL
   by another session during the file can trip it too (rolled back; re-run).
-  A no-transaction file runs statement by statement under a session `SET ROLE <owner>`; the post-check
-  runs before its **last** statement (the registration, a lint rule), which then runs as the owner only
-  if the check passed. A hit → exit 9, the earlier statements stay committed (no transaction), the
+  A no-transaction file runs statement by statement under a session `SET ROLE <owner>`, all but its
+  **last** statement (the registration, a plain literal INSERT by the lint, checked again at run time
+  for files below the head, exit 8). The registration runs in the runner's own transaction: `BEGIN`,
+  `SET LOCAL ROLE <owner>`, pinned `search_path`, the INSERT, settle, `RESET ROLE`, post-check, then
+  `COMMIT` — a hit → `ROLLBACK`, exit 9, the earlier statements stay committed (no transaction), the
   version is **not** registered, so the file is retried once the objects are fixed.
+  Both paths take the snapshot once more **after COMMIT**: anything that still ran at COMMIT shows up
+  there → exit 9 with "ownership check after COMMIT" (the file is committed and registered; clean up by
+  hand). With the settle step nothing of the file is left to run at COMMIT; this is the backstop.
 - `roles/` files run only when the login role is the master (`master_role`), else exit 8.
 - The idle check and the `shared.schema_versions` reads run as the login role.
 

@@ -219,10 +219,12 @@ class FakeConn:
     X1: `login` is session_user, `owners` the live owner per anchor schema (missing = no schema),
     `members` the roles the login role is a member of, `base` the ownership snapshot before the file
     (rows of OBJECTS_SQL), `stray` (kind, name) objects the file leaves owned by the login role (they
-    appear in every snapshot after the first), `can_register` the owner's grant on schema_versions."""
+    appear in every snapshot after the first), `late` the same for objects that only appear after
+    COMMIT (third snapshot on), `can_register` the owner's grant on schema_versions, `xact_ids` the
+    successive XACT_IDS_SQL counts (default: always 1, so one settle round)."""
 
     def __init__(self, applied=None, registers=True, fail=None, states=None, login="aa_cis_admin",
-                 owners=None, members=(), stray=(), base=(), can_register=True):
+                 owners=None, members=(), stray=(), base=(), can_register=True, late=(), xact_ids=()):
         self.applied, self.registers, self.fail = applied, registers, fail
         self.executed, self.closed, self.ran = [], False, False
         self.states = states or [({"booking": [], "shared": []}, 0)]
@@ -231,6 +233,7 @@ class FakeConn:
         self.owners = dict(TODAY_OWNERS if owners is None else owners)
         self.postchecks = []
         self.base, self.can_register = list(base), can_register
+        self.late, self.xact_ids = list(late), list(xact_ids)
 
     def state(self):
         return self.states[min(self.checks, len(self.states)) - 1]
@@ -240,7 +243,8 @@ class FakeConn:
             self.postchecks.append((list(args[0]), args[1]))
             if len(self.postchecks) == 1:
                 return list(self.base)
-            return self.base + [obj(k, n, self.login) for k, n in self.stray]
+            late = self.late if len(self.postchecks) > 2 else []
+            return self.base + [obj(k, n, self.login) for k, n in self.stray + late]
         if query == rm.JOB_TABLES_SQL:
             self.checks += 1
             return [(schema,) for schema in sorted(self.state()[0])]
@@ -271,6 +275,8 @@ class FakeConn:
             return args[0] in self.members
         if query == rm.CAN_REGISTER_SQL:
             return self.can_register
+        if query == rm.XACT_IDS_SQL:
+            return self.xact_ids.pop(0) if self.xact_ids else 1
         if "ORDER BY version DESC" in query:
             return "230"
         if query == rm.WAVE_TABLE_SQL:
@@ -536,6 +542,10 @@ class IdleCheckTest(unittest.TestCase):
         self.assertIn(REFUSAL.format("booking.job (unreadable)"), log)
 
 
+# What the runner sends between a switched body and RESET ROLE when one settle round writes nothing.
+SETTLE_ONE_ROUND = ["SAVEPOINT x1_settle", "SET CONSTRAINTS ALL IMMEDIATE", "RELEASE SAVEPOINT x1_settle",
+                    "CLOSE ALL"]
+
 BK_FILE = """-- Migration bk-015: X1 probe.
 BEGIN;
 DO $$ BEGIN
@@ -587,12 +597,13 @@ class RoleSwitchTest(unittest.TestCase):
         self.assertEqual(code, 0, log)
         stmts = rm.split_statements(BK_FILE)
         self.assertEqual(conn.executed, [stmts[0].text, 'SET LOCAL ROLE "bk_owner"',
-                                         "\n".join(s.text for s in stmts[1:-1]), "RESET ROLE",
-                                         "SET LOCAL search_path TO pg_catalog, pg_temp", stmts[-1].text])
+                                         "\n".join(s.text for s in stmts[1:-1]), *SETTLE_ONE_ROUND, "RESET ROLE",
+                                         "SET LOCAL search_path TO pg_catalog, pg_temp", stmts[-1].text,
+                                         "SET search_path TO pg_catalog, pg_temp", "RESET search_path"])
         self.assertTrue(conn.executed[0].startswith("-- Migration bk-015") and conn.executed[0].endswith("BEGIN;"))
-        self.assertEqual(conn.executed[-1], "COMMIT;")
-        # Snapshot once after BEGIN (as the login role) and once after RESET ROLE.
-        self.assertEqual(conn.postchecks, [(list(rm.OWNER_SCHEMAS), "bk_owner")] * 2)
+        self.assertEqual(stmts[-1].text, "COMMIT;")
+        # Snapshot after BEGIN (as the login role), after RESET ROLE (post-check) and after COMMIT.
+        self.assertEqual(conn.postchecks, [(list(rm.OWNER_SCHEMAS), "bk_owner")] * 3)
         self.assertIn("MIGRATE ran as: bk_owner — login aa_cis_admin, anchor schema booking owned by bk_owner", log)
 
     def test_cis_after_245_runs_as_cis_owner_under_db_migrator(self):
@@ -647,22 +658,70 @@ class RoleSwitchTest(unittest.TestCase):
         code, conn, _, _ = self.run_task(NO_TX, file="cis/247_x.sql", version="247", conn=conn)
         self.assertEqual(code, 0)
         stmts = rm.split_statements(NO_TX)
-        # Work as the owner, post-check as the login role, then the registration as the owner too.
+        # Work as the owner; then the registration as the owner in the runner's own transaction, settled
+        # and post-checked before its COMMIT (review S241 round 2: nothing of the file runs after the check).
         self.assertEqual(conn.executed, ['SET ROLE "cis_owner"', stmts[0].text, stmts[1].text, "RESET ROLE",
-                                         "SET search_path TO pg_catalog, pg_temp", "RESET search_path",
-                                         'SET ROLE "cis_owner"', stmts[2].text, "RESET ROLE"])
-        self.assertEqual(len(conn.postchecks), 2)
+                                         "BEGIN", 'SET LOCAL ROLE "cis_owner"',
+                                         "SET LOCAL search_path TO pg_catalog, pg_temp", stmts[2].text,
+                                         *SETTLE_ONE_ROUND, "RESET ROLE",
+                                         "SET LOCAL search_path TO pg_catalog, pg_temp", "COMMIT",
+                                         "SET search_path TO pg_catalog, pg_temp", "RESET search_path"])
+        self.assertEqual(len(conn.postchecks), 3)
 
     def test_switched_no_transaction_postcheck_failure_leaves_the_version_unregistered(self):
         conn = FakeConn(owners={**TODAY_OWNERS, "shared": "cis_owner"}, members={"cis_owner"},
                         stray=[("relation", "shared.ix_a")], registers=False)
         code, conn, _, log = self.run_task(NO_TX, file="cis/247_x.sql", version="247", conn=conn)
         self.assertEqual(code, 9)
-        registration = rm.split_statements(NO_TX)[-1].text
-        self.assertNotIn(registration, conn.executed)
-        self.assertEqual(conn.executed[-1], "RESET search_path")
+        # The registration ran in the runner's transaction and was rolled back with it.
+        self.assertEqual(conn.executed[-3:], ["RESET ROLE", "SET LOCAL search_path TO pg_catalog, pg_temp",
+                                              "ROLLBACK"])
+        self.assertNotIn("COMMIT", conn.executed)
         self.assertIn("relation shared.ix_a (owner aa_cis_admin)", log)
         self.assertIn("the version is NOT registered", log)
+
+    def test_settle_repeats_while_deferred_work_writes(self):
+        """Review S241 round 2: a fired deferred trigger can re-defer and queue more; a round that
+        assigned a transaction id (a write) is repeated, a quiet round ends the settle."""
+        conn = FakeConn(owners={**TODAY_OWNERS, "booking": "bk_owner"}, members={"bk_owner"},
+                        xact_ids=[1, 2, 2, 3, 3, 3])
+        code, conn, _, log = self.run_task(BK_FILE, file="booking/015_x.sql", version="bk-015", conn=conn)
+        self.assertEqual(code, 0, log)
+        self.assertEqual(conn.executed.count("SET CONSTRAINTS ALL IMMEDIATE"), 3)
+        settle = conn.executed.index("SAVEPOINT x1_settle")
+        self.assertLess(settle, conn.executed.index("RESET ROLE"))       # under the owner role
+        self.assertEqual(conn.executed[-3], "COMMIT;")
+
+    def test_settle_that_never_quiets_down_is_refused(self):
+        conn = FakeConn(owners={**TODAY_OWNERS, "booking": "bk_owner"}, members={"bk_owner"},
+                        xact_ids=list(range(100)))
+        code, conn, _, log = self.run_task(BK_FILE, file="booking/015_x.sql", version="bk-015", conn=conn)
+        self.assertEqual(code, 9)
+        self.assertEqual(conn.executed.count("SET CONSTRAINTS ALL IMMEDIATE"), rm.SETTLE_ROUNDS)
+        self.assertEqual(conn.executed[-1], "ROLLBACK")
+        self.assertNotIn("COMMIT;", conn.executed)
+        self.assertIn(f"deferred trigger work still queues more after {rm.SETTLE_ROUNDS} rounds", log)
+
+    def test_object_appearing_at_commit_is_reported(self):
+        for sql, file, version in ((BK_FILE, "booking/015_x.sql", "bk-015"), (NO_TX, "cis/247_x.sql", "247")):
+            with self.subTest(file=file):
+                conn = FakeConn(owners={**TODAY_OWNERS, "booking": "bk_owner", "shared": "cis_owner"},
+                                members={"bk_owner", "cis_owner"}, late=[("relation", "booking.at_commit")])
+                code, conn, _, log = self.run_task(sql, file=file, version=version, conn=conn)
+                self.assertEqual(code, 9)
+                self.assertIn(conn.executed[-3], ("COMMIT;", "COMMIT"))
+                self.assertIn("ownership check after COMMIT (ran as ", log)
+                self.assertIn("relation booking.at_commit (owner aa_cis_admin). Something ran at COMMIT", log)
+
+    def test_switched_no_transaction_registration_must_be_plain_at_run_time(self):
+        """Below the head the lint does not run; the switch still refuses a registration with code in it."""
+        sql = NO_TX.replace("VALUES ('241', now(), 'AA-2: covering index')", "SELECT shared.reg()")
+        conn = FakeConn(owners={**TODAY_OWNERS, "shared": "cis_owner"}, members={"cis_owner"})
+        code, conn, _, log = self.run_task(sql, file="cis/242_x.sql", version="242", conn=conn)
+        self.assertEqual((code, conn.executed, conn.postchecks), (8, [], []))
+        self.assertIn("MIGRATE ERROR: role: line 6: under the role switch the last statement of a no-transaction", log)
+        # Not switched (today): unchanged.
+        self.assertEqual(self.run_task(sql, file="cis/242_x.sql", version="242")[0], 0)
 
     def test_switch_refuses_when_the_owner_cannot_register(self):
         for sql, file, version in ((BK_FILE, "booking/015_x.sql", "bk-015"), (NO_TX, "cis/247_x.sql", "247")):
@@ -874,6 +933,21 @@ class RoleLintTest(unittest.TestCase):
             ("booking/015_x.sql", "DO $$ DECLARE v text; BEGIN v := 'GRANT bk_owner TO booking'; EXECUTE v; END $$;",
              "grants a role membership"),
             ("booking/015_x.sql", "ALTER DATABASE x SET \"role\" = 'aa_cis_admin';", "only `SET LOCAL ROLE`"),
+            # Review S241 round 2: work deferred to COMMIT runs after the post-check.
+            ("booking/015_x.sql", "CREATE CONSTRAINT TRIGGER t AFTER INSERT ON booking.x DEFERRABLE INITIALLY "
+             "DEFERRED FOR EACH ROW EXECUTE FUNCTION booking.f();", "constraint trigger fires at COMMIT"),
+            ("booking/015_x.sql", "create constraint trigger t after insert on booking.x deferrable "
+             "for each row execute function booking.f();", "constraint trigger fires at COMMIT"),
+            ("cis/246_x.sql", "CREATE CONSTRAINT TRIGGER t AFTER UPDATE ON shared.x INITIALLY DEFERRED "
+             "FOR EACH ROW EXECUTE FUNCTION shared.f();", "constraint trigger fires at COMMIT"),
+            ("booking/015_x.sql", "SET CONSTRAINTS ALL DEFERRED;", "SET CONSTRAINTS … DEFERRED"),
+            ("booking/015_x.sql", "SET CONSTRAINTS booking.c_fk, booking.t DEFERRED;", "SET CONSTRAINTS … DEFERRED"),
+            ("booking/015_x.sql", "CREATE FUNCTION booking.f() RETURNS trigger LANGUAGE plpgsql AS "
+             "'BEGIN SET CONSTRAINTS ALL DEFERRED; RETURN NULL; END';", "SET CONSTRAINTS … DEFERRED"),
+            ("booking/015_x.sql", "DO $$ BEGIN EXECUTE 'SET CONSTRAINTS ALL ' || 'DEFERRED'; END $$;",
+             "SET CONSTRAINTS … DEFERRED"),
+            ("booking/015_x.sql", "DO 'BEGIN EXECUTE ''CREATE CONSTRAINT TRIGGER t AFTER INSERT ON booking.x "
+             "DEFERRABLE FOR EACH ROW EXECUTE FUNCTION booking.f()''; END';", "constraint trigger fires at COMMIT"),
         ]
         for path, stmt, needle in cases:
             with self.subTest(stmt=stmt):
@@ -905,6 +979,12 @@ class RoleLintTest(unittest.TestCase):
             "CREATE TRIGGER t BEFORE INSERT ON booking.x FOR EACH ROW EXECUTE FUNCTION booking.f();",
             "COMMENT ON COLUMN booking.m.role IS E'role of the member';",
             "CREATE TABLE booking.e (note text DEFAULT e'x');",
+            "CREATE CONSTRAINT TRIGGER t AFTER INSERT ON booking.x NOT DEFERRABLE FOR EACH ROW "
+            "EXECUTE FUNCTION booking.f();",
+            "CREATE CONSTRAINT TRIGGER t AFTER INSERT ON booking.x FOR EACH ROW EXECUTE FUNCTION booking.f();",
+            "SET CONSTRAINTS ALL IMMEDIATE;",
+            "ALTER TABLE booking.c ADD CONSTRAINT c_fk FOREIGN KEY (p) REFERENCES booking.p DEFERRABLE "
+            "INITIALLY DEFERRED;",
         ):
             with self.subTest(stmt=stmt):
                 self.assertEqual(self.lint(self.body(stmt), "booking/015_x.sql"), [])
@@ -939,6 +1019,36 @@ class RoleLintTest(unittest.TestCase):
         # A no-transaction file above the head is fine (statement by statement under SET ROLE).
         self.assertEqual(self.lint(NO_TX, "cis/247_x.sql"), [])
         self.assertEqual(self.lint(self.body("SELECT 1;"), "booking/014_x.sql"), [])
+
+    def test_switched_no_transaction_registration_is_plain(self):
+        """Review S241 round 2: the registration runs right before the post-check; no code in it."""
+        head = "-- migrate: no-transaction\nCREATE INDEX CONCURRENTLY IF NOT EXISTS ix ON booking.x (a);\n"
+        ok = ("INSERT INTO shared.schema_versions (version, applied_at, description) VALUES ('bk-015', now(), 'x') "
+              "ON CONFLICT (version) DO NOTHING;",
+              "INSERT INTO shared.schema_versions VALUES ('bk-015', CURRENT_TIMESTAMP, E'it''s') "
+              "ON CONFLICT DO NOTHING;",
+              "insert into shared.schema_versions (version) values ('bk-015');",
+              "INSERT INTO shared.schema_versions (version, applied_at, description)\nVALUES ('bk-015', NOW( ), NULL);")
+        bad = ("INSERT INTO shared.schema_versions (version) SELECT booking.reg();",
+               "INSERT INTO shared.schema_versions (version) VALUES (booking.reg());",
+               "INSERT INTO shared.schema_versions (version) VALUES ((SELECT 'bk-015'));",
+               "INSERT INTO shared.schema_versions (version) VALUES ('bk-015'::text);",
+               "INSERT INTO shared.schema_versions (version) VALUES ('bk-015'), ('bk-016');",
+               "INSERT INTO shared.schema_versions (version) VALUES ('bk-015') ON CONFLICT (version) DO UPDATE "
+               "SET description = booking.f();",
+               "INSERT INTO shared.schema_versions (version) VALUES ('bk-015') RETURNING booking.f(version);",
+               "WITH x AS (SELECT booking.f()) INSERT INTO shared.schema_versions (version) VALUES ('bk-015');")
+        for reg in ok:
+            with self.subTest(reg=reg):
+                self.assertEqual(self.lint(head + reg + "\n", "booking/015_x.sql"), [])
+        for reg in bad:
+            with self.subTest(reg=reg):
+                errors = self.lint(head + reg + "\n", "booking/015_x.sql")
+                self.assertTrue(any("must be a plain `INSERT INTO shared.schema_versions" in e for e in errors), errors)
+                # At or below the head (applied, never linted) and transactional files: not this rule.
+                self.assertEqual(self.lint(head + reg + "\n", "booking/013_x.sql"), [])
+        self.assertEqual(self.lint(self.body("SELECT 1;").replace("VALUES ('x')", "SELECT booking.f()"),
+                                   "booking/015_x.sql"), [])
 
     def test_real_copies_still_pass(self):
         root = Path(__file__).resolve().parent.parent.parent
