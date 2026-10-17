@@ -56,7 +56,10 @@
 -- aa_app_user S+D; as aa_app_user foreign 0/0, empty 0/0, own n/1), then regenerate
 -- docs/architecture/db-schema-reference.md.
 --
--- Rollback (restores the pre-237 state; the code works either way while the flag is off):
+-- Rollback (restores the pre-237 state). First turn the flag OFF: `SET aa544:integration_disconnect_pool
+-- false` (NOT DEL: since S241 D-12 a missing key means ON) plus the api env var
+-- TENANT_POOL_FORCE_ADMIN_FLAGS so it survives a Redis restart, and confirm used_tenant_pool=False in Logs
+-- Insights; the code works either way only while the flag is OFF:
 --   DROP POLICY IF EXISTS tenant_isolation ON shared.tenant_integrations;
 --   ALTER TABLE shared.tenant_integrations DISABLE ROW LEVEL SECURITY;
 --   REVOKE DELETE ON shared.tenant_integrations FROM aa_app_user;   -- SELECT predates 237 (007b)
