@@ -26,8 +26,8 @@
 --   4. default privileges: FOR ROLE tp_owner IN SCHEMA tripplanner GRANT SELECT, INSERT, UPDATE, DELETE ON
 --      TABLES and USAGE, SELECT ON SEQUENCES TO tripplanner (the rows that exist FOR ROLE aa_cis_admin,
 --      restated), then REVOKE the FOR ROLE aa_cis_admin rows (they would cover nothing from now on).
---   PostgreSQL rewrites every ACL to the new owner (grantor), so the privileges of tripplanner and booking
---   do not change; guard 2 compares them with a snapshot taken before step 1.
+--   PostgreSQL rewrites every ACL to the new owner (grantor and the owner's own entry), so no grant to any
+--   role changes; guard 2 compares the raw ACLs with a snapshot taken before step 1.
 --
 -- After this file DB Migrate runs every later tripplanner/ file as tp_owner (live-owner switch, XD8): the
 -- objects created from tp-014 on belong to tp_owner and the restated default privileges cover them, with
@@ -39,10 +39,18 @@
 --      SELECT and INSERT on shared.schema_versions (each checked on its own: a privilege list is true when
 --      ANY of them is held, and has_table_privilege ignores schema USAGE); roles tripplanner and booking
 --      exist; the schema is owned by the runner (or already by tp_owner, a re-run);
---   2. after: no schema, relation, function or type in tripplanner is owned by anyone but tp_owner (else an
---      object was added after this file was written: add its ALTER ... OWNER TO and re-run); the privileges
---      of tripplanner and booking on the schema and every relation equal the snapshot; the default
---      privileges of the schema are exactly the restated rows (none FOR ROLE aa_cis_admin).
+--   2. after: no object in tripplanner is owned by anyone but tp_owner (else an object was added after this
+--      file was written: add its ALTER ... OWNER TO and re-run). The kinds are the ones the DB Migrate
+--      ownership post-check scans (run_migration.py OBJECTS_SQL): schema, relation, function, type, and the
+--      kinds ALTER TABLE ... OWNER does not carry: extended statistics (stxowner stays), collation,
+--      operator, operator class / family, text search configuration / dictionary, conversion. None exists
+--      in tripplanner (tp-001..012 create none); if one appears on Dev the file rolls back here instead of
+--      the S9 probe tp-014 failing with exit 9 later. The ACLs equal the snapshot exactly: every
+--      aclexplode() row of the schema (nspacl), every relation (relacl, NULL read as acldefault) and every
+--      column (attacl), any grantee incl. PUBLIC, with aa_cis_admin read as tp_owner in the snapshot
+--      (grantor and grantee); has_*_privilege of tripplanner and booking is compared as well (readable
+--      message). The default privileges of the schema are exactly the restated rows (none FOR ROLE
+--      aa_cis_admin).
 --   The behaviour (tripplanner DML, the BIGSERIAL inserts, booking reading the view but not the table, a
 --   later file run as tp_owner) is replayed in migrations/tests/test_tp013_pg.py on a throwaway Postgres;
 --   after apply it is verified live (X1 plan S7 Verify).
@@ -51,9 +59,10 @@
 -- runner's lock_timeout 5s (stated above). TripPlanner has no job table; the Lambdas' transactions are
 -- short, and a lock timeout fails the whole file with nothing changed (retry). Not destructive.
 --
--- Rollback: a prepared, unmerged AA-CIS-Infra roles/ undo file (key rl-NNN, next free number), run as the
--- master. Not a tripplanner/ file: once this file commits, tripplanner/ files run as tp_owner, which cannot
--- give objects back to aa_cis_admin. tp-014 is reserved for the X1 S9 SET ROLE probe.
+-- Rollback: the prepared, unmerged AA-CIS-Infra roles/ undo file db/migrations/roles/003_x1_tp_owner_undo.sql
+-- (branch feat/x1-s7-tp013-undo; key rl-003, renumbered to the next free rl- key if 003 is taken when it is
+-- needed), run as the master. Not a tripplanner/ file: once this file commits, tripplanner/ files run as
+-- tp_owner, which cannot give objects back to aa_cis_admin. tp-014 is reserved for the X1 S9 SET ROLE probe.
 -- Re-running as the master is a no-op (DB Migrate never re-runs a registered version).
 
 BEGIN;
@@ -92,7 +101,46 @@ BEGIN
     END IF;
 END $$;
 
--- ── Snapshot: what tripplanner and booking may do on the schema and on every relation ────────────
+-- ── Snapshot 1: the raw ACLs of the schema, every relation and every column, any grantee ─────────
+-- aclexplode() of nspacl / relacl / attacl; a NULL ACL is read as acldefault() (the owner's implicit
+-- rights), so the owner's own entry is compared too. Role oids as names, 0 = PUBLIC.
+CREATE OR REPLACE TEMP VIEW tp013_acl AS
+SELECT 'schema tripplanner' AS object, '' AS col,
+       CASE WHEN x.grantor = 0 THEN 'PUBLIC' ELSE pg_get_userbyid(x.grantor)::text END AS grantor,
+       CASE WHEN x.grantee = 0 THEN 'PUBLIC' ELSE pg_get_userbyid(x.grantee)::text END AS grantee,
+       x.privilege_type AS privilege, x.is_grantable AS grantable
+  FROM pg_namespace n
+ CROSS JOIN LATERAL aclexplode(COALESCE(n.nspacl, acldefault('n', n.nspowner))) x
+ WHERE n.nspname = 'tripplanner'
+UNION ALL
+SELECT c.oid::regclass::text, '',
+       CASE WHEN x.grantor = 0 THEN 'PUBLIC' ELSE pg_get_userbyid(x.grantor)::text END,
+       CASE WHEN x.grantee = 0 THEN 'PUBLIC' ELSE pg_get_userbyid(x.grantee)::text END,
+       x.privilege_type, x.is_grantable
+  FROM pg_class c
+ CROSS JOIN LATERAL aclexplode(COALESCE(c.relacl,
+                                        acldefault(CASE WHEN c.relkind = 'S' THEN 's' ELSE 'r' END::"char",
+                                                   c.relowner))) x
+ WHERE c.relnamespace = 'tripplanner'::regnamespace
+UNION ALL
+SELECT c.oid::regclass::text, a.attname::text,
+       CASE WHEN x.grantor = 0 THEN 'PUBLIC' ELSE pg_get_userbyid(x.grantor)::text END,
+       CASE WHEN x.grantee = 0 THEN 'PUBLIC' ELSE pg_get_userbyid(x.grantee)::text END,
+       x.privilege_type, x.is_grantable
+  FROM pg_attribute a
+  JOIN pg_class c ON c.oid = a.attrelid AND c.relnamespace = 'tripplanner'::regnamespace
+ CROSS JOIN LATERAL aclexplode(a.attacl) x
+ WHERE a.attacl IS NOT NULL AND NOT a.attisdropped;
+
+-- The expected ACLs after the transfer: the old owner aa_cis_admin becomes tp_owner wherever it appears.
+CREATE TEMP TABLE tp013_acl_before ON COMMIT DROP AS
+SELECT object, col,
+       CASE grantor WHEN 'aa_cis_admin' THEN 'tp_owner' ELSE grantor END AS grantor,
+       CASE grantee WHEN 'aa_cis_admin' THEN 'tp_owner' ELSE grantee END AS grantee,
+       privilege, grantable
+  FROM tp013_acl;
+
+-- ── Snapshot 2 (readable second assertion): what tripplanner and booking may do ──────────────────
 CREATE OR REPLACE TEMP VIEW tp013_privileges AS
 SELECT g.grantee::text AS grantee, c.oid::regclass::text AS object, p.privilege,
        CASE WHEN c.relkind = 'S' THEN has_sequence_privilege(g.grantee, c.oid, p.privilege)
@@ -150,6 +198,7 @@ ALTER DEFAULT PRIVILEGES FOR ROLE aa_cis_admin IN SCHEMA tripplanner
 DO $$
 DECLARE
     stray text;
+    acl_diff text;
     changed text;
     defaults text;
 BEGIN
@@ -165,11 +214,49 @@ BEGIN
               FROM pg_proc p WHERE p.pronamespace = 'tripplanner'::regnamespace
             UNION ALL
             SELECT 'type', t.oid::regtype::text, pg_get_userbyid(t.typowner)::text
-              FROM pg_type t WHERE t.typnamespace = 'tripplanner'::regnamespace) o
+              FROM pg_type t WHERE t.typnamespace = 'tripplanner'::regnamespace
+            UNION ALL
+            SELECT 'statistics', 'tripplanner.' || x.stxname, pg_get_userbyid(x.stxowner)::text
+              FROM pg_statistic_ext x WHERE x.stxnamespace = 'tripplanner'::regnamespace
+            UNION ALL
+            SELECT 'collation', 'tripplanner.' || x.collname, pg_get_userbyid(x.collowner)::text
+              FROM pg_collation x WHERE x.collnamespace = 'tripplanner'::regnamespace
+            UNION ALL
+            SELECT 'operator', x.oid::regoperator::text, pg_get_userbyid(x.oprowner)::text
+              FROM pg_operator x WHERE x.oprnamespace = 'tripplanner'::regnamespace
+            UNION ALL
+            SELECT 'operator class', 'tripplanner.' || x.opcname, pg_get_userbyid(x.opcowner)::text
+              FROM pg_opclass x WHERE x.opcnamespace = 'tripplanner'::regnamespace
+            UNION ALL
+            SELECT 'operator family', 'tripplanner.' || x.opfname, pg_get_userbyid(x.opfowner)::text
+              FROM pg_opfamily x WHERE x.opfnamespace = 'tripplanner'::regnamespace
+            UNION ALL
+            SELECT 'text search configuration', 'tripplanner.' || x.cfgname, pg_get_userbyid(x.cfgowner)::text
+              FROM pg_ts_config x WHERE x.cfgnamespace = 'tripplanner'::regnamespace
+            UNION ALL
+            SELECT 'text search dictionary', 'tripplanner.' || x.dictname, pg_get_userbyid(x.dictowner)::text
+              FROM pg_ts_dict x WHERE x.dictnamespace = 'tripplanner'::regnamespace
+            UNION ALL
+            SELECT 'conversion', 'tripplanner.' || x.conname, pg_get_userbyid(x.conowner)::text
+              FROM pg_conversion x WHERE x.connamespace = 'tripplanner'::regnamespace) o
      WHERE o.owner <> 'tp_owner';
     IF stray IS NOT NULL THEN
         RAISE EXCEPTION 'tp-013: not owned by tp_owner after the transfer: % (an object was added after this '
-                        'file was written: add its ALTER ... OWNER TO tp_owner and re-run)', stray;
+                        'file was written, or is of a kind ALTER TABLE ... OWNER does not carry: add its '
+                        'ALTER ... OWNER TO tp_owner and re-run)', stray;
+    END IF;
+
+    SELECT string_agg(format('%s %s%s: %s %s by %s%s', d.what, d.object,
+                             CASE WHEN d.col = '' THEN '' ELSE '.' || d.col END, d.grantee, d.privilege,
+                             d.grantor, CASE WHEN d.grantable THEN ' WITH GRANT OPTION' ELSE '' END),
+                      '; ' ORDER BY d.object, d.col, d.grantee, d.privilege, d.what)
+      INTO acl_diff
+      FROM ((SELECT 'lost' AS what, * FROM tp013_acl_before EXCEPT SELECT 'lost', * FROM tp013_acl)
+            UNION ALL
+            (SELECT 'gained', * FROM tp013_acl EXCEPT SELECT 'gained', * FROM tp013_acl_before)) d;
+    IF acl_diff IS NOT NULL THEN
+        RAISE EXCEPTION 'tp-013: ACLs in schema tripplanner changed by the owner transfer (expected: the same '
+                        'entries with aa_cis_admin read as tp_owner): %', acl_diff;
     END IF;
 
     SELECT string_agg(format('%s %s on %s: %s -> %s', COALESCE(b.grantee, a.grantee), COALESCE(b.privilege, a.privilege),
@@ -208,6 +295,7 @@ BEGIN
 END $$;
 
 DROP VIEW tp013_privileges;
+DROP VIEW tp013_acl;
 
 INSERT INTO shared.schema_versions (version, applied_at, description)
 VALUES ('tp-013', now(), 'AA-852 X1 S7: schema tripplanner + its 16 objects owned by tp_owner (was aa_cis_admin); default privileges FOR ROLE tp_owner to tripplanner, FOR ROLE aa_cis_admin rows revoked')
