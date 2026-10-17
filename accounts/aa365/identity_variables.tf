@@ -61,13 +61,19 @@ variable "identity_external_custom_domain" {
 
 # ── Email (AA-811) ───────────────────────────────────────────────────────────
 variable "identity_ses_enabled" {
-  description = "Send Cognito mail through the AA-811 SES identity (DEVELOPER mode) and enable EMAIL_OTP as a first factor in both pools. Turn on only when the identity shows VerifiedForSendingStatus=true and DKIM SUCCESS (and, for real users, the account is out of the SES sandbox in us-west-1). Off = COGNITO_DEFAULT sender, no email codes: only break-glass can sign in to WORKFORCE."
+  description = "Send Cognito mail through the AA-811 SES identity (DEVELOPER mode) and enable EMAIL_OTP as a first factor in both pools. On by default since AA-854: the identity lumiguides.it.com shows VerifiedForSendingStatus=true, DKIM SUCCESS, MAIL FROM SUCCESS and the account has production access in us-west-1 (read-only check 17/10/2026). Off = COGNITO_DEFAULT sender, no email codes: only break-glass can sign in to WORKFORCE."
+  type        = bool
+  default     = true
+}
+
+variable "identity_external_native_signup_enabled" {
+  description = "Let the EXTERNAL pre sign-up trigger accept native (email code) self sign-up on the traveller clients. Needs identity_ses_enabled. Off by default (AA-854): Phase 0/1 is staff only, and public self sign-up should sit behind the WAF rate rules (identity_waf_enabled, S241 D-19 quote first) so a script cannot burn the SES reputation that staff email codes share."
   type        = bool
   default     = false
 }
 
 variable "identity_ses_identity_arn" {
-  description = "ARN of the verified SES identity in acc2 us-west-1 created by AA-811 (ses.tf), e.g. arn:aws:ses:us-west-1:005097885195:identity/lumiguides.it.com. Required when identity_ses_enabled = true."
+  description = "Override for the SES identity ARN (acc2 us-west-1). Empty = the AA-811 identity in ses.tf (local.ses_identity_arn, lumiguides.it.com)."
   type        = string
   default     = ""
 
@@ -84,13 +90,13 @@ variable "identity_ses_from_address" {
 }
 
 variable "identity_ses_configuration_set_workforce" {
-  description = "SES configuration set (AA-811) for WORKFORCE mail: separate bounce/complaint tracking from EXTERNAL (ADR 0006 Costs). Empty = none. Used only when identity_ses_enabled = true."
+  description = "Override for the WORKFORCE SES configuration set (separate bounce/complaint tracking from EXTERNAL, ADR 0006 Costs). Empty = ses.tf stream \"workforce\" (aa-email-<env>-workforce). Used only when identity_ses_enabled = true."
   type        = string
   default     = ""
 }
 
 variable "identity_ses_configuration_set_external" {
-  description = "SES configuration set (AA-811) for EXTERNAL mail. Empty = none. Used only when identity_ses_enabled = true."
+  description = "Override for the EXTERNAL SES configuration set. Empty = ses.tf stream \"external\" (aa-email-<env>-external). Used only when identity_ses_enabled = true."
   type        = string
   default     = ""
 }
@@ -163,9 +169,9 @@ variable "identity_client_urls" {
 
 # ── WAF on the pools (ADR 0006 decision 1) ───────────────────────────────────
 variable "identity_waf_enabled" {
-  description = "Attach a REGIONAL web ACL with per-IP rate rules to both pools (~$7/month for one shared ACL)."
+  description = "Attach one shared REGIONAL web ACL with per-IP rate rules to both pools. BILLABLE: about $7/month for this single shared ACL ($5 ACL + 2 x $1 rules + $0.60 per million requests; ADR 0006 quotes $12-15/month for two ACLs). Off by default: S241 D-19 = quote first, enable only with Nghiep's go (AA-854). Enable before identity_external_native_signup_enabled."
   type        = bool
-  default     = true
+  default     = false
 }
 
 variable "identity_waf_signup_rate_limit" {

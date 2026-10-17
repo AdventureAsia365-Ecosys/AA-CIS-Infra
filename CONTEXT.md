@@ -74,8 +74,9 @@ accounts/
                                    the AA-832 every-5-min schedule was removed in AA-751)
     identity.tf, identity_variables.tf (AA-703, root ADR 0006: Cognito pools aa-workforce-dev /
                                    aa-external-dev, app clients, groups, trigger Lambdas in
-                                   lambda_src/identity_triggers + tests, WAF; SES and custom
-                                   domains gated by variables, default off)
+                                   lambda_src/identity_triggers + tests; SES (ses.tf identity) on,
+                                   EXTERNAL native sign-up, WAF and custom domains gated by
+                                   variables, default off — AA-854)
     observability.tf, observability_ecosys.tf (S235 alarms + log retention; RDS alarms per data standard
                                    C4.1 + per-role AA/RDS RoleConnectionLimitPct alarms, AA-832; job
                                    backlog alarms per owner AA/Jobs/CIS + AA/Jobs/Booking and the

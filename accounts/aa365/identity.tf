@@ -11,7 +11,9 @@
 #       aa-external-<env>   tenant users + travellers; self sign-up gated per client by the trigger; MFA OFF
 #   - 6 app clients (decision 2): workforce cis-admin / booking-staff / breakglass (confidential),
 #     external cis-portal (confidential), booking-customer / tripplanner (public, PKCE)
-#   - 6 WORKFORCE groups <app>-<role> (decision 3); EXTERNAL has none (tenant roles live in CIS DB)
+#   - 7 WORKFORCE groups <app>-<role> (decision 3): 3 CIS roles + every Booking staff role
+#     (AA-Booking backend/app/auth/staff.py STAFF_ROLES, incl. content_creator: S241 Q4/Q5, AA-854);
+#     EXTERNAL has none (tenant roles live in CIS DB)
 #   - Staff sign in with an EMAIL ONE-TIME CODE ONLY (S236 amendment: adventure.asia mail is on
 #     DreamHost, not Google Workspace, so there is no `hd` claim to restrict Google to staff). The
 #     WORKFORCE pool has NO social identity provider. Google and Facebook exist on EXTERNAL only,
@@ -21,9 +23,12 @@
 #     the AA-806 workload boundary (the CI apply role may only create roles that carry it)
 #   - prefix domains (managed login v2) always; custom domains auth. / staff-auth. only when
 #     identity_custom_domains_enabled = true (needs the AA-818 us-east-1 certificate)
-#   - Cognito mail through the AA-811 SES identity only when identity_ses_enabled = true (needs the
-#     identity verified, DKIM SUCCESS); until then COGNITO_DEFAULT and no EMAIL_OTP
-#   - one REGIONAL WAF web ACL with per-IP rate rules, associated with both pools
+#   - Cognito mail through the AA-811 SES identity (ses.tf, same root) when identity_ses_enabled = true
+#     (default since AA-854: identity verified, DKIM SUCCESS, account out of the SES sandbox, checked
+#     live 17/10/2026); off = COGNITO_DEFAULT and no EMAIL_OTP. EXTERNAL native self sign-up stays
+#     refused until identity_external_native_signup_enabled = true (needs the WAF decision, D-19)
+#   - optional REGIONAL WAF web ACL with per-IP rate rules on both pools, OFF by default
+#     (identity_waf_enabled; billable, needs a quote and Nghiep's go per S241 D-19)
 #   - Secrets Manager container aa-identity/<env>/breakglass (no value; decision 11)
 #
 # SIGN-IN UNTIL SES IS ON: EMAIL_OTP needs the DEVELOPER (SES) email configuration, so with
@@ -66,12 +71,12 @@
 #     in Phase 1 (ADR 0006 migration plan).
 #
 # APPLY PREREQUISITES (CI apply role aa-cis-infra-tf-apply, AA-806 split):
-#   - cognito-idp:* and wafv2:CreateWebACL/DeleteWebACL/CheckCapacity: the AA-811 bootstrap grant
-#     (local MFA apply) must be live first, or the CI apply fails with AccessDenied.
-#   - identity_ses_enabled = true switches both pools to DEVELOPER email: Cognito then creates the
-#     service-linked role AWSServiceRoleForAmazonCognitoIdpEmailService with the CALLER's
-#     credentials, so the apply role needs iam:CreateServiceLinkedRole for
-#     email.cognito-idp.amazonaws.com unless that role already exists in acc2.
+#   - cognito-idp:* and wafv2:CreateWebACL/DeleteWebACL/CheckCapacity: statements
+#     CognitoUserPoolManage / WAFv2WebACLCreate in cicd_split.tf (AA-811 bootstrap grant, local MFA
+#     apply) must be live first, or the CI apply fails with AccessDenied.
+#   - identity_ses_enabled = true (the default) switches both pools to DEVELOPER email: Cognito then
+#     creates the service-linked role AWSServiceRoleForAmazonCognitoIdpEmailService with the CALLER's
+#     credentials; cicd_split.tf statement CognitoEmailServiceLinkedRole grants exactly that.
 #   - EXTERNAL Google / Facebook: the plan role (aa-cis-infra-tf-plan) reads secret values only for
 #     ARNs in local.tf_plan_secret_arns (cicd_split.tf, bootstrap). Add the IdP secret ARNs there
 #     before setting the IdP variables, or the next CI plan fails on refresh.
@@ -93,6 +98,18 @@ locals {
   id_ses_enabled   = var.identity_ses_enabled
   id_first_factors = local.id_ses_enabled ? ["PASSWORD", "EMAIL_OTP"] : ["PASSWORD"]
 
+  # SES wiring (AA-854): empty variables fall back to the AA-811 identity and configuration sets
+  # in ses.tf (same root), so no ARN has to be copied into tfvars.
+  id_ses_identity_arn = var.identity_ses_identity_arn != "" ? var.identity_ses_identity_arn : local.ses_identity_arn
+  id_ses_config_set = {
+    workforce = var.identity_ses_configuration_set_workforce != "" ? var.identity_ses_configuration_set_workforce : aws_sesv2_configuration_set.stream["workforce"].configuration_set_name
+    external  = var.identity_ses_configuration_set_external != "" ? var.identity_ses_configuration_set_external : aws_sesv2_configuration_set.stream["external"].configuration_set_name
+  }
+
+  # EXTERNAL native self sign-up (traveller clients) needs EMAIL_OTP (SES) AND an explicit opt-in:
+  # without the WAF rate rules a script could burn SES reputation shared with staff email codes.
+  id_ext_native_signup = local.id_ses_enabled && var.identity_external_native_signup_enabled
+
   id_ext_google = var.identity_external_google_client_id != "" && var.identity_external_google_client_secret_arn != ""
   id_facebook   = var.identity_facebook_app_id != "" && var.identity_facebook_app_secret_arn != ""
 
@@ -106,6 +123,8 @@ locals {
     "booking-admin"       = { precedence = 40, description = "Booking staff admin" }
     "booking-sales"       = { precedence = 50, description = "Booking sales" }
     "booking-contracting" = { precedence = 60, description = "Booking contracting" }
+    # S241 Q4/Q5 (AA-854): every Booking staff role has a group, content_creator included.
+    "booking-content_creator" = { precedence = 70, description = "Booking content creator" }
   }
 
   id_ext_idps_portal    = concat(["COGNITO"], local.id_ext_google ? ["Google"] : [])
@@ -160,7 +179,7 @@ locals {
     TRAVELLER_CLIENT_NAMES = join(",", local.id_traveller_client_names)
     GOOGLE_PROVIDER_NAME   = "Google"
     FACEBOOK_PROVIDER_NAME = "Facebook"
-    NATIVE_SIGNUP_ENABLED  = tostring(local.id_ses_enabled)
+    NATIVE_SIGNUP_ENABLED  = tostring(local.id_ext_native_signup)
   }
 
   # Roles: `pure` = logs only (both pre token triggers and the WORKFORCE pre sign-up, which make no
@@ -352,9 +371,9 @@ resource "aws_cognito_user_pool" "workforce" {
 
   email_configuration {
     email_sending_account = local.id_ses_enabled ? "DEVELOPER" : "COGNITO_DEFAULT"
-    source_arn            = local.id_ses_enabled ? var.identity_ses_identity_arn : null
+    source_arn            = local.id_ses_enabled ? local.id_ses_identity_arn : null
     from_email_address    = local.id_ses_enabled ? var.identity_ses_from_address : null
-    configuration_set     = local.id_ses_enabled && var.identity_ses_configuration_set_workforce != "" ? var.identity_ses_configuration_set_workforce : null
+    configuration_set     = local.id_ses_enabled ? local.id_ses_config_set["workforce"] : null
   }
 
   lambda_config {
@@ -376,8 +395,8 @@ resource "aws_cognito_user_pool" "workforce" {
       error_message = "identity_breakglass_email must be inside identity_staff_email_domain, or the pre token trigger denies it."
     }
     precondition {
-      condition     = !local.id_ses_enabled || (var.identity_ses_identity_arn != "" && var.identity_ses_from_address != "")
-      error_message = "identity_ses_enabled = true needs identity_ses_identity_arn (the verified AA-811 identity) and identity_ses_from_address."
+      condition     = !local.id_ses_enabled || var.identity_ses_from_address != ""
+      error_message = "identity_ses_enabled = true needs identity_ses_from_address (inside the AA-811 identity's domain)."
     }
     precondition {
       condition     = !local.id_custom_domains || var.identity_custom_domain_certificate_arn != ""
@@ -431,9 +450,9 @@ resource "aws_cognito_user_pool" "external" {
 
   email_configuration {
     email_sending_account = local.id_ses_enabled ? "DEVELOPER" : "COGNITO_DEFAULT"
-    source_arn            = local.id_ses_enabled ? var.identity_ses_identity_arn : null
+    source_arn            = local.id_ses_enabled ? local.id_ses_identity_arn : null
     from_email_address    = local.id_ses_enabled ? var.identity_ses_from_address : null
-    configuration_set     = local.id_ses_enabled && var.identity_ses_configuration_set_external != "" ? var.identity_ses_configuration_set_external : null
+    configuration_set     = local.id_ses_enabled ? local.id_ses_config_set["external"] : null
   }
 
   lambda_config {
@@ -632,6 +651,10 @@ resource "aws_cognito_user_pool_domain" "external_custom" {
 # =============================================================================
 # WAF on both pools (ADR 0006 decision 1): per-IP rate limits on sign-up / sign-in / code resend
 # (MAU + SES abuse) and a global per-IP cap. One shared web ACL (same rules for both pools).
+# OFF by default (S241 D-19: every new AWS spend is quoted and approved first). Cost when on, us-west-1
+# list prices: $5/web ACL + $1/rule x 2 + $0.60 per million requests = about $7/month for this one
+# shared ACL; the ADR's $12-15/month figure assumes two separate ACLs. Turn on before
+# identity_external_native_signup_enabled.
 # =============================================================================
 resource "aws_wafv2_web_acl" "identity" {
   count       = var.identity_waf_enabled ? 1 : 0

@@ -30,7 +30,8 @@ from common import (
 )
 
 DEFAULT_STAFF_GROUPS = (
-    "cis-admin,cis-reviewer,cis-content,booking-admin,booking-sales,booking-contracting"
+    "cis-admin,cis-reviewer,cis-content,"
+    "booking-admin,booking-sales,booking-contracting,booking-content_creator"
 )
 
 

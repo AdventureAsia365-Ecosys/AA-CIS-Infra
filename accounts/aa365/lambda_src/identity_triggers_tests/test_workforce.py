@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import re
+from pathlib import Path
 
 import pytest
 
@@ -110,3 +112,21 @@ def test_custom_staff_groups_env(monkeypatch):
     monkeypatch.setenv("STAFF_GROUPS", "cis-admin")
     out = workforce.pre_token_generation(token_event(STAFF, ["cis-admin", "booking-sales"]))
     assert out["response"]["claimsAndScopeOverrideDetails"]["groupOverrideDetails"]["groupsToOverride"] == ["cis-admin"]
+
+
+def test_booking_content_creator_group_kept_by_default():
+    # S241 Q4/Q5 (AA-854): every Booking staff role (AA-Booking STAFF_ROLES) has a WORKFORCE group.
+    out = workforce.pre_token_generation(token_event(STAFF, ["booking-content_creator", "rogue"]))
+    details = out["response"]["claimsAndScopeOverrideDetails"]
+    assert details["groupOverrideDetails"]["groupsToOverride"] == ["booking-content_creator"]
+
+
+def test_default_staff_groups_match_terraform_groups():
+    # Guard: the trigger's fallback list and the Terraform groups (identity.tf id_staff_groups) must
+    # not drift; Terraform passes the same keys as STAFF_GROUPS, the default is only a fallback.
+    tf = (Path(__file__).resolve().parents[2] / "identity.tf").read_text()
+    block = re.search(r"id_staff_groups = \{(.*?)\n  \}", tf, re.S).group(1)
+    tf_groups = set(re.findall(r'^\s*"([a-z_-]+)"\s*=', block, re.M))
+    assert tf_groups == set(workforce.DEFAULT_STAFF_GROUPS.split(","))
+    booking_roles = {"admin", "sales", "contracting", "content_creator"}
+    assert {g.removeprefix("booking-") for g in tf_groups if g.startswith("booking-")} == booking_roles
