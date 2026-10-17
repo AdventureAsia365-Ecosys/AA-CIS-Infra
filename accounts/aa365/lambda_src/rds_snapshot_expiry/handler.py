@@ -15,6 +15,11 @@ Rule
     - tag aa:retain-until is malformed (fail safe: keep, and report it).
   Otherwise expire when aa:retain-until is in the past, or when the snapshot is older than
   RETAIN_DAYS (strictly: now - SnapshotCreateTime > RETAIN_DAYS days).
+  Orphan guard (fail safe): a snapshot that would expire is KEPT, and reported, when its source
+  instance no longer exists or was re-created (the snapshot's InstanceCreateTime differs from the
+  live instance's). This covers the final snapshot RDS writes when the instance is deleted
+  ("aa-cis-dev-db-final", modules/rds): it may be the only copy left. Tag it aa:retain=keep (or
+  aa:retain-until) to keep it on purpose and silence the report.
 
 Safety
   DRY_RUN: only the exact string "false" deletes; anything else (unset, "False", "0", "") reports.
@@ -24,7 +29,8 @@ Safety
 Report
   One JSON log line per snapshot (identifier, instance, created, age_days, decision, reason) and
   a summary line. An SNS message goes to ALERT_TOPIC_ARN only when something was deleted, would
-  be deleted (dry run), was held back by the cap, failed, or carried a malformed tag.
+  be deleted (dry run), was held back by the cap, failed, carried a malformed tag, or was kept by
+  the orphan guard.
 """
 
 from __future__ import annotations
@@ -62,6 +68,7 @@ class Decision:
     decision: str
     reason: str
     malformed_tag: bool = False
+    orphan: bool = False
     _created_dt: datetime | None = field(default=None, repr=False, compare=False)
 
     def as_log(self) -> dict:
@@ -106,14 +113,39 @@ def parse_retain_until(value: str) -> date | None:
         return None
 
 
-def decide_one(snapshot: dict, *, now: datetime, retain_days: int, allowlist: Iterable[str]) -> Decision:
-    """Apply the keep/expire rule to one DescribeDBSnapshots item. No AWS calls."""
+def source_instance_problem(snapshot: dict, live_instances: dict[str, datetime | None]) -> str | None:
+    """Why the snapshot's source instance is not the live one, or None when it is.
+
+    live_instances maps each allowlisted identifier that exists now to its InstanceCreateTime
+    (None when RDS has not set it yet). Missing data on either side counts as a problem (fail safe).
+    """
+    instance = snapshot.get("DBInstanceIdentifier")
+    if instance not in live_instances:
+        return f"source instance {instance!r} no longer exists"
+    live_created = _as_utc(live_instances[instance])
+    snap_instance_created = _as_utc(snapshot.get("InstanceCreateTime"))
+    if live_created is None or snap_instance_created is None:
+        return "cannot match the snapshot to the live instance (no InstanceCreateTime)"
+    if live_created != snap_instance_created:
+        return (
+            f"source instance {instance!r} was re-created "
+            f"(snapshot of the {snap_instance_created.isoformat()} instance)"
+        )
+    return None
+
+
+def decide_one(snapshot: dict, *, now: datetime, retain_days: int, allowlist: Iterable[str],
+               live_instances: dict[str, datetime | None]) -> Decision:
+    """Apply the keep/expire rule to one DescribeDBSnapshots item. No AWS calls.
+
+    live_instances: allowlisted instances that exist now -> InstanceCreateTime (orphan guard).
+    """
     ident = snapshot.get("DBSnapshotIdentifier", "")
     instance = snapshot.get("DBInstanceIdentifier")
     created_dt = _as_utc(snapshot.get("SnapshotCreateTime"))
     age_days = round((now - created_dt).total_seconds() / 86400, 2) if created_dt else None
 
-    def out(decision: str, reason: str, malformed: bool = False) -> Decision:
+    def out(decision: str, reason: str, malformed: bool = False, orphan: bool = False) -> Decision:
         return Decision(
             identifier=ident,
             instance=instance,
@@ -122,6 +154,7 @@ def decide_one(snapshot: dict, *, now: datetime, retain_days: int, allowlist: It
             decision=decision,
             reason=reason,
             malformed_tag=malformed,
+            orphan=orphan,
             _created_dt=created_dt,
         )
 
@@ -155,10 +188,17 @@ def decide_one(snapshot: dict, *, now: datetime, retain_days: int, allowlist: It
 
     # Expire rules.
     if until is not None:
-        return out(EXPIRE, f"tag {TAG_RETAIN_UNTIL}={until.isoformat()} is in the past")
-    if now - created_dt > timedelta(days=retain_days):
-        return out(EXPIRE, f"older than {retain_days} days")
-    return out(KEEP, f"younger than {retain_days} days")
+        expire_reason = f"tag {TAG_RETAIN_UNTIL}={until.isoformat()} is in the past"
+    elif now - created_dt > timedelta(days=retain_days):
+        expire_reason = f"older than {retain_days} days"
+    else:
+        return out(KEEP, f"younger than {retain_days} days")
+
+    # Orphan guard: never expire the last copy of a deleted or replaced instance by age alone.
+    problem = source_instance_problem(snapshot, live_instances)
+    if problem:
+        return out(KEEP, f"{expire_reason}, but {problem} (fail safe)", orphan=True)
+    return out(EXPIRE, expire_reason)
 
 
 def apply_cap_and_mode(decisions: list[Decision], *, max_deletes: int, dry_run: bool) -> list[Decision]:
@@ -182,9 +222,12 @@ def apply_cap_and_mode(decisions: list[Decision], *, max_deletes: int, dry_run: 
 
 
 def plan(snapshots: list[dict], *, now: datetime, retain_days: int, allowlist: Iterable[str],
-         max_deletes: int, dry_run: bool) -> list[Decision]:
+         live_instances: dict[str, datetime | None], max_deletes: int, dry_run: bool) -> list[Decision]:
     allow = list(allowlist)
-    decisions = [decide_one(s, now=now, retain_days=retain_days, allowlist=allow) for s in snapshots]
+    decisions = [
+        decide_one(s, now=now, retain_days=retain_days, allowlist=allow, live_instances=live_instances)
+        for s in snapshots
+    ]
     return apply_cap_and_mode(decisions, max_deletes=max_deletes, dry_run=dry_run)
 
 
@@ -197,12 +240,14 @@ def summarize(decisions: list[Decision], *, dry_run: bool) -> dict:
         "dry_run": dry_run,
         "counts": counts,
         "malformed_tags": [d.identifier for d in decisions if d.malformed_tag],
+        "orphans_kept": [d.identifier for d in decisions if d.orphan],
     }
 
 
 def needs_notification(decisions: list[Decision]) -> bool:
     return any(
-        d.decision in (DELETED, WOULD_DELETE, OVER_CAP, ERROR) or d.malformed_tag for d in decisions
+        d.decision in (DELETED, WOULD_DELETE, OVER_CAP, ERROR) or d.malformed_tag or d.orphan
+        for d in decisions
     )
 
 
@@ -210,6 +255,7 @@ def build_message(decisions: list[Decision], *, env_name: str, dry_run: bool) ->
     mode = "DRY RUN" if dry_run else "LIVE"
     n = {k: sum(1 for d in decisions if d.decision == k) for k in (DELETED, WOULD_DELETE, OVER_CAP, ERROR)}
     malformed = [d for d in decisions if d.malformed_tag]
+    orphans = [d for d in decisions if d.orphan]
     parts = []
     if n[DELETED]:
         parts.append(f"{n[DELETED]} deleted")
@@ -221,10 +267,12 @@ def build_message(decisions: list[Decision], *, env_name: str, dry_run: bool) ->
         parts.append(f"{n[ERROR]} failed")
     if malformed:
         parts.append(f"{len(malformed)} malformed tag")
+    if orphans:
+        parts.append(f"{len(orphans)} kept, source instance gone")
     subject = f"[{env_name}] RDS snapshot expiry ({mode}): " + ", ".join(parts or ["nothing to do"])
     lines = [f"RDS manual snapshot expiry, {mode}, {env_name}.", ""]
     for d in decisions:
-        if d.decision in (DELETED, WOULD_DELETE, OVER_CAP, ERROR) or d.malformed_tag:
+        if d.decision in (DELETED, WOULD_DELETE, OVER_CAP, ERROR) or d.malformed_tag or d.orphan:
             lines.append(f"- {d.decision}: {d.identifier} (created {d.created}, {d.age_days} d) - {d.reason}")
     lines += [
         "",
@@ -265,6 +313,27 @@ def list_manual_snapshots(rds) -> list[dict]:
     return out
 
 
+def describe_live_instances(rds, allowlist: Iterable[str]) -> dict[str, datetime | None]:
+    """Allowlisted instances that exist now -> InstanceCreateTime. Not found -> left out.
+
+    Any other error propagates: without this answer the orphan guard cannot run, so the
+    invocation fails (Errors alarm) instead of deleting blind.
+    """
+    live: dict[str, datetime | None] = {}
+    for ident in allowlist:
+        try:
+            resp = rds.describe_db_instances(DBInstanceIdentifier=ident)
+        except Exception as exc:  # noqa: BLE001 — botocore ClientError; tests use no boto3
+            code = (getattr(exc, "response", None) or {}).get("Error", {}).get("Code")
+            if code in ("DBInstanceNotFound", "DBInstanceNotFoundFault"):
+                continue
+            raise
+        for inst in resp.get("DBInstances", []):
+            if inst.get("DBInstanceIdentifier") == ident:
+                live[ident] = inst.get("InstanceCreateTime")
+    return live
+
+
 def run(rds, sns, *, env: dict, now: datetime) -> dict:
     dry_run = is_dry_run(env.get("DRY_RUN"))
     retain_days = _int_env(env, "RETAIN_DAYS", 30, 1)
@@ -277,7 +346,8 @@ def run(rds, sns, *, env: dict, now: datetime) -> dict:
 
     decisions = plan(
         list_manual_snapshots(rds), now=now, retain_days=retain_days, allowlist=allowlist,
-        max_deletes=max_deletes, dry_run=dry_run,
+        live_instances=describe_live_instances(rds, allowlist), max_deletes=max_deletes,
+        dry_run=dry_run,
     )
 
     if not dry_run:

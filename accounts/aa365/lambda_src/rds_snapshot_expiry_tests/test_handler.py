@@ -21,10 +21,13 @@ import handler as h  # noqa: E402
 
 NOW = datetime(2026, 10, 17, 22, 0, 0, tzinfo=timezone.utc)
 ALLOW = ["aa-cis-dev-db"]
+# InstanceCreateTime of the live instance (the real one was created 2026-07-07).
+LIVE_CREATED = datetime(2026, 7, 7, 10, 53, 4, 51000, tzinfo=timezone.utc)
+LIVE = {"aa-cis-dev-db": LIVE_CREATED}
 
 
 def snap(ident, *, age=None, created=None, tags=None, instance="aa-cis-dev-db", stype="manual",
-         status="available"):
+         status="available", instance_created=LIVE_CREATED):
     if created is None:
         created = NOW - (age if isinstance(age, timedelta) else timedelta(days=age))
     return {
@@ -33,13 +36,15 @@ def snap(ident, *, age=None, created=None, tags=None, instance="aa-cis-dev-db", 
         "SnapshotCreateTime": created,
         "SnapshotType": stype,
         "Status": status,
+        "InstanceCreateTime": instance_created,
         "DBSnapshotArn": f"arn:aws:rds:us-west-1:005097885195:snapshot:{ident}",
         "TagList": [{"Key": k, "Value": v} for k, v in (tags or {}).items()],
     }
 
 
-def decide(s, retain_days=30):
-    return h.decide_one(s, now=NOW, retain_days=retain_days, allowlist=ALLOW)
+def decide(s, retain_days=30, live=None):
+    return h.decide_one(s, now=NOW, retain_days=retain_days, allowlist=ALLOW,
+                        live_instances=LIVE if live is None else live)
 
 
 class DecideOneTest(unittest.TestCase):
@@ -129,23 +134,63 @@ class DecideOneTest(unittest.TestCase):
         self.assertEqual(decide(s).decision, h.EXPIRE)
 
 
+class OrphanGuardTest(unittest.TestCase):
+    """The final snapshot of a deleted/replaced instance must never expire by age alone."""
+
+    def test_final_snapshot_of_deleted_instance_kept_and_flagged(self):
+        d = decide(snap("aa-cis-dev-db-final", age=60), live={})
+        self.assertEqual(d.decision, h.KEEP)
+        self.assertTrue(d.orphan)
+        self.assertIn("no longer exists", d.reason)
+
+    def test_past_retain_until_on_orphan_kept(self):
+        d = decide(snap("db-migrate-x", age=40, tags={"aa:retain-until": "2026-10-01"}), live={})
+        self.assertEqual(d.decision, h.KEEP)
+        self.assertTrue(d.orphan)
+
+    def test_snapshot_of_previous_incarnation_kept(self):
+        old_incarnation = LIVE_CREATED - timedelta(days=200)
+        d = decide(snap("aa-cis-dev-db-final", age=60, instance_created=old_incarnation))
+        self.assertEqual(d.decision, h.KEEP)
+        self.assertTrue(d.orphan)
+        self.assertIn("re-created", d.reason)
+
+    def test_missing_instance_create_time_kept(self):
+        self.assertTrue(decide(snap("s", age=60, instance_created=None)).orphan)
+        self.assertTrue(decide(snap("s", age=60), live={"aa-cis-dev-db": None}).orphan)
+
+    def test_string_instance_create_time_matches(self):
+        s = snap("s", age=60, instance_created="2026-07-07T10:53:04.051000+00:00")
+        self.assertEqual(decide(s).decision, h.EXPIRE)
+
+    def test_young_orphan_not_flagged(self):
+        d = decide(snap("aa-cis-dev-db-final", age=5), live={})
+        self.assertEqual(d.decision, h.KEEP)
+        self.assertFalse(d.orphan)
+
+    def test_explicit_keep_on_orphan_not_flagged(self):
+        d = decide(snap("aa-cis-dev-db-final", age=60, tags={"aa:retain": "keep"}), live={})
+        self.assertEqual(d.decision, h.KEEP)
+        self.assertFalse(d.orphan)
+
+
 class CapAndModeTest(unittest.TestCase):
     def _five_old(self):
         return [snap(f"s{i}", age=40 + i) for i in range(5)]  # s4 oldest
 
     def test_cap_dry_run_marks_oldest_would_delete_rest_over_cap(self):
-        ds = h.plan(self._five_old(), now=NOW, retain_days=30, allowlist=ALLOW, max_deletes=3, dry_run=True)
+        ds = h.plan(self._five_old(), now=NOW, retain_days=30, allowlist=ALLOW, live_instances=LIVE, max_deletes=3, dry_run=True)
         by = {d.identifier: d.decision for d in ds}
         self.assertEqual([by[f"s{i}"] for i in (4, 3, 2)], [h.WOULD_DELETE] * 3)
         self.assertEqual([by[f"s{i}"] for i in (1, 0)], [h.OVER_CAP] * 2)
 
     def test_cap_live_leaves_expire_for_caller(self):
-        ds = h.plan(self._five_old(), now=NOW, retain_days=30, allowlist=ALLOW, max_deletes=3, dry_run=False)
+        ds = h.plan(self._five_old(), now=NOW, retain_days=30, allowlist=ALLOW, live_instances=LIVE, max_deletes=3, dry_run=False)
         self.assertEqual(sum(d.decision == h.EXPIRE for d in ds), 3)
         self.assertEqual(sum(d.decision == h.OVER_CAP for d in ds), 2)
 
     def test_cap_zero_deletes_nothing(self):
-        ds = h.plan(self._five_old(), now=NOW, retain_days=30, allowlist=ALLOW, max_deletes=0, dry_run=False)
+        ds = h.plan(self._five_old(), now=NOW, retain_days=30, allowlist=ALLOW, live_instances=LIVE, max_deletes=0, dry_run=False)
         self.assertTrue(all(d.decision == h.OVER_CAP for d in ds))
 
 
@@ -157,11 +202,27 @@ class DryRunSemanticsTest(unittest.TestCase):
                 self.assertTrue(h.is_dry_run(value))
 
 
+class FakeClientError(Exception):
+    def __init__(self, code):
+        super().__init__(code)
+        self.response = {"Error": {"Code": code}}
+
+
 class FakeRds:
-    def __init__(self, snapshots, fail=()):
+    def __init__(self, snapshots, fail=(), instances=None, describe_error=None):
         self.snapshots = snapshots
         self.fail = set(fail)
         self.deleted = []
+        self.instances = LIVE if instances is None else instances
+        self.describe_error = describe_error
+
+    def describe_db_instances(self, DBInstanceIdentifier):  # noqa: N803 — boto3 kwarg
+        if self.describe_error:
+            raise FakeClientError(self.describe_error)
+        if DBInstanceIdentifier not in self.instances:
+            raise FakeClientError("DBInstanceNotFound")
+        return {"DBInstances": [{"DBInstanceIdentifier": DBInstanceIdentifier,
+                                 "InstanceCreateTime": self.instances[DBInstanceIdentifier]}]}
 
     def get_paginator(self, name):
         assert name == "describe_db_snapshots"
@@ -203,8 +264,8 @@ ENV = {
 
 
 class RunTest(unittest.TestCase):
-    def _run(self, snapshots, dry_run_value, fail=()):
-        rds, sns = FakeRds(snapshots, fail), FakeSns()
+    def _run(self, snapshots, dry_run_value, fail=(), **rds_kwargs):
+        rds, sns = FakeRds(snapshots, fail, **rds_kwargs), FakeSns()
         env = dict(ENV)
         if dry_run_value is not None:
             env["DRY_RUN"] = dry_run_value
@@ -268,6 +329,21 @@ class RunTest(unittest.TestCase):
         summary = h.run(rds, sns, env=env, now=NOW)
         self.assertEqual(rds.deleted, ["old"])
         self.assertEqual(summary["counts"], {h.SKIP: 1, h.DELETED: 1})
+
+    def test_deleted_instance_final_snapshot_never_deleted_live_and_reported(self):
+        snaps = [snap("aa-cis-dev-db-final", age=60), snap("old", age=45)]
+        rds, sns, env = self._run(snaps, "false", instances={})
+        summary = h.run(rds, sns, env=env, now=NOW)
+        self.assertEqual(rds.deleted, [])
+        self.assertEqual(summary["orphans_kept"], ["aa-cis-dev-db-final", "old"])
+        self.assertEqual(len(sns.published), 1)
+        self.assertIn("source instance gone", sns.published[0]["Subject"])
+
+    def test_describe_instances_error_fails_without_deleting(self):
+        rds, sns, env = self._run([snap("old", age=45)], "false", describe_error="Throttling")
+        with self.assertRaises(FakeClientError):
+            h.run(rds, sns, env=env, now=NOW)
+        self.assertEqual(rds.deleted, [])
 
     def test_non_allowlisted_and_automated_never_deleted_live(self):
         snaps = [

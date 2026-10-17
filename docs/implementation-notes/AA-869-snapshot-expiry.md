@@ -13,6 +13,18 @@ purpose. The DM-7.5 retention-table amendment is in the root repo (separate PR).
   allowlist, status != available) -> skip. `keep-` prefix, `aa:retain=keep`, malformed
   `aa:retain-until` (fail safe, reported), `aa:retain-until` >= today (UTC) -> keep. Then
   `aa:retain-until` < today -> expire; else age > 30 days -> expire; else keep.
+- Orphan guard (review finding, fail safe): a snapshot that would expire is kept and reported when
+  its source instance no longer exists or was re-created (snapshot `InstanceCreateTime` differs
+  from the live instance's, or either is missing). Reason: `modules/rds` writes the final snapshot
+  `aa-cis-dev-db-final` (manual type, instance tags only) when the instance is deleted; with the
+  automated backups gone it can be the only copy, and age alone must not remove it. Chosen over
+  renaming `final_snapshot_identifier` to `keep-...` because it also covers a ForceNew replacement
+  (same identifier, new instance) and any other snapshot of a former incarnation, and it leaves the
+  shared DB module untouched. Cost: one `DescribeDBInstances` per allowlisted instance per run,
+  scoped to those `db:` ARNs. Any error other than "not found" fails the run (nothing deleted).
+  Tag such a snapshot `aa:retain=keep` (or `aa:retain-until`) to keep it on purpose and stop the
+  daily report. Verified on the live list: the 4 current snapshots match the live instance
+  (`InstanceCreateTime` 2026-07-07T10:53:04.051Z), so none is flagged.
 - "Older than 30 days" is strict: `now - SnapshotCreateTime > 30 days`. Exactly 30 days is kept.
 - `aa:retain=keep` is compared case-insensitively with spaces stripped: a sloppy `Keep` keeps the
   snapshot (the safe direction). `aa:retain-until` is strict `YYYY-MM-DD`; anything else is
@@ -21,7 +33,7 @@ purpose. The DM-7.5 retention-table amendment is in the root repo (separate PR).
   `rds_snapshot_expiry_dry_run`, validated to `true`/`false`).
 - Cap 3 per run, oldest first; the rest are `over_cap` and reported, picked up the next day.
 - SNS (shared `aa-cis-dev-acp-alerts`) only when something is deleted / would be deleted / over
-  cap / failed, or a malformed tag is seen. Subject <= 100 chars, body = one line per affected
+  cap / failed, a malformed tag is seen, or the orphan guard kept a snapshot. Subject <= 100 chars, body = one line per affected
   snapshot + how to keep one. No secrets in it.
 - Outside the VPC (like the identity triggers): only RDS + SNS control-plane calls, so no NAT
   dependency and no security group.
@@ -38,13 +50,16 @@ purpose. The DM-7.5 retention-table amendment is in the root repo (separate PR).
 - `.github/workflows/db-migrate.yml`: the pre-destructive snapshot step adds the three `aa:` tags;
   the comment and the step-summary line now say it expires automatically instead of "delete by
   hand". Nothing else in that flow changed.
+- `db/README.md` (destructive directive) and `CONTEXT.md` (Layout entry, DB Migrate paragraph) now
+  describe the automatic expiry of manual snapshots (review findings).
 
 ## Tradeoffs
 - `aws_lambda_function_event_invoke_config.maximum_retry_attempts = 0`. Scheduler invokes
   asynchronously; with Lambda's default 2 retries a run that deleted some snapshots and then failed
   could delete up to 3 x cap in one day. A failed run raises (after the SNS report) so the Errors
   alarm fires; the next day retries naturally.
-- IAM: `rds:DescribeDBSnapshots` needs `*`; `ListTagsForResource` and `DeleteDBSnapshot` are scoped
+- IAM: `rds:DescribeDBInstances` scoped to the allowlisted `db:` ARNs (orphan guard);
+  `rds:DescribeDBSnapshots` needs `*`; `ListTagsForResource` and `DeleteDBSnapshot` are scoped
   to `snapshot:*` of this account/region. Defence in depth: explicit Deny on `snapshot:rds:*`,
   `snapshot:awsbackup:*`, `snapshot:keep-*`, and on any snapshot tagged `aa:retain=keep`
   (`aws:ResourceTag`, ignore case). There is no IAM condition key for the source DB instance, so

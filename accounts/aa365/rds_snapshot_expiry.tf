@@ -11,6 +11,9 @@
 #   - keep: identifier "keep-...", tag aa:retain=keep, tag aa:retain-until=YYYY-MM-DD (today or
 #     later, UTC), or a malformed aa:retain-until (fail safe, reported).
 #   - expire: older than retain_days, or aa:retain-until in the past.
+#   - orphan guard: a snapshot whose source instance is gone or was re-created (InstanceCreateTime
+#     differs) is kept and reported instead of expiring, e.g. the final snapshot "aa-cis-dev-db-final"
+#     RDS writes when the instance is deleted (modules/rds). Tag it aa:retain=keep to silence it.
 #   - DRY_RUN: only the exact string "false" deletes. Default "true": report only.
 #   - at most max_deletes_per_run deletions per run, oldest first; the rest wait for the next run.
 # DB Migrate (.github/workflows/db-migrate.yml) tags its pre-destructive snapshot
@@ -129,6 +132,14 @@ resource "aws_iam_role_policy" "rds_snapshot_expiry_perms" {
         Effect   = "Allow"
         Action   = ["rds:DescribeDBSnapshots"]
         Resource = "*"
+      },
+      {
+        # Orphan guard: is the snapshot's source instance still the live one? (The final snapshot
+        # of a deleted instance must never expire by age alone.)
+        Sid      = "DescribeAllowlistedInstances"
+        Effect   = "Allow"
+        Action   = ["rds:DescribeDBInstances"]
+        Resource = [for i in var.rds_snapshot_expiry_instances : "arn:aws:rds:${var.aws_region}:${var.account_id}:db:${i}"]
       },
       {
         Sid      = "ReadSnapshotTags"
