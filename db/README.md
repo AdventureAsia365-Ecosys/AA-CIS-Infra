@@ -75,7 +75,10 @@ line (a directive after the first statement is an error):
   `ALTER TABLE … DROP [COLUMN]` and `TRUNCATE`. On `mode=apply`, DB Migrate creates the manual
   snapshot `db-migrate-<version>-<run id>-<attempt>` of `aa-cis-dev-db`, waits until it is available and
   passes its id to the task; the runner refuses a destructive apply without it (exit 5). The DRY
-  RUN procedure still applies. Delete the snapshot by hand once the contract is confirmed.
+  RUN procedure still applies. The snapshot is tagged `aa:retain-until` = today + 30 days (UTC); the
+  daily `rds-snapshot-expiry` Lambda (`accounts/aa365/rds_snapshot_expiry.tf`, AA-869) deletes it
+  after that date (once its `DRY_RUN` is `false`). Do not delete it by hand: it is the undo path for
+  30 days. To keep it longer, move `aa:retain-until` forward or tag `aa:retain=keep`.
 - **Lint** (same code in CI, in the DB Migrate "Validate input" step and in the task): unknown or
   misplaced directives, `CONCURRENTLY` (except `REFRESH MATERIALIZED VIEW CONCURRENTLY`) or `VACUUM`
   without no-transaction, destructive statements without the

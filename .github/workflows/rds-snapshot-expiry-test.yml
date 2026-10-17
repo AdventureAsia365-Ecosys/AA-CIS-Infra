@@ -1,0 +1,44 @@
+name: RDS Snapshot Expiry Tests
+
+# AA-869: the expiry Lambda deletes manual RDS snapshots. Its keep/expire rule, the cap and the
+# DRY_RUN semantics are unit-tested on every PR and push that touches them, before Terraform
+# re-zips the handler. Stdlib unittest, no AWS access, no pip install.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "accounts/aa365/lambda_src/rds_snapshot_expiry/**"
+      - "accounts/aa365/lambda_src/rds_snapshot_expiry_tests/**"
+      - ".github/workflows/rds-snapshot-expiry-test.yml"
+  push:
+    branches: [main]
+    paths:
+      - "accounts/aa365/lambda_src/rds_snapshot_expiry/**"
+      - "accounts/aa365/lambda_src/rds_snapshot_expiry_tests/**"
+      - ".github/workflows/rds-snapshot-expiry-test.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  rds-snapshot-expiry-tests:
+    name: RDS snapshot expiry tests (unittest)
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: accounts/aa365
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python (Lambda runtime python3.12)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # -B + sys.dont_write_bytecode (test file) keep __pycache__ out of the archive_file source dir.
+      - name: Run expiry rule tests
+        run: python -B -m unittest discover -s lambda_src/rds_snapshot_expiry_tests -v
