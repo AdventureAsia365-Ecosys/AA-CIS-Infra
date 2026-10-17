@@ -316,9 +316,11 @@ resource "aws_cloudwatch_log_group" "ecs" {
 }
 
 # ── ECR Repository ────────────────────────────────────────────
+# AA-869: IMMUTABLE. Deploy Dev pushes only dev-<sha> (AA-CIS-App, since AA-869), so a tag always
+# names one image and a rollback to an older task-def revision gets exactly the image it ran.
 resource "aws_ecr_repository" "api" {
   name                 = "${local.name_prefix}-api"
-  image_tag_mutability = "MUTABLE"
+  image_tag_mutability = "IMMUTABLE"
   image_scanning_configuration {
     scan_on_push = true
   }
@@ -327,17 +329,36 @@ resource "aws_ecr_repository" "api" {
 
 resource "aws_ecr_lifecycle_policy" "api" {
   repository = aws_ecr_repository.api.name
+  # AA-869: keep 30 deploy images (~1.5 days at the S241 deploy rate, so recent task-def revisions
+  # still have their image for a rollback; ~13 GB, about +0.7 USD/month over 10 images), expire
+  # untagged layers after 7 days. The frozen :latest image also carries its dev-<sha> tag, so it
+  # ages out with rule 2; the task definitions' :latest placeholder then names a missing tag, which
+  # is harmless (services ignore task_definition; every deploy rewrites the image).
   policy = jsonencode({
-    rules = [{
-      rulePriority = 1
-      description  = "Keep last 10 images"
-      selection = {
-        tagStatus   = "any"
-        countType   = "imageCountMoreThan"
-        countNumber = 10
-      }
-      action = { type = "expire" }
-    }]
+    rules = [
+      {
+        rulePriority = 1
+        description  = "Expire untagged images after 7 days"
+        selection = {
+          tagStatus   = "untagged"
+          countType   = "sinceImagePushed"
+          countUnit   = "days"
+          countNumber = 7
+        }
+        action = { type = "expire" }
+      },
+      {
+        rulePriority = 2
+        description  = "Keep the last 30 dev-<sha> deploy images"
+        selection = {
+          tagStatus     = "tagged"
+          tagPrefixList = ["dev-"]
+          countType     = "imageCountMoreThan"
+          countNumber   = 30
+        }
+        action = { type = "expire" }
+      },
+    ]
   })
 }
 
