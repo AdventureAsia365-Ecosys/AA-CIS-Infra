@@ -19,7 +19,9 @@ locals {
 # Every ECS Exec session on this cluster (CIS api, CIS worker, Booking api) is recorded here: the
 # SSM agent in the task uploads the session transcript when the session ends. No KMS key: no other
 # log group in this stack uses a CMK, and CloudWatch Logs encrypts at rest with its own key anyway.
-# The transcript holds whatever the session printed, so ad-hoc scripts must not print secrets.
+# The transcript holds whatever the session printed (kept 30 days, readable by anyone with
+# logs:GetLogEvents on the account): never run env/printenv in an exec session, and scripts print
+# counts and ids only, never DSNs or secret values.
 resource "aws_cloudwatch_log_group" "exec_sessions" {
   name              = "/ecs/${local.name_prefix}/exec-sessions"
   retention_in_days = 30
@@ -35,10 +37,13 @@ resource "aws_ecs_cluster" "main" {
     value = "disabled"
   }
 
-  # S241 D-07: OVERRIDE sends exec session logs to the group above (DEFAULT would only follow each
-  # task definition's awslogs driver, which records nothing for exec). Each task role needs the
-  # logs grant to write there (CIS: aws_iam_role_policy.ecs_task_exec_logging
-  # below; Booking: accounts/aa365/booking.tf).
+  # S241 D-07: DEFAULT writes exec transcripts into each task definition's awslogs group (mixed with
+  # app logs, 14-day retention; Booking's task role cannot write there). OVERRIDE sends every
+  # session on the cluster to the dedicated group above. Each task role needs the logs grant to
+  # write there (CIS: aws_iam_role_policy.ecs_task_exec_logging below, enforced by depends_on;
+  # Booking: accounts/aa365/booking.tf, applied before the cluster, see
+  # docs/implementation-notes/S241-exec-logging.md). Rollback: set logging = "DEFAULT" and drop
+  # log_configuration; deleting this block may leave OVERRIDE live with no Terraform owner.
   configuration {
     execute_command_configuration {
       logging = "OVERRIDE"
@@ -48,6 +53,9 @@ resource "aws_ecs_cluster" "main" {
       }
     }
   }
+  # Without this, UpdateCluster can run before the CIS task role may write to the group.
+  depends_on = [aws_iam_role_policy.ecs_task_exec_logging]
+
   # AA-828: the cluster also runs aws_ecs_service.booking (accounts/aa365/booking.tf), so the root
   # passes cluster_tags = { App = "shared" }. A cluster has no cost line of its own; task cost is
   # attributed through the service tags propagated to each task (propagate_tags below).

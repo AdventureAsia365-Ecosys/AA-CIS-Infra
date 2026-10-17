@@ -44,8 +44,17 @@ No Linear issue: session decisions D-07 (ECS Exec audit trail) and D-08 (RDS con
 ## Tradeoffs
 - Exec transcripts contain whatever the session printed. Today's sessions are short (sample of
   25: 325–3,000 bytes each), but an ad-hoc script that prints a DSN or secret would now be kept 30
-  days instead of 14. Same exposure as before, longer retention; rule stays "scripts never print
-  secrets".
+  days instead of 14, and Booking sessions are recorded for the first time. Both containers carry
+  secret env vars (Booking `DATABASE_URL` with the DB password; the CIS secrets block). Rule: never
+  run `env`/`printenv` in an exec session; scripts print counts and ids only, never DSNs or secret
+  values (also in the log group comment in `modules/ecs/main.tf`). No current `.tmp-session`
+  script was found printing a DSN or password. The presigned S3 URL in `sh -c` is not echoed into
+  the transcript (it is in CloudTrail `ExecuteCommand` anyway and expires after 300 s).
+  Not done here, left as follow-ups: the same one-line rule in `skill/aa-cis-schema/references/ecs-exec.md`
+  (root repo) and in the global CLAUDE.md exec block (Nghiệp edits that file); a CloudWatch Logs
+  data protection policy on the group (scan cost < $0.01/month, but its managed identifiers do not
+  cover PostgreSQL DSNs); any role with account-wide `logs:GetLogEvents`/`FilterLogEvents` can now
+  read this group, so scope such reads later.
 - `log_connections` also logs RDS's own `rdsadmin` monitoring connections. Accepted: small volume
   (see cost).
 
@@ -61,10 +70,58 @@ No Linear issue: session decisions D-07 (ECS Exec audit trail) and D-08 (RDS con
 ## Should know
 - In-place only: `UpdateCluster` (no task restart), `PutRolePolicy` × 2, `ModifyDBParameterGroup`
   (immediate, instance stays `in-sync`), `CreateLogGroup`. Nothing is replaced.
-- Verify after apply: run one ECS Exec session on CIS api and one on Booking, then check that a
-  stream `ecs-execute-command-<id>` appears in `/ecs/aa-cis-dev/exec-sessions`; and look for
-  `connection authorized:` / `disconnection:` lines in the RDS postgresql log group.
-- Running tasks: the logging target is read when a session starts, so no redeploy is expected. If
-  the first session after apply does not show up in the new group, force a new deployment of that
-  service.
+- `aws_ecs_cluster.main` has `depends_on = [aws_iam_role_policy.ecs_task_exec_logging]`, so the
+  CIS grant always lands before `UpdateCluster`. The Booking grant lives in the root
+  (`booking.tf`) and reads the module's log group ARN, so the cluster cannot depend on it without a
+  cycle: apply in two steps (below).
+
+## Apply (local, targeted, two steps)
+Never `-target=module.ecs` or `-target=module.rds` as a whole: module.rds pulls in
+`aws_db_instance.main` (`var.apply_immediately`, pending AA-824 class/param-group work, could
+reboot the shared DB) and module.ecs re-registers the api/worker task definitions on `:latest`.
+`aws_iam_role_policy.booking_ecs_task` depends (via `aws_iam_role.booking_ecs_task`) on
+`time_sleep.wait_for_iam_propagation` → `aws_iam_role_policy.tf_apply`, and module.rds has
+`depends_on = [module.vpc]`; any drift there would join a targeted apply, hence the exact counts.
+`TF_VAR_db_password` must be set (variables are validated even under `-target`); these resources
+do not read it.
+
+Final target list:
+```
+-target=module.ecs.aws_cloudwatch_log_group.exec_sessions
+-target=module.ecs.aws_iam_role_policy.ecs_task_exec_logging
+-target=aws_iam_role_policy.booking_ecs_task
+-target=module.ecs.aws_ecs_cluster.main
+-target=module.rds.aws_db_parameter_group.main
+```
+- Plan with all five first. Required: `Plan: 2 to add, 3 to change, 0 to destroy` (create the log
+  group and the CIS policy; update the cluster, the Booking policy and the param group in place).
+  Checked 17/10/2026 against live state from this branch: exactly that, and the param group diff is
+  only the two new parameters. Abort if `tf_apply`, `time_sleep`, `workload_boundary`,
+  `aws_db_instance`, any VPC resource, any task definition/service or any secret appears.
+- Step 1: the first three targets. Required: `2 to add, 1 to change, 0 to destroy` (checked
+  17/10/2026). Apply, then wait ~15 s for IAM propagation.
+- Step 2: `module.ecs.aws_ecs_cluster.main` + `module.rds.aws_db_parameter_group.main`. Required:
+  `0 to add, 2 to change, 0 to destroy`.
+- Do not start exec sessions or scheduled exec scripts between the steps.
+
+## Verify after apply
+- ECS Exec: one session each on `aa-cis-dev-api`, `aa-cis-dev-worker` and Booking, with the
+  canonical S3 pattern and a trivial script (`python3 -c 'print(1)'`). Each must return output, and
+  after it ends a new `ecs-execute-command-*` stream must appear in `/ecs/aa-cis-dev/exec-sessions`.
+  The logging target is read when a session starts, so no redeploy is expected; if a session leaves
+  no stream, check the task role grant before anything else.
+- RDS: `log_connections`/`log_disconnections` only apply to new backends. Long-lived pools (CIS
+  api/worker, Booking) log nothing until they reconnect, which is not a failure. Verify with a fresh
+  connection: one asyncpg connect/close via the canonical ECS exec pattern (or a TripPlanner Lambda
+  call), then look in `/aws/rds/instance/aa-cis-dev-db/postgresql` for `connection authorized:` and
+  `disconnection: session time` lines for that user. `describe-db-instances`
+  `DBParameterGroups[0].ParameterApplyStatus` must still be `in-sync`. Do not reboot the DB or
+  redeploy services to get pool lines.
 - Old exec streams in `/ecs/aa-cis-dev` expire with its 14-day retention; nothing to clean up.
+
+## Rollback
+A code change, not a block deletion (the provider may leave OVERRIDE live after the
+`configuration` block is removed, with no Terraform owner): set `logging = "DEFAULT"` and drop
+`log_configuration` in `aws_ecs_cluster.main`, re-apply the same targets (plan must show only the
+cluster changing), then verify with one exec session again. The RDS parameters revert by removing
+the two `parameter` blocks (dynamic, no reboot).
