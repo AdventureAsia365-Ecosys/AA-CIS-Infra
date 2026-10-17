@@ -31,3 +31,8 @@ output "service_name" {
 output "task_definition_arn" {
   value = aws_ecs_task_definition.api.arn
 }
+
+# S241 D-07: the Booking task role (accounts/aa365/booking.tf) grants its ECS Exec log writes here.
+output "exec_session_log_group_arn" {
+  value = aws_cloudwatch_log_group.exec_sessions.arn
+}

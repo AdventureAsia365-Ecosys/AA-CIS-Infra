@@ -43,6 +43,20 @@ resource "aws_db_parameter_group" "main" {
     value = "1"
   }
 
+  # S241 D-08: one line per connection opened and closed (user, database, client host, session
+  # length), so a DB session can be traced to a client. Both are dynamic and engine-default (not
+  # system) on postgres15, so "immediate" applies them to new connections with no reboot and no
+  # permanent plan diff (unlike the AA-832 parameters below). Lands in the exported postgresql log.
+  parameter {
+    name  = "log_connections"
+    value = "1"
+  }
+
+  parameter {
+    name  = "log_disconnections"
+    value = "1"
+  }
+
   # Kill sessions idle inside an open transaction for 60 s (ms). Default is 86400000 (24 h).
   parameter {
     name  = "idle_in_transaction_session_timeout"

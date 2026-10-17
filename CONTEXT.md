@@ -72,6 +72,11 @@ accounts/
     dfs_balance.tf                (ops-probe Lambda: 06:15 UTC schedule POSTs the admin probes, AA-627/720/727;
                                    20:30 UTC schedule POSTs /admin/job-runner/retention/schedule, AA-825;
                                    the AA-832 every-5-min schedule was removed in AA-751)
+    identity.tf, identity_variables.tf (AA-703, root ADR 0006: Cognito pools aa-workforce-dev /
+                                   aa-external-dev, app clients, groups, trigger Lambdas in
+                                   lambda_src/identity_triggers + tests; SES (ses.tf identity) on,
+                                   EXTERNAL native sign-up, WAF and custom domains gated by
+                                   variables, default off — AA-854)
     observability.tf, observability_ecosys.tf (S235 alarms + log retention; RDS alarms per data standard
                                    C4.1 + per-role AA/RDS RoleConnectionLimitPct alarms, AA-832; job
                                    backlog alarms per owner AA/Jobs/CIS + AA/Jobs/Booking and the
@@ -164,7 +169,8 @@ only that namespace (`booking_ecs_task_put_metric_jobs`). Each owner has three a
 is off). The AA-832 chain (Scheduler every 5 min → ops-probe Lambda → admin POST → `shared.job` →
 worker) is gone. **Alarm notifications:** every alarm on `aws_sns_topic.alerts` has
 `alarm_actions` only (no `ok_actions`, AA-751): e-mail on a transition into ALARM, recovery in the
-console / alarm history.
+console / alarm history. Exception: the 14 `aa-identity-dev-*` alarms (identity.tf, AA-854) already
+have `ok_actions` per S241 D-20 (e-mail on OK too), which the other alarms adopt in the D-20 lane.
 
 The **DFS balance alert** (AA-627) is a small in-VPC Lambda `aa-cis-dev-dfs-balance-check`
 triggered daily by EventBridge Scheduler. The schedule must live in the `aa-cis-dev-acp` schedule
