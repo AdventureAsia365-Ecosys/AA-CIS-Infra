@@ -1,0 +1,28 @@
+# AA-867 (S241): weekly Dependabot version updates for the Terraform providers/modules and the
+# GitHub Actions used here. Grouped so a week's updates arrive as one PR per ecosystem. Dependabot
+# PRs get no repository secrets: if a Terraform Plan check fails for that reason, push the same change
+# from a normal branch. Security alerts and updates are switched on in the repo settings.
+version: 2
+updates:
+  - package-ecosystem: terraform
+    directories: ["/accounts/*", "/modules/*"]
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    groups:
+      terraform:
+        patterns: ["*"]
+    commit-message:
+      prefix: chore
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: chore
