@@ -26,6 +26,17 @@ environments: [dev]
 # (DM-8.9). Owns the public extensions (vector, pg_stat_statements) and the public.* leftovers.
 master_role: aa_cis_admin
 
+# DB Migrate login from X1 S22 (rl-002, X1 S20, creates it, NOCREATEROLE). PostgreSQL checks
+# SET ROLE against the SESSION user's memberships, so it must be a member of every role a file can be
+# switched to: each owner_role (the runner's live-owner switch, XD8) and every set_local_roles entry
+# (catalog_owner for the S22 catalog recipe, cis_owner the way back, cis_app for the 244-style guard
+# blocks), plus pg_read_all_stats (schema dump / probe session cells). Never aa_app_user (§1.4 of the
+# X1 plan: a policy TO r reaches its members). db/tests/test_roles_files.py checks this list against
+# the owners above and, once a roles/ file creates the role, against that file's grants; DB Migrate
+# refuses (exit 8, also in check mode) a file whose SET LOCAL ROLE target the login cannot reach.
+migrator_role: db_migrator
+migrator_member_of: [bk_owner, catalog_owner, cis_app, cis_owner, pg_read_all_stats, tp_owner]
+
 owners:
   cis:
     repo: AA-CIS-App
@@ -46,7 +57,9 @@ owners:
     idle_exempt_kinds: []                # none since AA-751 (S240)
     # SET LOCAL ROLE targets the role lint allows in cis/ (X1 plan S1 item 6): catalog_owner (catalog
     # view recipe), cis_owner (the way back from catalog_owner, never RESET ROLE), cis_app (behavioural
-    # guard blocks, 244/245).
+    # guard blocks, 244/245). Each must be reachable from the DB Migrate login (migrator_member_of).
+    # catalog_owner is reachable only from S22 (db_migrator): catalog.* view changes are frozen from
+    # S1 until S22 (X1 review S241; the lint asks for the recipe, the runner refuses it at check time).
     set_local_roles: [catalog_owner, cis_owner, cis_app]
     role_lint_from: 243                  # applied files <= 242 never re-run; 225/235 use the old catalog dance
     # Grants to other apps' roles (input for the X2 grant guard; not enforced yet). contract = the
