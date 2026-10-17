@@ -7,6 +7,9 @@
 --
 -- Why (ADR 0008 decision 6, data standards SEC-1, DM-1.3; AA-Ecosys docs/audits/2026-10-17-S241-x1/x1-plan.md):
 -- Booking's objects (customer PII, pricing, supplier rates) must not be owned by the role the CIS runtime logs in as.
+-- Ownership only: aa_cis_admin stays a member of bk_owner (rl-001; on PostgreSQL 15 that grant follows the member's
+-- INHERIT, per-grant INHERIT FALSE needs 16), so the CIS runtime, which logs in as aa_cis_admin until X1 S18 (cis_app)
+-- and S19 (secret deny), can still read and alter booking.* with every owner right. P0-9 is not met by this file.
 -- After this file DB Migrate runs every later booking/ file as bk_owner (it reads the live owner of schema booking
 -- before each file and SET ROLEs to it), so bk-015+ create objects owned by bk_owner and covered by its default
 -- privileges, with no gap and no runner change. The runtime role booking keeps exactly the privileges it has.
@@ -31,9 +34,19 @@
 -- Undo (not a booking/ file: once bk_owner owns the schema the runner runs booking/ files as bk_owner, which cannot
 -- give objects to aa_cis_admin): a prepared Infra-native roles/ file (rl-0xx), kept unmerged. Never key bk-015.
 --
--- Locks: ALTER ... OWNER takes ACCESS EXCLUSIVE on each object for milliseconds; lock_timeout 5s; DB Migrate refuses
--- apply while booking.job (or any job table) is busy. booking.job, inbox_events, customers are the hot tables.
--- Re-running the whole file is a no-op (owner already bk_owner, idempotent default privileges, ON CONFLICT DO NOTHING).
+-- Locks: held until COMMIT, taken up front. Right after the step-1 guard one LOCK TABLE statement takes ACCESS EXCLUSIVE
+-- on all 32 tables and v_customer_summary, so under lock_timeout 5s the file gets every lock or none and fails before
+-- it changes anything. Hot tables come first (job, inbox_events, inbox_cursor, customers, trip_cases, audit_logs): the
+-- same order as the app's inbox path (inbox_events -> customers -> trip_cases -> audit_logs), which therefore cannot
+-- deadlock with it. While that one statement waits it holds the tables it already locked, for at most 5 s.
+-- Not in the LOCK: sequences (LOCK refuses them; their only users are the column defaults of tables locked here) and
+-- v_schema_versions (LOCK on a view also locks its base tables with the view owner's rights, here
+-- shared.schema_versions, which bk_owner may not lock; only Booking readiness reads the view, its ALTER VIEW below
+-- takes that one lock). DB Migrate refuses apply while a job table is busy, but bk_inquiry_pull is exempt from its idle
+-- check, so the Booking worker and staff API may be running: their requests wait for this file (well under a second
+-- once the locks are held), or the LOCK fails after 5 s and nothing changed.
+-- Idempotent only as the master (the CI re-run). After the transfer DB Migrate never re-runs it, because it would run
+-- as bk_owner and the guard refuses; a forced redo is a roles/ file.
 
 BEGIN;
 
@@ -44,6 +57,9 @@ SET LOCAL statement_timeout = '15min';
 
 DO $$
 BEGIN
+    IF current_user <> 'aa_cis_admin' THEN
+        RAISE EXCEPTION 'bk-014 runs only as the master before the transfer (got %): a redo after it is a roles/ file', current_user;
+    END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'bk_owner' AND NOT rolcanlogin) THEN
         RAISE EXCEPTION 'bk-014: role bk_owner (NOLOGIN) is missing: apply Infra roles/001_x1_owner_roles.sql (rl-001) first';
     END IF;
@@ -82,6 +98,18 @@ FROM (
     FROM pg_proc f, aclexplode(coalesce(f.proacl, acldefault('f', f.proowner))) a
     WHERE f.pronamespace = 'booking'::regnamespace AND a.grantee <> f.proowner
 ) s;
+
+-- Every lock this file needs on tables, in one statement (header, Locks): all or none within lock_timeout, held until
+-- COMMIT. Hot tables first, in the app's order; v_customer_summary's base tables (customers, trip_cases) are in the list.
+LOCK TABLE booking.job, booking.inbox_events, booking.inbox_cursor, booking.customers, booking.trip_cases,
+    booking.audit_logs, booking.countries, booking.customer_otps, booking.customer_sessions, booking.fx_rates,
+    booking.hotel_room_types, booking.hotels, booking.media_files, booking.notification_reads,
+    booking.notifications, booking.policy_approvals, booking.pricing_rules, booking.services, booking.settings,
+    booking.staff_assignments, booking.staff_users, booking.supplier_contracts, booking.supplier_rates,
+    booking.suppliers, booking.trip_case_countries, booking.trip_case_legs, booking.trip_case_status_history,
+    booking.trip_case_status_transitions, booking.trip_case_version_itinerary, booking.trip_case_versions,
+    booking.trip_plans, booking.version_item_costs, booking.v_customer_summary
+    IN ACCESS EXCLUSIVE MODE;
 
 -- ── 2. Schema first (the new owner needs CREATE on it for the objects below) ──
 
