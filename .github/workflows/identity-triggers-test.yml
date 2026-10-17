@@ -10,12 +10,20 @@ on:
     paths:
       - "accounts/aa365/lambda_src/identity_triggers/**"
       - "accounts/aa365/lambda_src/identity_triggers_tests/**"
+      # test_default_staff_groups_match_terraform_groups reads identity.tf (id_staff_groups), so a
+      # group added or renamed there must run the guard too (AA-854 review).
+      - "accounts/aa365/identity.tf"
+      - "accounts/aa365/identity_variables.tf"
       - ".github/workflows/identity-triggers-test.yml"
   push:
     branches: [main]
     paths:
       - "accounts/aa365/lambda_src/identity_triggers/**"
       - "accounts/aa365/lambda_src/identity_triggers_tests/**"
+      # test_default_staff_groups_match_terraform_groups reads identity.tf (id_staff_groups), so a
+      # group added or renamed there must run the guard too (AA-854 review).
+      - "accounts/aa365/identity.tf"
+      - "accounts/aa365/identity_variables.tf"
       - ".github/workflows/identity-triggers-test.yml"
 
 permissions:

@@ -67,7 +67,7 @@ variable "identity_ses_enabled" {
 }
 
 variable "identity_external_native_signup_enabled" {
-  description = "Let the EXTERNAL pre sign-up trigger accept native (email code) self sign-up on the traveller clients. Needs identity_ses_enabled. Off by default (AA-854): Phase 0/1 is staff only, and public self sign-up should sit behind the WAF rate rules (identity_waf_enabled, S241 D-19 quote first) so a script cannot burn the SES reputation that staff email codes share."
+  description = "Let the EXTERNAL pre sign-up trigger accept native (email code) self sign-up on the traveller clients. Needs identity_ses_enabled AND identity_waf_enabled (both enforced by preconditions on the EXTERNAL pool). Off by default (AA-854): Phase 0/1 is staff only, and public self sign-up should sit behind the WAF rate rules (identity_waf_enabled, S241 D-19 quote first) so a script cannot burn the SES reputation that staff email codes share."
   type        = bool
   default     = false
 }
@@ -169,7 +169,7 @@ variable "identity_client_urls" {
 
 # ── WAF on the pools (ADR 0006 decision 1) ───────────────────────────────────
 variable "identity_waf_enabled" {
-  description = "Attach one shared REGIONAL web ACL with per-IP rate rules to both pools. BILLABLE: about $7/month for this single shared ACL ($5 ACL + 2 x $1 rules + $0.60 per million requests; ADR 0006 quotes $12-15/month for two ACLs). Off by default: S241 D-19 = quote first, enable only with Nghiep's go (AA-854). Enable before identity_external_native_signup_enabled."
+  description = "Attach one shared REGIONAL web ACL with per-IP rate rules to both pools. BILLABLE: about $7/month for this single shared ACL ($5 ACL + 2 x $1 rules + $0.60 per million requests; ADR 0006 quotes $12-15/month for two ACLs). Off by default: S241 D-19 = quote first, enable only with Nghiep's go (AA-854). Required by identity_external_native_signup_enabled (precondition on the EXTERNAL pool)."
   type        = bool
   default     = false
 }

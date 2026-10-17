@@ -25,6 +25,8 @@ locals {
   ses_config_set_name = "aa-email-${var.environment}"
 
   # workforce / external: Cognito user pools (AA-703, PR #105 identity_ses_configuration_set_*).
+  # COUPLING: identity.tf reads stream["workforce"] / ["external"] and local.ses_identity_arn for both
+  # pools' email_configuration; renaming or removing them updates the pools and can break staff OTP.
   # transactional: app mail (Booking quotes/OTP, TripPlanner advisor notifications, CIS).
   ses_streams = toset(["workforce", "external", "transactional"])
 

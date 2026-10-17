@@ -1,8 +1,13 @@
 # =============================================================================
 # Ecosystem identity on Amazon Cognito (AA-703, root ADR 0006 "Ecosystem identity", ACCEPTED S236,
-# Phase 0 "Pools and triggers"). Self-contained like booking.tf: every resource lives in this file,
-# uses the aa-workforce-* / aa-external-* / aa-identity-* prefixes and only READS
-# aws_sns_topic.alerts (observability.tf) and aws_iam_policy.workload_boundary (cicd_split.tf).
+# Phase 0 "Pools and triggers"). Every resource lives in this file and uses the aa-workforce-* /
+# aa-external-* / aa-identity-* prefixes. It only READS resources owned elsewhere:
+#   - aws_sns_topic.alerts (observability.tf) and aws_iam_policy.workload_boundary (cicd_split.tf)
+#   - ses.tf (AA-811): local.ses_identity_arn and aws_sesv2_configuration_set.stream["workforce"]
+#     / ["external"], used by BOTH pools' email_configuration when identity_ses_enabled = true.
+#     COUPLING: renaming ses_config_set_name, removing the workforce/external entries of
+#     local.ses_streams or replacing the SES identity updates both user pools in place and can
+#     break staff email codes (EMAIL_OTP). Plan identity.tf with any such ses.tf change.
 # No CIS / Booking / TripPlanner resource is changed.
 #
 # WHAT THIS FILE ADDS:
@@ -19,14 +24,16 @@
 #     WORKFORCE pool has NO social identity provider. Google and Facebook exist on EXTERNAL only,
 #     each created ONLY when its client id and secret ARN variables are set (count = 0 otherwise)
 #   - 4 Python 3.12 trigger Lambdas (pre sign-up + pre token generation V2_0 per pool), outside
-#     the VPC, published versions behind a `live` alias (decision 5), with alarms. Their roles carry
+#     the VPC, published versions behind a `live` alias (decision 5), with alarms (ALARM + OK mail,
+#     S241 D-20) and 365-day log groups (auth audit logs, S241 D-09). Their roles carry
 #     the AA-806 workload boundary (the CI apply role may only create roles that carry it)
 #   - prefix domains (managed login v2) always; custom domains auth. / staff-auth. only when
 #     identity_custom_domains_enabled = true (needs the AA-818 us-east-1 certificate)
 #   - Cognito mail through the AA-811 SES identity (ses.tf, same root) when identity_ses_enabled = true
 #     (default since AA-854: identity verified, DKIM SUCCESS, account out of the SES sandbox, checked
 #     live 17/10/2026); off = COGNITO_DEFAULT and no EMAIL_OTP. EXTERNAL native self sign-up stays
-#     refused until identity_external_native_signup_enabled = true (needs the WAF decision, D-19)
+#     refused until identity_external_native_signup_enabled = true, which a precondition on the
+#     EXTERNAL pool only accepts together with identity_waf_enabled and identity_ses_enabled (D-19)
 #   - optional REGIONAL WAF web ACL with per-IP rate rules on both pools, OFF by default
 #     (identity_waf_enabled; billable, needs a quote and Nghiep's go per S241 D-19)
 #   - Secrets Manager container aa-identity/<env>/breakglass (no value; decision 11)
@@ -237,10 +244,12 @@ resource "aws_iam_role" "identity_trigger" {
   tags                 = local.id_tags
 }
 
+# 365 days (S241 D-09: security/audit logs 365, app logs 30): these are auth audit logs
+# (break-glass token issued, admin-create with staff email, refused sign-ups). Volume is tiny.
 resource "aws_cloudwatch_log_group" "identity_trigger" {
   for_each          = local.id_triggers
   name              = "/aws/lambda/${local.id_prefix}-${each.key}"
-  retention_in_days = 30
+  retention_in_days = 365
   tags              = local.id_tags
 }
 
@@ -465,6 +474,21 @@ resource "aws_cognito_user_pool" "external" {
   }
 
   tags = merge(local.id_tags, { Pool = "external" })
+
+  # The native sign-up gate is enforced, not a silent AND (AA-854 review): public self sign-up on
+  # booking-customer / tripplanner without the WAF rate rules would let a script burn MAU and the
+  # SES reputation that staff email codes share (ADR 0006 Costs); without SES the flag would be
+  # ignored without notice.
+  lifecycle {
+    precondition {
+      condition     = !var.identity_external_native_signup_enabled || var.identity_waf_enabled
+      error_message = "identity_external_native_signup_enabled = true needs identity_waf_enabled = true (per-IP rate rules first; WAF is billable, quote and Nghiep's go per S241 D-19)."
+    }
+    precondition {
+      condition     = !var.identity_external_native_signup_enabled || var.identity_ses_enabled
+      error_message = "identity_external_native_signup_enabled = true needs identity_ses_enabled = true (native sign-up uses EMAIL_OTP, which needs the SES DEVELOPER email configuration)."
+    }
+  }
 }
 
 # =============================================================================
@@ -763,6 +787,8 @@ resource "aws_secretsmanager_secret" "identity_breakglass" {
 # Alarms (ADR 0006 decisions 5 and 11). A denial is raised as an exception, so Lambda `Errors`
 # also counts refusals: the Errors alarm uses a burst threshold, while unexpected exceptions are
 # caught exactly by the `*_error` log metric.
+# Notifications: alarm_actions AND ok_actions (S241 D-20 "e-mail on OK too", reversing AA-751's
+# ALARM-only rule that the other alarms on the topic still follow until the D-20 lane lands).
 # =============================================================================
 resource "aws_cloudwatch_log_metric_filter" "identity_trigger_unexpected" {
   for_each       = local.id_triggers
@@ -791,6 +817,7 @@ resource "aws_cloudwatch_metric_alarm" "identity_trigger_unexpected" {
   comparison_operator = "GreaterThanOrEqualToThreshold"
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
   tags                = local.id_tags
 }
 
@@ -808,6 +835,7 @@ resource "aws_cloudwatch_metric_alarm" "identity_trigger_errors" {
   comparison_operator = "GreaterThanOrEqualToThreshold"
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
   tags                = local.id_tags
 }
 
@@ -825,6 +853,7 @@ resource "aws_cloudwatch_metric_alarm" "identity_trigger_throttles" {
   comparison_operator = "GreaterThanOrEqualToThreshold"
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
   tags                = local.id_tags
 }
 
@@ -842,6 +871,7 @@ resource "aws_cloudwatch_metric_alarm" "identity_trigger_duration" {
   comparison_operator = "GreaterThanThreshold"
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
   tags                = local.id_tags
 }
 
@@ -871,6 +901,7 @@ resource "aws_cloudwatch_metric_alarm" "identity_breakglass" {
   comparison_operator = "GreaterThanOrEqualToThreshold"
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
   tags                = local.id_tags
 }
 
