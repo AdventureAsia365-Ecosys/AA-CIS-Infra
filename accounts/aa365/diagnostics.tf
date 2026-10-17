@@ -9,12 +9,12 @@
 
 # ---------------------------------------------------------------------------
 # 1. VPC Flow Logs — NLB subnets + ALB subnets (4 total), CloudWatch Logs,
-#    7-day retention.
+#    365-day retention (security log class, AA-872 / S241 D-09).
 # ---------------------------------------------------------------------------
 
 resource "aws_cloudwatch_log_group" "diag_flow_logs" {
   name              = "/aa-cis-dev/diagnostic/vpc-flow-logs"
-  retention_in_days = 7
+  retention_in_days = 365 # AA-872 (S241 D-09): security/audit logs 365 days
 
   tags = merge(local.shared_tags, {
     Purpose = "AA-272-diagnostic-only"

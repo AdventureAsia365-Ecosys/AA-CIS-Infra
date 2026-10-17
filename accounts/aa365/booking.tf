@@ -122,7 +122,7 @@ resource "aws_ecr_lifecycle_policy" "booking" {
 # -----------------------------------------------------------------------------
 resource "aws_cloudwatch_log_group" "booking" {
   name              = "/ecs/${local.bk_name_prefix}"
-  retention_in_days = 14
+  retention_in_days = 30 # AA-872 (S241 D-09): app logs 30 days
   tags              = local.bk_tags
 }
 
