@@ -7,6 +7,9 @@
 #                              role_lint_from, view_owner_roles), IDLE_EXEMPT_KINDS
 #   * db/check_migration_copies.py  OWNERS (repo, path, key prefix, native), PATH_RE
 #   * .github/workflows/db-migrate.yml  input regex, key prefix case, environment choices
+#   * db/isolation_probe.py    MASTER_ROLE, OWNERS (schemas, anchor_schema, owner_role, owner_transfer_key,
+#                              runtime_secrets, view_owner_roles, runtime_privileges[_from]),
+#                              CONSUMER_GRANTS, RLS_ENABLE_ONLY_ALLOWLIST (X1 S2)
 # db/tests/test_owners_registry.py fails when any of them disagrees with this file. The runner and
 # the guards keep their own constants on purpose: they run with the standard library only (the
 # ECS task gets just the runner and the SQL through presigned URLs).
@@ -47,8 +50,26 @@ owners:
               acp_silver_s4, catalog, geo, gold_aa_internal, shared, silver_aa_internal]
     owner_role: cis_owner                # X1 S20 (rl-002) + S21 (245)
     owner_role_today: aa_cis_admin
+    owner_transfer_key: "245"            # schema_versions key that moves the objects to owner_role (probe state key)
     runtime_roles: [cis_app, aa_app_user]          # cis_app from X1 S18 (api + worker), aa_app_user = tenant pool
     runtime_roles_today: [aa_cis_admin, aa_app_user]
+    # DSN secret of each runtime role: the isolation probe logs in with these (X1 S2), never as the master.
+    runtime_secrets: {cis_app: aa-cis/dev/rds-cis-app, aa_app_user: aa-cis/dev/rds-app-user}
+    # What each runtime role must hold in its schemas (isolation probe cells runtime_grants.<owner> and
+    # default_acl.<owner>, X1 review S241): `objects` on every existing object (plus USAGE on each schema;
+    # sequences other than identity sequences, functions other than trigger functions), `default_acl`
+    # from pg_default_acl FOR ROLE <live owner of anchor_schema> IN SCHEMA s, so objects the owner creates
+    # later reach the runtime too. Expected once the transfer is in force (owner_transfer_key registered
+    # AND anchor_schema owned by owner_role), or from runtime_privileges_from when set.
+    # aa_app_user has no schema-wide rights (per table + RLS, CIS 241), so only cis_app is listed.
+    runtime_privileges:
+      cis_app:
+        schemas: [acp_contract, acp_deliver, acp_gold_output, acp_shared, acp_silver_s2, acp_silver_s3,
+                  acp_silver_s4, geo, gold_aa_internal, shared, silver_aa_internal]   # catalog: no grant (244)
+        objects: {relation: [SELECT], sequence: [USAGE], function: [EXECUTE]}
+        default_acl: {tables: [DELETE, INSERT, SELECT, UPDATE], sequences: [SELECT, UPDATE, USAGE],
+                      functions: [EXECUTE]}
+    runtime_privileges_from: "244"       # CIS 244 (X1 S16) grants cis_app before the 245 transfer
     # catalog.* views are owned by catalog_owner (NOLOGIN, CIS 225); the schema itself goes to cis_owner.
     # The ownership post-check accepts new objects owned by these roles besides the dir's live owner.
     view_owner_roles: [catalog_owner]
@@ -62,6 +83,9 @@ owners:
     # S1 until S22 (X1 review S241; the lint asks for the recipe, the runner refuses it at check time).
     set_local_roles: [catalog_owner, cis_owner, cis_app]
     role_lint_from: 243                  # applied files <= 242 never re-run; 225/235 use the old catalog dance
+    # ENABLE-without-FORCE RLS tables that need no permissive policy TO cis_app (probe cell
+    # rls.enable_only_has_cis_app_policy, CIS standing CI check, X1 S15/S16). Empty: 244 covers all 8.
+    rls_enable_only_allowlist: []
     # Grants to other apps' roles (input for the X2 grant guard; not enforced yet). contract = the
     # intended reads (schema-ownership.md rule 2); grandfathered = removed by X4 (TripPlanner decoupling).
     consumer_grants:
@@ -84,8 +108,21 @@ owners:
     schemas: [booking]
     owner_role: bk_owner                 # X1 S3 (rl-001) + S6 (bk-014)
     owner_role_today: aa_cis_admin
+    owner_transfer_key: bk-014
     runtime_roles: [booking]             # API + in-process booking.job worker
     runtime_roles_today: [booking]
+    runtime_secrets: {booking: booking/dev/database-url}
+    # What each runtime role must hold in its schemas (isolation probe cells runtime_grants.<owner> and
+    # default_acl.<owner>, X1 review S241): `objects` on every existing object (plus USAGE on each schema;
+    # sequences other than identity sequences, functions other than trigger functions), `default_acl`
+    # from pg_default_acl FOR ROLE <live owner of anchor_schema> IN SCHEMA s, so objects the owner creates
+    # later reach the runtime too. Expected once the transfer is in force (owner_transfer_key registered
+    # AND anchor_schema owned by owner_role), or from runtime_privileges_from when set.
+    runtime_privileges:
+      booking:
+        schemas: [booking]
+        objects: {relation: [SELECT], sequence: [USAGE], function: [EXECUTE]}
+        default_acl: {tables: [DELETE, INSERT, SELECT, UPDATE], sequences: [SELECT, USAGE], functions: [EXECUTE]}
     job_table: booking.job
     job_kind_prefix: bk_
     idle_exempt_kinds: [bk_inquiry_pull] # always queued at +60 s (bk-002 intake, Booking intake.RECURRING)
@@ -101,8 +138,21 @@ owners:
     schemas: [tripplanner]
     owner_role: tp_owner                 # X1 S3 (rl-001) + S7 (tp-013)
     owner_role_today: aa_cis_admin
+    owner_transfer_key: tp-013
     runtime_roles: [tripplanner]         # browse + assembly Lambdas
     runtime_roles_today: [tripplanner]
+    runtime_secrets: {tripplanner: tripplanner/dev/database-url}
+    # What each runtime role must hold in its schemas (isolation probe cells runtime_grants.<owner> and
+    # default_acl.<owner>, X1 review S241): `objects` on every existing object (plus USAGE on each schema;
+    # sequences other than identity sequences, functions other than trigger functions), `default_acl`
+    # from pg_default_acl FOR ROLE <live owner of anchor_schema> IN SCHEMA s, so objects the owner creates
+    # later reach the runtime too. Expected once the transfer is in force (owner_transfer_key registered
+    # AND anchor_schema owned by owner_role), or from runtime_privileges_from when set.
+    runtime_privileges:
+      tripplanner:
+        schemas: [tripplanner]
+        objects: {relation: [SELECT], sequence: [USAGE], function: [EXECUTE]}
+        default_acl: {tables: [DELETE, INSERT, SELECT, UPDATE], sequences: [SELECT, USAGE]}   # no functions (tp-008)
     job_table: null                      # tripplanner.job comes with AA-861 (job template)
     job_kind_prefix: tp_
     idle_exempt_kinds: []

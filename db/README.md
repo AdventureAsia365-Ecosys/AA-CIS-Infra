@@ -24,8 +24,10 @@ the prepared undo files of the X1 ownership transfers; it always runs as the RDS
 The runner, the copy guard and the workflow keep their own constants (standard library only, the ECS
 task gets just the runner and the SQL); `db/tests/test_owners_registry.py` fails when any of
 `run_migration.py` (`MASTER_ROLE`, `OWNER_DIRS`, `IDLE_EXEMPT_KINDS`), `check_migration_copies.py`
-(`OWNERS`, `PATH_RE`) or `db-migrate.yml` (dir regex, key prefixes, `environment` choices) disagrees
-with `owners.yaml`. Change them in the same PR.
+(`OWNERS`, `PATH_RE`), `db-migrate.yml` (dir regex, key prefixes, `environment` choices) or
+`isolation_probe.py` (`OWNERS`: schemas, anchor schema, owner role, `owner_transfer_key`,
+`runtime_secrets`, view owners, `runtime_privileges[_from]`; `CONSUMER_GRANTS`;
+`RLS_ENABLE_ONLY_ALLOWLIST`) disagrees with `owners.yaml`. Change them in the same PR.
 
 ## Flow
 0. The owner repo merges a **migration-file-only** PR to its `main` first (S237 D8). Code that
@@ -49,6 +51,7 @@ with `owners.yaml`. Change them in the same PR.
 4. **DB Schema Dump** (`.github/workflows/db-schema-dump.yml`) is dispatched by a successful apply
    (and runs nightly): it regenerates `AA-Ecosys/docs/architecture/db-schema-reference.md` and
    opens/updates the root PR `bot/db-schema-reference` when the structure changed. Merge it by hand.
+   The same apply also dispatches **DB Isolation Probe** (see "Isolation probe" below).
 
 ## Runner safety (AA-807 N5, `run_migration.py`)
 Every DB Migrate session runs with `lock_timeout = '5s'`, `statement_timeout = '15min'`,
@@ -202,6 +205,54 @@ run artifact. `gen_schema_reference.py` renders the Markdown; its `schema-finger
 dump without row counts, sizes and counters) decides whether the root PR is opened or updated, so
 statistics alone never open a PR. Local render: `python3 db/gen_schema_reference.py schema.json
 --out /tmp/ref.md`. The workflow needs the secret `ROOT_REPO_DOCS_TOKEN` (see its header).
+
+## Isolation probe (X1 plan S2, U-16)
+**DB Isolation Probe** (`.github/workflows/db-isolation-probe.yml`, nightly 04:13 UTC, manual, and
+dispatched by DB Migrate after every apply) runs `isolation_probe.py` in a one-off ECS task like the
+dump (api task definition until X1 S12). Read-only: READ ONLY transactions, rolled back, every probe
+statement in a savepoint (locks released at once), counts and names only, tenants labelled
+`master`/`t1`/…, never by id. Its configuration is one JSON argument (no new env var).
+
+- **Isolation evidence only from the role under test:** it logs in as `aa_app_user`, `booking`,
+  `tripplanner`, `cis_app` (from X1 S17) and the CIS runtime (the secret the running api task
+  definition injects) **with each role's own DSN secret** (`owners.yaml` `runtime_secrets`). The task's
+  own database login (master until X1 S22, then `db_migrator`) reads only the catalog: it is a member
+  of owner roles (and `db_migrator` of `catalog_owner`), so its rows are never tenant evidence.
+- **Cells:** runtime role attributes (LOGIN; no SUPERUSER, BYPASSRLS, CREATEROLE — on PG 15 a CREATEROLE
+  role can grant itself any owner role —, CREATEDB, REPLICATION), membership chain (no `rds_superuser`,
+  `pg_read_all_data`,
+  `pg_write_all_data`, master, `*_owner`), owned objects, connection limit; owner roles NOLOGIN;
+  logins; cross-app reads raise 42501 (`booking` → `tripplanner.sessions`, `shared.tenants`;
+  `tripplanner` → `booking.customers`; `aa_app_user`, `cis_app`, CIS runtime → `booking.customers`,
+  `tripplanner.sessions`); every object of each owner's schemas owned by its `owner_role` (view owners
+  on views only); **runtime grants** — each runtime role (`runtime_privileges`) has USAGE on its
+  schemas, SELECT on every relation, USAGE on every non-identity sequence, EXECUTE on every non-trigger
+  function — and **default privileges** FOR ROLE <live owner of the anchor schema> in each schema
+  granting it the listed table / sequence / function privileges, with no FOR ROLE master row left once
+  transferred (the failure an owner transfer most likely causes: a runtime role without a grant on the
+  next object, 42501 after deploy); contract consumer grants on single objects (`booking` →
+  `tripplanner.v_inquiry_outbox`, `geo.name_norm`, `tripplanner` → `shared.llm_call_log` INSERT);
+  `bk_owner`/`tp_owner` registry grants; `cis_app` cannot write
+  `shared.schema_versions`; every ENABLE-without-FORCE CIS table has a permissive policy `TO cis_app`
+  (or `rls_enable_only_allowlist`); `aa_app_user` tenant matrix (GUC unset / empty / forged / each
+  tenant: 0 cross-tenant rows); the CIS runtime sees every `tenant_tour_versions` row without a GUC;
+  `db_migrator` sessions below its limit − 1; no master session but break-glass.
+- **Pending cells keyed to live state:** a cell that cannot pass before a later X1 step is `pending`
+  until its key is true — a `shared.schema_versions` row (`rl-001`, `243`, `244`, `rl-002`); for the
+  ownership, runtime-grant and default-privilege cells the transfer **in force**: `bk-014` / `tp-013` /
+  `245` registered **and** the anchor schema (`booking`, `tripplanner`, `shared`) owned by the owner
+  role — the fact DB Migrate's role switch reads, so a planned rollback (a `roles/` undo file; registry
+  rows are never deleted) puts the cells back to pending instead of failing every night; `cis_app`
+  grants from `244`; the running api task definition's database secret (`aa-cis/dev/rds-cis-app`,
+  S18); a `cis_app` DSN in `aa-cis/dev/rds-cis-app` **and** the `x1:password-set` comment that DB
+  Migrate `mode=set-password` (S12) writes on the role (between Nghiệp's Console edit and set-password
+  the login fails with 28P01: pending + a workflow warning, not red); or a catalog login other than the
+  master (S22). A pending cell that already passes is `ready`. Once its key is true a failure fails the job.
+- **Output:** `PROBE header|cell|matrix|summary` lines in the task log → `probe.json` (artifact, 30
+  days) and a step-summary table. Task exit 0 = no failing cell, 1 = a failing cell, 2 = could not run.
+  Local dry run against a throwaway PostgreSQL: `python3 db/isolation_probe.py '{"dsn_file":
+  "dsns.json", "ssl": "disable", "cis_runtime_secret": "<arn or name>"}'` (`dsns.json` maps secret
+  names and `catalog` to DSNs).
 
 ## Rules
 - Every file self-registers: `INSERT INTO shared.schema_versions ... ON CONFLICT DO NOTHING`,
