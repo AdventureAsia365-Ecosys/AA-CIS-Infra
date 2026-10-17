@@ -310,11 +310,14 @@ resource "aws_iam_role" "cis_app_deploy" {
         # Every job that assumes this role (deploy-dev.yml build-and-push + deploy,
         # eval-regression.yml eval) runs in the `dev` environment, so the sub context is
         # `environment:dev` (the ref is not part of the sub when an environment is set). "main
-        # only" is enforced by the `dev` environment's deployment-branch rule (main), which must
-        # stay set in the AA-CIS-App repo settings. pull_request runs and other repos are denied.
+        # only" is enforced twice (AA-866, S241): the `dev` environment's deployment-branch rule
+        # (main, set 17/10/2026) and the `ref` claim below. AWS evaluates the `ref` key for GitHub
+        # tokens: scratch-role trial run 39033922112 (ref = trial branch allowed, ref = main denied).
+        # pull_request runs and other repos are denied.
         StringEquals = {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
           "token.actions.githubusercontent.com:sub" = ["${local.oidc_sub_cis_app}:environment:dev"]
+          "token.actions.githubusercontent.com:ref" = "refs/heads/main"
         }
       }
     }]
@@ -515,11 +518,14 @@ resource "aws_iam_role" "tf_apply" {
         # `environment:prod`. Correction (AA-866, S241): the repo is private on GitHub Free, so `prod`
         # has NO deployment-branch rule and NO required reviewer (the API returns none). Today the
         # only main-only gate is the job-level `if: github.ref == 'refs/heads/main'` in both
-        # workflows; a branch that edits the workflow can drop it. AA-866 adds the IAM
-        # `token.actions.githubusercontent.com:ref` condition here after a scratch-role trial.
+        # workflows; a branch that edits the workflow can drop it, so the `ref` claim below is the
+        # real gate (AA-866; AWS evaluates it, scratch-role trial run 39033922112). Every workflow
+        # on this role runs from main: terraform-apply / db-migrate (job `if`), db-schema-dump and
+        # db-isolation-probe (schedule = default branch, or dispatched by db-migrate with --ref main).
         StringEquals = {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
           "token.actions.githubusercontent.com:sub" = ["${local.oidc_sub_cis_infra}:environment:prod"]
+          "token.actions.githubusercontent.com:ref" = "refs/heads/main"
         }
       }
     }]
