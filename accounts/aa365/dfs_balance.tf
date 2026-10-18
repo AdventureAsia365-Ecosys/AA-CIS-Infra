@@ -148,11 +148,11 @@ resource "aws_lambda_function" "dfs_balance_check" {
   filename         = data.archive_file.dfs_balance.output_path
   source_code_hash = data.archive_file.dfs_balance.output_base64sha256
 
-  # In-VPC (private subnets + app SG) for parity with the other app Lambdas and
+  # In-VPC (private subnets + ops-lambda SG) for parity with the other app Lambdas and
   # to sit on the trusted egress path fronting the WAF-protected API.
   vpc_config {
     subnet_ids         = module.vpc.private_subnet_ids
-    security_group_ids = [module.vpc.sg_app_id]
+    security_group_ids = [aws_security_group.ops_lambda.id] # ADR 0004b (X1 S13b): NAT egress only, no data store
   }
 
   environment {
