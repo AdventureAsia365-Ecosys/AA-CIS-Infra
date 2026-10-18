@@ -86,6 +86,10 @@ accounts/
     identity_iam.tf               (AA-816: CIS task role (api + worker) allow-list on the WORKFORCE pool
                                    only — create/group/disable/enable/global sign-out + ListUsers*;
                                    no AdminGetUser / AdminSetUserPassword / attribute writes, ADR 0006)
+    identity_alerts.tf             (AA-854 I1: break-glass secret resource policy — Get/PutSecretValue
+                                   only for the MFA admin role; EventBridge rule on CloudTrail
+                                   management events incl. read-only -> SNS alerts topic; the
+                                   alerts topic policy = AWS default statement + events.amazonaws.com)
     observability.tf, observability_ecosys.tf (S235 alarms + log retention; RDS alarms per data standard
                                    C4.1 + per-role AA/RDS RoleConnectionLimitPct alarms, AA-832; job
                                    backlog alarms per owner AA/Jobs/CIS + AA/Jobs/Booking and the
