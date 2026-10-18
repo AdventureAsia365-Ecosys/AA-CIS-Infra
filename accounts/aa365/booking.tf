@@ -413,7 +413,7 @@ resource "aws_ecs_service" "booking" {
 
   network_configuration {
     subnets          = module.vpc.private_subnet_ids
-    security_groups  = [module.vpc.sg_app_id] # same app-tier SG as CIS: ALB -> app allowed, app -> RDS :5432 allowed
+    security_groups  = [aws_security_group.booking_api.id] # ADR 0004b (X1 S13a): own SG, ALB -> 8000 allowed, admitted by RDS
     assign_public_ip = false
   }
 
