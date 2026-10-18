@@ -86,6 +86,10 @@ accounts/
     identity_iam.tf               (AA-816: CIS task role (api + worker) allow-list on the WORKFORCE pool
                                    only — create/group/disable/enable/global sign-out + ListUsers*;
                                    no AdminGetUser / AdminSetUserPassword / attribute writes, ADR 0006)
+    identity_alerts.tf             (AA-854 I1: break-glass secret resource policy — Get/PutSecretValue
+                                   only for the MFA admin role; EventBridge rule on CloudTrail
+                                   management events incl. read-only -> SNS alerts topic; the
+                                   alerts topic policy = AWS default statement + events.amazonaws.com)
     observability.tf, observability_ecosys.tf (S235 alarms + log retention; RDS alarms per data standard
                                    C4.1 + per-role AA/RDS RoleConnectionLimitPct alarms, AA-832; job
                                    backlog alarms per owner AA/Jobs/CIS + AA/Jobs/Booking and the
@@ -185,7 +189,11 @@ is off). The AA-832 chain (Scheduler every 5 min → ops-probe Lambda → admin 
 worker) is gone. **Alarm notifications:** every alarm on `aws_sns_topic.alerts` has
 `alarm_actions` only (no `ok_actions`, AA-751): e-mail on a transition into ALARM, recovery in the
 console / alarm history. Exception: the 14 `aa-identity-dev-*` alarms (identity.tf, AA-854) already
-have `ok_actions` per S241 D-20 (e-mail on OK too), which the other alarms adopt in the D-20 lane.
+have `ok_actions` per S241 D-20 (e-mail on OK too), which the other alarms adopt in the D-20 lane. **Alerts topic policy:** `aws_sns_topic.alerts` has exactly one
+`aws_sns_topic_policy` — `aws_sns_topic_policy.alerts` in `identity_alerts.tf` (AWS default statement
+for same-account publishers + EventBridge from `rule/aa-identity-dev-*`, which sends the break-glass
+secret access alerts). A new service publisher adds a statement there; never add a second
+`aws_sns_topic_policy` for this topic (they overwrite each other).
 
 The **DFS balance alert** (AA-627) is a small in-VPC Lambda `aa-cis-dev-dfs-balance-check`
 triggered daily by EventBridge Scheduler. The schedule must live in the `aa-cis-dev-acp` schedule
