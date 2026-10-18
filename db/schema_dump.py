@@ -1,7 +1,8 @@
 """Read-only dump of the shared RDS catalog, run in a one-off ECS task (AA-807 N1).
 
 Started by .github/workflows/db-schema-dump.yml exactly like DB Migrate starts run_migration.py:
-the workflow uploads this file to S3, the task (CIS api image, task role, DATABASE_URL secret)
+the workflow uploads this file to S3, the task (migrator task definition since X1 S12: CIS api image,
+the migrator task role, DATABASE_URL secret)
 downloads it through a presigned URL and execs it. Uses only the image's Python + asyncpg + boto3.
 
 What it captures, for every non-system schema (extension-owned objects left out):

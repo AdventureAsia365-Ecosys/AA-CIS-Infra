@@ -1,8 +1,25 @@
 """Runs ONE migration inside a one-off ECS task on the CIS api image (RDS is VPC-private).
 
 Started by .github/workflows/db-migrate.yml, which uploads this file and the migration to S3 and
-passes presigned URLs. Uses only the image's own Python + asyncpg and the task's DATABASE_URL
-(Secrets Manager, task definition) — nothing from the app code.
+passes presigned URLs. The task is a revision of the migrator task definition aa-cis-dev-db-migrate
+(X1 S12: container migrate, own roles, the image the api service runs). Uses only the image's own
+Python + asyncpg (+ boto3 for set-password) and the task's DATABASE_URL (Secrets Manager, task
+definition) — nothing from the app code.
+
+Modes (MIGRATION_MODE): check, apply (below), and two X1 S12 modes whose argument is folded into the
+same value, so no new environment variable reaches the task:
+  set-password:<role>   role in PASSWORD_ROLES (owners.yaml password_roles: cis_app, db_migrator). Plan
+                        XD2: reads the role's DSN secret in the task (boto3), checks the DSN user is the
+                        role and the password is >= 32 printable ASCII characters, computes a
+                        SCRAM-SHA-256 verifier locally (RFC 5802/7677, 4096 iterations, random 16-byte
+                        salt), runs ALTER ROLE <role> PASSWORD '<verifier>' as the master, test-connects
+                        with the DSN (prints only current_user and rolconnlimit), then COMMENT ON ROLE
+                        <role> IS 'x1:password-set <UTC> by DB Migrate set-password (run <id>)'. Never logs
+                        the DSN, the password or the verifier (error texts are redacted).
+  run-script:<path>     path = db/scripts/<name>.py (see db/scripts/README.md). The file arrives like a
+                        migration (MIGRATION_URL + MIGRATION_SHA256, MIGRATION_FILE = the path), must
+                        define a top-level async def main(conn), and runs as the master after the same idle
+                        check as apply; its output goes to the log as is.
 
 Every migration self-registers in shared.schema_versions (repo convention), so:
   check — print whether the version is applied, change nothing
@@ -75,6 +92,11 @@ ROLE` target (PostgreSQL checks the session user), else exit 8: this is where th
 freeze from S1 to S22 bites (the master is not a member of catalog_owner and never becomes one; from
 S22 db_migrator is), and where a db_migrator without cis_app would show up.
 
+Exit codes (10–13: X1 S12): 10 mode input refused (unknown MIGRATION_MODE, role or script path outside the
+allowlists, MIGRATION_FILE not the script, script without async def main(conn)) · 11 set-password refused
+before any change (role missing or NOLOGIN, secret unreadable/empty/not a DSN of that role, weak password) ·
+12 set-password: password set but the test login failed (role not marked) · 13 run-script raised or
+returned non-zero · 8 also covers set-password / run-script under a login other than the master.
 Exit codes: 0 ok · 2 sha256 mismatch · 3 file ran but did not register · 4 lint error ·
 5 destructive apply without a snapshot · 6 PostgreSQL error (lock/statement timeout included) ·
 7 apply refused: a job table is busy or a rerun wave is open · 8 role refused (roles/ under a
@@ -87,16 +109,23 @@ and registered: clean up by hand).
 
 Local, no database and no asyncpg needed (CI lint and the DB Migrate "Validate input" step):
   python3 db/run_migration.py --inspect db/migrations/cis/230_x.sql
-prints the parsed directives as JSON and exits 1 on a lint error.
+prints the parsed directives as JSON and exits 1 on a lint error;
+  python3 db/run_migration.py --inspect-script db/scripts/session_info.py
+prints {"errors": [...]} for a run-script file and exits 1 on any.
 """
+import ast
 import asyncio
+import base64
 import hashlib
+import hmac
 import json
 import os
 import re
 import sys
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 DEFAULT_SETTINGS = {"lock_timeout": "5s", "statement_timeout": "15min", "application_name": "db-migrate"}
 OVERRIDABLE = ("lock_timeout", "statement_timeout")
@@ -156,8 +185,10 @@ OPEN_WAVES_SQL = "SELECT count(*)::int FROM shared.rerun_wave WHERE status = 'op
 # ── X1 owner registry mirror (db/owners.yaml; db/tests/test_owners_registry.py keeps them equal) ──
 # The task gets only this file and the SQL (presigned URLs), so the registry facts it needs are
 # constants here, not a YAML read (no PyYAML in the runner, no new env var).
-MASTER_ROLE = "aa_cis_admin"      # RDS master: runs roles/ files; break-glass after X1 S22
+MASTER_ROLE = "aa_cis_admin"      # RDS master: runs roles/ files, set-password, run-script; break-glass after X1 S22
 ROLES_DIR = "roles"               # Infra-native files, key rl-NNN
+# owners.yaml password_roles: LOGIN roles whose password mode=set-password sets from their DSN secret (XD2).
+PASSWORD_ROLES = {"cis_app": "aa-cis/dev/rds-cis-app", "db_migrator": "aa-cis/dev/db-migrator"}
 
 
 @dataclass(frozen=True)
@@ -1149,17 +1180,407 @@ async def run_switched(conn, sql: str, d: Directives, plan: RolePlan, owner_dir:
     return 0
 
 
+# ── X1 S12: mode=set-password and mode=run-script ──
+# Both arrive folded into the value of MIGRATION_MODE ("set-password:<role>",
+# "run-script:db/scripts/<name>.py"), so no new environment variable reaches the task.
+SET_PASSWORD = "set-password"
+RUN_SCRIPT = "run-script"
+SECRETS_REGION = "us-west-1"                  # acc2: every DSN secret of the shared RDS lives here
+PASSWORD_MIN_LEN = 32                         # plan S17: a new random password of at least 32 characters
+# Printable ASCII only: PostgreSQL's SASLprep returns pure ASCII unchanged, so the verifier computed here
+# from the raw password matches what the server derives from the password the client sends.
+PASSWORD_RE = re.compile(r"^[\x20-\x7e]+$")
+SCRAM_ITERATIONS = 4096                       # PostgreSQL's scram_iterations default
+SCRAM_SALT_BYTES = 16                         # PostgreSQL's SCRAM_DEFAULT_SALT_LEN
+SCRIPT_PATH_RE = re.compile(r"^db/scripts/[a-z0-9_]+\.py$")
+# db-migrate.yml uploads the runner to s3://<bucket>/db-migrate/<run id>/run_migration.py: the run id is
+# read from the presigned URL's path (only the digits are logged; the signature is never printed).
+RUN_ID_RE = re.compile(r"(?:^|/)db-migrate/([0-9]+)/")
+PASSWORD_MARKER = "x1:password-set"           # db/isolation_probe.py PASSWORD_MARKER (probe state key)
+ROLE_LOGIN_SQL = "SELECT rolcanlogin FROM pg_catalog.pg_roles WHERE rolname = $1"
+WHOAMI_SQL = ("SELECT current_user::text AS current_user, "
+              "(SELECT rolconnlimit FROM pg_catalog.pg_roles WHERE rolname = current_user) AS rolconnlimit")
+
+
+@dataclass(frozen=True)
+class Mode:
+    kind: str           # check | apply | set-password | run-script
+    arg: str = ""       # set-password: the role; run-script: db/scripts/<name>.py
+
+
+def parse_mode(value: str) -> Mode:
+    """MIGRATION_MODE → Mode; ValueError (exit 10) for anything outside the allowlists."""
+    if value in ("check", "apply"):
+        return Mode(value)
+    kind, sep, arg = (value or "").partition(":")
+    if kind == SET_PASSWORD and sep:
+        if arg not in PASSWORD_ROLES:
+            raise ValueError(f"set-password: role {arg!r} is not in db/owners.yaml password_roles "
+                             f"({', '.join(sorted(PASSWORD_ROLES))})")
+        return Mode(kind, arg)
+    if kind == RUN_SCRIPT and sep:
+        if not SCRIPT_PATH_RE.fullmatch(arg):
+            raise ValueError(f"run-script: {arg!r} is not a db/scripts/<name>.py path")
+        return Mode(kind, arg)
+    raise ValueError(f"unknown MIGRATION_MODE {value!r} (check, apply, set-password:<role>, "
+                     f"run-script:db/scripts/<name>.py)")
+
+
+def _b64(b: bytes) -> str:
+    return base64.b64encode(b).decode("ascii")
+
+
+def scram_sha256_verifier(password: str, salt: bytes = None, iterations: int = SCRAM_ITERATIONS) -> str:
+    """SCRAM-SHA-256 secret (RFC 5802 / RFC 7677) in PostgreSQL's pg_authid format:
+    SCRAM-SHA-256$<iterations>:<salt>$<StoredKey>:<ServerKey>, all base64.
+
+    SaltedPassword = PBKDF2-HMAC-SHA-256(password, salt, iterations) (RFC 5802 Hi()),
+    ClientKey = HMAC(SaltedPassword, "Client Key"), StoredKey = SHA-256(ClientKey),
+    ServerKey = HMAC(SaltedPassword, "Server Key"). ALTER ROLE … PASSWORD '<this>' stores it as is, so
+    the password itself never reaches the server or its statement log."""
+    salt = os.urandom(SCRAM_SALT_BYTES) if salt is None else salt
+    salted = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+    client_key = hmac.new(salted, b"Client Key", hashlib.sha256).digest()
+    stored_key = hashlib.sha256(client_key).digest()
+    server_key = hmac.new(salted, b"Server Key", hashlib.sha256).digest()
+    return f"SCRAM-SHA-256${iterations}:{_b64(salt)}${_b64(stored_key)}:{_b64(server_key)}"
+
+
+@dataclass(frozen=True)
+class DsnLogin:
+    user: str
+    password: str
+    raw_password: str = field(default="", repr=False)    # as written in the DSN (percent-encoded)
+
+    def __repr__(self) -> str:                           # never print the password by accident
+        return f"DsnLogin(user={self.user!r}, password=***)"
+
+
+def dsn_login(dsn: str) -> DsnLogin:
+    """User and password exactly as asyncpg reads them from a URL DSN (connect_utils: netloc.partition('@'),
+    then auth.partition(':'), each percent-decoded), so the verifier matches what the test login sends.
+    ValueError messages never contain any part of the value."""
+    try:
+        parsed = urllib.parse.urlparse(dsn)
+    except ValueError:
+        raise ValueError("not a parseable URL") from None
+    if parsed.scheme not in ("postgresql", "postgres"):
+        raise ValueError("not a postgresql:// DSN")
+    if "@" not in parsed.netloc:
+        raise ValueError("the DSN has no user:password@ part")
+    auth, _, hostspec = parsed.netloc.partition("@")
+    if "@" in hostspec:
+        raise ValueError("more than one '@' in the DSN: percent-encode '@' in the password as %40")
+    raw_user, _, raw_password = auth.partition(":")
+    query = urllib.parse.parse_qs(parsed.query)
+    if {"user", "password", "passfile"} & set(query):
+        raise ValueError("the DSN query sets user/password/passfile: keep them in the user:password@ part only")
+    return DsnLogin(urllib.parse.unquote(raw_user), urllib.parse.unquote(raw_password), raw_password)
+
+
+def dsn_target(dsn: str) -> tuple:
+    """(host, port, database) a URL DSN connects to, as asyncpg reads it (port 5432 by default). ValueError for
+    a DSN whose target is not one plain host:port/database (several hosts, or host/port/database in the
+    query, which asyncpg would honour). Messages never contain any part of the value."""
+    try:
+        parsed = urllib.parse.urlparse(dsn)
+        hostspec = parsed.netloc.rpartition("@")[2]
+        port = parsed.port or 5432
+    except ValueError:
+        raise ValueError("the DSN's host:port is not parseable") from None
+    if "," in hostspec or not parsed.hostname:
+        raise ValueError("the DSN must name exactly one host")
+    if {"host", "port", "dbname", "database"} & set(urllib.parse.parse_qs(parsed.query)):
+        raise ValueError("the DSN query sets host/port/dbname/database: keep them in the URL only")
+    database = urllib.parse.unquote(parsed.path.lstrip("/"))
+    if not database:
+        raise ValueError("the DSN names no database")
+    return parsed.hostname.lower(), port, database
+
+
+def _redact(text: str, secrets) -> str:
+    """Replace each secret in the text, also in the forms an error message may show it: repr-escaped,
+    percent-encoded and percent-decoded."""
+    forms = set()
+    for v in secrets:
+        if v:
+            forms |= {v, repr(v)[1:-1], v.encode("unicode_escape").decode("ascii"),
+                      urllib.parse.quote(v, safe=""), urllib.parse.unquote(v)}
+    for value in sorted({f for f in forms if f}, key=len, reverse=True):
+        text = text.replace(value, "***")
+    return text
+
+
+def _master_secrets(env) -> tuple:
+    """The master DSN and its password (decoded + as written), for _redact."""
+    dsn = env.get("DATABASE_URL") or ""
+    try:
+        who = dsn_login(dsn)
+        return dsn, who.password, who.raw_password
+    except ValueError:
+        return (dsn,)
+
+
+def _quote_literal(text: str) -> str:
+    return "'" + text.replace("'", "''") + "'"
+
+
+def _aws_err(e: Exception) -> str:
+    code = (getattr(e, "response", None) or {}).get("Error", {}).get("Code")
+    return f"{type(e).__name__}{f' {code}' if code else ''}"
+
+
+def _run_id(env) -> str:
+    m = RUN_ID_RE.search(urllib.parse.urlparse(env.get("RUNNER_URL") or "").path)
+    return m.group(1) if m else "unknown"
+
+
+def _get_secret(secret_id: str) -> str:
+    import boto3   # only inside the task (the image has it); CI and the lint path never call this
+    return boto3.client("secretsmanager", region_name=SECRETS_REGION).get_secret_value(
+        SecretId=secret_id).get("SecretString") or ""
+
+
+async def run_set_password(env, role: str, connect, get_secret) -> int:
+    """XD2: the DSN Nghiệp wrote in the Console (S17 / S20) becomes the role's password; only a SCRAM
+    verifier leaves the task. Order: checks (master login, role exists + LOGIN, secret readable, DSN user
+    = role, password shape) → ALTER ROLE … PASSWORD '<verifier>' as the master → test login with the
+    DSN (prints current_user + rolconnlimit) → COMMENT ON ROLE … 'x1:password-set …' as the master (the
+    isolation probe expects the role's login only once the marker exists). Re-running is idempotent
+    (new salt, same password)."""
+    secret_id = PASSWORD_ROLES[role]
+    log(f"set-password: role={role} secret={secret_id}")
+    conn = await connect(env["DATABASE_URL"], dict(DEFAULT_SETTINGS))
+    hide: tuple = ()
+    try:
+        login = await conn.fetchval(SESSION_USER_SQL)
+        if login != MASTER_ROLE:
+            log(f"ERROR: role: set-password runs only as the RDS master {MASTER_ROLE} (login is {login}): "
+                f"ALTER ROLE … PASSWORD needs CREATEROLE")
+            return 8
+        can_login = await conn.fetchval(ROLE_LOGIN_SQL, role)
+        if can_login is None:
+            log(f"ERROR: role {role} does not exist (rl-001 creates cis_app, rl-002 db_migrator): nothing changed")
+            return 11
+        if not can_login:
+            log(f"ERROR: role {role} is NOLOGIN: nothing changed")
+            return 11
+        try:
+            dsn = (get_secret(secret_id) or "").strip()
+        except Exception as e:                  # botocore ClientError: log the error code only
+            log(f"ERROR: secret {secret_id} unreadable ({_aws_err(e)}); a secret with no value yet reads like a "
+                f"missing one: Nghiệp writes the DSN in the Console first (plan S17 / S20). Nothing changed")
+            return 11
+        if not dsn:
+            log(f"ERROR: secret {secret_id} is empty: nothing changed")
+            return 11
+        hide = (dsn,)
+        try:
+            who = dsn_login(dsn)
+        except ValueError as e:
+            log(f"ERROR: secret {secret_id}: {e}. Nothing changed")
+            return 11
+        hide = (dsn, who.password, who.raw_password)
+        if who.user != role:
+            log(f"ERROR: secret {secret_id} names a user other than {role}: nothing changed")
+            return 11
+        if len(who.password) < PASSWORD_MIN_LEN or not PASSWORD_RE.match(who.password):
+            log(f"ERROR: secret {secret_id}: the password must be at least {PASSWORD_MIN_LEN} printable ASCII "
+                f"characters (percent-encoded in the DSN where needed): nothing changed")
+            return 11
+        # The test login must reach the server and database the master is on: a mistyped host would otherwise
+        # mark the role on this database while the password went to (and was tested against) another server.
+        try:
+            target, master_target = dsn_target(dsn), dsn_target(env["DATABASE_URL"])
+        except ValueError as e:
+            log(f"ERROR: secret {secret_id} or the master DSN: {e}. Nothing changed")
+            return 11
+        if target != master_target:
+            log(f"ERROR: secret {secret_id} points at another host, port or database than the master connection "
+                f"(they must be equal): nothing changed")
+            return 11
+        verifier = scram_sha256_verifier(who.password)
+        hide = (dsn, who.password, who.raw_password, verifier)
+        await conn.execute(f"ALTER ROLE {_quote_ident(role)} PASSWORD {_quote_literal(verifier)}")
+        log(f"set-password: ALTER ROLE {role} PASSWORD '<SCRAM-SHA-256 verifier, {SCRAM_ITERATIONS} iterations>' done")
+        try:
+            test = await connect(dsn, dict(DEFAULT_SETTINGS), ssl="require")    # never a cleartext password
+            try:
+                row = await test.fetchrow(WHOAMI_SQL)
+            finally:
+                await test.close()
+        except Exception as e:                  # class + SQLSTATE only: an auth error's text adds nothing safe
+            state = getattr(e, "sqlstate", "") or ""
+            log(f"ERROR: test login as {role} with {secret_id} failed: {type(e).__name__} {state}".rstrip()
+                + f". The password is set; the role is NOT marked {PASSWORD_MARKER}")
+            return 12
+        log(f"set-password: test login current_user={row['current_user']} rolconnlimit={row['rolconnlimit']}")
+        if row["current_user"] != role:
+            log(f"ERROR: the test login ran as {row['current_user']}, not {role}: the role is NOT marked")
+            return 12
+        when = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        comment = f"{PASSWORD_MARKER} {when} by DB Migrate set-password (run {_run_id(env)})"
+        await conn.execute(f"COMMENT ON ROLE {_quote_ident(role)} IS {_quote_literal(comment)}")
+        log(f"set-password: COMMENT ON ROLE {role} IS {_quote_literal(comment)}")
+        return 0
+    except Exception as e:                      # PostgreSQL error on ALTER / COMMENT: never echo the statement
+        log(f"ERROR: {type(e).__name__} {getattr(e, 'sqlstate', '') or ''} {_redact(str(e), hide)}")
+        return 6
+    finally:
+        await conn.close()
+
+
+def script_errors(source: str, path: str) -> list:
+    """Shape of a db/scripts/ file: valid Python with a top-level `async def main(conn)` (one argument), and
+    at most one `READ_ONLY = True|False`; a READ_ONLY script may not switch read-only off again."""
+    if not SCRIPT_PATH_RE.fullmatch(path or ""):
+        return [f"{path!r} is not a db/scripts/<name>.py path"]
+    try:
+        tree = ast.parse(source, filename=path)
+    except SyntaxError as e:
+        return [f"syntax error, line {e.lineno}: {e.msg}"]
+    mains = [n for n in tree.body if isinstance(n, ast.AsyncFunctionDef) and n.name == "main"]
+    if not mains:
+        return ["needs a top-level `async def main(conn)` (the runner awaits it with the master connection)"]
+    a = mains[-1].args
+    if len(a.posonlyargs) + len(a.args) != 1 or a.vararg or a.kwarg or a.kwonlyargs:
+        return ["main() takes exactly one argument: the asyncpg connection"]
+    read_only = _read_only_decl(tree)
+    if read_only is _BAD_DECL:
+        return ["READ_ONLY must be one top-level `READ_ONLY = True` (or False)"]
+    if read_only and any(READ_ONLY_ESCAPE_RE.search(text) for text in _code_strings(tree)):
+        return ["a READ_ONLY script must not change transaction_read_only / default_transaction_read_only "
+                "or open a READ WRITE transaction"]
+    return []
+
+
+def _code_strings(tree) -> list:
+    """Every string literal of the file except docstrings (comments are not in the AST either)."""
+    docs = set()
+    for n in ast.walk(tree):
+        if isinstance(n, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and n.body:
+            first = n.body[0]
+            if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant):
+                docs.add(id(first.value))
+    return [n.value for n in ast.walk(tree)
+            if isinstance(n, ast.Constant) and isinstance(n.value, str) and id(n) not in docs]
+
+
+_BAD_DECL = object()
+READ_ONLY_ESCAPE_RE = re.compile(r"transaction_read_only|read\s+write", re.I)
+
+
+def _read_only_decl(tree):
+    """Top-level READ_ONLY: True / False, or _BAD_DECL unless it is exactly one assignment of a bool literal."""
+    found = []
+    for n in tree.body:
+        targets = n.targets if isinstance(n, ast.Assign) else (
+            [n.target] if isinstance(n, (ast.AnnAssign, ast.AugAssign)) else [])
+        if any(isinstance(t, ast.Name) and t.id == "READ_ONLY" for t in targets):
+            found.append(n)
+    if not found:
+        return False
+    if len(found) != 1 or not isinstance(found[0], ast.Assign) or len(found[0].targets) != 1:
+        return _BAD_DECL
+    v = found[0].value
+    return v.value if isinstance(v, ast.Constant) and isinstance(v.value, bool) else _BAD_DECL
+
+
+def script_is_read_only(source: str) -> bool:
+    return _read_only_decl(ast.parse(source)) is True
+
+
+async def run_script(env, path: str, fetch, connect, sleep) -> int:
+    """XD5 / S19: a reviewed db/scripts/ file runs as the master, after the same idle check as apply
+    (exit 7 while busy, MIGRATION_IDLE_OVERRIDE applies). A script that declares `READ_ONLY = True` runs
+    with default_transaction_read_only=on instead and skips the wait (the busy report is still logged).
+    The file arrives like a migration (presigned URL + sha256). Its own output goes to the task log as is."""
+    file = env.get("MIGRATION_FILE") or ""
+    if file != path:
+        log(f"ERROR: MIGRATION_FILE {file!r} is not the mode's script {path!r}")
+        return 10
+    raw = fetch(env["MIGRATION_URL"])
+    digest = hashlib.sha256(raw).hexdigest()
+    if digest != env.get("MIGRATION_SHA256"):
+        log(f"sha256 mismatch: got {digest}")
+        return 2
+    log(f"run-script: file={path} sha256={digest[:12]}")
+    source = raw.decode("utf-8")
+    errors = script_errors(source, path)
+    if errors:
+        for e in errors:
+            log(f"ERROR: {path}: {e}")
+        return 10
+    code = compile(source, path, "exec")
+    read_only = script_is_read_only(source)
+    settings = dict(DEFAULT_SETTINGS)
+    if read_only:
+        settings["default_transaction_read_only"] = "on"
+    conn = await connect(env["DATABASE_URL"], settings)
+    try:
+        login = await conn.fetchval(SESSION_USER_SQL)
+        if login != MASTER_ROLE:
+            log(f"ERROR: role: run-script runs only as the RDS master {MASTER_ROLE} (login is {login})")
+            return 8
+        log(f"ran as: {login} (run-script{', READ_ONLY: default_transaction_read_only=on' if read_only else ''})")
+        report = await job_tables_busy(conn)
+        log_report(report)
+        override = (env.get("MIGRATION_IDLE_OVERRIDE") or "").strip()
+        if read_only:
+            log("run-script: READ_ONLY script, the idle check is report-only (no wait, no refusal)")
+        elif override:
+            if any(st.busy for st in report):
+                log(f"WARNING: idle check OVERRIDDEN ({override}), busy: {busy_summary(report)}")
+            else:
+                log(f"note: idle-check override set ({override}) but nothing is busy")
+        else:
+            report = await wait_until_idle(conn, first=report, sleep=sleep)
+            if any(st.busy for st in report):
+                log(f"ERROR: refusing run-script — busy: {busy_summary(report)}. Wait until every job table is "
+                    f"idle, or re-dispatch with override_busy_jobs=<reason> (Nghiệp only)")
+                return 7
+        log("run-script: main(conn) starts; its output follows")
+        try:
+            ns = {"__name__": "db_script", "__file__": path}
+            exec(code, ns)                      # reviewed file on main, sha256-checked above
+            result = await ns["main"](conn)
+        except Exception as e:                  # a script's error text could carry the master DSN: redacted
+            state = getattr(e, "sqlstate", "") or ""
+            log(_redact(f"ERROR: script raised {type(e).__name__} {state} {e}".rstrip(), _master_secrets(env)))
+            if state == "55P03":
+                log("hint: lock_timeout (5s) hit — retry when the job tables are idle, or SET LOCAL lock_timeout "
+                    "inside the script's own transaction")
+            return 13
+        if result not in (None, 0):
+            log(_redact(f"ERROR: script main() returned {result!r}", _master_secrets(env)))
+            return 13
+        log("run-script: done")
+        return 0
+    finally:
+        await conn.close()
+
+
 def _fetch(url: str) -> bytes:
     return urllib.request.urlopen(url, timeout=30).read()
 
 
-async def _connect(dsn: str, settings: dict):
+async def _connect(dsn: str, settings: dict, ssl=None):
     import asyncpg   # only inside the task: the lint path and CI run without asyncpg
-    return await asyncpg.connect(dsn, timeout=30, server_settings=settings)
+    extra = {"ssl": ssl} if ssl else {}  # None: the DSN's sslmode / asyncpg's default, as before S12
+    return await asyncpg.connect(dsn, timeout=30, server_settings=settings, **extra)
 
 
-async def run_task(env=None, fetch=_fetch, connect=_connect, sleep=asyncio.sleep) -> int:
+async def run_task(env=None, fetch=_fetch, connect=_connect, sleep=asyncio.sleep, get_secret=_get_secret) -> int:
     env = os.environ if env is None else env
+    try:
+        m = parse_mode(env.get("MIGRATION_MODE") or "")
+    except ValueError as e:
+        log(f"ERROR: {e}")
+        return 10
+    if m.kind == SET_PASSWORD:
+        return await run_set_password(env, m.arg, connect=connect, get_secret=get_secret)
+    if m.kind == RUN_SCRIPT:
+        return await run_script(env, m.arg, fetch=fetch, connect=connect, sleep=sleep)
     raw = fetch(env["MIGRATION_URL"])
     digest = hashlib.sha256(raw).hexdigest()
     if digest != env["MIGRATION_SHA256"]:
@@ -1272,6 +1693,14 @@ async def run_task(env=None, fetch=_fetch, connect=_connect, sleep=asyncio.sleep
         await conn.close()
 
 
+def inspect_script(path: str, out=sys.stdout) -> int:
+    """DB Migrate "Validate input" for mode=run-script: {"errors": [...]} as JSON, exit 1 on any."""
+    with open(path, encoding="utf-8") as f:
+        errors = script_errors(f.read(), path)
+    print(json.dumps({"errors": errors}), file=out)
+    return 1 if errors else 0
+
+
 def inspect(path: str, out=sys.stdout) -> int:
     with open(path, encoding="utf-8") as f:
         sql = f.read()
@@ -1284,4 +1713,6 @@ def inspect(path: str, out=sys.stdout) -> int:
 if __name__ == "__main__":
     if len(sys.argv) == 3 and sys.argv[1] == "--inspect":
         sys.exit(inspect(sys.argv[2]))
+    if len(sys.argv) == 3 and sys.argv[1] == "--inspect-script":
+        sys.exit(inspect_script(sys.argv[2]))
     sys.exit(asyncio.run(run_task()))
