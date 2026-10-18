@@ -36,3 +36,17 @@ output "task_definition_arn" {
 output "exec_session_log_group_arn" {
   value = aws_cloudwatch_log_group.exec_sessions.arn
 }
+
+# X1 S11: the DB migrator task definition (accounts/aa365/db_migrator.tf) pulls the CIS image and
+# writes its container log into the CIS log group under stream prefix "migrate".
+output "ecr_repository_arn" {
+  value = aws_ecr_repository.api.arn
+}
+
+output "log_group_name" {
+  value = aws_cloudwatch_log_group.ecs.name
+}
+
+output "log_group_arn" {
+  value = aws_cloudwatch_log_group.ecs.arn
+}

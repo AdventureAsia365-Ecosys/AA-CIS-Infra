@@ -12,11 +12,13 @@ resource "aws_security_group" "efs" {
   description = "EFS security group"
   vpc_id      = var.vpc_id
 
+  # ADR 0004b (X1 S11): admitted groups from var.ingress_sg_ids (null = only var.sg_app_id). Inline
+  # block = authoritative; adding a group is authorize-only (see modules/vpc aws_security_group.rds).
   ingress {
     from_port       = 2049
     to_port         = 2049
     protocol        = "tcp"
-    security_groups = [var.sg_app_id]
+    security_groups = var.ingress_sg_ids != null ? var.ingress_sg_ids : [var.sg_app_id]
   }
 
   tags = merge(var.tags, {
