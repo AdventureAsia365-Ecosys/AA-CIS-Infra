@@ -77,13 +77,24 @@ resource "aws_cloudwatch_event_rule" "identity_breakglass_secret" {
       eventSource = ["secretsmanager.amazonaws.com"]
       "$or" = [
         {
-          # Value access (the plan's two calls), a value write through UpdateSecret, and removal or
-          # replacement of the Deny policy above. Denied attempts are logged too (errorCode set).
+          # Value access (the plan's two calls), a value write through UpdateSecret, removal or
+          # replacement of the Deny policy above, and copying the value out of reach of this
+          # us-west-1 rule/trail (ReplicateSecretToRegions) or into a rotation Lambda (RotateSecret).
+          # Denied attempts match here too when CloudTrail logs requestParameters (errorCode set).
           eventName = [
             "GetSecretValue", "PutSecretValue", "UpdateSecret",
             "PutResourcePolicy", "DeleteResourcePolicy", "DeleteSecret", "RestoreSecret",
+            "ReplicateSecretToRegions", "RotateSecret",
           ]
           requestParameters = { secretId = local.id_breakglass_secret_id_match }
+        },
+        {
+          # Safety net: a DENIED value call logged without requestParameters.secretId (the secret
+          # cannot be identified, so alert on any). Not verified live which shape CloudTrail uses
+          # for a resource-policy deny; denied calls that do carry secretId match the branch above.
+          eventName         = ["GetSecretValue", "PutSecretValue"]
+          errorCode         = [{ prefix = "AccessDenied" }]
+          requestParameters = { secretId = [{ exists = false }] }
         },
         {
           # BatchGetSecretValue by explicit id list (a filter-based batch is covered by the
