@@ -49,3 +49,14 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "rds_ingress_sg_ids" {
+  description = "ADR 0004b (X1 S11): security groups admitted to the RDS group on 5432 (inline ingress, authoritative). Null keeps the old behaviour: only this module's app group."
+  type        = list(string)
+  default     = null
+
+  validation {
+    condition     = var.rds_ingress_sg_ids == null ? true : length(var.rds_ingress_sg_ids) > 0
+    error_message = "rds_ingress_sg_ids: pass null (old single source) or a non-empty list; an empty list would make an ingress rule with no source."
+  }
+}

@@ -72,6 +72,9 @@ module "vpc" {
   # workload boundary like every other role the CI apply role may write.
   permissions_boundary_arn = aws_iam_policy.workload_boundary.arn
 
+  # ADR 0004b (X1 S11): one source group per DB caller (app_security_groups.tf).
+  rds_ingress_sg_ids = local.rds_ingress_sg_ids
+
   tags = local.shared_app_tags # AA-828: VPC, subnets, NAT instance + EIP, route tables, SGs
 }
 
@@ -119,7 +122,8 @@ module "elasticache" {
   vpc_id             = module.vpc.vpc_id
   private_subnet_ids = module.vpc.private_subnet_ids
   sg_app_id          = module.vpc.sg_app_id
-  tags               = local.cis_app_tags # only the CIS api reads REDIS_HOST
+  ingress_sg_ids     = local.redis_ingress_sg_ids # ADR 0004b (X1 S11), app_security_groups.tf
+  tags               = local.cis_app_tags         # only the CIS api reads REDIS_HOST
 
   depends_on = [module.vpc]
 }
@@ -132,6 +136,7 @@ module "efs" {
   vpc_id             = module.vpc.vpc_id
   private_subnet_ids = module.vpc.private_subnet_ids
   sg_app_id          = module.vpc.sg_app_id
+  ingress_sg_ids     = local.efs_ingress_sg_ids # ADR 0004b (X1 S11), app_security_groups.tf
   tags               = local.cis_app_tags
 
   depends_on = [module.vpc]

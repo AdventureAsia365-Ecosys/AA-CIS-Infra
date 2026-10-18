@@ -323,11 +323,17 @@ resource "aws_security_group" "rds" {
   description = "RDS security group"
   vpc_id      = aws_vpc.main.id
 
+  # ADR 0004b (X1 S11): one source group per DB caller, from var.rds_ingress_sg_ids (null = the shared
+  # app group only, as before). Inline block = authoritative (no separate ingress-rule resources).
+  # Provider behaviour (hashicorp/aws 5.100.0, vpc_security_group.go updateSecurityGroupRules, checked
+  # S242): old and new inline rules are expanded to one rule per source before the set difference, so
+  # growing this list only authorizes the new sources (no revoke of the app group, no gap) and shrinking
+  # it (S14) only revokes the dropped ones. The plan output still prints the whole rule as -/+.
   ingress {
     from_port       = 5432
     to_port         = 5432
     protocol        = "tcp"
-    security_groups = [aws_security_group.app.id]
+    security_groups = var.rds_ingress_sg_ids != null ? var.rds_ingress_sg_ids : [aws_security_group.app.id]
   }
 
   tags = merge(var.tags, {
