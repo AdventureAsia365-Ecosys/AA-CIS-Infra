@@ -71,11 +71,11 @@ jobs:
       HAS_ROOT_TOKEN: ${{ secrets.ROOT_REPO_DOCS_TOKEN != '' }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       # PyYAML for the owners.yaml mirror test (db/tests/test_owners_registry.py); same pin as the
       # Migration Copy Guard. Without it that module is skipped, not failed.
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -160,7 +160,7 @@ jobs:
           jq -r '(.soft_keys // [])[] | select((.orphans // 0) > 0) | "::warning::soft key \(.name): \(.orphans) orphan row(s) of \(.total - .without_key) keyed"' schema.json
 
       - name: Keep dump + rendered file as an artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: db-schema-dump-${{ github.run_id }}
           path: |
@@ -170,7 +170,7 @@ jobs:
 
       - name: Check out the root repo
         if: env.HAS_ROOT_TOKEN == 'true'
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           repository: ${{ env.ROOT_REPO }}
           ref: ${{ env.ROOT_BRANCH }}
