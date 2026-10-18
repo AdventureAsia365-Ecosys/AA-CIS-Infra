@@ -28,8 +28,11 @@ on:
       - "db/tests/**"
       - "db/owners.yaml"
       - "db/isolation_probe.py"
+      - "db/scripts/**"
+      - ".github/scripts/**"
       - ".github/workflows/db-isolation-probe.yml"
       - ".github/workflows/db-migrate.yml"
+      - ".github/workflows/db-schema-dump.yml"
       - ".github/workflows/migration-copy-guard.yml"
   schedule:
     - cron: "17 2 * * *"   # nightly, 02:17 UTC
@@ -106,4 +109,19 @@ jobs:
           status=$?
           cat lint.log
           { echo '### Migration lint and unique numbers'; echo '```'; grep -v '^::' lint.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+
+      # X1 S12: every db/scripts/ file DB Migrate mode=run-script could run has the shape the runner
+      # needs (top-level async def main(conn)); the same check runs again at dispatch and in the task.
+      - name: Shape of db/scripts files (run-script)
+        run: |
+          status=0
+          for f in db/scripts/*.py; do
+            [ -e "$f" ] || continue
+            if ! [[ "$f" =~ ^db/scripts/[a-z0-9_]+\.py$ ]]; then
+              echo "::error file=$f::name must be db/scripts/<lower case, digits, underscores>.py"; status=1; continue
+            fi
+            out=$(python3 db/run_migration.py --inspect-script "$f") || status=1
+            jq -r --arg f "$f" '.errors[] | "::error file=" + $f + "::" + .' <<<"$out"
+          done
           exit "$status"

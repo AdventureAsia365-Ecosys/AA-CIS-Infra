@@ -6,7 +6,8 @@
 #   * db/run_migration.py      MASTER_ROLE, OWNER_DIRS (anchor schema, schemas, set_local_roles,
 #                              role_lint_from, view_owner_roles), IDLE_EXEMPT_KINDS
 #   * db/check_migration_copies.py  OWNERS (repo, path, key prefix, native), PATH_RE
-#   * .github/workflows/db-migrate.yml  input regex, key prefix case, environment choices
+#   * db/run_migration.py      PASSWORD_ROLES (password_roles, X1 S12)
+#   * .github/workflows/db-migrate.yml  input regex, key prefix case, environment choices, set-password role regex
 #   * db/isolation_probe.py    MASTER_ROLE, OWNERS (schemas, anchor_schema, owner_role, owner_transfer_key,
 #                              runtime_secrets, view_owner_roles, runtime_privileges[_from]),
 #                              CONSUMER_GRANTS, RLS_ENABLE_ONLY_ALLOWLIST (X1 S2)
@@ -25,7 +26,7 @@ version: 1
 # DB Migrate `environment` input (DM-8.2). Only dev exists; a prod entry comes with the prod blueprint.
 environments: [dev]
 
-# RDS master. Runs roles/ files and DB Migrate mode=set-password; break-glass only after X1 S22
+# RDS master. Runs roles/ files and DB Migrate mode=set-password / run-script; break-glass only after X1 S22
 # (DM-8.9). Owns the public extensions (vector, pg_stat_statements) and the public.* leftovers.
 master_role: aa_cis_admin
 
@@ -39,6 +40,12 @@ master_role: aa_cis_admin
 # refuses (exit 8, also in check mode) a file whose SET LOCAL ROLE target the login cannot reach.
 migrator_role: db_migrator
 migrator_member_of: [bk_owner, catalog_owner, cis_app, cis_owner, pg_read_all_stats, tp_owner]
+
+# DB Migrate mode=set-password (X1 S12, plan XD2): the LOGIN roles whose password the workflow sets, and the
+# DSN secret each one's password is read from inside the task (Nghiệp writes the DSN in the Console, S17 /
+# S20). Mirrored by db/run_migration.py PASSWORD_ROLES and the role regex of db-migrate.yml "Validate input".
+# The legacy runtime roles (booking, tripplanner, aa_app_user) keep the passwords they have (XD1).
+password_roles: {cis_app: aa-cis/dev/rds-cis-app, db_migrator: aa-cis/dev/db-migrator}
 
 owners:
   cis:

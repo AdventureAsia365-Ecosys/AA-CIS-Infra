@@ -1,9 +1,12 @@
 name: DB Migrate (shared RDS)
 # Applies ONE reviewed migration from db/migrations/<owner>/ to the shared acc2 RDS.
-# RDS is VPC-private, so the SQL runs in a one-off ECS Fargate task started from the CIS api task
-# definition (same subnets/SG as the service), with the task's own DATABASE_URL secret. The
-# runner script and the SQL reach the task through short-lived presigned S3 URLs; the task's exit
-# code is the job result and its log is printed here.
+# RDS is VPC-private, so the SQL runs in a one-off ECS Fargate task of the migrator task definition
+# (X1 S12, accounts/aa365/db_migrator.tf: family aa-cis-dev-db-migrate, container migrate, own roles,
+# the master DSN secret): .github/scripts/migrator-task.sh registers a revision with the image the CIS
+# api service runs now, the task runs in the api service's subnets with the security group
+# aa-cis-dev-sg-db-migrate, and the revision is deregistered at the end. The runner script and the
+# SQL reach the task through short-lived presigned S3 URLs; the task's exit code is the job result
+# and its log (stream migrate/migrate/<task id>) is printed here.
 #
 # Flow: migration PR merged to main (human-approved) → run this with mode=check → mode=apply.
 # Re-running apply is a no-op once the version is in shared.schema_versions.
@@ -28,13 +31,25 @@ name: DB Migrate (shared RDS)
 # summary shows `ran as: <role>`. Exit 8 = role refused (incl. an owner that cannot register the
 # version), 9 = ownership post-check failed (rolled back; a no-transaction file is left unregistered),
 # or the check after COMMIT found something that ran at COMMIT (committed: clean up by hand).
+#
+# Two more modes (X1 S12), folded into the value of the task's existing MIGRATION_MODE variable:
+#   set-password (input role, allowlist db/owners.yaml password_roles: cis_app, db_migrator) — the task
+#     reads the role's DSN secret itself, sends only a SCRAM-SHA-256 verifier (ALTER ROLE as the master),
+#     test-connects with the DSN, prints current_user + rolconnlimit and marks the role
+#     (COMMENT ON ROLE … 'x1:password-set …'). No secret reaches the runner or the log (plan XD2).
+#   run-script (input script, a reviewed db/scripts/<name>.py on main) — the file reaches the task like a
+#     migration (presigned URL + sha256) and its async main(conn) runs as the master after the same idle
+#     check as apply (exit 7 while busy; override_busy_jobs applies). See db/scripts/README.md.
+# Exit 10 = mode input refused, 11 = set-password secret refused, 12 = set-password test login failed,
+# 13 = run-script failed.
 on:
   workflow_dispatch:
     inputs:
       migration:
-        description: "Path under db/migrations/, e.g. cis/215_publish_log_idempotency.sql, tripplanner/007_register_versions.sql or roles/001_x1_owner_roles.sql"
-        required: true
+        description: "check/apply: path under db/migrations/, e.g. cis/215_publish_log_idempotency.sql, tripplanner/007_register_versions.sql or roles/001_x1_owner_roles.sql"
+        required: false
         type: string
+        default: ""
       environment:
         description: "Target database (db/owners.yaml environments; only dev exists)"
         required: true
@@ -42,11 +57,21 @@ on:
         options: [dev]
         default: dev
       mode:
-        description: "check = report only; apply = run the file"
+        description: "check = report only; apply = run the file; set-password = set the role's password from its DSN secret; run-script = run a db/scripts/ file as the master"
         required: true
         type: choice
-        options: [check, apply]
+        options: [check, apply, set-password, run-script]
         default: check
+      role:
+        description: "set-password only: cis_app or db_migrator (db/owners.yaml password_roles)"
+        required: false
+        type: string
+        default: ""
+      script:
+        description: "run-script only: path of a reviewed script on main, e.g. db/scripts/session_info.py"
+        required: false
+        type: string
+        default: ""
       override_busy_jobs:
         description: "Nghiệp only: reason to apply although a job table is busy or a rerun wave is open (empty = refuse when busy)"
         required: false
@@ -64,7 +89,7 @@ permissions:
 
 jobs:
   migrate:
-    name: Migrate (${{ inputs.environment }} ${{ inputs.mode }} ${{ inputs.migration }})
+    name: Migrate (${{ inputs.environment }} ${{ inputs.mode }} ${{ inputs.migration }}${{ inputs.role }}${{ inputs.script }})
     runs-on: ubuntu-latest
     environment: prod
     if: github.ref == 'refs/heads/main'
@@ -75,12 +100,24 @@ jobs:
       BUCKET: aa-cis-bronze-005097885195
       LOG_GROUP: /ecs/aa-cis-dev
       DB_INSTANCE: aa-cis-dev-db
-      MIGRATION: ${{ inputs.migration }}
+      # X1 S12: no new variable names. MIGRATION carries the input the mode uses (check/apply: migration,
+      # set-password: role, run-script: script); "Unused inputs" below refuses the others.
+      MIGRATION: ${{ inputs.mode == 'set-password' && inputs.role || (inputs.mode == 'run-script' && inputs.script || inputs.migration) }}
       MODE: ${{ inputs.mode }}
       ENVIRONMENT: ${{ inputs.environment }}
       OVERRIDE_BUSY_JOBS: ${{ inputs.override_busy_jobs }}
     steps:
       - uses: actions/checkout@v5
+
+      # X1 S12: each mode takes only its own input (MIGRATION above carries it to the steps below).
+      - name: Unused inputs
+        if: >-
+          ((inputs.mode == 'check' || inputs.mode == 'apply') && (inputs.role != '' || inputs.script != '')) ||
+          (inputs.mode == 'set-password' && (inputs.migration != '' || inputs.script != '' || inputs.override_busy_jobs != '')) ||
+          (inputs.mode == 'run-script' && (inputs.migration != '' || inputs.role != ''))
+        run: |
+          echo "::error::mode $MODE takes only its own input: check/apply -> migration (apply: + override_busy_jobs), set-password -> role, run-script -> script (+ override_busy_jobs)"
+          exit 1
 
       - name: Validate input
         id: file
@@ -90,6 +127,50 @@ jobs:
           if [ "$ENVIRONMENT" != "dev" ]; then
             echo "::error::environment must be dev (db/owners.yaml environments)"; exit 1
           fi
+          # Trimmed the same way the runner .strip()s MIGRATION_IDLE_OVERRIDE, so the summary and the
+          # task agree on whether an override is present. A value of only spaces is rejected.
+          OVR="${OVERRIDE_BUSY_JOBS#"${OVERRIDE_BUSY_JOBS%%[![:space:]]*}"}"
+          OVR="${OVR%"${OVR##*[![:space:]]}"}"
+          if [ -n "$OVERRIDE_BUSY_JOBS" ] && [ -z "$OVR" ]; then
+            echo "::error::override_busy_jobs is blank: leave it empty, or give a reason"; exit 1
+          fi
+          if [ -n "$OVR" ]; then
+            if [ "${#OVR}" -gt 200 ] || [[ "$OVR" == *$'\n'* ]]; then
+              echo "::error::override_busy_jobs must be one line of at most 200 characters"; exit 1
+            fi
+          fi
+          case "$MODE" in
+            set-password)
+              # Allowlist = db/owners.yaml password_roles (db/tests/test_owners_registry.py keeps them equal);
+              # the runner checks it again in the task.
+              if ! [[ "$MIGRATION" =~ ^(cis_app|db_migrator)$ ]]; then
+                echo "::error::role must be cis_app or db_migrator (db/owners.yaml password_roles)"; exit 1
+              fi
+              echo "### set-password \`$MIGRATION\` ($ENVIRONMENT)" >> "$GITHUB_STEP_SUMMARY"
+              echo "- environment: $ENVIRONMENT" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+              ;;
+            run-script)
+              if ! [[ "$MIGRATION" =~ ^db/scripts/[a-z0-9_]+\.py$ ]]; then
+                echo "::error::script must look like db/scripts/name.py (lower case, digits, underscores)"; exit 1
+              fi
+              test -f "$MIGRATION" || { echo "::error::$MIGRATION not found on main"; exit 1; }
+              # Same shape check the task runs: valid Python with a top-level async def main(conn).
+              set +e
+              INSPECT=$(python3 db/run_migration.py --inspect-script "$MIGRATION"); SHAPE=$?
+              set -e
+              jq -r '.errors[] | "::error file='"$MIGRATION"'::" + .' <<<"$INSPECT"
+              [ "$SHAPE" = "0" ] || exit 1
+              echo "sha256=$(sha256sum "$MIGRATION" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+              echo "### run-script \`$MIGRATION\` ($ENVIRONMENT)" >> "$GITHUB_STEP_SUMMARY"
+              echo "- environment: $ENVIRONMENT" >> "$GITHUB_STEP_SUMMARY"
+              if [ -n "$OVR" ]; then
+                echo "::warning::idle check override requested: $OVR"
+                echo "- **idle check override:** $OVR" >> "$GITHUB_STEP_SUMMARY"
+              fi
+              exit 0
+              ;;
+          esac
           if ! [[ "$MIGRATION" =~ ^(cis|tripplanner|booking|roles)/([0-9]{3})_[a-z0-9_]+\.sql$ ]]; then
             echo "::error::migration must look like <cis|tripplanner|booking|roles>/215_name.sql"; exit 1
           fi
@@ -104,17 +185,7 @@ jobs:
           echo "sha256=$(sha256sum "db/migrations/$MIGRATION" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
           echo "### $MODE \`$MIGRATION\` ($ENVIRONMENT)" >> "$GITHUB_STEP_SUMMARY"
           echo "- environment: $ENVIRONMENT" >> "$GITHUB_STEP_SUMMARY"
-          # Trimmed the same way the runner .strip()s MIGRATION_IDLE_OVERRIDE, so the summary and the
-          # task agree on whether an override is present. A value of only spaces is rejected.
-          OVR="${OVERRIDE_BUSY_JOBS#"${OVERRIDE_BUSY_JOBS%%[![:space:]]*}"}"
-          OVR="${OVR%"${OVR##*[![:space:]]}"}"
-          if [ -n "$OVERRIDE_BUSY_JOBS" ] && [ -z "$OVR" ]; then
-            echo "::error::override_busy_jobs is blank: leave it empty, or give a reason"; exit 1
-          fi
           if [ -n "$OVR" ]; then
-            if [ "${#OVR}" -gt 200 ] || [[ "$OVR" == *$'\n'* ]]; then
-              echo "::error::override_busy_jobs must be one line of at most 200 characters"; exit 1
-            fi
             echo "::warning::idle check override requested: $OVR"
             echo "- **idle check override:** $OVR" >> "$GITHUB_STEP_SUMMARY"
           fi
@@ -157,9 +228,15 @@ jobs:
           echo "id=$SNAP" >> "$GITHUB_OUTPUT"
           echo "- snapshot \`$SNAP\` available (aa:retain-until $RETAIN_UNTIL, then expired automatically)" >> "$GITHUB_STEP_SUMMARY"
 
+      # X1 S12: a revision of aa-cis-dev-db-migrate with the api service's current image (ARN and
+      # network configuration are step outputs: not secret). Deregistered by the last step.
+      - name: Register the migrator revision (api image)
+        id: td
+        run: bash .github/scripts/migrator-task.sh prepare
+
       # Presigned URLs (15 min) are created and used in this one step — a masked value in a
       # step output can be dropped by Actions, so they are never passed between steps.
-      - name: Upload runner + SQL, run one-off ECS task
+      - name: Upload runner + file, run one-off ECS task
         id: task
         env:
           VERSION: ${{ steps.file.outputs.version }}
@@ -168,30 +245,39 @@ jobs:
         run: |
           PREFIX="db-migrate/${{ github.run_id }}"
           echo "prefix=$PREFIX" >> "$GITHUB_OUTPUT"
+          # What reaches the task (validated above): the mode value folded into MIGRATION_MODE, the file
+          # behind MIGRATION_URL (none for set-password) and MIGRATION_FILE.
+          case "$MODE" in
+            check|apply) mode_value="$MODE"; payload="db/migrations/$MIGRATION"; task_file="$MIGRATION" ;;
+            set-password) mode_value="set-password:$MIGRATION"; payload=""; task_file="" ;;
+            run-script) mode_value="run-script:$MIGRATION"; payload="$MIGRATION"; task_file="$MIGRATION" ;;
+            *) echo "::error::unknown mode $MODE"; exit 1 ;;
+          esac
           aws s3 cp db/run_migration.py "s3://$BUCKET/$PREFIX/run_migration.py" --only-show-errors
-          aws s3 cp "db/migrations/$MIGRATION" "s3://$BUCKET/$PREFIX/migration.sql" --only-show-errors
           RUNNER_URL=$(aws s3 presign "s3://$BUCKET/$PREFIX/run_migration.py" --expires-in 900)
-          SQL_URL=$(aws s3 presign "s3://$BUCKET/$PREFIX/migration.sql" --expires-in 900)
           echo "::add-mask::$RUNNER_URL"
-          echo "::add-mask::$SQL_URL"
+          FILE_URL=""
+          if [ -n "$payload" ]; then
+            aws s3 cp "$payload" "s3://$BUCKET/$PREFIX/payload" --only-show-errors
+            FILE_URL=$(aws s3 presign "s3://$BUCKET/$PREFIX/payload" --expires-in 900)
+            echo "::add-mask::$FILE_URL"
+          fi
 
-          SVC=$(aws ecs describe-services --cluster "$CLUSTER" --services "$SERVICE" --output json)
-          TASK_DEF=$(jq -r '.services[0].taskDefinition' <<<"$SVC")
-          NET=$(jq -c '.services[0].networkConfiguration' <<<"$SVC")
-          echo "task definition: $TASK_DEF"
+          TASK_DEF="${{ steps.td.outputs.arn }}"
+          NET='${{ steps.td.outputs.network }}'
+          echo "task definition: $TASK_DEF (image of ${{ steps.td.outputs.api_task_definition }})"
           OVERRIDES=$(jq -nc \
-            --arg runner "$RUNNER_URL" --arg sql "$SQL_URL" --arg file "$MIGRATION" \
-            --arg version "$VERSION" --arg sha "$SHA256" --arg mode "$MODE" --arg snap "$SNAPSHOT" \
+            --arg runner "$RUNNER_URL" --arg sql "$FILE_URL" --arg file "$task_file" \
+            --arg version "$VERSION" --arg sha "$SHA256" --arg mode "$mode_value" --arg snap "$SNAPSHOT" \
             --arg override "$OVERRIDE_BUSY_JOBS" \
-            '{containerOverrides: [{name: "api",
+            '{containerOverrides: [{name: "migrate",
               command: ["python3", "-c", "import os,urllib.request;exec(urllib.request.urlopen(os.environ[\"RUNNER_URL\"],timeout=30).read())"],
               environment: [
                 {name: "RUNNER_URL", value: $runner}, {name: "MIGRATION_URL", value: $sql},
                 {name: "MIGRATION_FILE", value: $file}, {name: "MIGRATION_VERSION", value: $version},
                 {name: "MIGRATION_SHA256", value: $sha}, {name: "MIGRATION_MODE", value: $mode},
                 {name: "MIGRATION_SNAPSHOT", value: $snap},
-                {name: "MIGRATION_IDLE_OVERRIDE", value: $override},
-                {name: "JOB_WORKER_IN_API", value: "false"}]}]}')
+                {name: "MIGRATION_IDLE_OVERRIDE", value: $override}]}]}')
           TASK_ARN=$(aws ecs run-task --cluster "$CLUSTER" --task-definition "$TASK_DEF" \
             --launch-type FARGATE --network-configuration "$NET" --overrides "$OVERRIDES" \
             --started-by "gh-db-migrate-${{ github.run_id }}" \
@@ -208,49 +294,71 @@ jobs:
           TASK_ARN: ${{ steps.task.outputs.arn }}
         run: |
           TASK_ID="${TASK_ARN##*/}"
-          aws logs get-log-events --log-group-name "$LOG_GROUP" --log-stream-name "api/api/$TASK_ID" \
+          aws logs get-log-events --log-group-name "$LOG_GROUP" --log-stream-name "migrate/migrate/$TASK_ID" \
             --start-from-head --query 'events[].message' --output text | tr '\t' '\n' | tee task.log || true
           grep '^MIGRATE' task.log >> "$GITHUB_STEP_SUMMARY" || true
           DESC=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$TASK_ARN" --output json)
-          EXIT=$(jq -r '.tasks[0].containers[] | select(.name=="api") | .exitCode' <<<"$DESC")
+          EXIT=$(jq -r '.tasks[0].containers[] | select(.name=="migrate") | .exitCode' <<<"$DESC")
           echo "exit code: $EXIT  stopped: $(jq -r '.tasks[0].stoppedReason' <<<"$DESC")"
           if [ "$EXIT" = "7" ]; then
             echo "::error::apply refused: a job table is busy or a rerun wave is open (see the MIGRATE busy lines). Wait until idle, or re-dispatch with override_busy_jobs=<reason> (Nghiệp only)"
             exit 1
           fi
           if [ "$EXIT" = "8" ]; then
-            echo "::error::role refused (see the MIGRATE ERROR: role line): roles/ runs only as the master, the login role must be a member of the anchor schema's live owner, the owner needs USAGE on shared + INSERT on shared.schema_versions (CIS 243), and a switched file must be one BEGIN … COMMIT block"
+            echo "::error::role refused (see the MIGRATE ERROR: role line): roles/, set-password and run-script run only as the master, the login role must be a member of the anchor schema's live owner, the owner needs USAGE on shared + INSERT on shared.schema_versions (CIS 243), and a switched file must be one BEGIN … COMMIT block"
             exit 1
           fi
           if [ "$EXIT" = "9" ]; then
             echo "::error::ownership post-check failed: the file created or re-owned objects for a role other than the owner it ran as, or changed roles (see the MIGRATE ERROR line); a transactional file was rolled back, a no-transaction file is not registered; if the line says 'after COMMIT' the file is committed and registered: clean up by hand"
             exit 1
           fi
+          if [ "$EXIT" = "10" ]; then
+            echo "::error::mode input refused by the runner (see the MIGRATE ERROR line): set-password takes a role from db/owners.yaml password_roles, run-script a db/scripts/<name>.py file with a top-level async def main(conn)"
+            exit 1
+          fi
+          if [ "$EXIT" = "11" ]; then
+            echo "::error::set-password refused before any change (see the MIGRATE ERROR line): the role does not exist or cannot log in, or its DSN secret is unreadable, empty, not a postgresql:// DSN, names another user, or has a password shorter than 32 printable ASCII characters. Fix the secret value in the Console (by hand), then re-run"
+            exit 1
+          fi
+          if [ "$EXIT" = "12" ]; then
+            echo "::error::set-password: the password was set but the test login with the DSN failed (see the MIGRATE ERROR line); the role is NOT marked x1:password-set. Check the connection limit and the DSN host/database, then re-run"
+            exit 1
+          fi
+          if [ "$EXIT" = "13" ]; then
+            echo "::error::run-script: the script raised or returned non-zero (see its output above and the MIGRATE ERROR line)"
+            exit 1
+          fi
           [ "$EXIT" = "0" ] || { echo "::error::migration task exited with $EXIT"; exit 1; }
 
-      # The apply already succeeded: a failed dispatch only warns (the nightly dump catches up).
+      # The run already succeeded: a failed dispatch only warns (the nightly dump catches up).
+      # run-script may change the structure too (X1 S12).
       - name: Regenerate the schema reference (DB Schema Dump)
-        if: success() && inputs.mode == 'apply'
+        if: success() && (inputs.mode == 'apply' || inputs.mode == 'run-script')
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh workflow run db-schema-dump.yml --repo "${{ github.repository }}" --ref main \
-            -f reason="after DB Migrate apply of $MIGRATION (run ${{ github.run_id }})"
+            -f reason="after DB Migrate $MODE of $MIGRATION (run ${{ github.run_id }})"
           echo "- dispatched DB Schema Dump (root reference PR if the structure changed)" >> "$GITHUB_STEP_SUMMARY"
 
       # X1 S2: re-check role isolation after every apply (its pending cells follow the new
-      # shared.schema_versions rows). Same rule as the dump: the apply already succeeded, so a failed
-      # dispatch only warns (the nightly probe catches up).
+      # shared.schema_versions rows), set-password (the cis_app login cells follow the role's
+      # x1:password-set marker) and run-script. Same rule as the dump: the run already succeeded, so a
+      # failed dispatch only warns (the nightly probe catches up).
       - name: Re-run the isolation probe (DB Isolation Probe)
-        if: success() && inputs.mode == 'apply'
+        if: success() && inputs.mode != 'check'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh workflow run db-isolation-probe.yml --repo "${{ github.repository }}" --ref main \
-            -f reason="after DB Migrate apply of $MIGRATION (run ${{ github.run_id }})"
+            -f reason="after DB Migrate $MODE of $MIGRATION (run ${{ github.run_id }})"
           echo "- dispatched DB Isolation Probe (X1 S2)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Deregister the migrator revision
+        if: always() && steps.td.outputs.arn != ''
+        run: bash .github/scripts/migrator-task.sh deregister "${{ steps.td.outputs.arn }}"
 
       - name: Remove S3 objects
         if: always() && steps.task.outputs.prefix != ''
