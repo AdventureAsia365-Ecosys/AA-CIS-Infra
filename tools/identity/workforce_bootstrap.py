@@ -13,10 +13,14 @@ Subcommands
   breakglass-verify                       Enable, sign in with password + TOTP on the breakglass client,
                                           print the claim summary, revoke, sign out, DISABLE (finally).
   authorize-url --client C --redirect R   Spike helper: managed-login authorize URL with PKCE S256;
-                                          verifier + state go to a 0600 file under .tmp-session/s242/.
+                                          verifier + state go to a 0600 file under
+                                          .tmp-session/identity-spike/ (or --state-dir).
   exchange-code [--url CALLBACK_URL]      Spike helper: check state, exchange the code (client secret
                                           read with DescribeUserPoolClient), print non-secret claims of
                                           the access + ID tokens, then revoke the refresh token.
+
+Fail closed: if a cleanup step (revoke, global sign-out, disable) fails, the command exits 1 and does
+not print "done"/"OK", even when the main work succeeded.
 
 Secret hygiene: passwords, TOTP seeds, client secrets, codes and tokens are never printed. Every line
 goes through a redactor that masks any registered secret, and errors are printed without a traceback.
@@ -34,6 +38,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import string
 import struct
@@ -59,6 +64,10 @@ DEFAULT_HOSTED_DOMAIN = "https://aa365-staff-auth-dev.auth.us-west-1.amazoncogni
 # D1 (S241/S242): break-glass stays admin@adventure.asia = identity_breakglass_email default.
 DEFAULT_BREAKGLASS_EMAIL = "admin@adventure.asia"
 STAFF_EMAIL_DOMAIN = "adventure.asia"
+# Local part allowed in addresses the tool handles. It also keeps the ListUsers filter
+# (email = "...") free of quotes and backslashes.
+EMAIL_LOCAL_RE = re.compile(r"^[a-z0-9._%+-]+$")
+STATE_DIR_NAME = "identity-spike"  # <AA-Ecosys>/.tmp-session/identity-spike (gitignored)
 # identity.tf local.id_staff_groups (same list as the trigger's DEFAULT_STAFF_GROUPS).
 STAFF_GROUPS = (
     "cis-admin",
@@ -166,12 +175,26 @@ def normalise_email(email: str) -> str:
     return (email or "").strip().lower()
 
 
+def split_email(email: str) -> tuple[str, str]:
+    """Normalise and split; refuse a missing part or an unsupported character in the local part."""
+    email = normalise_email(email)
+    local, sep, domain = email.rpartition("@")
+    if not sep or not local or not domain:
+        raise ToolError("refused client-side: not an email address")
+    if not EMAIL_LOCAL_RE.match(local):
+        raise ToolError("refused client-side: unsupported character in the email local part "
+                        "(allowed: a-z 0-9 . _ % + -)")
+    return local, domain
+
+
 def require_staff_email(email: str) -> str:
     email = normalise_email(email)
     local, sep, domain = email.rpartition("@")
     if not sep or not local or domain != STAFF_EMAIL_DOMAIN:
-        # Same wording as the WORKFORCE pre sign-up trigger (workforce.py) refusing it server-side.
-        raise ToolError(f"refused: admin-created user outside the staff domain (@{STAFF_EMAIL_DOMAIN} only)")
+        # Worded differently from the trigger's server-side reason (workforce.py) on purpose, so A5
+        # evidence cannot mix up a client-side refusal with the pre sign-up trigger's.
+        raise ToolError(f"refused client-side: address outside the staff domain (@{STAFF_EMAIL_DOMAIN} only)")
+    split_email(email)
     return email
 
 
@@ -236,10 +259,10 @@ def claim_summary(label: str, token: str) -> list[str]:
 
 
 def find_state_dir(start: Path) -> Path:
-    """<AA-Ecosys root>/.tmp-session/s242, found by walking up to the folder holding .tmp-session."""
+    """<AA-Ecosys root>/.tmp-session/identity-spike, found by walking up to the folder holding .tmp-session."""
     for parent in [start, *start.parents]:
         if (parent / ".tmp-session").is_dir() and parent.name != ".tmp-session":
-            return parent / ".tmp-session" / "s242"
+            return parent / ".tmp-session" / STATE_DIR_NAME
     raise ToolError("could not find the workspace .tmp-session folder; pass --state-dir")
 
 
@@ -428,15 +451,21 @@ class Ctx:
 # --------------------------------------------------------------------------------------------
 # Subcommands
 # --------------------------------------------------------------------------------------------
+def cleanup_failed_error(cmd: str, failures: list[str], pool_id: str, username: str, note: str = "") -> ToolError:
+    """Fail closed: a failed revoke / sign-out / disable makes the whole command fail (exit 1)."""
+    return ToolError(
+        f"{cmd}: cleanup INCOMPLETE ({', '.join(failures)}).{note} The user may still be enabled: run "
+        f"aws cognito-idp admin-disable-user --user-pool-id {pool_id} --username {username} "
+        f"--profile aa365-admin --region us-west-1"
+    )
+
+
 def cmd_create_staff(ctx: Ctx, email: str, groups_raw: str, name: str | None,
                      breakglass_email: str, trigger_refusal_test: bool = False) -> int:
     groups = parse_groups(groups_raw)
     if trigger_refusal_test:
-        # A5 evidence only: skip the client-side domain check so the pre sign-up trigger refuses it.
-        email = normalise_email(email)
-        ctx.out.warn("WARNING --trigger-refusal-test: client-side domain check skipped; expect the trigger to refuse")
-    else:
-        email = require_staff_email(email)
+        return _trigger_refusal_test(ctx, email)
+    email = require_staff_email(email)
     if email == normalise_email(breakglass_email):
         raise ToolError("refused: that is the break-glass address; use breakglass-init")
     created = create_user_suppressed(ctx.idp, ctx.pool_id, email, name)
@@ -446,19 +475,65 @@ def cmd_create_staff(ctx: Ctx, email: str, groups_raw: str, name: str | None,
     return 0
 
 
+def _trigger_refusal_test(ctx: Ctx, email: str) -> int:
+    """A5 evidence: AdminCreateUser an out-of-domain address and expect the pre sign-up trigger to refuse.
+
+    Never adds groups. If Cognito accepts the user (trigger NOT refusing), the user is disabled at once
+    and the command fails, so no out-of-domain account is left usable.
+    """
+    _, domain = split_email(email)
+    email = normalise_email(email)
+    if domain == STAFF_EMAIL_DOMAIN:
+        raise ToolError("refused: --trigger-refusal-test needs an address OUTSIDE the staff domain")
+    ctx.out.warn("WARNING --trigger-refusal-test: client-side domain check skipped; no groups will be added")
+    try:
+        create_user_suppressed(ctx.idp, ctx.pool_id, email)
+    except ctx.idp.exceptions.UserLambdaValidationException as exc:
+        message = (getattr(exc, "response", {}).get("Error") or {}).get("Message", "")
+        ctx.out.info(f"trigger: refused server-side (UserLambdaValidationException): {message}")
+        ctx.out.info("create-staff --trigger-refusal-test: OK (pre sign-up trigger refused the address)")
+        return 0
+    try:
+        ctx.idp.admin_disable_user(UserPoolId=ctx.pool_id, Username=email)
+        disabled = "the user was created and then DISABLED"
+    except Exception as exc:  # noqa: BLE001
+        disabled = f"the user was created and disabling it FAILED ({type(exc).__name__})"
+    raise ToolError(
+        f"trigger did NOT refuse {email}: {disabled}. Remove it by hand: aws cognito-idp admin-delete-user "
+        f"--user-pool-id {ctx.pool_id} --username {email} --profile aa365-admin --region us-west-1"
+    )
+
+
 def cmd_breakglass_init(ctx: Ctx, email: str) -> int:
     email = require_staff_email(email)
     client_id = find_client_id(ctx.idp, ctx.pool_id, ctx.breakglass_client_name)
     ctx.out.info(f"client: {ctx.breakglass_client_name} = {client_id}")
+    # Preflight before touching the user: a missing or deleted secret fails here, not after the old
+    # password is gone. DescribeSecret is metadata only (no value; not one of the I1 alert events).
+    try:
+        described = ctx.sm.describe_secret(SecretId=ctx.secret_id)
+    except Exception as exc:  # noqa: BLE001
+        raise ToolError(f"preflight: cannot describe secret {ctx.secret_id} ({type(exc).__name__}); "
+                        "nothing was changed") from None
+    if described.get("DeletedDate"):
+        raise ToolError(f"preflight: secret {ctx.secret_id} is scheduled for deletion; nothing was changed")
+    ctx.out.info(f"preflight: secret {ctx.secret_id} exists")
     existing = find_user(ctx.idp, ctx.pool_id, email)
     if existing is None:
-        create_user_suppressed(ctx.idp, ctx.pool_id, email)
-        ctx.out.info(f"user: {email} created (SUPPRESS, email_verified=true)")
+        if create_user_suppressed(ctx.idp, ctx.pool_id, email):
+            ctx.out.info(f"user: {email} created (SUPPRESS, email_verified=true)")
+        else:
+            # ListUsers missed a user that exists (filter mismatch or race): treat it as a rotation.
+            existing = {"UserStatus": "unknown"}
+            ctx.out.info(f"user: {email} already exists (not found by ListUsers); rotating password + TOTP")
     else:
         ctx.out.info(f"user: {email} exists (status {existing.get('UserStatus')}); rotating password + TOTP")
     username = email
     client_secret = None
     signed_in = None
+    password_set = False
+    stored = False
+    failures: list[str] = []
     try:
         add_to_groups(ctx.idp, ctx.pool_id, username, BREAKGLASS_GROUPS, ctx.out)
         client_secret = client_secret_of(ctx.idp, ctx.pool_id, client_id, ctx.out)
@@ -479,6 +554,7 @@ def cmd_breakglass_init(ctx: Ctx, email: str) -> int:
         password = generate_password()
         ctx.out.register(password)
         ctx.idp.admin_set_user_password(UserPoolId=ctx.pool_id, Username=username, Password=password, Permanent=True)
+        password_set = True
         ctx.out.info("password: new permanent password set")
 
         signed_in = sign_in(
@@ -510,11 +586,18 @@ def cmd_breakglass_init(ctx: Ctx, email: str) -> int:
             "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         })
         put = ctx.sm.put_secret_value(SecretId=ctx.secret_id, SecretString=value)
+        stored = True
         ctx.out.info(f"secret: {ctx.secret_id} stored, VersionId {put.get('VersionId')}")
     finally:
-        close_out(ctx.idp, pool_id=ctx.pool_id, username=username, client_id=client_id,
-                  client_secret=client_secret, refresh_token=signed_in.refresh_token if signed_in else None,
-                  out=ctx.out)
+        failures = close_out(ctx.idp, pool_id=ctx.pool_id, username=username, client_id=client_id,
+                             client_secret=client_secret,
+                             refresh_token=signed_in.refresh_token if signed_in else None, out=ctx.out)
+        if password_set and not stored:
+            ctx.out.warn("WARNING break-glass credentials NOT stored: the previous password (and any old "
+                         f"secret value in {ctx.secret_id}) is now invalid. Re-run breakglass-init.")
+    if failures:
+        raise cleanup_failed_error("breakglass-init", failures, ctx.pool_id, username,
+                                   note=f" The new credentials WERE stored in {ctx.secret_id}.")
     ctx.out.info("breakglass-init: done. Next: breakglass-verify (waits for a fresh TOTP window)")
     return 0
 
@@ -538,6 +621,7 @@ def cmd_breakglass_verify(ctx: Ctx, email: str) -> int:
         raise ToolError("secret value lacks password or totp_seed; run breakglass-init")
     client_secret = None
     signed_in = None
+    failures: list[str] = []
     try:
         client_secret = client_secret_of(ctx.idp, ctx.pool_id, client_id, ctx.out)
         ctx.idp.admin_enable_user(UserPoolId=ctx.pool_id, Username=username)
@@ -552,9 +636,12 @@ def cmd_breakglass_verify(ctx: Ctx, email: str) -> int:
         if claims.get("token_use") != "access" or claims.get("client_id") != client_id:
             raise ToolError("unexpected access token (token_use/client_id)")
     finally:
-        close_out(ctx.idp, pool_id=ctx.pool_id, username=username, client_id=client_id,
-                  client_secret=client_secret, refresh_token=signed_in.refresh_token if signed_in else None,
-                  out=ctx.out)
+        failures = close_out(ctx.idp, pool_id=ctx.pool_id, username=username, client_id=client_id,
+                             client_secret=client_secret,
+                             refresh_token=signed_in.refresh_token if signed_in else None, out=ctx.out)
+    if failures:
+        raise cleanup_failed_error("breakglass-verify", failures, ctx.pool_id, username,
+                                   note=" The sign-in itself succeeded.")
     ctx.out.info("breakglass-verify: OK")
     return 0
 
@@ -685,7 +772,8 @@ def build_parser() -> argparse.ArgumentParser:
     cs.add_argument("--name", default=None, help="optional display name (Cognito `name`)")
     cs.add_argument("--breakglass-email", default=DEFAULT_BREAKGLASS_EMAIL)
     cs.add_argument("--trigger-refusal-test", action="store_true",
-                    help="A5 evidence only: skip the client-side domain check so the trigger refuses")
+                    help="A5 evidence only: out-of-domain address, no groups; expects the pre sign-up "
+                         "trigger to refuse (disables the user and fails if it does not)")
 
     for name, text in (
         ("breakglass-init", "create or rotate break-glass (password + TOTP to Secrets Manager), then disable"),

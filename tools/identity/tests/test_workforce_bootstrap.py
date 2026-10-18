@@ -55,12 +55,21 @@ def assert_clean(captured, *values):
         assert value not in text, f"secret leaked to output: {value[:6]}..."
 
 
-def stub_close_out(idp_stub, username=BG_EMAIL, with_revoke=True):
+def stub_close_out(idp_stub, username=BG_EMAIL, with_revoke=True, disable_fails=False):
     if with_revoke:
         idp_stub.add_response("revoke_token", {},
                               {"Token": REFRESH, "ClientId": BG_CLIENT_ID, "ClientSecret": CLIENT_SECRET})
     idp_stub.add_response("admin_user_global_sign_out", {}, {"UserPoolId": POOL, "Username": username})
-    idp_stub.add_response("admin_disable_user", {}, {"UserPoolId": POOL, "Username": username})
+    if disable_fails:
+        idp_stub.add_client_error("admin_disable_user", service_error_code="InternalErrorException",
+                                  http_status_code=500)
+    else:
+        idp_stub.add_response("admin_disable_user", {}, {"UserPoolId": POOL, "Username": username})
+
+
+def stub_describe_secret(sm_stub):
+    sm_stub.add_response("describe_secret", {"Name": "aa-identity/dev/breakglass"},
+                         {"SecretId": "aa-identity/dev/breakglass"})
 
 
 # --------------------------------------------------------------------------------------------
@@ -131,6 +140,13 @@ def test_generated_password_meets_pool_policy():
                                    "@adventure.asia", "a@sub.adventure.asia", ""])
 def test_require_staff_email_refuses_out_of_domain(email):
     with pytest.raises(wb.ToolError, match="outside the staff domain"):
+        wb.require_staff_email(email)
+
+
+@pytest.mark.parametrize("email", ['a"b@adventure.asia', "a\\b@adventure.asia", "a b@adventure.asia",
+                                   "a'b@adventure.asia"])
+def test_require_staff_email_refuses_unsafe_local_part(email):
+    with pytest.raises(wb.ToolError, match="unsupported character in the email local part"):
         wb.require_staff_email(email)
 
 
@@ -224,7 +240,7 @@ def test_create_staff_refuses_breakglass_address(stubbed, ctx_factory):
         wb.cmd_create_staff(ctx_factory(), "Admin@adventure.asia", "cis-admin", None, BG_EMAIL)
 
 
-def test_create_staff_trigger_refusal_test_still_sends_suppress(stubbed, ctx_factory, capsys):
+def test_create_staff_trigger_refusal_test_reports_server_side_refusal(stubbed, ctx_factory, capsys):
     _, idp_stub, _, _ = stubbed
     idp_stub.add_client_error("admin_create_user", service_error_code="UserLambdaValidationException",
                               service_message="PreSignUp failed with error Not allowed.",
@@ -234,11 +250,30 @@ def test_create_staff_trigger_refusal_test_still_sends_suppress(stubbed, ctx_fac
                                                      {"Name": "email_verified", "Value": "true"}],
                                   "MessageAction": "SUPPRESS",
                               })
-    with pytest.raises(Exception, match="UserLambdaValidationException"):
+    # No admin_add_user_to_group stubbed: a group call would fail the test.
+    assert wb.cmd_create_staff(ctx_factory(), "X@example.com", "cis-admin", None, BG_EMAIL,
+                               trigger_refusal_test=True) == 0
+    idp_stub.assert_no_pending_responses()
+    captured = capsys.readouterr()
+    assert "client-side domain check skipped" in captured.err
+    assert "refused server-side (UserLambdaValidationException): PreSignUp failed" in captured.out
+    assert "refused client-side" not in captured.out + captured.err
+
+
+def test_create_staff_trigger_refusal_test_disables_and_fails_if_trigger_accepts(stubbed, ctx_factory, capsys):
+    _, idp_stub, _, _ = stubbed
+    idp_stub.add_response("admin_create_user", {}, None)
+    idp_stub.add_response("admin_disable_user", {}, {"UserPoolId": POOL, "Username": "x@example.com"})
+    with pytest.raises(wb.ToolError, match="trigger did NOT refuse x@example.com: .*DISABLED"):
         wb.cmd_create_staff(ctx_factory(), "x@example.com", "cis-admin", None, BG_EMAIL,
                             trigger_refusal_test=True)
-    idp_stub.assert_no_pending_responses()
-    assert "client-side domain check skipped" in capsys.readouterr().err
+    idp_stub.assert_no_pending_responses()  # no group was added
+    assert "OK" not in capsys.readouterr().out
+
+
+def test_create_staff_trigger_refusal_test_refuses_staff_domain(stubbed, ctx_factory):
+    with pytest.raises(wb.ToolError, match="OUTSIDE the staff domain"):
+        wb.cmd_create_staff(ctx_factory(), STAFF_EMAIL, "cis-admin", None, BG_EMAIL, trigger_refusal_test=True)
 
 
 def test_main_prints_one_line_error_and_exit_1(stubbed, monkeypatch, capsys):
@@ -247,7 +282,7 @@ def test_main_prints_one_line_error_and_exit_1(stubbed, monkeypatch, capsys):
     rc = wb.main(["create-staff", "--email", "x@example.com", "--groups", "cis-admin"])
     assert rc == 1
     captured = capsys.readouterr()
-    assert "ERROR refused: admin-created user outside the staff domain" in captured.err
+    assert "ERROR refused client-side: address outside the staff domain" in captured.err
     assert "Traceback" not in captured.err
 
 
@@ -256,6 +291,7 @@ def test_main_prints_one_line_error_and_exit_1(stubbed, monkeypatch, capsys):
 # --------------------------------------------------------------------------------------------
 def _stub_init_happy(idp_stub, sm_stub, existing: bool):
     idp_stub.add_response("list_user_pool_clients", CLIENTS_PAGE, {"UserPoolId": POOL, "MaxResults": 60})
+    stub_describe_secret(sm_stub)
     users = [{"Username": USER_SUB, "UserStatus": "CONFIRMED", "Enabled": False}] if existing else []
     idp_stub.add_response("list_users", {"Users": users},
                           {"UserPoolId": POOL, "Filter": f'email = "{BG_EMAIL}"', "Limit": 2})
@@ -323,9 +359,10 @@ def test_breakglass_init_happy_path_no_secret_leak(stubbed, ctx_factory, monkeyp
 
 
 def test_breakglass_init_failure_still_revokes_and_disables(stubbed, ctx_factory, monkeypatch, capsys):
-    _, idp_stub, _, _ = stubbed
+    _, idp_stub, _, sm_stub = stubbed
     monkeypatch.setattr(wb, "generate_password", lambda length=wb.PASSWORD_LENGTH: PASSWORD)
     idp_stub.add_response("list_user_pool_clients", CLIENTS_PAGE, {"UserPoolId": POOL, "MaxResults": 60})
+    stub_describe_secret(sm_stub)
     idp_stub.add_response("list_users", {"Users": []}, None)
     idp_stub.add_response("admin_create_user", {}, None)
     idp_stub.add_response("admin_add_user_to_group", {}, None)
@@ -344,6 +381,8 @@ def test_breakglass_init_failure_still_revokes_and_disables(stubbed, ctx_factory
     idp_stub.assert_no_pending_responses()  # revoke + sign-out + disable all ran
     captured = capsys.readouterr()
     assert "user: DISABLED" in captured.out
+    assert "break-glass credentials NOT stored" in captured.err and "Re-run breakglass-init" in captured.err
+    assert "breakglass-init: done" not in captured.out
     assert_clean(captured, PASSWORD, SEED, CLIENT_SECRET, REFRESH)
 
 
@@ -549,9 +588,12 @@ def test_exchange_code_reports_callback_error(stubbed, ctx_factory, tmp_path, ca
 
 
 def test_find_state_dir_walks_up_to_workspace(tmp_path):
-    (tmp_path / ".tmp-session" / "s242" / "wt" / "tools" / "identity").mkdir(parents=True)
-    start = tmp_path / ".tmp-session" / "s242" / "wt" / "tools" / "identity"
-    assert wb.find_state_dir(start) == tmp_path / ".tmp-session" / "s242"
+    start = tmp_path / ".tmp-session" / "s999" / "wt" / "tools" / "identity"
+    start.mkdir(parents=True)
+    assert wb.find_state_dir(start) == tmp_path / ".tmp-session" / "identity-spike"
+    plain = tmp_path / "infra" / "AA-CIS-Infra" / "tools" / "identity"
+    plain.mkdir(parents=True)
+    assert wb.find_state_dir(plain) == tmp_path / ".tmp-session" / "identity-spike"
 
 
 def test_breakglass_init_rerun_after_partial_run_without_totp(stubbed, ctx_factory, monkeypatch, capsys):
@@ -559,6 +601,7 @@ def test_breakglass_init_rerun_after_partial_run_without_totp(stubbed, ctx_facto
     idp, idp_stub, sm, sm_stub = stubbed
     monkeypatch.setattr(wb, "generate_password", lambda length=wb.PASSWORD_LENGTH: PASSWORD)
     idp_stub.add_response("list_user_pool_clients", CLIENTS_PAGE, None)
+    stub_describe_secret(sm_stub)
     idp_stub.add_response("list_users", {"Users": [{"Username": USER_SUB, "UserStatus": "FORCE_CHANGE_PASSWORD",
                                                     "Enabled": False}]}, None)
     idp_stub.add_response("admin_add_user_to_group", {}, None)
@@ -580,3 +623,130 @@ def test_breakglass_init_rerun_after_partial_run_without_totp(stubbed, ctx_facto
     captured = capsys.readouterr()
     assert "nothing to clear" in captured.out and "user: DISABLED" in captured.out
     assert_clean(captured, PASSWORD, SEED, CLIENT_SECRET, REFRESH)
+
+
+# --------------------------------------------------------------------------------------------
+# Review fixes (fail closed, preflight, ListUsers miss)
+# --------------------------------------------------------------------------------------------
+def _stub_init_until_signin(idp_stub, sm_stub):
+    """First-run path up to and including the secret write (no close-out)."""
+    idp_stub.add_response("list_user_pool_clients", CLIENTS_PAGE, None)
+    stub_describe_secret(sm_stub)
+    idp_stub.add_response("list_users", {"Users": []}, None)
+    idp_stub.add_response("admin_create_user", {}, None)
+    idp_stub.add_response("admin_add_user_to_group", {}, None)
+    idp_stub.add_response("admin_add_user_to_group", {}, None)
+    idp_stub.add_response("describe_user_pool_client",
+                          {"UserPoolClient": {"ClientId": BG_CLIENT_ID, "ClientSecret": CLIENT_SECRET}}, None)
+    idp_stub.add_response("admin_enable_user", {}, None)
+    idp_stub.add_response("admin_set_user_password", {}, None)
+    idp_stub.add_response("initiate_auth", auth_result(access_token()), None)
+    idp_stub.add_response("associate_software_token", {"SecretCode": SEED}, None)
+    idp_stub.add_response("verify_software_token", {"Status": "SUCCESS"}, None)
+    idp_stub.add_response("admin_set_user_mfa_preference", {}, None)
+
+
+def test_breakglass_init_failed_disable_exits_1_without_done(stubbed, monkeypatch, capsys):
+    idp, idp_stub, sm, sm_stub = stubbed
+    monkeypatch.setattr(wb, "generate_password", lambda length=wb.PASSWORD_LENGTH: PASSWORD)
+    monkeypatch.setattr(wb, "_aws_clients", lambda args, out: (idp, sm))
+    _stub_init_until_signin(idp_stub, sm_stub)
+    sm_stub.add_response("put_secret_value", {"VersionId": "d" * 32 + "-version"}, None)
+    stub_close_out(idp_stub, disable_fails=True)
+    rc = wb.main(["--pool-id", POOL, "breakglass-init"])
+    assert rc == 1
+    idp_stub.assert_no_pending_responses()
+    captured = capsys.readouterr()
+    assert "breakglass-init: done" not in captured.out
+    assert "user: DISABLED" not in captured.out
+    assert "cleanup INCOMPLETE (admin_disable_user InternalErrorException)" in captured.err
+    assert "WERE stored" in captured.err and "admin-disable-user" in captured.err
+    assert_clean(captured, PASSWORD, SEED, CLIENT_SECRET, REFRESH)
+
+
+def test_breakglass_verify_failed_disable_exits_1_without_ok(stubbed, monkeypatch, capsys):
+    idp, idp_stub, sm, sm_stub = stubbed
+    monkeypatch.setattr(wb, "_aws_clients", lambda args, out: (idp, sm))
+    _stub_verify_start(idp_stub, sm_stub)
+    idp_stub.add_response("initiate_auth", {"ChallengeName": "SOFTWARE_TOKEN_MFA", "Session": S1,
+                                            "ChallengeParameters": {}}, None)
+    idp_stub.add_response("respond_to_auth_challenge", auth_result(access_token()), None)
+    stub_close_out(idp_stub, disable_fails=True)
+    monkeypatch.setattr(wb, "wait_for_fresh_window", lambda clock, sleep, step=30: clock())  # no real sleep
+    rc = wb.main(["--pool-id", POOL, "breakglass-verify"])
+    assert rc == 1
+    idp_stub.assert_no_pending_responses()
+    captured = capsys.readouterr()
+    assert "breakglass-verify: OK" not in captured.out
+    assert "cleanup INCOMPLETE (admin_disable_user InternalErrorException)" in captured.err
+    assert_clean(captured, PASSWORD, SEED, CLIENT_SECRET, REFRESH)
+
+
+def test_breakglass_init_put_secret_denied_warns_not_stored(stubbed, ctx_factory, monkeypatch, capsys):
+    _, idp_stub, _, sm_stub = stubbed
+    monkeypatch.setattr(wb, "generate_password", lambda length=wb.PASSWORD_LENGTH: PASSWORD)
+    _stub_init_until_signin(idp_stub, sm_stub)
+    sm_stub.add_client_error("put_secret_value", service_error_code="AccessDeniedException", http_status_code=400)
+    stub_close_out(idp_stub)
+    with pytest.raises(Exception, match="AccessDeniedException"):
+        wb.cmd_breakglass_init(ctx_factory(), BG_EMAIL)
+    idp_stub.assert_no_pending_responses()
+    sm_stub.assert_no_pending_responses()
+    captured = capsys.readouterr()
+    assert "user: DISABLED" in captured.out
+    assert "break-glass credentials NOT stored" in captured.err
+    assert_clean(captured, PASSWORD, SEED, CLIENT_SECRET, REFRESH)
+
+
+def test_breakglass_init_preflight_missing_secret_changes_nothing(stubbed, ctx_factory, capsys):
+    _, idp_stub, _, sm_stub = stubbed
+    idp_stub.add_response("list_user_pool_clients", CLIENTS_PAGE, None)
+    sm_stub.add_client_error("describe_secret", service_error_code="ResourceNotFoundException",
+                             http_status_code=400)
+    # Nothing else stubbed: any user call (ListUsers, AdminCreateUser, ...) would fail the test.
+    with pytest.raises(wb.ToolError, match="preflight: cannot describe secret .*nothing was changed"):
+        wb.cmd_breakglass_init(ctx_factory(), BG_EMAIL)
+    idp_stub.assert_no_pending_responses()
+    sm_stub.assert_no_pending_responses()
+
+
+def test_breakglass_init_preflight_secret_scheduled_for_deletion(stubbed, ctx_factory):
+    import datetime as dt
+    _, idp_stub, _, sm_stub = stubbed
+    idp_stub.add_response("list_user_pool_clients", CLIENTS_PAGE, None)
+    sm_stub.add_response("describe_secret", {"Name": "aa-identity/dev/breakglass",
+                                             "DeletedDate": dt.datetime(2026, 10, 18)}, None)
+    with pytest.raises(wb.ToolError, match="scheduled for deletion"):
+        wb.cmd_breakglass_init(ctx_factory(), BG_EMAIL)
+
+
+def test_breakglass_init_listusers_miss_takes_rotation_path(stubbed, ctx_factory, monkeypatch, capsys):
+    _, idp_stub, _, sm_stub = stubbed
+    monkeypatch.setattr(wb, "generate_password", lambda length=wb.PASSWORD_LENGTH: PASSWORD)
+    idp_stub.add_response("list_user_pool_clients", CLIENTS_PAGE, None)
+    stub_describe_secret(sm_stub)
+    idp_stub.add_response("list_users", {"Users": []}, None)
+    idp_stub.add_client_error("admin_create_user", service_error_code="UsernameExistsException",
+                              http_status_code=400)
+    idp_stub.add_response("admin_add_user_to_group", {}, None)
+    idp_stub.add_response("admin_add_user_to_group", {}, None)
+    idp_stub.add_response("describe_user_pool_client",
+                          {"UserPoolClient": {"ClientId": BG_CLIENT_ID, "ClientSecret": CLIENT_SECRET}}, None)
+    idp_stub.add_response("admin_enable_user", {}, None)
+    # The rotation path clears the old TOTP preference before the password sign-in.
+    idp_stub.add_response("admin_set_user_mfa_preference", {}, {
+        "UserPoolId": POOL, "Username": BG_EMAIL,
+        "SoftwareTokenMfaSettings": {"Enabled": False, "PreferredMfa": False}})
+    idp_stub.add_response("admin_set_user_password", {}, None)
+    idp_stub.add_response("initiate_auth", auth_result(access_token()), None)
+    idp_stub.add_response("associate_software_token", {"SecretCode": SEED}, None)
+    idp_stub.add_response("verify_software_token", {"Status": "SUCCESS"}, None)
+    idp_stub.add_response("admin_set_user_mfa_preference", {}, None)
+    sm_stub.add_response("put_secret_value", {"VersionId": "e" * 32 + "-version"}, None)
+    stub_close_out(idp_stub)
+    assert wb.cmd_breakglass_init(ctx_factory(), BG_EMAIL) == 0
+    idp_stub.assert_no_pending_responses()
+    out = capsys.readouterr().out
+    assert "already exists (not found by ListUsers)" in out
+    assert "created (SUPPRESS" not in out
+    assert "breakglass-init: done" in out
