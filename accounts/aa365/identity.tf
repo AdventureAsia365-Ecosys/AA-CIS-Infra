@@ -739,14 +739,13 @@ locals {
   id_branding_assets = [
     { category = "FORM_LOGO", extension = "PNG", file = "aa-form-logo.png" },
     { category = "PAGE_HEADER_LOGO", extension = "SVG", file = "aa-header-logo.svg" },
-    { category = "PAGE_FOOTER_LOGO", extension = "SVG", file = "aa-footer-logo.svg" },
     { category = "FAVICON_SVG", extension = "SVG", file = "aa-favicon.svg" },
   ]
 
   # Only values that differ from Cognito's defaults. Colours are RRGGBBAA.
   id_branding_settings_workforce = {
     categories = {
-      global = { colorSchemeMode = "LIGHT", pageHeader = { enabled = true }, pageFooter = { enabled = true } }
+      global = { colorSchemeMode = "LIGHT", pageHeader = { enabled = true }, pageFooter = { enabled = false } }
       form   = { displayGraphics = false }
     }
     componentClasses = {
@@ -779,10 +778,6 @@ locals {
       pageHeader = {
         logo      = { enabled = true, location = "START" }
         lightMode = { background = { color = "ffffffff" }, borderColor = "e9e4dbff" }
-      }
-      pageFooter = {
-        logo      = { enabled = true, location = "CENTER" }
-        lightMode = { background = { color = "f4f1ecff" }, borderColor = "e9e4dbff" }
       }
       form = {
         borderRadius = 16.0

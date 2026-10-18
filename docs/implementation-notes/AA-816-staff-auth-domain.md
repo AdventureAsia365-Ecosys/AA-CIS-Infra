@@ -43,7 +43,7 @@ domain and make it look like the Adventure Asia product.
   4 LIGHT assets from `accounts/aa365/assets/identity/`: `aa-form-logo.png` (official logo, copied
   from the CIS frontend `public/assets/adventure-asia-logo.png`), `aa-header-logo.svg` (mark +
   "Adventure Asia" + "Staff sign-in": Cognito has no text/title/font setting),
-  `aa-footer-logo.svg`, `aa-favicon.svg`. `use_cognito_provided_values` is left out (conflicts with
+  `aa-favicon.svg`. `use_cognito_provided_values` is left out (conflicts with
   `settings`).
 - **Import, then replace.** The 3 styles the CLI workaround created are adopted with `import`
   blocks (ID `<pool_id>,<branding_id>`, confirmed by the plan). The provider marks the `asset` set
@@ -154,3 +154,10 @@ domain and make it look like the Adventure Asia product.
   `identity_managed_login_base_urls.external` to `auth.`.
 - Long term: move the admin sign-in under `adventure.asia` (e.g. `admin.adventure.asia`) to remove
   the brand/domain mismatch entirely (business decision).
+
+## S242 pre-validation result
+- First pre-validation was rejected: logos must have a width:height ratio between 1:1 and 4:1 (header 296x64, footer 288x24).
+  Fix: header viewBox padded to 296x74 (4:1); footer logo dropped (pageFooter disabled), since a one-line text strip
+  cannot meet 4:1 without becoming unreadable.
+- Second pre-validation on the EXTERNAL tripplanner client was accepted (3 assets); screenshots
+  docs/audits/2026-10-18-S242-cognito-phase1/screens/10-*.png and 11-*.png (root repo); test style deleted.
