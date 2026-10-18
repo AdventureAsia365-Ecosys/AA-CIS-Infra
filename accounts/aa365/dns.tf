@@ -45,6 +45,8 @@ locals {
       records = [
         "v=spf1 include:zohomail.com ~all",
         "zoho-verification=zb55616719.zmverify.zoho.com",
+        # Google Search Console domain verification (S242: Safe Browsing false-positive review).
+        "google-site-verification=SBJolfpUeC42TjlDLGt0U1X0lqFXGxyRYcq4Ta4SDDQ",
       ]
     }
     "zmail._domainkey|TXT" = {
