@@ -18,10 +18,9 @@
 locals {
   cis_port = 8000 # modules/ecs container port (api task definition, target group)
 
-  # Callers admitted by each data store (ADR 0004b decision 2). The shared app group stays in every
-  # list until S14 (contract).
+  # Callers admitted by each data store (ADR 0004b decision 2). The shared app group was removed in
+  # X1 S14 (contract) once no live caller used it.
   rds_ingress_sg_ids = [
-    module.vpc.sg_app_id,
     aws_security_group.cis_api.id,
     aws_security_group.cis_worker.id,
     aws_security_group.booking_api.id,
@@ -29,12 +28,10 @@ locals {
     aws_security_group.db_migrate.id,
   ]
   redis_ingress_sg_ids = [
-    module.vpc.sg_app_id,
     aws_security_group.cis_api.id,
     aws_security_group.cis_worker.id,
   ]
   efs_ingress_sg_ids = [
-    module.vpc.sg_app_id,
     aws_security_group.cis_api.id,
     aws_security_group.cis_worker.id,
   ]
