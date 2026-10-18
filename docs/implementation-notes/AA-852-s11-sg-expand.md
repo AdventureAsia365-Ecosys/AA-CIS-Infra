@@ -35,8 +35,8 @@ here (S13), nothing runs the migrator family yet (S12), and `sg-app` stays in ev
   must not start the api server with the master DSN.
 - **Execution role `aa-cis-dev-db-migrate-execution-role`**: ECR auth + pull on the CIS repo only (new output `ecr_repository_arn`),
   `logs:CreateLogStream/PutLogEvents` on `log-stream:migrate/*` of the CIS group only (new output `log_group_arn`),
-  `GetSecretValue` on `aa-cis/dev/rds` and `aa-cis/dev/db-migrator` (exact ARNs). `AmazonECSTaskExecutionRolePolicy` not attached
-  (Booking pattern).
+  `GetSecretValue` on `aa-cis/dev/rds` only (exact ARN; `aa-cis/dev/db-migrator` is added in S22 with the `secrets` switch, as
+  the plan's S11 item 3 says). `AmazonECSTaskExecutionRolePolicy` not attached (Booking pattern).
 - **Task role `aa-cis-dev-db-migrate-task-role`**: `GetSecretValue` on `aa-cis/dev/rds`, `aa-cis/dev/rds-app-user` (not in
   Terraform: ARN pattern `…:secret:aa-cis/dev/rds-app-user-??????`), `aa-cis/dev/rds-cis-app`, `aa-cis/dev/db-migrator`,
   `booking/dev/database-url`, `tripplanner/dev/database-url`; `s3:PutObject` on `aa-cis-bronze-005097885195/db-schema-dump/*` only.
@@ -46,6 +46,11 @@ here (S13), nothing runs the migrator family yet (S12), and `sg-app` stays in ev
   `depends_on = [time_sleep.wait_for_iam_propagation]` like the Booking roles.
 - **`cis_app = 90`** added to `rds_role_connection_limits` → one new alarm `aa-cis-dev-rds-role-connections-cis_app`. No sessions
   until S18; `treat_missing_data = notBreaching` keeps it OK.
+- **Placeholder merge gate:** the DSN env var name lives in `local.db_migrate_dsn_env_name`, and a `lifecycle.precondition` on
+  `aws_ecs_task_definition.db_migrate` fails `terraform plan` while it still starts with `__NGHIEP`. So CI plan / Terraform Apply
+  cannot register the task definition with the placeholder name (review finding, S242).
+- **Empty-list guard:** the three new module variables reject `[]` (`validation`), since an empty list would render an inline
+  ingress rule with no source; `null` keeps the old single source.
 
 ## Changed (vs. the plan / task text)
 - **Secret placeholders follow `booking_db` (secret container, no version), not `tripplanner_db` (REPLACE_ME version +
@@ -72,14 +77,22 @@ here (S13), nothing runs the migrator family yet (S12), and `sg-app` stays in ev
 ## Should know
 - ⚠️ **Hand edit before merge (Nghiệp, VSCode):** `accounts/aa365/db_migrator.tf`, task definition `secrets`: replace
   `__NGHIEP_EDIT_DB_ENV_NAME__` with the DSN env var name that `db/run_migration.py` reads (passed to `connect()` in `main()`,
-  line ~1184; same name as the first `secrets` entry of the api task definition in `modules/ecs/main.tf`). Underscore env var:
-  not written by the agent. Applying it unedited registers a task definition whose runs have no DSN (nothing runs it until S12).
+  line ~1184; same name as the first `secrets` entry of the api task definition in `modules/ecs/main.tf`). The value lives in
+  `local.db_migrate_dsn_env_name` at the top of the file. Underscore env var: not written by the agent. Until it is edited,
+  `terraform plan` fails on the precondition (intended merge gate); after the edit, `grep -rn "__NGHIEP_EDIT" accounts/` must
+  return nothing and plan must show 14 to add, 3 to change, 0 to destroy.
 - `terraform plan` (local, aa365-admin, `-lock=false`, 18/10/2026): **14 to add, 3 to change, 0 to destroy**. In place: the
   RDS (`sg-055c18ce0bd00b5e3`), Redis (`sg-0f5a810c884fd15bc`) and EFS (`sg-085fa83fd09be7fe7`) groups' inline ingress only.
   No replacement; no ECS service, task definition (api/worker/booking), Lambda, RDS, ElastiCache or EFS change.
 - Terraform Apply has no job-idle gate; S11 needs none (standing rules: the migrator task def is unused, and the SG change is
   authorize-only).
 - Verify after apply (plan §S11): RDS SG lists 6 sources, Redis and EFS 3; all apps still on `sg-app`.
-- Cost: two secrets ≈ $0.80/month; everything else free.
+- Cost: two secrets ≈ $0.80/month + the `cis_app` connections alarm $0.10/month (acc2 is past the 10 free alarms) ≈ $0.90/month
+  for S11. Separately, `cis_app` (LOGIN, limit 90, created by rl-001) is discovered by the CIS sampler, which adds 2 AA/RDS metrics
+  and takes acc2 from 10 to 12 custom metrics (~$0.60/month); caused by rl-001, recorded in the observability_ecosys.tf cost block.
+- **Out of S11, before S20/S22:** the CIS task role grants `secretsmanager:GetSecretValue` on `*` (`modules/ecs/main.tf`), so it
+  will be able to read `aa-cis/dev/db-migrator` once that secret has a value (S20). Narrow the CIS task role's secret access during
+  the X1 runtime switch (S18/S19), before the migrator DSN is written.
+- **Root-repo plan text drift (x1-plan.md S11 items 3/4, S12, S17/S20):** amended in the root PR, not in this repo.
 - `terraform fmt -recursive` also reformats `accounts/acc1-bedrock/main.tf`, `accounts/acc3-bedrock/batch.tf` and
   `modules/monitoring/main.tf` with Terraform 1.15.5 (pre-existing drift, unrelated); those were left out of this PR.

@@ -28,6 +28,14 @@ locals {
   db_migrate_family    = "${local.name_prefix}-db-migrate"
   db_migrate_container = "migrate"
 
+  # ⚠️ HAND EDIT (Nghiệp, VSCode) before merge: replace the placeholder below with the name of the DSN
+  # environment variable that db/run_migration.py reads (main(): the value passed to connect(),
+  # line ~1184). It is the same name as the FIRST entry of the api task definition's secrets list
+  # (modules/ecs/main.tf), which db/schema_dump.py and db/isolation_probe.py read too.
+  # Underscore env var names are never written by the agent (workspace rule). The precondition on
+  # aws_ecs_task_definition.db_migrate fails `terraform plan` while the placeholder is still here.
+  db_migrate_dsn_env_name = "__NGHIEP_EDIT_DB_ENV_NAME__"
+
   # Secret ARN pattern of a secret Terraform does not manage (Secrets Manager appends "-" + 6 chars).
   secret_arn_prefix = "arn:aws:secretsmanager:${var.aws_region}:${var.account_id}:secret:"
 
@@ -102,8 +110,9 @@ resource "aws_iam_role" "db_migrate_execution" {
 }
 
 # ECS agent: pull the CIS image, write stream prefix "migrate" of the CIS log group, inject the
-# master DSN (S11..S21) and, from S22, the db_migrator DSN. AmazonECSTaskExecutionRolePolicy is NOT
-# attached (ECR pull on every repo, logs on every group).
+# master DSN (S11..S21). aa-cis/dev/db-migrator is added to InjectMigratorDsn in S22, together with
+# the switch of the task definition's secrets entry (plan S11 item 3), not before.
+# AmazonECSTaskExecutionRolePolicy is NOT attached (ECR pull on every repo, logs on every group).
 resource "aws_iam_role_policy" "db_migrate_execution" {
   name = "${local.db_migrate_family}-execution"
   role = aws_iam_role.db_migrate_execution.id
@@ -131,13 +140,10 @@ resource "aws_iam_role_policy" "db_migrate_execution" {
         Resource = "${module.ecs.log_group_arn}:log-stream:${local.db_migrate_container}/*"
       },
       {
-        Sid    = "InjectMigratorDsn"
-        Effect = "Allow"
-        Action = ["secretsmanager:GetSecretValue"]
-        Resource = [
-          module.secrets.rds_secret_arn,
-          aws_secretsmanager_secret.db_migrator.arn,
-        ]
+        Sid      = "InjectMigratorDsn"
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = [module.secrets.rds_secret_arn]
       },
     ]
   })
@@ -192,13 +198,10 @@ resource "aws_ecs_task_definition" "db_migrate" {
     image     = "${module.ecs.ecr_repository_url}:latest" # placeholder; S12 swaps in the api's image per run
     essential = true
     command   = ["python3", "-c", "raise SystemExit('aa-cis-dev-db-migrate: the command is supplied per run (containerOverrides)')"]
-    # ⚠️ HAND EDIT (Nghiệp, VSCode) before merge: replace the placeholder name below with the name of
-    # the DSN environment variable that db/run_migration.py reads (main(): the value passed to
-    # connect(), line ~1184). It is the same name as the FIRST entry of the api task definition's
-    # secrets list (modules/ecs/main.tf), which db/schema_dump.py and db/isolation_probe.py read too.
-    # Underscore env var names are never written by the agent (workspace rule).
+    # ⚠️ HAND EDIT: the name comes from local.db_migrate_dsn_env_name (top of this file), which
+    # Nghiệp edits by hand; it must be the DSN variable db/run_migration.py reads.
     secrets = [
-      { name = "__NGHIEP_EDIT_DB_ENV_NAME__", valueFrom = module.secrets.rds_secret_arn },
+      { name = local.db_migrate_dsn_env_name, valueFrom = module.secrets.rds_secret_arn },
     ]
     logConfiguration = {
       logDriver = "awslogs"
@@ -211,6 +214,15 @@ resource "aws_ecs_task_definition" "db_migrate" {
   }])
 
   tags = merge(local.shared_tags, { Name = "${local.db_migrate_family}-task" })
+
+  lifecycle {
+    # Merge gate for the hand edit above: ECS accepts any env name, so without this an unedited
+    # placeholder would apply cleanly and only fail in S12 as a missing-DSN error inside the task.
+    precondition {
+      condition     = !startswith(local.db_migrate_dsn_env_name, "__NGHIEP")
+      error_message = "db_migrator.tf: local.db_migrate_dsn_env_name is still the placeholder. Nghiệp: set it by hand (VSCode) to the DSN env var name db/run_migration.py reads, then re-run plan."
+    }
+  }
 }
 
 output "db_migrate_task_definition_arn" {

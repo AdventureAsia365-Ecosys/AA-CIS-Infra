@@ -388,18 +388,22 @@ resource "aws_cloudwatch_metric_alarm" "rds_cpu_surplus_credits_charged" {
 #   Custom metrics: the first 10 per account are free. acc2 publishes AA/RDS 6 (RoleConnections +
 #   RoleConnectionLimitPct x 3 roles) + AA-751's 4 (AA/Jobs/CIS + AA/Jobs/Booking, 2 metrics each, no
 #   dimensions) = 10. The old console-made log metric filter ACP/Pipeline T3FallbackUsedCount (AA-296,
-#   never fired, alarm with no actions) was deleted on 16/10/2026, so all 10 are free: $0. A metric is
+#   never fired, alarm with no actions) was deleted on 16/10/2026, so those 10 were free: $0. A metric is
 #   billed only while it receives data; the aa-cis/ops log-write-failure filters have no default value,
 #   so they cost nothing until a write actually fails.
+#   X1 rl-001 (AA-852) created cis_app LOGIN CONNECTION LIMIT 90; the sampler discovers it by itself
+#   (rolcanlogin AND rolconnlimit > 0), so AA/RDS grows to 8 (4 roles x 2) and acc2 to 12 metrics:
+#   2 above the free tier at ~$0.30 each = ~$0.60/month (caused by rl-001, counted here since S11).
 #   Alarms: acc2 already has more than the 10 free (42 on 16/10/2026), so every one is $0.10:
-#   AA-832 8 (4 below + 3 per-role + "sampling stopped")         8 x $0.10 = $0.80
+#   AA-832 9 (4 below + 4 per-role + "sampling stopped")         9 x $0.10 = $0.90
 #   AA-751 6 (3 job backlog alarms x 2 owners, end of file)      6 x $0.10 = $0.60
 #   PutMetricData: CIS 2 calls per 5 min (AA/RDS + AA/Jobs/CIS) + Booking 1 = ~25,900/month,
 #   inside the 1M free API requests: $0.
 #   Sampling runs in process (CIS api ops_metrics_sampler, Booking JobMetricsSampler), so there is
 #   no Scheduler -> Lambda -> API Gateway / WAF / Secrets Manager traffic for it any more (the
 #   AA-832 every-5-minutes schedule is gone from dfs_balance.tf).
-#   Total about $1.40/month for the AA-832 + AA-751 alarms (metrics free).
+#   Total about $1.50/month for the AA-832 + AA-751 alarms, plus ~$0.60/month for the 2 metrics
+#   over the free tier since cis_app (rl-001) = about $2.10/month.
 # -----------------------------------------------------------------------------
 
 # ReadLatency / WriteLatency are published in SECONDS: 0.020 = 20 ms, averaged over 15 minutes.
