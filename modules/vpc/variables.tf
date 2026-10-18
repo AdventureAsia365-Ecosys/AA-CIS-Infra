@@ -49,3 +49,9 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "rds_ingress_sg_ids" {
+  description = "ADR 0004b (X1 S11): security groups admitted to the RDS group on 5432 (inline ingress, authoritative). Null keeps the old behaviour: only this module's app group."
+  type        = list(string)
+  default     = null
+}

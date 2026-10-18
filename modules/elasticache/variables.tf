@@ -3,6 +3,12 @@ variable "environment" { type = string }
 variable "vpc_id" { type = string }
 variable "private_subnet_ids" { type = list(string) }
 variable "sg_app_id" { type = string }
+
+variable "ingress_sg_ids" {
+  description = "ADR 0004b (X1 S11): security groups admitted on 6379 (inline ingress, authoritative). Null keeps the old behaviour: only var.sg_app_id."
+  type        = list(string)
+  default     = null
+}
 variable "node_type" {
   type    = string
   default = "cache.t3.micro"

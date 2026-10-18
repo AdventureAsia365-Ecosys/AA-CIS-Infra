@@ -60,6 +60,10 @@ locals {
     tripplanner = 30
     booking     = 15
     aa_app_user = 15
+    # X1 S11 (AA-852): cis_app (rl-001, no LOGIN use until S18). 90 = the XD6 floor; S15 measures the
+    # real peak and the limit (max(90, 2 x peak + one deploy set)) is restated here in the same PR.
+    # No sessions until S18, so the alarm stays OK (treat_missing_data = notBreaching).
+    cis_app = 90
   }
 }
 
