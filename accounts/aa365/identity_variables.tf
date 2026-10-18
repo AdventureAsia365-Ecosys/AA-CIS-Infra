@@ -37,13 +37,13 @@ variable "identity_external_domain_prefix" {
 }
 
 variable "identity_custom_domains_enabled" {
-  description = "Create the custom domains auth. / staff-auth. (ADR 0006 decision 10). Turn on only after the AA-818 us-east-1 certificate is ISSUED and the parent lumiguides.it.com has an A record; then add the CNAMEs from output identity_custom_domain_cloudfront_targets. Off = Dev runs on the prefix domains."
+  description = "Create the custom domains auth. / staff-auth. (ADR 0006 decision 10) and their Route 53 alias records. Needs the AA-818 us-east-1 certificate ISSUED and the apex A record (dns.tf aws_route53_record.apex). Off = Dev runs on the prefix domains only (the prefix domains always stay, as fallback)."
   type        = bool
-  default     = false
+  default     = true # AA-816 S242: certificate ISSUED (S237), NS on Route 53; staff sign-in moves off amazoncognito.com (Safe Browsing flag)
 }
 
 variable "identity_custom_domain_certificate_arn" {
-  description = "Public ACM certificate in us-east-1 (acc2, AA-818) covering auth. and staff-auth. Required when identity_custom_domains_enabled = true."
+  description = "Override for the us-east-1 ACM certificate of auth. and staff-auth. Empty (default) = aws_acm_certificate.auth in custom_domains.tf (AA-818, same root)."
   type        = string
   default     = ""
 
