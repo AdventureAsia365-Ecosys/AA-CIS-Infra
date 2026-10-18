@@ -477,7 +477,7 @@ resource "aws_ecs_service" "api" {
 
   network_configuration {
     subnets          = var.private_subnet_ids
-    security_groups  = [var.sg_app_id]
+    security_groups  = [coalesce(var.sg_api_id, var.sg_app_id)]
     assign_public_ip = false
   }
 
@@ -650,7 +650,7 @@ resource "aws_ecs_service" "worker" {
 
   network_configuration {
     subnets          = var.private_subnet_ids
-    security_groups  = [var.sg_app_id]
+    security_groups  = [coalesce(var.sg_worker_id, var.sg_app_id)]
     assign_public_ip = false
   }
 

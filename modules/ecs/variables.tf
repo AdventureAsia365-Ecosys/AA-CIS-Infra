@@ -23,6 +23,20 @@ variable "sg_app_id" {
   description = "Security group for ECS tasks"
 }
 
+# ADR 0004b (X1 S13c): one security group per caller. When set, the api / worker service uses its
+# own group instead of the shared app group; null keeps sg_app_id (rollback = unset these).
+variable "sg_api_id" {
+  type        = string
+  default     = null
+  description = "Security group for the api service; null falls back to sg_app_id"
+}
+
+variable "sg_worker_id" {
+  type        = string
+  default     = null
+  description = "Security group for the worker service; null falls back to sg_app_id"
+}
+
 variable "target_group_arn" {
   type        = string
   description = "ALB target group ARN"
