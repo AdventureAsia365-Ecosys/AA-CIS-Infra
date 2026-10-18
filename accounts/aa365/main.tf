@@ -168,6 +168,9 @@ module "ecs" {
 
   private_subnet_ids = module.vpc.private_subnet_ids
   sg_app_id          = module.vpc.sg_app_id
+  # ADR 0004b (X1 S13c): api and worker on their own groups (app_security_groups.tf).
+  sg_api_id    = aws_security_group.cis_api.id
+  sg_worker_id = aws_security_group.cis_worker.id
 
   target_group_arn = module.alb.target_group_arn
 
