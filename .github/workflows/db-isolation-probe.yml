@@ -62,9 +62,9 @@ jobs:
       LOG_GROUP: /ecs/aa-cis-dev
       REASON: ${{ github.event_name == 'schedule' && 'nightly' || inputs.reason || 'manual' }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -175,7 +175,7 @@ jobs:
 
       - name: Keep probe.json + task log as an artifact
         if: always() && steps.task.outputs.arn != ''
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: db-isolation-probe-${{ github.run_id }}
           path: |
