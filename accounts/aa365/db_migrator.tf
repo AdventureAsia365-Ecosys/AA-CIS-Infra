@@ -34,7 +34,7 @@ locals {
   # (modules/ecs/main.tf), which db/schema_dump.py and db/isolation_probe.py read too.
   # Underscore env var names are never written by the agent (workspace rule). The precondition on
   # aws_ecs_task_definition.db_migrate fails `terraform plan` while the placeholder is still here.
-  db_migrate_dsn_env_name = "__NGHIEP_EDIT_DB_ENV_NAME__"
+  db_migrate_dsn_env_name = "DATABASE_URL"
 
   # Secret ARN pattern of a secret Terraform does not manage (Secrets Manager appends "-" + 6 chars).
   secret_arn_prefix = "arn:aws:secretsmanager:${var.aws_region}:${var.account_id}:secret:"
