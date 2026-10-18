@@ -83,6 +83,9 @@ accounts/
                                    lambda_src/identity_triggers + tests; SES (ses.tf identity) on,
                                    EXTERNAL native sign-up, WAF and custom domains gated by
                                    variables, default off — AA-854)
+    identity_iam.tf               (AA-816: CIS task role (api + worker) allow-list on the WORKFORCE pool
+                                   only — create/group/disable/enable/global sign-out + ListUsers*;
+                                   no AdminGetUser / AdminSetUserPassword / attribute writes, ADR 0006)
     observability.tf, observability_ecosys.tf (S235 alarms + log retention; RDS alarms per data standard
                                    C4.1 + per-role AA/RDS RoleConnectionLimitPct alarms, AA-832; job
                                    backlog alarms per owner AA/Jobs/CIS + AA/Jobs/Booking and the
