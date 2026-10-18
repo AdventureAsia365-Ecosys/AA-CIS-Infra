@@ -198,10 +198,11 @@ class SetPasswordTest(unittest.TestCase):
     def run_sp(self, secret=CIS_APP_DSN, role="cis_app", master=None, test=None, test_error=None):
         self.master = master or PwConn()
         self.test = test or TestConn()
-        self.connects, self.secret_reads = [], []
+        self.connects, self.secret_reads, self.connect_kw = [], [], []
 
-        async def connect(dsn, settings):
+        async def connect(dsn, settings, **kw):
             self.connects.append((dsn, settings))
+            self.connect_kw.append(kw)
             if dsn == MASTER_DSN:
                 return self.master
             if test_error:
@@ -243,6 +244,7 @@ class SetPasswordTest(unittest.TestCase):
                                   r"""[0-9:]{8}Z by DB Migrate set-password \(run 4242\)'$""")
         self.assertIn(rm.PASSWORD_MARKER, comment)
         self.assertEqual([d for d, _ in self.connects], [MASTER_DSN, CIS_APP_DSN])
+        self.assertEqual(self.connect_kw, [{}, {"ssl": "require"}])         # test login never in cleartext
         self.assertIn("MIGRATE set-password: test login current_user=cis_app rolconnlimit=90\n", self.out)
         self.assertTrue(self.master.closed and self.test.closed)
         self.assertNoSecret(verifier, "deadbeef")
@@ -288,12 +290,41 @@ class SetPasswordTest(unittest.TestCase):
         self.assertEqual(self.run_sp(master=PwConn(login="db_migrator")), 8)
         self.assertEqual((self.secret_reads, self.master.executed), ([], []))
 
-    def test_failed_test_login_does_not_mark_the_role_and_redacts(self):
-        code = self.run_sp(test_error=PgError("28P01", f"password authentication failed ({PASSWORD}) {CIS_APP_DSN}"))
+    def test_failed_test_login_does_not_mark_the_role_and_logs_class_and_sqlstate_only(self):
+        escaped = PASSWORD.replace("!", "\\!")                                # a form exact replace would miss
+        code = self.run_sp(test_error=PgError("28P01", f"password authentication failed ({escaped}) {CIS_APP_DSN}"))
         self.assertEqual(code, 12)
         self.assertEqual(len(self.master.executed), 1)                          # ALTER only, no COMMENT
-        self.assertIn("password authentication failed (***) ***", self.out)
-        self.assertNoSecret()
+        self.assertIn("test login as cis_app with aa-cis/dev/rds-cis-app failed: PgError 28P01. The password is set",
+                      self.out)
+        self.assertNotIn("password authentication failed", self.out)
+        self.assertNoSecret(escaped)
+
+    def test_target_must_equal_the_master_connection(self):
+        pw = PASSWORD
+        cases = [
+            ("other host", f"postgresql://cis_app:{pw}@other.example:5432/aa_cis_dev"),
+            ("other port", f"postgresql://cis_app:{pw}@db.example:6432/aa_cis_dev"),
+            ("other database", f"postgresql://cis_app:{pw}@db.example:5432/postgres"),
+            ("no database", f"postgresql://cis_app:{pw}@db.example:5432"),
+            ("host in query", f"postgresql://cis_app:{pw}@db.example:5432/aa_cis_dev?host=evil.example"),
+            ("two hosts", f"postgresql://cis_app:{pw}@db.example:5432,evil.example:5432/aa_cis_dev"),
+        ]
+        for name, dsn in cases:
+            with self.subTest(name):
+                self.assertEqual(self.run_sp(secret=dsn), 11)
+                self.assertEqual(self.master.executed, [])
+                self.assertEqual(len(self.connects), 1)
+                self.assertNoSecret(dsn)
+        # Default port and host case: same target.
+        self.assertEqual(self.run_sp(secret=f"postgresql://cis_app:{pw}@DB.example/aa_cis_dev"), 0)
+
+    def test_redact_covers_escaped_and_encoded_forms(self):
+        secret = "a'b\\c d%"
+        text = f"x {secret} {secret!r} {rm.urllib.parse.quote(secret, safe='')} y"
+        out = rm._redact(text, (secret,))
+        self.assertEqual(out.count("***"), 3, out)
+        self.assertNotIn("b\\\\c", out)
 
     def test_test_login_as_another_user_is_refused(self):
         self.assertEqual(self.run_sp(test=TestConn(user="aa_cis_admin")), 12)
@@ -326,7 +357,7 @@ class RunScriptTest(unittest.TestCase):
         self.conn = conn or FakeConn()
         self.sleeps = []
 
-        async def connect(dsn, settings):
+        async def connect(dsn, settings, **kw):
             self.settings = settings
             return self.conn
 
@@ -370,6 +401,48 @@ class RunScriptTest(unittest.TestCase):
         self.assertEqual(self.run_rs(source=raising), 13)
         self.assertIn("script raised RuntimeError", self.out)
         self.assertEqual(self.run_rs(source="async def main(conn):\n    return 3\n"), 13)
+
+    def test_script_error_text_is_redacted_for_the_master_dsn(self):
+        leaky = ("import os\nasync def main(conn):\n"
+                 "    raise RuntimeError('cannot reach ' + os.environ['DATABASE_URL'])\n")
+        dsn = "postgresql://aa_cis_admin:Mst%21Secret-Value-123456@db.example:5432/aa_cis_dev"
+        rm_env = dict(os.environ, DATABASE_URL=dsn)
+        old = os.environ.copy()
+        os.environ.clear(); os.environ.update(rm_env)
+        try:
+            self.assertEqual(self.run_rs(source=leaky, DATABASE_URL=dsn), 13)
+        finally:
+            os.environ.clear(); os.environ.update(old)
+        self.assertIn("script raised RuntimeError", self.out)
+        for value in (dsn, "Mst%21Secret-Value-123456", "Mst!Secret-Value-123456"):
+            self.assertNotIn(value, self.out)
+        returning = "async def main(conn):\n    return 'x ' + 'Mst!Secret-Value-123456'\n"
+        self.assertEqual(self.run_rs(source=returning, DATABASE_URL=dsn), 13)
+        self.assertNotIn("Mst!Secret-Value-123456", self.out)
+
+    def test_read_only_script_skips_the_wait_and_sets_the_session_read_only(self):
+        busy = ({"booking": [job("bk_x")], "shared": []}, 0)
+        src = "READ_ONLY = True\n" + SCRIPT
+        self.assertEqual(self.run_rs(source=src, conn=FakeConn(states=[busy])), 0)
+        self.assertEqual(self.sleeps, [])
+        self.assertEqual(self.settings, {**rm.DEFAULT_SETTINGS, "default_transaction_read_only": "on"})
+        self.assertIn("READ_ONLY script, the idle check is report-only", self.out)
+        self.assertIn("SCRIPT who=aa_cis_admin\n", self.out)
+        # READ_ONLY = False behaves like no declaration: waits and refuses while busy.
+        self.assertEqual(self.run_rs(source="READ_ONLY = False\n" + SCRIPT, conn=FakeConn(states=[busy])), 7)
+        self.assertEqual(self.settings, rm.DEFAULT_SETTINGS)
+
+    def test_read_only_declaration_shape(self):
+        bad = ["READ_ONLY = 1\n", "READ_ONLY = True\nREAD_ONLY = True\n", "READ_ONLY: bool = True\n",
+               "READ_ONLY = x = True\n", "READ_ONLY = True\nSQL = 'SET default_transaction_read_only = off'\n",
+               "READ_ONLY = True\nSQL = 'BEGIN READ  WRITE'\n"]
+        for head in bad:
+            with self.subTest(head=head):
+                self.assertTrue(rm.script_errors(head + SCRIPT, "db/scripts/x.py"))
+        self.assertEqual(rm.script_errors("READ_ONLY = True\n" + SCRIPT, "db/scripts/x.py"), [])
+        self.assertEqual(rm.script_errors("SQL = 'SET default_transaction_read_only = off'\n" + SCRIPT,
+                                          "db/scripts/x.py"), [])               # only READ_ONLY files are checked
+        self.assertTrue(rm.script_is_read_only((ROOT / "db/scripts/session_info.py").read_text()))
 
     def test_main_guard_does_not_fire(self):
         src = SCRIPT + "\nif __name__ == '__main__':\n    raise SystemExit('ran as __main__')\n"
@@ -457,6 +530,8 @@ class MigratorWorkflowTest(unittest.TestCase):
         self.assertIn("- name: Unused inputs", text)
         for code in ("7", "8", "9", "10", "11", "12", "13"):
             self.assertIn(f'if [ "$EXIT" = "{code}" ]', text)
+        self.assertIn('--next-token "$TOKEN"', text)                            # every page of the task log
+        self.assertIn('if [ "$STATUS" != "STOPPED" ]', text)                   # waiter ceiling reported as such
 
 
 @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs bash + jq")
@@ -496,6 +571,36 @@ class MigratorTaskScriptTest(unittest.TestCase):
         bad = json.loads(json.dumps(self.BASE))
         bad["taskDefinition"]["containerDefinitions"][0]["name"] = "api"
         self.assertNotEqual(self.sh("render", "img", stdin=json.dumps(bad)).returncode, 0)
+
+    def test_check_base_accepts_the_terraform_revision(self):
+        r = self.sh("check-base", stdin=json.dumps(self.BASE))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        s22 = json.loads(json.dumps(self.BASE))
+        s22["taskDefinition"]["containerDefinitions"][0]["secrets"][0]["valueFrom"] = \
+            "arn:aws:secretsmanager:us-west-1:005097885195:secret:aa-cis/dev/db-migrator-Ab12Cd"
+        self.assertEqual(self.sh("check-base", stdin=json.dumps(s22)).returncode, 0)
+
+    def test_check_base_refuses_copies_and_hand_registered_revisions(self):
+        def variant(edit):
+            td = json.loads(json.dumps(self.BASE))
+            edit(td["taskDefinition"], td["taskDefinition"]["containerDefinitions"][0])
+            return json.dumps(td)
+        cases = {
+            "per-run copy": lambda t, c: c.update(image="005097885195.dkr.ecr.us-west-1.amazonaws.com/aa-cis-dev-api:dev-0123abc"),
+            "task role": lambda t, c: t.update(taskRoleArn="arn:aws:iam::005097885195:role/aa-cis-dev-ecs-task-role"),
+            "execution role": lambda t, c: t.update(executionRoleArn="arn:aws:iam::005097885195:role/x-execution-role"),
+            "cis_app secret": lambda t, c: c["secrets"][0].update(
+                valueFrom="arn:aws:secretsmanager:us-west-1:005097885195:secret:aa-cis/dev/rds-cis-app-Ab12Cd"),
+            "two secrets": lambda t, c: c["secrets"].append({"name": "X", "valueFrom": c["secrets"][0]["valueFrom"]}),
+            "secret name": lambda t, c: c["secrets"][0].update(name="DSN"),
+            "plain env": lambda t, c: c.update(environment=[{"name": "A", "value": "b"}]),
+            "family": lambda t, c: t.update(family="aa-cis-dev-db-migrate-x"),
+        }
+        for name, edit in cases.items():
+            with self.subTest(name):
+                r = self.sh("check-base", stdin=variant(edit))
+                self.assertNotEqual(r.returncode, 0)
+                self.assertIn("not the Terraform migrator shape", r.stderr)
 
     def test_deregister_only_touches_the_migrator_family(self):
         r = self.sh("deregister", "arn:aws:ecs:us-west-1:005097885195:task-definition/aa-cis-dev-api:673")

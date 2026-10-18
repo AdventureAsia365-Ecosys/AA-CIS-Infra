@@ -19,9 +19,17 @@ One PR, workflows + runner + tests only. **No Terraform change, no hand edit, no
 - **Register in its own step before the run step; deregister as the last-but-one step with
   `if: always() && steps.td.outputs.arn != ''`.** `prepare` writes `arn` to `$GITHUB_OUTPUT` right after
   register, before its own checks, so a failed check still deregisters. Presigned URLs stay inside the run step.
-- **Base = the family's latest ACTIVE revision** (normally Terraform's). A revision left ACTIVE by a run whose
-  deregister failed, or by a concurrent run (DB Migrate, dump and probe have separate concurrency groups), is an
-  identical copy apart from the image, which is replaced anyway; the invariant check guards the rest.
+- **Base = the newest ACTIVE revision whose image is still the `:latest` placeholder** (review fix A4/B2; first
+  draft took the family's latest ACTIVE revision). `pick_base` walks `list-task-definitions --family-prefix
+  aa-cis-dev-db-migrate --status ACTIVE --sort DESC` (ARN regex, since `--family-prefix` matches longer names),
+  skipping per-run copies left ACTIVE by a lost deregister (warning: deregister it). Then `check-base` asserts
+  Terraform's fixed shape, independent of the invariant: family, `role/aa-cis-dev-db-migrate-task-role`,
+  `role/aa-cis-dev-db-migrate-execution-role`, one container `migrate`, image `:latest`, no plain `environment`,
+  exactly one secret `DATABASE_URL` whose ARN matches `:secret:aa-cis/dev/(rds|db-migrator)-<6 chars>$`
+  (`rds-cis-app` and the other `rds-*` secrets do not match; `db-migrator` is allowed now so S22's Terraform
+  switch needs no script change). Checked against live rev 1 (read-only describe): passes. Without this, a stale
+  copy would be inherited forever (after S22 it would keep running as the master), and a hand-registered
+  revision with other roles/secrets would be copied with the invariant check still passing.
 - **No tags on workflow revisions**: `registeredBy` already names the CI role; avoids depending on
   `ecs:TagResource` and keeps `ManagedBy=terraform` off revisions Terraform does not manage.
 - **Deregister, not delete.** INACTIVE revisions stay describable (the stopped task references its ARN, useful
@@ -47,6 +55,12 @@ One PR, workflows + runner + tests only. **No Terraform change, no hand edit, no
   runs as another user, role not marked), then `COMMENT ON ROLE "<role>" IS 'x1:password-set <UTC> by DB Migrate
   set-password (run <id>)'`. Every error text passes through `_redact` (DSN, decoded + encoded password,
   verifier); a botocore error logs only its class and error code.
+- **set-password review hardening (A2, A3).** Before the ALTER, the secret's DSN must reach the same
+  host (case-insensitive), port (default 5432) and database as `DATABASE_URL` (`dsn_target`; several hosts or
+  host/port/dbname/database in the query are refused), else exit 11 with nothing changed. The test login passes
+  `ssl="require"` (`_connect` gained an optional `ssl`; the master connection keeps the DSN/asyncpg default), so
+  the password is never sent in cleartext. Exit 12 logs only the exception class and SQLSTATE, not `str(e)`.
+  `_redact` also replaces repr-escaped, unicode-escaped, percent-encoded and percent-decoded forms.
 - **Run id for the marker comes from `RUNNER_URL`'s path** (`db-migrate/<run id>/run_migration.py`, only the
   digits are used). Reading `GITHUB_RUN_ID` or passing it would be a new variable name; `"unknown"` if the path
   ever changes.
@@ -57,7 +71,20 @@ One PR, workflows + runner + tests only. **No Terraform change, no hand edit, no
   `if __name__ == "__main__"` blocks do not run) and `await main(conn)` on the master connection with the
   standard session settings. Exception or non-zero return → exit 13 (55P03 gets the lock hint). Contract over
   subprocess: the script never touches the DSN variable and inherits lock/statement timeouts and
-  `application_name = db-migrate`.
+  `application_name = db-migrate`. A script's exception text and non-zero return value are redacted for the
+  master DSN and its password (review fix A1).
+- **`READ_ONLY = True` scripts (review fix B3, for plan S15's sampler and the post-merge smoke test).** One
+  top-level bool literal (AST-checked; anything else is exit 10 / copy-guard red). The runner connects with
+  `default_transaction_read_only = on` in the startup settings and the idle check becomes report-only (no wait,
+  no exit 7). A READ_ONLY file whose string literals (docstrings excluded) mention `transaction_read_only` or
+  `READ WRITE` is refused. It is a declaration enforced by the session, not a sandbox: still the master login,
+  the PR review still reads the file. `session_info.py` declares it.
+- **DB Migrate reads every page of the task log** (same loop as the probe; one `get-log-events` call stops at
+  1 MB / 10k events) and, when the task is not STOPPED after the 30-minute wait, fails with "still RUNNING …
+  keeps running with the master DSN" instead of "exited with null". It does not stop the task (stopping a
+  no-transaction apply half way is worse than letting it finish).
+- **`prepare` warns when the api service's PRIMARY deployment is not COMPLETED** (review nit B5): the image is
+  still the newest deployment's, as before S12.
 - **File transport mirrors migrations**: the workflow uploads it as `db-migrate/<run id>/payload` next to the
   runner, passes the presigned URL in `MIGRATION_URL` and its sha256 in `MIGRATION_SHA256`. set-password sends no
   file (`MIGRATION_URL` empty).
@@ -73,12 +100,18 @@ One PR, workflows + runner + tests only. **No Terraform change, no hand edit, no
   so the mode can be verified without a write.
 
 ## Changed (vs. the plan / task text)
-- **No IAM change.** The three workflows run as `aa-cis-infra-tf-apply` (environment prod). It has
+- **No IAM change, but S12 depends on the S11 Terraform Apply** (review fix B1; the first draft said "safe to merge
+  on its own"). `prepare` needs family `aa-cis-dev-db-migrate`, SG `aa-cis-dev-sg-db-migrate` and the RDS ingress
+  from it; merged before the S11 apply, every DB Migrate run and the nightly dump (03:43 UTC) and probe
+  (04:13 UTC) would go red. Checked live 18/10 (read-only): rev 1 ACTIVE (`:latest`, the two migrator roles,
+  secret `aa-cis/dev/rds-7K4JX3`, empty environment), SG `sg-0d74ce8cc170fb0ce` exists, RDS SG
+  `sg-055c18ce0bd00b5e3` lists 6 sources. So the S11 apply has run and the ordering is satisfied now.
+  The three workflows run as `aa-cis-infra-tf-apply` (environment prod). It has
   `ecs:RegisterTaskDefinition`, `ecs:DeregisterTaskDefinition`, `ecs:DescribeTaskDefinition` and `ecs:RunTask`
   through `AmazonECS_FullAccess`, `iam:PassRole` on `arn:aws:iam::005097885195:role/aa-*-dev-*` through
   `IAMRoleManageStack` (`cicd_split.tf`; the migrator roles `aa-cis-dev-db-migrate-*` match, and its boundary
   denies role writes only outside that pattern), and `ec2:DescribeSubnets/DescribeSecurityGroups` through
-  `AmazonVPCFullAccess`. So the PR is safe to merge on its own; no Terraform Apply ordering is needed.
+  `AmazonVPCFullAccess` (`ecs:ListTaskDefinitions` for `pick_base` is in `AmazonECS_FullAccess` too).
   (Read from Terraform; the IAM API itself could not be queried from this agent session.)
 - **Plan S12's hand edit is gone.** The plan expected one new env var for the role name (Nghiệp to write two
   lines by hand). The role and script travel in the value of the existing `MIGRATION_MODE` instead, and the
@@ -106,25 +139,42 @@ One PR, workflows + runner + tests only. **No Terraform change, no hand edit, no
 - 32-character printable-ASCII rule may refuse a password someone chose by hand; it is cheaper than debugging a
   SASLprep mismatch (password "set" but logins fail).
 
+- `READ_ONLY` as a session default vs. a separate read-only login: a read-only role would need a new secret and
+  Terraform; the session default plus the AST guard stops accidental writes in a reviewed file, which is the risk.
+- Base selection by `:latest` + fixed shape vs. passing the Terraform output ARN: the workflows do not run
+  Terraform, and the output would need a state read; the shape check pins the same facts without it.
+- Review items not changed: B6 (memory: the post-merge dump check proves 512 MB; raise `memory` on exit 137);
+  stopping a task that outlives the 30-minute wait (reported, not stopped; see Decisions).
+
 ## Should know
 - **Verify after merge (plan S12):** DB Migrate `mode=check`, `migration=cis/242_…` → exit 0 and the step
   summary shows `migrator task definition: …aa-cis-dev-db-migrate:<n>`; the revision is INACTIVE afterwards
   (`aws ecs describe-task-definition --task-definition aa-cis-dev-db-migrate:<n> --profile aa365-admin --region us-west-1 --query taskDefinition.status`);
   DB Schema Dump dispatch green **and** a new object under `s3://aa-cis-bronze-005097885195/db-schema-dump/<run id>/`;
   DB Isolation Probe dispatch green; `pg_stat_activity` shows `db-migrate` sessions from the migrator SG's ENI.
-  Optional: `mode=run-script`, `script=db/scripts/session_info.py` → `SCRIPT session_user=aa_cis_admin`.
+  Optional: `mode=run-script`, `script=db/scripts/session_info.py` → `SCRIPT session_user=aa_cis_admin` (READ_ONLY,
+  so it runs even while a wave is open).
 - **set-password is not runnable until S17** (`aa-cis/dev/rds-cis-app` has no value yet → exit 11 "unreadable …
   ResourceNotFoundException", nothing changed). That refusal is the expected result of a dry dispatch today.
-- **S22 must give these modes a master connection.** set-password and run-script refuse any login but
-  `aa_cis_admin` (exit 8). When S22 switches the task's `DATABASE_URL` secret to `aa-cis/dev/db-migrator`, the
-  runner needs a master connection read in-task from `aa-cis/dev/rds` (the task role already reads it) for
-  `roles/`, set-password and run-script, as plan S22 says.
+- **S22 must give BOTH new modes a master connection (root plan amendment).** set-password and run-script
+  refuse any login but `aa_cis_admin` (exit 8). Plan S22 lists only `roles/`, set-password and extensions for
+  the in-task master connection; it must also name **run-script** (README: the master path after S19). When S22
+  switches the task's `DATABASE_URL` secret to `aa-cis/dev/db-migrator`, the runner opens a master connection
+  read in-task from `aa-cis/dev/rds` (the task role already reads it) for `roles/`, set-password and run-script;
+  S22's check "set-password … exits 0 (master path)" depends on it. `check-base` already accepts the
+  `db-migrator` secret.
+- **Root plan text to amend (root PR):** S12 needs no new env var, no hand edit, no IAM change, and merges only
+  after the S11 Terraform Apply is green (now true); S22 runner change covers run-script; S15's sampler is a
+  `READ_ONLY = True` script, one snapshot per dispatch (30-minute ceiling per run).
 - **Memory:** the migrator is 0.25 vCPU / 0.5 GB (api: 0.5 vCPU / 1 GB). Runner, dump and probe hold only catalog
   rows; if a dump ever stops with exit 137 (OOM), raise `memory` in `db_migrator.tf`.
 - The task log stream moves from `api/api/<id>` to `migrate/migrate/<id>` (same log group `/ecs/aa-cis-dev`).
 - Cost: none (task definition revisions are free; the one-off task is smaller than the api-sized one it replaces).
 - `actionlint` 1.7.12 (+ shellcheck): only the four pre-existing SC2034 warnings (`for i in 1 2 3` waiter loops,
-  `page` loop), identical on `origin/main`; `shellcheck` on `migrator-task.sh` clean.
-- Tests: `python3 -m unittest discover -s db/tests` → 213 tests OK (29 new in `test_runner_modes.py`: RFC 7677
+  `page` loop), identical on `origin/main` (the new log loop in DB Migrate uses `_`); `shellcheck` on
+  `migrator-task.sh` clean.
+- Tests: `python3 -m unittest discover -s db/tests` → 220 tests OK after the review fixes (7 more: target match,
+  ssl + class-only exit 12, redact forms, run-script redaction, READ_ONLY run + shape, `check-base` accept/refuse).
+  Before the fixes: 213 tests OK (29 new in `test_runner_modes.py`: RFC 7677
   vector + independent client SCRAM exchange, mode allowlist, DSN parsing, set-password paths with
   no-secret-in-output checks, run-script paths, workflow guards incl. "no new env names", `render`/`deregister`).

@@ -39,7 +39,8 @@ name: DB Migrate (shared RDS)
 #     (COMMENT ON ROLE … 'x1:password-set …'). No secret reaches the runner or the log (plan XD2).
 #   run-script (input script, a reviewed db/scripts/<name>.py on main) — the file reaches the task like a
 #     migration (presigned URL + sha256) and its async main(conn) runs as the master after the same idle
-#     check as apply (exit 7 while busy; override_busy_jobs applies). See db/scripts/README.md.
+#     check as apply (exit 7 while busy; override_busy_jobs applies); a script declaring READ_ONLY = True runs
+#     with default_transaction_read_only=on and the idle check only reports. 30-minute ceiling. See db/scripts/README.md.
 # Exit 10 = mode input refused, 11 = set-password secret refused, 12 = set-password test login failed,
 # 13 = run-script failed.
 on:
@@ -294,12 +295,31 @@ jobs:
           TASK_ARN: ${{ steps.task.outputs.arn }}
         run: |
           TASK_ID="${TASK_ARN##*/}"
-          aws logs get-log-events --log-group-name "$LOG_GROUP" --log-stream-name "migrate/migrate/$TASK_ID" \
-            --start-from-head --query 'events[].message' --output text | tr '\t' '\n' | tee task.log || true
+          STREAM="migrate/migrate/$TASK_ID"
+          # Every page of the stream (one call returns at most 1 MB / 10k events; run-script output can be long).
+          : > task.log
+          TOKEN=""
+          for _ in $(seq 1 50); do
+            if [ -z "$TOKEN" ]; then
+              R=$(aws logs get-log-events --log-group-name "$LOG_GROUP" --log-stream-name "$STREAM" --start-from-head --output json) || break
+            else
+              R=$(aws logs get-log-events --log-group-name "$LOG_GROUP" --log-stream-name "$STREAM" --next-token "$TOKEN" --output json) || break
+            fi
+            jq -r '.events[].message' <<<"$R" >> task.log
+            NEXT=$(jq -r '.nextForwardToken' <<<"$R")
+            [ "$NEXT" = "$TOKEN" ] && break
+            TOKEN="$NEXT"
+          done
+          cat task.log
           grep '^MIGRATE' task.log >> "$GITHUB_STEP_SUMMARY" || true
           DESC=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$TASK_ARN" --output json)
           EXIT=$(jq -r '.tasks[0].containers[] | select(.name=="migrate") | .exitCode' <<<"$DESC")
-          echo "exit code: $EXIT  stopped: $(jq -r '.tasks[0].stoppedReason' <<<"$DESC")"
+          STATUS=$(jq -r '.tasks[0].lastStatus' <<<"$DESC")
+          echo "exit code: $EXIT  status: $STATUS  stopped: $(jq -r '.tasks[0].stoppedReason' <<<"$DESC")"
+          if [ "$STATUS" != "STOPPED" ]; then
+            echo "::error::the task is still $STATUS after the 30-minute wait and keeps running with the master DSN (the log above is partial). Watch $STREAM in CloudWatch; stop the task in the ECS Console only if it must not finish"
+            exit 1
+          fi
           if [ "$EXIT" = "7" ]; then
             echo "::error::apply refused: a job table is busy or a rerun wave is open (see the MIGRATE busy lines). Wait until idle, or re-dispatch with override_busy_jobs=<reason> (Nghiệp only)"
             exit 1
@@ -317,7 +337,7 @@ jobs:
             exit 1
           fi
           if [ "$EXIT" = "11" ]; then
-            echo "::error::set-password refused before any change (see the MIGRATE ERROR line): the role does not exist or cannot log in, or its DSN secret is unreadable, empty, not a postgresql:// DSN, names another user, or has a password shorter than 32 printable ASCII characters. Fix the secret value in the Console (by hand), then re-run"
+            echo "::error::set-password refused before any change (see the MIGRATE ERROR line): the role does not exist or cannot log in, or its DSN secret is unreadable, empty, not a postgresql:// DSN, names another user, points at another host/port/database than the master, or has a password shorter than 32 printable ASCII characters. Fix the secret value in the Console (by hand), then re-run"
             exit 1
           fi
           if [ "$EXIT" = "12" ]; then

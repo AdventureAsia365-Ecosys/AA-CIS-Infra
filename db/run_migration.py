@@ -113,6 +113,7 @@ prints the parsed directives as JSON and exits 1 on a lint error;
   python3 db/run_migration.py --inspect-script db/scripts/session_info.py
 prints {"errors": [...]} for a run-script file and exits 1 on any.
 """
+import ast
 import asyncio
 import base64
 import hashlib
@@ -1277,10 +1278,47 @@ def dsn_login(dsn: str) -> DsnLogin:
     return DsnLogin(urllib.parse.unquote(raw_user), urllib.parse.unquote(raw_password), raw_password)
 
 
+def dsn_target(dsn: str) -> tuple:
+    """(host, port, database) a URL DSN connects to, as asyncpg reads it (port 5432 by default). ValueError for
+    a DSN whose target is not one plain host:port/database (several hosts, or host/port/database in the
+    query, which asyncpg would honour). Messages never contain any part of the value."""
+    try:
+        parsed = urllib.parse.urlparse(dsn)
+        hostspec = parsed.netloc.rpartition("@")[2]
+        port = parsed.port or 5432
+    except ValueError:
+        raise ValueError("the DSN's host:port is not parseable") from None
+    if "," in hostspec or not parsed.hostname:
+        raise ValueError("the DSN must name exactly one host")
+    if {"host", "port", "dbname", "database"} & set(urllib.parse.parse_qs(parsed.query)):
+        raise ValueError("the DSN query sets host/port/dbname/database: keep them in the URL only")
+    database = urllib.parse.unquote(parsed.path.lstrip("/"))
+    if not database:
+        raise ValueError("the DSN names no database")
+    return parsed.hostname.lower(), port, database
+
+
 def _redact(text: str, secrets) -> str:
-    for value in sorted({v for v in secrets if v}, key=len, reverse=True):
+    """Replace each secret in the text, also in the forms an error message may show it: repr-escaped,
+    percent-encoded and percent-decoded."""
+    forms = set()
+    for v in secrets:
+        if v:
+            forms |= {v, repr(v)[1:-1], v.encode("unicode_escape").decode("ascii"),
+                      urllib.parse.quote(v, safe=""), urllib.parse.unquote(v)}
+    for value in sorted({f for f in forms if f}, key=len, reverse=True):
         text = text.replace(value, "***")
     return text
+
+
+def _master_secrets(env) -> tuple:
+    """The master DSN and its password (decoded + as written), for _redact."""
+    dsn = env.get("DATABASE_URL") or ""
+    try:
+        who = dsn_login(dsn)
+        return dsn, who.password, who.raw_password
+    except ValueError:
+        return (dsn,)
 
 
 def _quote_literal(text: str) -> str:
@@ -1350,19 +1388,31 @@ async def run_set_password(env, role: str, connect, get_secret) -> int:
             log(f"ERROR: secret {secret_id}: the password must be at least {PASSWORD_MIN_LEN} printable ASCII "
                 f"characters (percent-encoded in the DSN where needed): nothing changed")
             return 11
+        # The test login must reach the server and database the master is on: a mistyped host would otherwise
+        # mark the role on this database while the password went to (and was tested against) another server.
+        try:
+            target, master_target = dsn_target(dsn), dsn_target(env["DATABASE_URL"])
+        except ValueError as e:
+            log(f"ERROR: secret {secret_id} or the master DSN: {e}. Nothing changed")
+            return 11
+        if target != master_target:
+            log(f"ERROR: secret {secret_id} points at another host, port or database than the master connection "
+                f"(they must be equal): nothing changed")
+            return 11
         verifier = scram_sha256_verifier(who.password)
         hide = (dsn, who.password, who.raw_password, verifier)
         await conn.execute(f"ALTER ROLE {_quote_ident(role)} PASSWORD {_quote_literal(verifier)}")
         log(f"set-password: ALTER ROLE {role} PASSWORD '<SCRAM-SHA-256 verifier, {SCRAM_ITERATIONS} iterations>' done")
         try:
-            test = await connect(dsn, dict(DEFAULT_SETTINGS))
+            test = await connect(dsn, dict(DEFAULT_SETTINGS), ssl="require")    # never a cleartext password
             try:
                 row = await test.fetchrow(WHOAMI_SQL)
             finally:
                 await test.close()
-        except Exception as e:
-            log(f"ERROR: test login as {role} with {secret_id} failed: {_redact(_err(e), hide)}. The password "
-                f"is set; the role is NOT marked {PASSWORD_MARKER}")
+        except Exception as e:                  # class + SQLSTATE only: an auth error's text adds nothing safe
+            state = getattr(e, "sqlstate", "") or ""
+            log(f"ERROR: test login as {role} with {secret_id} failed: {type(e).__name__} {state}".rstrip()
+                + f". The password is set; the role is NOT marked {PASSWORD_MARKER}")
             return 12
         log(f"set-password: test login current_user={row['current_user']} rolconnlimit={row['rolconnlimit']}")
         if row["current_user"] != role:
@@ -1381,8 +1431,8 @@ async def run_set_password(env, role: str, connect, get_secret) -> int:
 
 
 def script_errors(source: str, path: str) -> list:
-    """Shape of a db/scripts/ file: valid Python with a top-level `async def main(conn)` (one argument)."""
-    import ast
+    """Shape of a db/scripts/ file: valid Python with a top-level `async def main(conn)` (one argument), and
+    at most one `READ_ONLY = True|False`; a READ_ONLY script may not switch read-only off again."""
     if not SCRIPT_PATH_RE.fullmatch(path or ""):
         return [f"{path!r} is not a db/scripts/<name>.py path"]
     try:
@@ -1395,13 +1445,56 @@ def script_errors(source: str, path: str) -> list:
     a = mains[-1].args
     if len(a.posonlyargs) + len(a.args) != 1 or a.vararg or a.kwarg or a.kwonlyargs:
         return ["main() takes exactly one argument: the asyncpg connection"]
+    read_only = _read_only_decl(tree)
+    if read_only is _BAD_DECL:
+        return ["READ_ONLY must be one top-level `READ_ONLY = True` (or False)"]
+    if read_only and any(READ_ONLY_ESCAPE_RE.search(text) for text in _code_strings(tree)):
+        return ["a READ_ONLY script must not change transaction_read_only / default_transaction_read_only "
+                "or open a READ WRITE transaction"]
     return []
+
+
+def _code_strings(tree) -> list:
+    """Every string literal of the file except docstrings (comments are not in the AST either)."""
+    docs = set()
+    for n in ast.walk(tree):
+        if isinstance(n, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and n.body:
+            first = n.body[0]
+            if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant):
+                docs.add(id(first.value))
+    return [n.value for n in ast.walk(tree)
+            if isinstance(n, ast.Constant) and isinstance(n.value, str) and id(n) not in docs]
+
+
+_BAD_DECL = object()
+READ_ONLY_ESCAPE_RE = re.compile(r"transaction_read_only|read\s+write", re.I)
+
+
+def _read_only_decl(tree):
+    """Top-level READ_ONLY: True / False, or _BAD_DECL unless it is exactly one assignment of a bool literal."""
+    found = []
+    for n in tree.body:
+        targets = n.targets if isinstance(n, ast.Assign) else (
+            [n.target] if isinstance(n, (ast.AnnAssign, ast.AugAssign)) else [])
+        if any(isinstance(t, ast.Name) and t.id == "READ_ONLY" for t in targets):
+            found.append(n)
+    if not found:
+        return False
+    if len(found) != 1 or not isinstance(found[0], ast.Assign) or len(found[0].targets) != 1:
+        return _BAD_DECL
+    v = found[0].value
+    return v.value if isinstance(v, ast.Constant) and isinstance(v.value, bool) else _BAD_DECL
+
+
+def script_is_read_only(source: str) -> bool:
+    return _read_only_decl(ast.parse(source)) is True
 
 
 async def run_script(env, path: str, fetch, connect, sleep) -> int:
     """XD5 / S19: a reviewed db/scripts/ file runs as the master, after the same idle check as apply
-    (exit 7 while busy, MIGRATION_IDLE_OVERRIDE applies). The file arrives like a migration (presigned
-    URL + sha256). Its own output goes to the task log as is."""
+    (exit 7 while busy, MIGRATION_IDLE_OVERRIDE applies). A script that declares `READ_ONLY = True` runs
+    with default_transaction_read_only=on instead and skips the wait (the busy report is still logged).
+    The file arrives like a migration (presigned URL + sha256). Its own output goes to the task log as is."""
     file = env.get("MIGRATION_FILE") or ""
     if file != path:
         log(f"ERROR: MIGRATION_FILE {file!r} is not the mode's script {path!r}")
@@ -1419,17 +1512,23 @@ async def run_script(env, path: str, fetch, connect, sleep) -> int:
             log(f"ERROR: {path}: {e}")
         return 10
     code = compile(source, path, "exec")
-    conn = await connect(env["DATABASE_URL"], dict(DEFAULT_SETTINGS))
+    read_only = script_is_read_only(source)
+    settings = dict(DEFAULT_SETTINGS)
+    if read_only:
+        settings["default_transaction_read_only"] = "on"
+    conn = await connect(env["DATABASE_URL"], settings)
     try:
         login = await conn.fetchval(SESSION_USER_SQL)
         if login != MASTER_ROLE:
             log(f"ERROR: role: run-script runs only as the RDS master {MASTER_ROLE} (login is {login})")
             return 8
-        log(f"ran as: {login} (run-script)")
+        log(f"ran as: {login} (run-script{', READ_ONLY: default_transaction_read_only=on' if read_only else ''})")
         report = await job_tables_busy(conn)
         log_report(report)
         override = (env.get("MIGRATION_IDLE_OVERRIDE") or "").strip()
-        if override:
+        if read_only:
+            log("run-script: READ_ONLY script, the idle check is report-only (no wait, no refusal)")
+        elif override:
             if any(st.busy for st in report):
                 log(f"WARNING: idle check OVERRIDDEN ({override}), busy: {busy_summary(report)}")
             else:
@@ -1445,15 +1544,15 @@ async def run_script(env, path: str, fetch, connect, sleep) -> int:
             ns = {"__name__": "db_script", "__file__": path}
             exec(code, ns)                      # reviewed file on main, sha256-checked above
             result = await ns["main"](conn)
-        except Exception as e:
+        except Exception as e:                  # a script's error text could carry the master DSN: redacted
             state = getattr(e, "sqlstate", "") or ""
-            log(f"ERROR: script raised {type(e).__name__} {state} {e}".rstrip())
+            log(_redact(f"ERROR: script raised {type(e).__name__} {state} {e}".rstrip(), _master_secrets(env)))
             if state == "55P03":
                 log("hint: lock_timeout (5s) hit — retry when the job tables are idle, or SET LOCAL lock_timeout "
                     "inside the script's own transaction")
             return 13
         if result not in (None, 0):
-            log(f"ERROR: script main() returned {result!r}")
+            log(_redact(f"ERROR: script main() returned {result!r}", _master_secrets(env)))
             return 13
         log("run-script: done")
         return 0
@@ -1465,9 +1564,10 @@ def _fetch(url: str) -> bytes:
     return urllib.request.urlopen(url, timeout=30).read()
 
 
-async def _connect(dsn: str, settings: dict):
+async def _connect(dsn: str, settings: dict, ssl=None):
     import asyncpg   # only inside the task: the lint path and CI run without asyncpg
-    return await asyncpg.connect(dsn, timeout=30, server_settings=settings)
+    extra = {"ssl": ssl} if ssl else {}  # None: the DSN's sslmode / asyncpg's default, as before S12
+    return await asyncpg.connect(dsn, timeout=30, server_settings=settings, **extra)
 
 
 async def run_task(env=None, fetch=_fetch, connect=_connect, sleep=asyncio.sleep, get_secret=_get_secret) -> int:
