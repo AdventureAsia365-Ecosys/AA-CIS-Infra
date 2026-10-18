@@ -323,7 +323,7 @@ resource "aws_lambda_function" "tripplanner_browse" {
 
   vpc_config {
     subnet_ids         = module.vpc.private_subnet_ids
-    security_group_ids = [module.vpc.sg_app_id]
+    security_group_ids = [aws_security_group.tp_lambda.id] # ADR 0004b (X1 S13b)
   }
 
   environment {
@@ -363,7 +363,7 @@ resource "aws_lambda_function" "tripplanner_assembly" {
 
   vpc_config {
     subnet_ids         = module.vpc.private_subnet_ids
-    security_group_ids = [module.vpc.sg_app_id]
+    security_group_ids = [aws_security_group.tp_lambda.id] # ADR 0004b (X1 S13b)
   }
 
   environment {
