@@ -379,7 +379,7 @@ class RunTaskTest(unittest.TestCase):
 
     def test_sha_mismatch(self):
         raw = PLAIN.encode()
-        env = {"MIGRATION_URL": "u", "MIGRATION_SHA256": "0" * 64}
+        env = {"MIGRATION_URL": "u", "MIGRATION_SHA256": "0" * 64, "MIGRATION_MODE": "apply"}   # mode first (X1 S12)
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(asyncio.run(rm.run_task(env, fetch=lambda url: raw)), 2)
 

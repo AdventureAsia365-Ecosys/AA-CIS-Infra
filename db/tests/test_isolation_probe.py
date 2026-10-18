@@ -466,8 +466,9 @@ class WorkflowTest(unittest.TestCase):
         self.assertIn("db/isolation_probe.py", WORKFLOW)
 
     def test_db_migrate_dispatches_the_probe_after_apply(self):
+        # X1 S12: also after set-password (the cis_app login cells follow its marker) and run-script.
         step = MIGRATE_WORKFLOW[MIGRATE_WORKFLOW.index("name: Re-run the isolation probe"):]
-        self.assertIn("if: success() && inputs.mode == 'apply'", step.split("run:")[0])
+        self.assertIn("if: success() && inputs.mode != 'check'", step.split("run:")[0])
         self.assertIn("continue-on-error: true", step.split("run:")[0])
         self.assertIn("db-isolation-probe.yml", step)
         self.assertTrue(re.search(r"actions: write", MIGRATE_WORKFLOW))

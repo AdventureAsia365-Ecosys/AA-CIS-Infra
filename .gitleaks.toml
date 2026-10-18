@@ -32,6 +32,10 @@ keywords = ["://"]
     '''^\{[^}]*\}$''',
   ]
 
+  [[rules.allowlists]]
+  description = "X1 S12 runner tests: fake DSNs (hosts db.example / h / host) that exercise DSN parsing and redaction"
+  paths = ['''^db/tests/test_runner_modes\.py$''']
+
 # Plaintext secret assigned in Terraform: <name>_password / _api_key / _secret_key / _token ... = "value"
 # Only names whose *value* is the secret: secret_*_arn / *_secret_name style keys do not match.
 [[rules]]

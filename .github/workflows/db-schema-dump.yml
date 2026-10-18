@@ -1,8 +1,10 @@
 name: DB Schema Dump (shared RDS)
 # AA-807 N1: regenerates AA-Ecosys docs/architecture/db-schema-reference.md from the live catalog.
 #
-# 1. A one-off ECS Fargate task (CIS api task definition, same subnets/SG/DATABASE_URL as DB Migrate)
-#    runs db/schema_dump.py: read-only (default_transaction_read_only + one REPEATABLE READ READ ONLY
+# 1. A one-off ECS Fargate task (the migrator task definition, X1 S12: a revision of
+#    aa-cis-dev-db-migrate with the CIS api service's current image, registered by
+#    .github/scripts/migrator-task.sh and deregistered at the end; api subnets, security group
+#    aa-cis-dev-sg-db-migrate, the same master DSN as DB Migrate) runs db/schema_dump.py: read-only (default_transaction_read_only + one REPEATABLE READ READ ONLY
 #    transaction), catalog queries only, no row values. It writes JSON to the bronze bucket with the
 #    task role: columns, indexes, constraints, policies, table + column grants, owners, default
 #    privileges, roles, functions, sizes, pg_stat_user_tables activity, sessions per
@@ -88,6 +90,12 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: us-west-1
 
+      # X1 S12: a revision of aa-cis-dev-db-migrate with the api service's current image (deregistered
+      # by the last step). Its task role may put only db-schema-dump/* (accounts/aa365/db_migrator.tf).
+      - name: Register the migrator revision (api image)
+        id: td
+        run: bash .github/scripts/migrator-task.sh prepare
+
       # Presigned URL created and used in this one step (a masked step output can be dropped).
       - name: Upload dump script, run one-off ECS task
         id: task
@@ -98,17 +106,16 @@ jobs:
           RUNNER_URL=$(aws s3 presign "s3://$BUCKET/$PREFIX/schema_dump.py" --expires-in 900)
           echo "::add-mask::$RUNNER_URL"
 
-          SVC=$(aws ecs describe-services --cluster "$CLUSTER" --services "$SERVICE" --output json)
-          TASK_DEF=$(jq -r '.services[0].taskDefinition' <<<"$SVC")
-          NET=$(jq -c '.services[0].networkConfiguration' <<<"$SVC")
-          echo "task definition: $TASK_DEF"
+          TASK_DEF="${{ steps.td.outputs.arn }}"
+          NET='${{ steps.td.outputs.network }}'
+          echo "task definition: $TASK_DEF (image of ${{ steps.td.outputs.api_task_definition }})"
           OVERRIDES=$(jq -nc \
             --arg runner "$RUNNER_URL" --arg bucket "$BUCKET" --arg key "$PREFIX/schema.json" \
-            '{containerOverrides: [{name: "api",
+            '{containerOverrides: [{name: "migrate",
               command: ["python3", "-c", "import os,urllib.request;exec(urllib.request.urlopen(os.environ[\"RUNNER_URL\"],timeout=30).read())"],
               environment: [
                 {name: "RUNNER_URL", value: $runner}, {name: "DUMP_BUCKET", value: $bucket},
-                {name: "DUMP_KEY", value: $key}, {name: "JOB_WORKER_IN_API", value: "false"}]}]}')
+                {name: "DUMP_KEY", value: $key}]}]}')
           TASK_ARN=$(aws ecs run-task --cluster "$CLUSTER" --task-definition "$TASK_DEF" \
             --launch-type FARGATE --network-configuration "$NET" --overrides "$OVERRIDES" \
             --started-by "gh-db-schema-dump-${{ github.run_id }}" \
@@ -125,11 +132,11 @@ jobs:
           TASK_ARN: ${{ steps.task.outputs.arn }}
         run: |
           TASK_ID="${TASK_ARN##*/}"
-          aws logs get-log-events --log-group-name "$LOG_GROUP" --log-stream-name "api/api/$TASK_ID" \
+          aws logs get-log-events --log-group-name "$LOG_GROUP" --log-stream-name "migrate/migrate/$TASK_ID" \
             --start-from-head --query 'events[].message' --output text | tr '\t' '\n' | tee task.log || true
           grep '^DUMP' task.log >> "$GITHUB_STEP_SUMMARY" || true
           DESC=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$TASK_ARN" --output json)
-          EXIT=$(jq -r '.tasks[0].containers[] | select(.name=="api") | .exitCode' <<<"$DESC")
+          EXIT=$(jq -r '.tasks[0].containers[] | select(.name=="migrate") | .exitCode' <<<"$DESC")
           echo "exit code: $EXIT  stopped: $(jq -r '.tasks[0].stoppedReason' <<<"$DESC")"
           [ "$EXIT" = "0" ] || { echo "::error::schema dump task exited with $EXIT"; exit 1; }
 
@@ -214,6 +221,10 @@ jobs:
               --title "docs: regenerate db-schema-reference.md (live dump)" --body-file ../pr-body.md)
             echo "- opened root PR $URL" >> "$GITHUB_STEP_SUMMARY"
           fi
+
+      - name: Deregister the migrator revision
+        if: always() && steps.td.outputs.arn != ''
+        run: bash .github/scripts/migrator-task.sh deregister "${{ steps.td.outputs.arn }}"
 
       - name: Remove the dump script from S3
         if: always() && steps.task.outputs.prefix != ''

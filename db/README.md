@@ -1,9 +1,22 @@
 # db/ — migrations applied to the shared RDS (acc2)
 
 RDS is VPC-private, so migrations are applied by the **DB Migrate** workflow
-(`.github/workflows/db-migrate.yml`): it starts a one-off ECS Fargate task from the CIS api task
-definition, which downloads `run_migration.py` and the SQL via presigned S3 URLs and runs it
-with the task's own `DATABASE_URL`.
+(`.github/workflows/db-migrate.yml`): it starts a one-off ECS Fargate task from the **migrator task
+definition** `aa-cis-dev-db-migrate` (X1 S12; `accounts/aa365/db_migrator.tf`), which downloads
+`run_migration.py` and the SQL via presigned S3 URLs and runs it with the task's own `DATABASE_URL`
+(the master DSN until X1 S22).
+
+Migrator task (DB Migrate, DB Schema Dump, DB Isolation Probe): `.github/scripts/migrator-task.sh prepare`
+registers a revision of the family copied from its latest ACTIVE revision with only the image replaced by
+the image the CIS api service runs now (roles, secret, logs, cpu/memory unchanged); the task runs in the
+api service's subnets with the security group `aa-cis-dev-sg-db-migrate`, container `migrate`, log stream
+`migrate/migrate/<task id>`; the last step deregisters the revision (`if: always()`).
+
+Two more DB Migrate modes (X1 S12): **`set-password`** (input `role`: `cis_app` or `db_migrator`,
+`owners.yaml` `password_roles`) sets the role's password from the DSN Nghiệp wrote in its secret: the
+task reads the secret itself, sends only a SCRAM-SHA-256 verifier, test-connects and marks the role
+`x1:password-set …` (plan XD2; nothing secret is logged). **`run-script`** (input `script`) runs a reviewed
+`db/scripts/<name>.py` as the master after the apply idle check: `db/scripts/README.md`.
 
 ```
 db/migrations/<owner>/<NNN>_<name>.sql   # owner = cis | tripplanner | booking | roles
@@ -212,7 +225,7 @@ statistics alone never open a PR. Local render: `python3 db/gen_schema_reference
 ## Isolation probe (X1 plan S2, U-16)
 **DB Isolation Probe** (`.github/workflows/db-isolation-probe.yml`, nightly 04:13 UTC, manual, and
 dispatched by DB Migrate after every apply) runs `isolation_probe.py` in a one-off ECS task like the
-dump (api task definition until X1 S12). Read-only: READ ONLY transactions, rolled back, every probe
+dump (the migrator task definition `aa-cis-dev-db-migrate`, X1 S12). Read-only: READ ONLY transactions, rolled back, every probe
 statement in a savepoint (locks released at once), counts and names only, tenants labelled
 `master`/`t1`/…, never by id. Its configuration is one JSON argument (no new env var).
 

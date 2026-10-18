@@ -178,6 +178,18 @@ class MirrorsAgreeTest(unittest.TestCase):
         for v in (str(o["owner_transfer_key"]) for o in SCHEMA_OWNERS.values()):
             self.assertIn(v, probe.VERSION_KEYS)
 
+    def test_password_roles(self):
+        # X1 S12 set-password: runner allowlist, workflow role regex and the probe marker agree with the registry.
+        roles = REGISTRY["password_roles"]
+        self.assertEqual(rm.PASSWORD_ROLES, roles)
+        self.assertEqual(roles["cis_app"], OWNERS["cis"]["runtime_secrets"]["cis_app"])   # the probe's login secret
+        self.assertIn(REGISTRY["migrator_role"], roles)
+        self.assertNotIn(REGISTRY["master_role"], roles)
+        self.assertEqual(rm.PASSWORD_MARKER, probe.PASSWORD_MARKER)
+        _, run = validate_step()
+        regex = re.search(r'=~ \^\(([a-z_|]+)\)\$', run).group(1)
+        self.assertEqual(set(regex.split("|")), set(roles))
+
     def test_idle_exempt_kinds(self):
         expected = {o["job_table"].split(".")[0]: frozenset(o["idle_exempt_kinds"])
                     for o in SCHEMA_OWNERS.values() if o["job_table"]}
@@ -203,6 +215,7 @@ class MirrorsAgreeTest(unittest.TestCase):
         prefixes = dict(re.findall(r'([a-z]+)\) PREFIX="([^"]*)"', run))
         self.assertEqual(prefixes, {n: o["key_prefix"] for n, o in OWNERS.items()})
         self.assertIn(f'"$ENVIRONMENT" != "{REGISTRY["environments"][0]}"', run)
+        self.assertEqual(inputs["mode"]["options"], ["check", "apply", "set-password", "run-script"])
 
 
 if __name__ == "__main__":

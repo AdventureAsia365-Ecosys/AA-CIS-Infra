@@ -1,8 +1,11 @@
 name: DB Isolation Probe (shared RDS)
 # X1 plan S2 (roadmap U-16, SDLC review P0-9): proves, read-only, that each app's DB roles are isolated.
 #
-# A one-off ECS Fargate task (CIS api task definition until X1 S12 moves it to the migrator task
-# definition) runs db/isolation_probe.py: READ ONLY transactions, rolled back, no row values. It logs in
+# A one-off ECS Fargate task of the migrator task definition (X1 S12: a revision of
+# aa-cis-dev-db-migrate with the CIS api service's current image, registered by
+# .github/scripts/migrator-task.sh and deregistered at the end; api subnets, security group
+# aa-cis-dev-sg-db-migrate; its task role reads exactly the DSN secrets below) runs
+# db/isolation_probe.py: READ ONLY transactions, rolled back, no row values. It logs in
 # AS EACH RUNTIME ROLE WITH ITS OWN DSN SECRET (aa_app_user, booking, tripplanner, cis_app from X1 S17,
 # and the CIS runtime = the secret the running api task definition injects), never through the
 # master's memberships; the task's own database login reads the catalog only. Cells: runtime role
@@ -76,6 +79,12 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: us-west-1
 
+      # X1 S12: a revision of aa-cis-dev-db-migrate with the api service's current image (deregistered
+      # by the last step).
+      - name: Register the migrator revision (api image)
+        id: td
+        run: bash .github/scripts/migrator-task.sh prepare
+
       # Presigned URL created and used in this one step (a masked step output can be dropped).
       - name: Upload the probe, run one-off ECS task
         id: task
@@ -86,23 +95,23 @@ jobs:
           URL=$(aws s3 presign "s3://$BUCKET/$PREFIX/isolation_probe.py" --expires-in 900)
           echo "::add-mask::$URL"
 
-          SVC=$(aws ecs describe-services --cluster "$CLUSTER" --services "$SERVICE" --output json)
-          APITD=$(jq -r '.services[0].taskDefinition' <<<"$SVC")
-          NET=$(jq -c '.services[0].networkConfiguration' <<<"$SVC")
+          # The api service's task definition (the one migrator-task.sh took the image from): only the
+          # ARN of its database secret is read below, as a probe state key.
+          APITD="${{ steps.td.outputs.api_task_definition }}"
+          NET='${{ steps.td.outputs.network }}'
           # State key of the CIS runtime cells (X1 S18): which secret the RUNNING api revision injects as
           # its database URL. Only the secret's ARN is read here, never its value.
           CISSECRET=$(aws ecs describe-task-definition --task-definition "$APITD" --output json \
             | jq -r '[.taskDefinition.containerDefinitions[] | select(.name == "api") | .secrets[]?
                       | select(.name == "DATABASE_URL") | .valueFrom][0] // ""')
           [ -n "$CISSECRET" ] || { echo "::error::api task definition $APITD has no database secret"; exit 1; }
-          # The probe runs from the api task definition until X1 S12 (then: aa-cis-dev-db-migrate, container migrate).
-          RUNTD="$APITD"
+          RUNTD="${{ steps.td.outputs.arn }}"
           echo "api task definition: $APITD (runtime secret: ${CISSECRET##*:secret:})"
           echo "probe task definition: $RUNTD"
           CONFIG=$(jq -nc --arg s "$CISSECRET" --arg td "$APITD" \
             '{cis_runtime_secret: $s, api_task_definition: $td, region: "us-west-1", ssl: "require"}')
           OVERRIDES=$(jq -nc --arg url "$URL" --arg cfg "$CONFIG" \
-            '{containerOverrides: [{name: "api",
+            '{containerOverrides: [{name: "migrate",
               command: ["python3", "-c", "import sys,urllib.request;exec(urllib.request.urlopen(sys.argv[1],timeout=30).read())", $url, $cfg]}]}')
           TASK_ARN=$(aws ecs run-task --cluster "$CLUSTER" --task-definition "$RUNTD" \
             --launch-type FARGATE --network-configuration "$NET" --overrides "$OVERRIDES" \
@@ -120,7 +129,7 @@ jobs:
           TASK_ARN: ${{ steps.task.outputs.arn }}
         run: |
           TASKID="${TASK_ARN##*/}"
-          STREAM="api/api/$TASKID"
+          STREAM="migrate/migrate/$TASKID"
           : > task.log
           TOKEN=""
           for page in $(seq 1 50); do
@@ -157,7 +166,7 @@ jobs:
           jq -r '.cells[] | select(.status == "FAIL") | "::error::isolation probe: \(.id) failed — \(.title)"' probe.json
           jq -r '.cells[] | select(.warn == true) | "::warning::isolation probe: \(.id) pending — \(.detail | tostring | .[:200])"' probe.json
           DESC=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$TASK_ARN" --output json)
-          EXIT=$(jq -r '.tasks[0].containers[] | select(.name=="api") | .exitCode' <<<"$DESC")
+          EXIT=$(jq -r '.tasks[0].containers[] | select(.name=="migrate") | .exitCode' <<<"$DESC")
           echo "exit code: $EXIT  stopped: $(jq -r '.tasks[0].stoppedReason' <<<"$DESC")"
           if [ "$EXIT" = "1" ]; then echo "::error::isolation probe: at least one expected cell failed (table above)"; exit 1; fi
           if [ "$EXIT" = "2" ]; then echo "::error::isolation probe could not run (catalog login or state keys unreadable)"; exit 1; fi
@@ -173,6 +182,10 @@ jobs:
             probe.json
             task.log
           retention-days: 30
+
+      - name: Deregister the migrator revision
+        if: always() && steps.td.outputs.arn != ''
+        run: bash .github/scripts/migrator-task.sh deregister "${{ steps.td.outputs.arn }}"
 
       - name: Remove the probe from S3
         if: always() && steps.task.outputs.prefix != ''

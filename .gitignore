@@ -1,6 +1,9 @@
 # Terraform
 .terraform/
 scripts/
+# X1 S12 (AA-852): reviewed DB Migrate run-script files and the workflow helper are tracked.
+!/db/scripts/
+!/.github/scripts/
 
 *.tfstate
 *.tfstate.backup

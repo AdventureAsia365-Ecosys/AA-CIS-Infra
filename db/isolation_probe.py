@@ -1,8 +1,8 @@
 """Read-only DB isolation probe of the shared RDS (X1 plan S2, roadmap U-16, P0-9).
 
 Started by .github/workflows/db-isolation-probe.yml exactly like the schema dump: the workflow uploads
-this file to S3, a one-off ECS task (CIS api task definition until X1 S12, then the migrator task
-definition) downloads it through a presigned URL and execs it. Python + asyncpg + boto3 of the image
+this file to S3, a one-off ECS task (the migrator task definition aa-cis-dev-db-migrate since X1 S12,
+with the api service's image) downloads it through a presigned URL and execs it. Python + asyncpg + boto3 of the image
 only. Configuration comes as one JSON argument (argv), so the task needs no new environment variable:
   {"cis_runtime_secret": "<valueFrom of the api task definition's database secret>",
    "api_task_definition": "<arn>", "region": "us-west-1", "ssl": "require"}
