@@ -52,7 +52,31 @@ domain and make it look like the Adventure Asia product.
   still matters: a plain create would fail because Cognito allows one style per client.
 - Output `identity_branding_commands` (CLI workaround) removed; new output
   `identity_workforce_branding_ids`. `identity_managed_login_base_urls.workforce` now reads
-  `https://staff-auth.lumiguides.it.com`. Issuers unchanged (pool endpoint). Prefix domains kept.
+  `https://staff-auth.lumiguides.it.com`; `.external` deliberately stays on the prefix URL until
+  EXTERNAL has a style (pages on `auth.` would not render). Issuers unchanged (pool endpoint).
+  Prefix domains kept.
+
+## Review round (S242): applied / rejected
+
+- Applied (medium): the replace deletes each style before creating the new one, and the payload has
+  never been sent to Cognito, so a rejection would leave all 3 WORKFORCE clients (breakglass too)
+  unstyled. No Terraform-side fix exists (one style per client rules out create_before_destroy), so
+  the runbook gains a pre-validation step on an EXTERNAL client and the rollback commands (below).
+  The payload file is extracted from the saved plan, so it is identical to what apply sends.
+- Applied (low): import blocks + `id_branding_existing_workforce` marked for removal in a follow-up
+  PR after the first apply (the IDs stop existing once replaced).
+- Applied (low): `identity_managed_login_base_urls.external` kept on the prefix URL.
+- Applied (low): footer no longer prints "adventure.asia" (a brand domain shown on a different
+  domain is an impersonation signal): "© Adventure Asia · Internal staff access only".
+- Applied (low): header and footer text outlined to SVG paths (Fahkwang SemiBold 22 px for
+  "Adventure Asia", Poppins Regular 14/13 px) with fontTools from the Google Fonts OFL files; an SVG
+  rendered as an image cannot load web fonts. Header viewBox widened 280 -> 296 (the real Fahkwang
+  run is 180 px wide), footer 420 -> 288. Rendered with cairosvg and checked visually.
+- Applied (low): Sid comment on `CognitoCustomDomainCloudFront` now says why `Resource "*"` is
+  accepted (AWS-owned distribution, no ARN to scope to; no distributions in this repo).
+- Applied (low): negative-cache wording: min(SOA TTL 900, SOA minimum) is about 15 min on Route 53,
+  not a day.
+- Rejected: none.
 
 ## Changed
 
@@ -63,7 +87,7 @@ domain and make it look like the Adventure Asia product.
   locals/import/resource, outputs.
 - `cicd_split.tf`: `CognitoCustomDomainCloudFront` statement.
 - `custom_domains.tf`: comments only (where the apex record and cert consumer live).
-- `assets/identity/*`: 4 files, ~18 KB total.
+- `assets/identity/*`: 4 files, ~41 KB total (header/footer text outlined to paths, see review).
 
 ## Plan (read-only, -lock=false, 18/10/2026)
 
@@ -92,15 +116,41 @@ domain and make it look like the Adventure Asia product.
 
 1. Nghiệp: Vercel → `aa-cis-frontend` → Settings → Domains → add `lumiguides.it.com`, redirect to
    `aa-cis.lumiguides.it.com`. (Vercel shows "Invalid configuration" until the A record exists.)
-2. Local MFA apply (bootstrap grant in `cicd_split.tf`; CI cannot change its own policy).
-3. If CreateUserPoolDomain fails with "unable to resolve the A record of the parent domain": a
-   resolver may hold a negative answer for the apex (zone SOA minimum is 86400). Wait a few minutes
-   and re-run the apply; everything else will already be in place.
-4. If CreateManagedLoginBranding rejects `buttons.borderRadius = 24`, use 16. If it rejects
-   `favicon.enabledTypes = ["SVG"]` without an ICO, add a 32px ICO asset (FAVICON_ICO) and set
-   `["ICO","SVG"]`.
-5. The custom domain can take up to ~1 hour before CloudFront serves it. Verify:
+2. **Pre-validate the branding payload** on the EXTERNAL `tripplanner` client (pool
+   `us-west-1_nKOvHan0W`, client `2fqmuij0lf47qpf1phjfcgseds`; no style, no users). The payload
+   `AA-Ecosys/.tmp-session/s242/aa816-branding-prevalidate.json` was extracted from the saved plan
+   (settings + the 4 assets exactly as apply sends them). Regenerate it whenever the plan is re-run
+   with other settings/assets (`terraform show -json <plan>` ->
+   `aws_cognito_managed_login_branding.workforce["cis-admin"].change.after`).
+   - `aws cognito-idp create-managed-login-branding --cli-input-json file:///home/nghiep/projects/AA-Ecosys/.tmp-session/s242/aa816-branding-prevalidate.json --profile aa365-admin --region us-west-1`
+   - Success: note the `ManagedLoginBrandingId`, optionally open the EXTERNAL prefix domain's
+     `/login?client_id=2fqmuij0lf47qpf1phjfcgseds&response_type=code&redirect_uri=<a registered callback>`
+     to eyeball the look, then delete it (EXTERNAL needs its own non-"Staff" header later):
+     `aws cognito-idp delete-managed-login-branding --user-pool-id us-west-1_nKOvHan0W --managed-login-branding-id <id> --profile aa365-admin --region us-west-1`
+   - Rejected: fix the setting (radius 24 -> 16; favicon without ICO -> add a FAVICON_ICO asset and
+     `["ICO","SVG"]`), re-plan, regenerate the payload, repeat. Do not apply until it passes.
+3. Local MFA apply (bootstrap grant in `cicd_split.tf`; CI cannot change its own policy).
+4. If CreateUserPoolDomain fails with "unable to resolve the A record of the parent domain": a
+   resolver may hold a negative answer for the apex (min(SOA TTL 900, SOA minimum), about 15 min on
+   Route 53). Wait ~15 min and re-run the apply; everything else will already be in place.
+5. **Rollback if apply leaves a WORKFORCE client without a style** (the removed
+   `identity_branding_commands` output held these; pool `us-west-1_bCcFvbSOS`):
+   - `aws cognito-idp create-managed-login-branding --user-pool-id us-west-1_bCcFvbSOS --client-id 3oqkumijh04cp81k3nlnub6qtv --use-cognito-provided-values --profile aa365-admin --region us-west-1` (cis-admin)
+   - `aws cognito-idp create-managed-login-branding --user-pool-id us-west-1_bCcFvbSOS --client-id 5ifl9dgkr8a5outnmsjc8v1kt3 --use-cognito-provided-values --profile aa365-admin --region us-west-1` (booking-staff)
+   - `aws cognito-idp create-managed-login-branding --user-pool-id us-west-1_bCcFvbSOS --client-id 2g3f3ncfuqdiuu1o5b70o4h0lq --use-cognito-provided-values --profile aa365-admin --region us-west-1` (breakglass)
+   Then drop the affected `aws_cognito_managed_login_branding.workforce[...]` from state (or import
+   the new ID) before the next plan.
+6. The custom domain can take up to ~1 hour before CloudFront serves it. Verify:
    `curl -sI https://staff-auth.lumiguides.it.com/.well-known/openid-configuration` (Cognito serves
    that endpoint on the custom domain only), then a real sign-in from aa-cis.
-6. Only after that, switch the CIS frontend hosted domain to `https://staff-auth.lumiguides.it.com`
+7. Only after that, switch the CIS frontend hosted domain to `https://staff-auth.lumiguides.it.com`
    (separate CIS PR). The prefix domain keeps working meanwhile, so the order is safe.
+8. Re-plan: expect `No changes` (import blocks are skipped once the resources are in state).
+
+## Follow-ups (not in this PR)
+
+- Remove the 3 import blocks + `id_branding_existing_workforce` after the first apply.
+- EXTERNAL managed login style (own header SVG without "Staff"), then switch
+  `identity_managed_login_base_urls.external` to `auth.`.
+- Long term: move the admin sign-in under `adventure.asia` (e.g. `admin.adventure.asia`) to remove
+  the brand/domain mismatch entirely (business decision).

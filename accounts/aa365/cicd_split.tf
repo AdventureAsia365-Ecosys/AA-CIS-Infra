@@ -694,6 +694,8 @@ resource "aws_iam_role_policy" "tf_apply" {
         {
           # AA-816 (S242), bootstrap grant: CreateUserPoolDomain with a custom domain needs the
           # caller to hold cloudfront:UpdateDistribution (AWS-managed distribution, no ARN of ours).
+          # Resource "*" is accepted: the distribution lives in an AWS-owned account, so there is no
+          # ARN to scope to, and this repo defines no CloudFront distributions of its own.
           Sid      = "CognitoCustomDomainCloudFront"
           Effect   = "Allow"
           Action   = ["cloudfront:UpdateDistribution"]

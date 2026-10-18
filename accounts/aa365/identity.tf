@@ -655,7 +655,8 @@ resource "aws_cognito_user_pool_client" "external" {
 # Creating a custom domain needs cloudfront:UpdateDistribution on the caller (AWS docs; cicd_split.tf
 # statement CognitoCustomDomainCloudFront, gated by time_sleep.wait_for_iam_propagation). First
 # apply: if Cognito still answers "unable to resolve the A record of the parent domain" (resolver
-# negative cache, SOA minimum 86400), re-run the apply.
+# negative cache: min(SOA TTL 900, SOA minimum) = about 15 minutes on Route 53), wait ~15 min and
+# re-run the apply.
 # =============================================================================
 resource "aws_cognito_user_pool_domain" "workforce_prefix" {
   domain                = var.identity_workforce_domain_prefix
@@ -722,9 +723,15 @@ resource "aws_route53_record" "identity_custom_domain" {
 # One style per client (Cognito allows exactly one). The three styles were first created with the
 # CLI (--use-cognito-provided-values) and are imported below; the asset set forces a replacement,
 # so the first apply deletes and recreates each style (new managed_login_branding_id, a few
-# seconds without a style per client). If Cognito rejects buttons.borderRadius 24, use 16.
+# seconds without a style per client). Because the delete runs before the create, a payload Cognito
+# rejects would leave all three clients (breakglass included) without a style: pre-validate the
+# exact payload on an EXTERNAL client first (runbook + rollback commands in
+# docs/implementation-notes/AA-816-staff-auth-domain.md). If Cognito rejects buttons.borderRadius
+# 24, use 16.
 # Assets: accounts/aa365/assets/identity/ (form logo = the official CIS frontend logo PNG; header,
-# footer and favicon SVGs use only Cognito-allowed SVG elements). Each request <= 2 MB (assets ~18 KB).
+# footer and favicon SVGs use only Cognito-allowed SVG elements; header/footer text is outlined to
+# paths in Fahkwang SemiBold / Poppins Regular, since an SVG shown as an image cannot load web fonts).
+# Each request <= 2 MB (assets ~41 KB).
 # =============================================================================
 locals {
   id_branding_assets_dir = "${path.module}/assets/identity"
@@ -802,7 +809,9 @@ locals {
     }
   }
 
-  # Styles created by the CLI workaround (S242), adopted instead of deleted by hand.
+  # Styles created by the CLI workaround (S242), adopted instead of deleted by hand. After the first
+  # apply these IDs no longer exist (the styles are replaced): remove this map and the import block
+  # in a follow-up PR, as observability_ecosys.tf did with its imports.
   id_branding_existing_workforce = {
     "cis-admin"     = "70d07784-581a-4407-8646-5332cd767f47"
     "booking-staff" = "a965331a-0208-4dc0-bc1f-c11c1ef48c39"
@@ -1104,10 +1113,12 @@ output "identity_external_client_ids" {
   value = { for k, c in aws_cognito_user_pool_client.external : k => c.id }
 }
 
+# EXTERNAL stays on its prefix URL even with custom domains on: its clients have no managed login
+# style yet, so pages on auth.lumiguides.it.com do not render. Switch it when EXTERNAL gets a style.
 output "identity_managed_login_base_urls" {
   value = {
     workforce = local.id_custom_domains ? "https://${var.identity_workforce_custom_domain}" : "https://${aws_cognito_user_pool_domain.workforce_prefix.domain}.auth.${var.aws_region}.amazoncognito.com"
-    external  = local.id_custom_domains ? "https://${var.identity_external_custom_domain}" : "https://${aws_cognito_user_pool_domain.external_prefix.domain}.auth.${var.aws_region}.amazoncognito.com"
+    external  = "https://${aws_cognito_user_pool_domain.external_prefix.domain}.auth.${var.aws_region}.amazoncognito.com"
   }
 }
 
