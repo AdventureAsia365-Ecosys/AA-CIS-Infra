@@ -17,6 +17,12 @@ variable "identity_breakglass_email" {
   default     = "admin@adventure.asia"
 }
 
+variable "identity_breakglass_admin_role_name" {
+  description = "IAM role that alone may GetSecretValue / PutSecretValue on the break-glass secret (identity_alerts.tf, ADR 0006 decision 11): the role the MFA admin CLI profiles (aa365-admin, default) assume. Every other principal, the CI apply role included, is denied; Terraform never needs the value."
+  type        = string
+  default     = "nghiep-admin-8h-session"
+}
+
 # ── Prefix domains (Dev) and optional custom domains ─────────────────────────
 variable "identity_workforce_domain_prefix" {
   description = "Cognito prefix domain for the WORKFORCE pool (<prefix>.auth.us-west-1.amazoncognito.com). Globally unique per region."
@@ -134,7 +140,7 @@ variable "identity_facebook_api_version" {
 
 # ── App client URLs ──────────────────────────────────────────────────────────
 variable "identity_client_urls" {
-  description = "Callback and sign-out URLs per app client key (cis-admin, booking-staff, breakglass, cis-portal, booking-customer, tripplanner). Hosts follow the S237 hostname decision (AA-818); they need not resolve yet. Paths are placeholders until each app implements its callback route. booking-staff / booking-customer stay on localhost until their frontend hosts are chosen."
+  description = "Callback and sign-out URLs per app client key (cis-admin, booking-staff, breakglass, cis-portal, booking-customer, tripplanner). Hosts follow the S237 hostname decision (AA-818); they need not resolve yet. Paths are placeholders until each app implements its callback route. booking-staff points at the aa-booking-admin Vercel hosts (S242); booking-customer stays on localhost until its frontend host is chosen."
   type = map(object({
     callback_urls = list(string)
     logout_urls   = list(string)
@@ -149,8 +155,10 @@ variable "identity_client_urls" {
       logout_urls   = ["https://aa-cis.lumiguides.it.com/login"]
     }
     "booking-staff" = {
-      callback_urls = ["http://localhost:3001/api/auth/callback/cognito"]
-      logout_urls   = ["http://localhost:3001/login"]
+      # AA-854 I1 (S242): Vercel project aa-booking-admin serves booking.lumiguides.it.com (custom, AA-818)
+      # and aa-booking-admin.vercel.app (both production domains, verified); localhost:3001 for local dev.
+      callback_urls = ["https://booking.lumiguides.it.com/api/auth/callback/cognito", "https://aa-booking-admin.vercel.app/api/auth/callback/cognito", "http://localhost:3001/api/auth/callback/cognito"]
+      logout_urls   = ["https://booking.lumiguides.it.com/login", "https://aa-booking-admin.vercel.app/login", "http://localhost:3001/login"]
     }
     "cis-portal" = {
       callback_urls = ["https://aa-cis.lumiguides.it.com/portal/api/auth/callback/cognito", "http://localhost:3000/portal/api/auth/callback/cognito"]

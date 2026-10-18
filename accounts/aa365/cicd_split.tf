@@ -678,6 +678,19 @@ resource "aws_iam_role_policy" "tf_apply" {
             StringEquals = { "iam:AWSServiceName" = "email.cognito-idp.amazonaws.com" }
           }
         },
+        {
+          # AA-854 I1 (S242), bootstrap grant: identity_alerts.tf rules on the default bus.
+          # EventBridgeAcpBusManage covers only the ACP bus; CloudWatchFullAccess has no events:*.
+          Sid    = "EventBridgeIdentityRuleManage"
+          Effect = "Allow"
+          Action = [
+            "events:PutRule", "events:DeleteRule", "events:DescribeRule", "events:EnableRule",
+            "events:DisableRule", "events:PutTargets", "events:RemoveTargets",
+            "events:ListTargetsByRule", "events:TagResource", "events:UntagResource",
+            "events:ListTagsForResource",
+          ]
+          Resource = "arn:aws:events:${var.aws_region}:${var.account_id}:rule/aa-identity-*"
+        },
       ],
     )
   })
