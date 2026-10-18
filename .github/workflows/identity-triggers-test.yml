@@ -3,6 +3,7 @@ name: Identity Trigger Tests
 # AA-703 (root ADR 0006 decision 5): the Cognito trigger Lambdas fail closed, so a broken release
 # denies every sign-in, break-glass included. Their unit tests run on every PR and push that touches
 # them, before Terraform publishes a new version behind the `live` alias. No AWS access needed.
+# AA-854 I2: the second job tests tools/identity/workforce_bootstrap.py (botocore Stubber, no AWS).
 
 on:
   pull_request:
@@ -14,6 +15,8 @@ on:
       # group added or renamed there must run the guard too (AA-854 review).
       - "accounts/aa365/identity.tf"
       - "accounts/aa365/identity_variables.tf"
+      # AA-854 I2: WORKFORCE bootstrap tool (break-glass, staff create, PKCE spike) and its tests.
+      - "tools/identity/**"
       - ".github/workflows/identity-triggers-test.yml"
   push:
     branches: [main]
@@ -24,6 +27,8 @@ on:
       # group added or renamed there must run the guard too (AA-854 review).
       - "accounts/aa365/identity.tf"
       - "accounts/aa365/identity_variables.tf"
+      # AA-854 I2: WORKFORCE bootstrap tool (break-glass, staff create, PKCE spike) and its tests.
+      - "tools/identity/**"
       - ".github/workflows/identity-triggers-test.yml"
 
 permissions:
@@ -54,3 +59,25 @@ jobs:
       # archive_file source dir.
       - name: Run trigger tests
         run: python -m pytest -p no:cacheprovider -q lambda_src/identity_triggers_tests
+
+  workforce-bootstrap-tests:
+    name: Workforce bootstrap tool tests (pytest)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # boto3 >= 1.36 has the USER_AUTH flow and the choice-based challenges in its Cognito model;
+      # Stubber validates every stubbed call against that model.
+      - name: Install pytest and boto3
+        run: python -m pip install "pytest>=8,<10" "boto3>=1.36,<2"
+
+      # The group test reads accounts/aa365/identity.tf (id_staff_groups).
+      - name: Run tool tests
+        run: python -m pytest -p no:cacheprovider -q tools/identity/tests

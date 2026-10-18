@@ -101,6 +101,12 @@ accounts/
 modules/          ← reusable building blocks, consumed by the account roots
   vpc, rds, ecs, alb, api_gateway, s3, secrets, waf, dynamodb, efs,
   elasticache, eventbridge, langfuse, monitoring
+tools/
+  identity/       ← workforce_bootstrap.py (AA-854): admin-run, MFA, stdlib + boto3. create-staff
+                    (AdminCreateUser SUPPRESS + groups), breakglass-init / -verify (password + TOTP
+                    into aa-identity/dev/breakglass, user left DISABLED), PKCE spike helpers; tests
+                    in tools/identity/tests (job in identity-triggers-test.yml). Tracked on purpose:
+                    scripts/ is gitignored, so hand-run tools that must be kept go in tools/.
 ```
 
 The **active dev stack** is `accounts/aa365` — it is the root Terraform actually applies against
