@@ -6,6 +6,12 @@ variable "dns_zone_name" {
   default     = "lumiguides.it.com"
 }
 
+variable "dns_apex_a_records" {
+  description = "A record(s) of the bare dns_zone_name (dns.tf, AA-816). Cognito custom domains need the parent to resolve. Vercel apex anycast IP: attach lumiguides.it.com to the aa-cis-frontend Vercel project (redirect to aa-cis.) BEFORE applying; use the IP the Vercel domain panel shows if it differs."
+  type        = list(string)
+  default     = ["76.76.21.21"]
+}
+
 variable "ses_from_address" {
   description = "The only From address the app roles may send as (ses:FromAddress condition). App send helpers must use exactly this."
   type        = string

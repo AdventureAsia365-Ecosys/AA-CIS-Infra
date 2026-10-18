@@ -691,6 +691,14 @@ resource "aws_iam_role_policy" "tf_apply" {
           ]
           Resource = "arn:aws:events:${var.aws_region}:${var.account_id}:rule/aa-identity-*"
         },
+        {
+          # AA-816 (S242), bootstrap grant: CreateUserPoolDomain with a custom domain needs the
+          # caller to hold cloudfront:UpdateDistribution (AWS-managed distribution, no ARN of ours).
+          Sid      = "CognitoCustomDomainCloudFront"
+          Effect   = "Allow"
+          Action   = ["cloudfront:UpdateDistribution"]
+          Resource = "*"
+        },
       ],
     )
   })

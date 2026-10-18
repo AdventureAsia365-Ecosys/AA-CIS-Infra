@@ -27,8 +27,10 @@
 #     the VPC, published versions behind a `live` alias (decision 5), with alarms (ALARM + OK mail,
 #     S241 D-20) and 365-day log groups (auth audit logs, S241 D-09). Their roles carry
 #     the AA-806 workload boundary (the CI apply role may only create roles that carry it)
-#   - prefix domains (managed login v2) always; custom domains auth. / staff-auth. only when
-#     identity_custom_domains_enabled = true (needs the AA-818 us-east-1 certificate)
+#   - prefix domains (managed login v2) always (fallback); custom domains auth. / staff-auth. +
+#     their Route 53 alias records when identity_custom_domains_enabled = true (default since
+#     AA-816 S242; AA-818 us-east-1 certificate + apex A record in dns.tf)
+#   - managed login branding (Adventure Asia style + logos) for the 3 WORKFORCE clients (AA-816 S242)
 #   - Cognito mail through the AA-811 SES identity (ses.tf, same root) when identity_ses_enabled = true
 #     (default since AA-854: identity verified, DKIM SUCCESS, account out of the SES sandbox, checked
 #     live 17/10/2026); off = COGNITO_DEFAULT and no EMAIL_OTP. EXTERNAL native self sign-up stays
@@ -71,9 +73,10 @@
 #   - Break-glass is restricted to its own client only by procedure: the pre token trigger is a
 #     pure function and cannot know client ids (pool -> trigger -> client would be a Terraform
 #     cycle). It logs every break-glass token issue (alarm below).
-#   - Managed-login branding is NOT here (provider 6.12+). Managed login v2 needs a branding style
-#     per client before its pages render: create it with the CLI after apply (see output
-#     identity_branding_commands).
+#   - Managed login v2 needs a branding style per client before its pages render. WORKFORCE clients
+#     carry the AA style below (AA-816 S242, was a CLI --use-cognito-provided-values workaround,
+#     now imported). EXTERNAL clients have NO style yet (no live users; needs its own non-"staff"
+#     header logo): their managed login pages do not render until one is added here.
 #   - The break-glass USER is not created here (Terraform would hold its password). One-off script
 #     in Phase 1 (ADR 0006 migration plan).
 #
@@ -121,6 +124,11 @@ locals {
   id_facebook   = var.identity_facebook_app_id != "" && var.identity_facebook_app_secret_arn != ""
 
   id_custom_domains = var.identity_custom_domains_enabled
+  # AA-818 certificate from custom_domains.tf (same root); the validation resource, when present,
+  # makes Terraform wait for ISSUED before Cognito gets the ARN.
+  id_custom_domain_cert_arn = var.identity_custom_domain_certificate_arn != "" ? var.identity_custom_domain_certificate_arn : (
+    local.cd_enabled == 1 ? aws_acm_certificate_validation.auth[0].certificate_arn : aws_acm_certificate.auth.arn
+  )
 
   # ADR 0006 decision 3: group name = <app>-<role>. Precedence only matters for cognito:preferred_role (unused).
   id_staff_groups = {
@@ -407,10 +415,6 @@ resource "aws_cognito_user_pool" "workforce" {
       condition     = !local.id_ses_enabled || var.identity_ses_from_address != ""
       error_message = "identity_ses_enabled = true needs identity_ses_from_address (inside the AA-811 identity's domain)."
     }
-    precondition {
-      condition     = !local.id_custom_domains || var.identity_custom_domain_certificate_arn != ""
-      error_message = "identity_custom_domains_enabled = true needs identity_custom_domain_certificate_arn (the AA-818 us-east-1 certificate, ISSUED)."
-    }
   }
 }
 
@@ -642,7 +646,16 @@ resource "aws_cognito_user_pool_client" "external" {
 # Domains (ADR 0006 decision 10). Prefix domains always (Dev, and the fallback if a custom domain
 # breaks). Custom domains only with identity_custom_domains_enabled = true, which needs the AA-818
 # us-east-1 certificate ISSUED and an A record on the parent lumiguides.it.com (Cognito refuses the
-# custom domain otherwise). DNS: CNAME/alias of each name to its CloudFront target (output below).
+# custom domain otherwise: dns.tf aws_route53_record.apex, hence the depends_on). DNS: Route 53
+# alias A record of each name to the CloudFront distribution Cognito creates.
+#
+# AA-816 (S242): Chrome Safe Browsing flagged the staff sign-in as deceptive: aa-cis. redirected to
+# aa365-staff-auth-dev.auth.us-west-1.amazoncognito.com with the default AWS look. The CIS frontend
+# now sends staff to https://staff-auth.lumiguides.it.com (managed_login base URL output below).
+# Creating a custom domain needs cloudfront:UpdateDistribution on the caller (AWS docs; cicd_split.tf
+# statement CognitoCustomDomainCloudFront, gated by time_sleep.wait_for_iam_propagation). First
+# apply: if Cognito still answers "unable to resolve the A record of the parent domain" (resolver
+# negative cache, SOA minimum 86400), re-run the apply.
 # =============================================================================
 resource "aws_cognito_user_pool_domain" "workforce_prefix" {
   domain                = var.identity_workforce_domain_prefix
@@ -659,17 +672,166 @@ resource "aws_cognito_user_pool_domain" "external_prefix" {
 resource "aws_cognito_user_pool_domain" "workforce_custom" {
   count                 = local.id_custom_domains ? 1 : 0
   domain                = var.identity_workforce_custom_domain
-  certificate_arn       = var.identity_custom_domain_certificate_arn
+  certificate_arn       = local.id_custom_domain_cert_arn
   user_pool_id          = aws_cognito_user_pool.workforce.id
   managed_login_version = 2
+
+  depends_on = [aws_route53_record.apex, time_sleep.wait_for_iam_propagation]
 }
 
 resource "aws_cognito_user_pool_domain" "external_custom" {
   count                 = local.id_custom_domains ? 1 : 0
   domain                = var.identity_external_custom_domain
-  certificate_arn       = var.identity_custom_domain_certificate_arn
+  certificate_arn       = local.id_custom_domain_cert_arn
   user_pool_id          = aws_cognito_user_pool.external.id
   managed_login_version = 2
+
+  depends_on = [aws_route53_record.apex, time_sleep.wait_for_iam_propagation]
+}
+
+locals {
+  id_custom_domain_aliases = local.id_custom_domains ? {
+    workforce = aws_cognito_user_pool_domain.workforce_custom[0]
+    external  = aws_cognito_user_pool_domain.external_custom[0]
+  } : {}
+}
+
+resource "aws_route53_record" "identity_custom_domain" {
+  for_each = local.id_custom_domain_aliases
+
+  zone_id = aws_route53_zone.lumiguides.zone_id
+  name    = each.value.domain
+  type    = "A"
+
+  alias {
+    name                   = each.value.cloudfront_distribution
+    zone_id                = each.value.cloudfront_distribution_zone_id # Z2FDTNDATAQYW2 (CloudFront)
+    evaluate_target_health = false
+  }
+}
+
+# =============================================================================
+# Managed login branding (AA-816 S242): the WORKFORCE sign-in pages in the Adventure Asia style of
+# the CIS /login card (cream F4F1EC page, white card radius 16, gold DB9628 pill button, ink
+# 1F2933), light mode only like /login. Cognito has no setting for the page title, the "Sign in"
+# heading or the font, so the brand name and "Staff sign-in" are drawn in the header SVG. The AWS
+# look (background graphic, blue palette, illustrations) is switched off. Accessibility: input and
+# checkbox borders 9099A6, focus ring and links 9E6E16 (>= 3:1 / ~4.5:1 on white); the white text
+# on the gold primary button (2.5:1) matches adventure.asia and /login on purpose.
+#
+# One style per client (Cognito allows exactly one). The three styles were first created with the
+# CLI (--use-cognito-provided-values) and are imported below; the asset set forces a replacement,
+# so the first apply deletes and recreates each style (new managed_login_branding_id, a few
+# seconds without a style per client). If Cognito rejects buttons.borderRadius 24, use 16.
+# Assets: accounts/aa365/assets/identity/ (form logo = the official CIS frontend logo PNG; header,
+# footer and favicon SVGs use only Cognito-allowed SVG elements). Each request <= 2 MB (assets ~18 KB).
+# =============================================================================
+locals {
+  id_branding_assets_dir = "${path.module}/assets/identity"
+
+  id_branding_assets = [
+    { category = "FORM_LOGO", extension = "PNG", file = "aa-form-logo.png" },
+    { category = "PAGE_HEADER_LOGO", extension = "SVG", file = "aa-header-logo.svg" },
+    { category = "PAGE_FOOTER_LOGO", extension = "SVG", file = "aa-footer-logo.svg" },
+    { category = "FAVICON_SVG", extension = "SVG", file = "aa-favicon.svg" },
+  ]
+
+  # Only values that differ from Cognito's defaults. Colours are RRGGBBAA.
+  id_branding_settings_workforce = {
+    categories = {
+      global = { colorSchemeMode = "LIGHT", pageHeader = { enabled = true }, pageFooter = { enabled = true } }
+      form   = { displayGraphics = false }
+    }
+    componentClasses = {
+      buttons = { borderRadius = 24.0 }
+      input = {
+        borderRadius = 8.0
+        lightMode    = { defaults = { backgroundColor = "ffffffff", borderColor = "9099a6ff" }, placeholderColor = "6b7380ff" }
+      }
+      inputLabel       = { lightMode = { textColor = "1f2933ff" } }
+      inputDescription = { lightMode = { textColor = "6b7380ff" } }
+      focusState       = { lightMode = { borderColor = "9e6e16ff" } }
+      link             = { lightMode = { defaults = { textColor = "9e6e16ff" }, hover = { textColor = "1f2933ff" } } }
+      optionControls = {
+        lightMode = {
+          defaults = { backgroundColor = "ffffffff", borderColor = "9099a6ff" }
+          selected = { backgroundColor = "db9628ff", foregroundColor = "ffffffff" }
+        }
+      }
+      divider = { lightMode = { borderColor = "e9e4dbff" } }
+      dropDown = {
+        borderRadius = 8.0
+        lightMode = {
+          hover = { itemBackgroundColor = "fbf3e3ff", itemBorderColor = "dda64eff", itemTextColor = "1f2933ff" }
+          match = { itemTextColor = "9e6e16ff" }
+        }
+      }
+    }
+    components = {
+      pageBackground = { image = { enabled = false }, lightMode = { color = "f4f1ecff" } }
+      pageHeader = {
+        logo      = { enabled = true, location = "START" }
+        lightMode = { background = { color = "ffffffff" }, borderColor = "e9e4dbff" }
+      }
+      pageFooter = {
+        logo      = { enabled = true, location = "CENTER" }
+        lightMode = { background = { color = "f4f1ecff" }, borderColor = "e9e4dbff" }
+      }
+      form = {
+        borderRadius = 16.0
+        logo         = { enabled = true, location = "CENTER", position = "TOP", formInclusion = "IN" }
+        lightMode    = { backgroundColor = "ffffffff", borderColor = "d8d3ccff" }
+      }
+      pageText = { lightMode = { headingColor = "1f2933ff", bodyColor = "33363dff", descriptionColor = "4a5568ff" } }
+      primaryButton = {
+        lightMode = {
+          defaults = { backgroundColor = "db9628ff", textColor = "ffffffff" }
+          hover    = { backgroundColor = "9e6e16ff", textColor = "ffffffff" }
+          active   = { backgroundColor = "9e6e16ff", textColor = "ffffffff" }
+        }
+      }
+      secondaryButton = {
+        lightMode = {
+          defaults = { backgroundColor = "ffffffff", borderColor = "dda64eff", textColor = "9e6e16ff" }
+          hover    = { backgroundColor = "fbf3e3ff", borderColor = "db9628ff", textColor = "9e6e16ff" }
+          active   = { backgroundColor = "f4e2c2ff", borderColor = "9e6e16ff", textColor = "9e6e16ff" }
+        }
+      }
+      alert   = { lightMode = { error = { backgroundColor = "fdf4f3ff", borderColor = "c20101ff" } } }
+      favicon = { enabledTypes = ["SVG"] }
+    }
+  }
+
+  # Styles created by the CLI workaround (S242), adopted instead of deleted by hand.
+  id_branding_existing_workforce = {
+    "cis-admin"     = "70d07784-581a-4407-8646-5332cd767f47"
+    "booking-staff" = "a965331a-0208-4dc0-bc1f-c11c1ef48c39"
+    "breakglass"    = "01c3d2c1-2127-4f04-84b7-7b7c750f2f6c"
+  }
+}
+
+import {
+  for_each = local.id_branding_existing_workforce
+  to       = aws_cognito_managed_login_branding.workforce[each.key]
+  id       = "${aws_cognito_user_pool.workforce.id},${each.value}"
+}
+
+resource "aws_cognito_managed_login_branding" "workforce" {
+  for_each = aws_cognito_user_pool_client.workforce
+
+  user_pool_id = aws_cognito_user_pool.workforce.id
+  client_id    = each.value.id
+  settings     = jsonencode(local.id_branding_settings_workforce)
+
+  dynamic "asset" {
+    for_each = local.id_branding_assets
+    content {
+      bytes      = filebase64("${local.id_branding_assets_dir}/${asset.value.file}")
+      category   = asset.value.category
+      color_mode = "LIGHT"
+      extension  = asset.value.extension
+    }
+  }
 }
 
 # =============================================================================
@@ -958,21 +1120,18 @@ output "identity_idp_redirect_uris" {
 }
 
 output "identity_custom_domain_cloudfront_targets" {
-  description = "CNAME targets for the auth custom domains (records in the lumiguides.it.com DNS zone: Route 53 once the nameservers are switched, S237 D5)."
+  description = "CloudFront targets of the auth custom domains (Route 53 alias records aws_route53_record.identity_custom_domain point at them)."
   value = local.id_custom_domains ? {
     (var.identity_workforce_custom_domain) = aws_cognito_user_pool_domain.workforce_custom[0].cloudfront_distribution
     (var.identity_external_custom_domain)  = aws_cognito_user_pool_domain.external_custom[0].cloudfront_distribution
   } : {}
 }
 
-output "identity_breakglass_secret_arn" {
-  value = aws_secretsmanager_secret.identity_breakglass.arn
+output "identity_workforce_branding_ids" {
+  description = "Managed login branding id per WORKFORCE client (changes when a style is replaced)."
+  value       = { for k, b in aws_cognito_managed_login_branding.workforce : k => b.managed_login_branding_id }
 }
 
-output "identity_branding_commands" {
-  description = "Managed login v2 needs a branding style per client (provider 6.12+ for Terraform); run once per client after apply."
-  value = concat(
-    [for k, c in aws_cognito_user_pool_client.workforce : "aws cognito-idp create-managed-login-branding --user-pool-id ${aws_cognito_user_pool.workforce.id} --client-id ${c.id} --use-cognito-provided-values --profile aa365-admin --region ${var.aws_region}"],
-    [for k, c in aws_cognito_user_pool_client.external : "aws cognito-idp create-managed-login-branding --user-pool-id ${aws_cognito_user_pool.external.id} --client-id ${c.id} --use-cognito-provided-values --profile aa365-admin --region ${var.aws_region}"],
-  )
+output "identity_breakglass_secret_arn" {
+  value = aws_secretsmanager_secret.identity_breakglass.arn
 }
