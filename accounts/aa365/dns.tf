@@ -95,6 +95,30 @@ resource "aws_route53_record" "parity" {
   records = each.value.records
 }
 
+# -----------------------------------------------------------------------------
+# AA-816 (S242): apex A record. Cognito refuses a custom domain (staff-auth. / auth., identity.tf)
+# unless the PARENT name resolves to an A record ("any value", an SOA is not enough); the apex had
+# none (Namecheap parity had no apex A). It points at Vercel's apex anycast IP so that, once
+# lumiguides.it.com is attached to the aa-cis-frontend Vercel project with a redirect to
+# https://aa-cis.lumiguides.it.com, a visitor of the bare domain lands on the real admin over
+# HTTPS instead of a dead name (also what a Safe Browsing reviewer sees). $0: no AWS resource
+# besides the record (hosted zone already paid), Vercel domains are free on every plan.
+#
+# ORDER: attach the domain in Vercel FIRST (Project -> Settings -> Domains -> add
+# lumiguides.it.com, redirect to aa-cis.lumiguides.it.com), then apply. An A record to Vercel
+# with no project claiming the name is the same takeover risk as an unclaimed Vercel CNAME
+# (custom_domain_vercel_hosts): another Vercel account could serve its own page on our apex.
+# Rejected: alias to the CIS ALB (internet-exposed ALB, bypasses the API GW WAF); S3 website
+# redirect (HTTP only, :443 refused); CloudFront + new apex cert (5 more resources for a redirect).
+# -----------------------------------------------------------------------------
+resource "aws_route53_record" "apex" {
+  zone_id = aws_route53_zone.lumiguides.zone_id
+  name    = var.dns_zone_name
+  type    = "A"
+  ttl     = 300
+  records = var.dns_apex_a_records
+}
+
 output "lumiguides_zone_id" {
   value = aws_route53_zone.lumiguides.zone_id
 }

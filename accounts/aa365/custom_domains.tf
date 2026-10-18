@@ -24,8 +24,8 @@
 #       (https://api-tripplanner.../browse/..., /trip/...)
 #     - Route 53 A alias records for both, and the Vercel frontend CNAMEs (var.custom_domain_vercel_hosts)
 #
-# Not here: the Cognito custom domains themselves and the apex A record they need (AA-703,
-# identity.tf); app env / CORS / canonical / Mapbox URL restriction (TripPlanner and Booking lanes);
+# Not here: the Cognito custom domains themselves (AA-703/AA-816, identity.tf) and the apex A record
+# they need (AA-816, dns.tf); app env / CORS / canonical / Mapbox URL restriction (TripPlanner and Booking lanes);
 # the hand-made api-cis. domain + cert (still outside state, records copied in dns.tf).
 #
 # The WAF association on the Booking REST stage (var.waf_protect_rest_api_stages) is per stage, so
@@ -220,7 +220,7 @@ output "custom_domain_certificates" {
 }
 
 output "auth_custom_domain_certificate_arn" {
-  description = "us-east-1 certificate for auth. + staff-auth. -> AA-703 var.identity_custom_domain_certificate_arn."
+  description = "us-east-1 certificate for auth. + staff-auth. (identity.tf uses it directly unless var.identity_custom_domain_certificate_arn overrides it)."
   value       = aws_acm_certificate.auth.arn
 }
 
