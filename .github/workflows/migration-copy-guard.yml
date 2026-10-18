@@ -51,13 +51,13 @@ jobs:
     name: Copies match owner main
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       # PyYAML only for the registry test (db/tests/test_owners_registry.py reads db/owners.yaml and
       # the workflow); the guards and the runner stay standard-library only.
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -100,7 +100,7 @@ jobs:
     name: Migration lint and unique numbers
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Lint every copy, check numbers are unique per owner
         run: |

@@ -108,7 +108,7 @@ jobs:
       ENVIRONMENT: ${{ inputs.environment }}
       OVERRIDE_BUSY_JOBS: ${{ inputs.override_busy_jobs }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       # X1 S12: each mode takes only its own input (MIGRATION above carries it to the steps below).
       - name: Unused inputs
