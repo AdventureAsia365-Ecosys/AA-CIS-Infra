@@ -256,6 +256,31 @@ class GuardTest(unittest.TestCase):
         self.assertIn("skip  db/migrations/cis/100_gone.sql", out.getvalue())
         self.assertIn("1 file(s) checked, 1 failed", out.getvalue())
 
+    # ── code copies (X2 RLS catalogue rules) ────────────────────────────────────
+
+    def test_code_copy_identical_passes_and_reads_owner_path(self):
+        body = b"RULES = {}\n"
+        rel = self.write("db/rls_catalogue_rules.py", body)
+        fetch = FakeOwnerRepos({("AA-CIS-App", "tests/integration/rls_catalogue_rules.py"): body})
+        self.assertEqual(self.check(rel, fetch), [])
+        self.assertEqual(fetch.calls, [("AA-CIS-App", "tests/integration/rls_catalogue_rules.py")])
+
+    def test_code_copy_differs_or_missing_fails(self):
+        rel = self.write("db/rls_catalogue_rules.py", b"RULES = {}\n")
+        diff = FakeOwnerRepos({("AA-CIS-App", "tests/integration/rls_catalogue_rules.py"): b"RULES = {1}\n"})
+        self.assertIn("differs from", self.check(rel, diff)[0])
+        self.assertIn("merge the owner PR first", self.check(rel, FakeOwnerRepos())[0])
+
+    def test_all_includes_code_copies(self):
+        self.write("db/rls_catalogue_rules.py", b"x\n")
+        self.assertEqual(guard.all_copies(self.root), ["db/rls_catalogue_rules.py"])
+        self.assertEqual(guard.main(["--all", "--repo-root", str(self.root)], fetch=FakeOwnerRepos()), 1)
+
+    def test_shipped_rules_file_is_a_registered_code_copy(self):
+        root = Path(__file__).resolve().parent.parent.parent
+        self.assertTrue((root / "db" / "rls_catalogue_rules.py").is_file())
+        self.assertIn("db/rls_catalogue_rules.py", guard.CODE_COPIES)
+
     def test_main_no_paths_is_noop(self):
         self.assertEqual(guard.main(["--repo-root", str(self.root)], fetch=FakeOwnerRepos()), 0)
 
