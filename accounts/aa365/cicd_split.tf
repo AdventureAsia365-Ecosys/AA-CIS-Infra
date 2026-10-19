@@ -710,6 +710,20 @@ resource "aws_iam_role_policy" "tf_apply" {
           Action   = ["cloudfront:UpdateDistribution"]
           Resource = "*"
         },
+        {
+          # AA-816 I5 (S243), bootstrap grant: e2e_mailbox.tf receipt rule set, its activation and the
+          # e2e-cognito rule. The wildcard covers Create/Delete/Describe/Update/Reorder of rules and
+          # sets, Set/DescribeActiveReceiptRuleSet and ListReceiptRuleSets. Several of these take no
+          # resource ARN (CreateReceiptRuleSet, DescribeActiveReceiptRuleSet), so the scope is the
+          # region, like CognitoUserPoolManage. SESIdentityManage above has no receipt actions.
+          Sid      = "SESReceiptRuleManage"
+          Effect   = "Allow"
+          Action   = ["ses:*ReceiptRule*"]
+          Resource = "*"
+          Condition = {
+            StringEquals = { "aws:RequestedRegion" = var.aws_region }
+          }
+        },
       ],
     )
   })
