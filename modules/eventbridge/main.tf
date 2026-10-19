@@ -246,7 +246,7 @@ resource "aws_cloudwatch_metric_alarm" "acp_dlq_depth" {
   period              = 300
   statistic           = "Sum"
   threshold           = 0
-  alarm_description   = "ACP Events DLQ has messages — investigate failed EventBridge deliveries"
+  alarm_description   = "ACP Events DLQ has messages — investigate failed EventBridge deliveries.${var.alarm_runbook_url == "" ? "" : " Runbook: ${var.alarm_runbook_url}"}"
   treat_missing_data  = "notBreaching"
 
   dimensions = {

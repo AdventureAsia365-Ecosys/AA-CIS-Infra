@@ -222,6 +222,8 @@ module "eventbridge" {
   account_id       = var.account_id
   tags             = local.common_tags
   alerts_topic_arn = aws_sns_topic.alerts.arn
+  # AA-893: runbook link in the DLQ alarm description (alarm_runbooks.tf).
+  alarm_runbook_url = local.runbook_url.queue_stuck
 
   # AA-402: same IAM propagation race as AA-287 — this module's event bus,
   # scheduler role, and schedule group needed aa-cis-dev-role's (retired, AA-806) newly-added

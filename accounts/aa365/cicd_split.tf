@@ -723,6 +723,29 @@ resource "aws_iam_role_policy" "tf_apply" {
             StringEquals = { "aws:RequestedRegion" = var.aws_region }
           }
         },
+        {
+          # AA-896 (S243), bootstrap grant: cost_anomaly.tf. CreateAnomalyMonitor/Subscription take no
+          # resource ARN (AWS service reference for ce: no resource type), so they need "*"; they create
+          # only in this account. Nothing else in the inline or managed policies grants ce:*.
+          Sid      = "CostAnomalyCreate"
+          Effect   = "Allow"
+          Action   = ["ce:CreateAnomalyMonitor", "ce:CreateAnomalySubscription"]
+          Resource = "*"
+        },
+        {
+          # AA-896: read, update, tag and delete only this account's anomaly monitors and subscriptions.
+          Sid    = "CostAnomalyManage"
+          Effect = "Allow"
+          Action = [
+            "ce:GetAnomalyMonitors", "ce:UpdateAnomalyMonitor", "ce:DeleteAnomalyMonitor",
+            "ce:GetAnomalySubscriptions", "ce:UpdateAnomalySubscription", "ce:DeleteAnomalySubscription",
+            "ce:TagResource", "ce:UntagResource", "ce:ListTagsForResource",
+          ]
+          Resource = [
+            "arn:aws:ce::${var.account_id}:anomalymonitor/*",
+            "arn:aws:ce::${var.account_id}:anomalysubscription/*",
+          ]
+        },
       ],
     )
   })

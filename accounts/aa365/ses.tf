@@ -235,7 +235,7 @@ resource "aws_iam_role_policy" "tripplanner_lambda_ses_send" {
 # -----------------------------------------------------------------------------
 resource "aws_cloudwatch_metric_alarm" "ses_bounce_rate" {
   alarm_name          = "aa-email-${var.environment}-bounce-rate"
-  alarm_description   = "SES account bounce rate above 2.5% (AWS review at 5%, pause at 10%). Check the aa-email-${var.environment}-feedback events and who is sending to bad addresses (sign-up abuse?). AA-811."
+  alarm_description   = "SES account bounce rate above 2.5% (AWS review at 5%, pause at 10%). Check the aa-email-${var.environment}-feedback events and who is sending to bad addresses (sign-up abuse?). AA-811.${local.runbook_suffix.ses_bounce}"
   namespace           = "AWS/SES"
   metric_name         = "Reputation.BounceRate"
   statistic           = "Maximum"
@@ -252,7 +252,7 @@ resource "aws_cloudwatch_metric_alarm" "ses_bounce_rate" {
 
 resource "aws_cloudwatch_metric_alarm" "ses_complaint_rate" {
   alarm_name          = "aa-email-${var.environment}-complaint-rate"
-  alarm_description   = "SES account complaint rate above 0.05% (AWS review at 0.1%, pause at 0.5%). AA-811."
+  alarm_description   = "SES account complaint rate above 0.05% (AWS review at 0.1%, pause at 0.5%). AA-811.${local.runbook_suffix.ses_bounce}"
   namespace           = "AWS/SES"
   metric_name         = "Reputation.ComplaintRate"
   statistic           = "Maximum"

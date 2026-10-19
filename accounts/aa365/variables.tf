@@ -181,6 +181,20 @@ variable "per_app_monthly_budgets" {
   }
 }
 
+# AA-896: an anomaly whose total cost impact reaches this many USD is sent to the alerts SNS topic
+# (cost_anomaly.tf). $5 is ~2% of the $250 account budget: small enough to catch a runaway batch or a
+# forgotten resource within a day, large enough to skip day-to-day noise. Raise it if it is noisy.
+variable "cost_anomaly_alert_usd" {
+  description = "Total-impact threshold (USD) for Cost Anomaly Detection alerts to the alerts SNS topic (AA-896)"
+  type        = number
+  default     = 5
+
+  validation {
+    condition     = var.cost_anomaly_alert_usd >= 1
+    error_message = "Use at least 1 USD."
+  }
+}
+
 # S235 Phase 0 (AA-678): associate the REGIONAL web ACL (modules/waf) with the CIS and Booking REST
 # API stages. Keep false until (1) the CI role has apigateway:SetWebACL (otherwise the CI apply
 # fails with AccessDenied on the association) and (2) the geo allow-list is confirmed for Booking
