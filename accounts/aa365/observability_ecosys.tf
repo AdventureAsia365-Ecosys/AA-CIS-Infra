@@ -497,6 +497,42 @@ resource "aws_cloudwatch_metric_alarm" "rds_role_connections_high" {
   tags = merge(local.ecosys_tags, { App = "shared" })
 }
 
+# X1 S18 (AA-860, plan XD6): a connection refused for the CIS runtime role. cis_app has CONNECTION LIMIT 90
+# (rl-001); the master it replaces had none, so SQLSTATE 53300 "too many connections for role "cis_app""
+# is a new failure mode. The 5-minute RoleConnectionLimitPct sample above can miss a burst between two
+# samples; the api and worker log every refused connect (asyncpg TooManyConnectionsError) to the one ECS log
+# group (/ecs/aa-cis-dev, streams api/ and worker/), so a log metric filter counts them. No default value:
+# the metric only exists while it matches (≈ $0 custom-metric cost when quiet), and missing data is OK.
+resource "aws_cloudwatch_log_metric_filter" "cis_app_too_many_connections" {
+  name           = "${local.name_prefix}-cis-app-too-many-connections"
+  log_group_name = module.ecs.log_group_name
+  pattern        = "\"too many connections for role\" \"cis_app\""
+
+  metric_transformation {
+    name      = "CisAppTooManyConnections"
+    namespace = "AA/RDS"
+    value     = "1"
+    unit      = "Count"
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "cis_app_too_many_connections" {
+  alarm_name          = "${local.name_prefix}-rds-cis-app-too-many-connections"
+  alarm_description   = "CIS api/worker logged 'too many connections for role \"cis_app\"' (SQLSTATE 53300, CONNECTION LIMIT ${local.rds_role_connection_limits["cis_app"]}) in the last 5 minutes: requests or jobs failed to get a DB connection. Check pool sizes (AA-CIS-App docs/implementation-notes/AA-860-S15.md) before raising the limit (Infra roles/ file)."
+  namespace           = "AA/RDS"
+  metric_name         = "CisAppTooManyConnections"
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  threshold           = 1
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
+
+  tags = merge(local.ecosys_tags, { App = "cis" })
+}
+
 # The sampler above runs in the CIS api. The api and worker task definitions share one task role
 # (modules/ecs aws_iam_role.ecs_task, aa-cis-dev-ecs-task-role), so the grant goes on that role.
 # PutMetricData has no resource ARN; the namespace condition limits it to AA/RDS and AA/Jobs/CIS
