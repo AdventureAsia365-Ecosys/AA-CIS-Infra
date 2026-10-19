@@ -106,10 +106,17 @@ class RegistryShapeTest(unittest.TestCase):
         for name, o in SCHEMA_OWNERS.items():
             for g in o["consumer_grants"]:
                 with self.subTest(owner=name, grant=g):
-                    self.assertEqual(set(g), {"grantee", "privilege", "object", "status", "source"})
+                    self.assertLessEqual({"grantee", "privilege", "object", "status", "source"}, set(g))
+                    self.assertLessEqual(set(g), {"grantee", "privilege", "object", "status", "source",
+                                                  "expected_from"})
                     self.assertIn(g["status"], ("contract", "grandfathered"))
                     self.assertIn(g["grantee"], runtime)
                     self.assertNotEqual(runtime[g["grantee"]], name)
+                    if "expected_from" in g:
+                        # The owner's own key (it creates the object and the grant), named in the source too.
+                        self.assertRegex(g["expected_from"], rf"^{re.escape(o['key_prefix'])}[0-9]{{3}}$")
+                        self.assertIn(g["expected_from"], g["source"])
+                        self.assertEqual(g["status"], "contract")
 
     def test_owner_grants_name_other_owners_owner_roles(self):
         # Cross-owner grants to NOLOGIN owner roles (CIS 243: what DB Migrate needs to register a file run as
@@ -170,10 +177,14 @@ class MirrorsAgreeTest(unittest.TestCase):
                                   for rp in p.runtime_privileges}, o["runtime_privileges"])
         # Contract consumer grants on one named object (wildcards such as catalog.* are left to the dump).
         single = re.compile(r"^[a-z_]+\.[a-z_]+(\([a-z, ]*\))?$")
-        expected = {(g["grantee"], tuple(x.strip() for x in g["privilege"].split(",")), g["object"])
+        expected = {(g["grantee"], tuple(x.strip() for x in g["privilege"].split(",")), g["object"],
+                     str(g.get("expected_from", "")))
                     for o in SCHEMA_OWNERS.values() for g in o["consumer_grants"]
                     if g["status"] == "contract" and single.match(g["object"])}
         self.assertEqual(set(probe.CONSUMER_GRANTS), expected)
+        # A keyed grant is only checked in its own cell; its key must be a state key the probe reads.
+        for key in probe.CONSUMER_GRANT_KEYS:
+            self.assertIn(key, probe.VERSION_KEYS)
         self.assertEqual(probe.RLS_ENABLE_ONLY_ALLOWLIST,
                          frozenset(OWNERS["cis"].get("rls_enable_only_allowlist", [])))
         # X1 S16 (CIS 244, S243): the RLS parity tables, sorted, all in CIS runtime schemas.
