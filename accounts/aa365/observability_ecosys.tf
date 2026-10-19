@@ -97,7 +97,7 @@ resource "aws_cloudwatch_log_group" "cis_apigw_execution" {
 # published every minute. Missing data (instance stopped on purpose) does not alarm.
 resource "aws_cloudwatch_metric_alarm" "nat_status_check_failed" {
   alarm_name          = "aa-ecosys-${var.environment}-nat-status-check-failed"
-  alarm_description   = "NAT instance ${module.vpc.nat_instance_id} failed an EC2 status check for 3 minutes. All private-subnet egress (CIS, Booking, TripPlanner, LLM calls) goes through it."
+  alarm_description   = "NAT instance ${module.vpc.nat_instance_id} failed an EC2 status check for 3 minutes. All private-subnet egress (CIS, Booking, TripPlanner, LLM calls) goes through it.${local.runbook_suffix.incident}"
   namespace           = "AWS/EC2"
   metric_name         = "StatusCheckFailed"
   dimensions          = { InstanceId = module.vpc.nat_instance_id }
@@ -119,7 +119,7 @@ resource "aws_cloudwatch_metric_alarm" "nat_status_check_failed" {
 # only while the target group publishes nothing; if it alarms after a scale-to-0, that is expected.
 resource "aws_cloudwatch_metric_alarm" "booking_no_healthy_task" {
   alarm_name          = "${local.bk_name_prefix}-no-healthy-task"
-  alarm_description   = "AA-Booking target group ${aws_lb_target_group.booking.name} has no healthy target for 5 minutes (service down or failing /booking/health)."
+  alarm_description   = "AA-Booking target group ${aws_lb_target_group.booking.name} has no healthy target for 5 minutes (service down or failing /booking/health).${local.runbook_suffix.api_5xx}"
   namespace           = "AWS/ApplicationELB"
   metric_name         = "HealthyHostCount"
   dimensions          = { TargetGroup = aws_lb_target_group.booking.arn_suffix, LoadBalancer = module.alb.alb_arn_suffix }
@@ -137,7 +137,7 @@ resource "aws_cloudwatch_metric_alarm" "booking_no_healthy_task" {
 
 resource "aws_cloudwatch_metric_alarm" "booking_unhealthy_hosts" {
   alarm_name          = "${local.bk_name_prefix}-unhealthy-hosts"
-  alarm_description   = "AA-Booking target group ${aws_lb_target_group.booking.name} has an unhealthy target for 5 minutes in a row."
+  alarm_description   = "AA-Booking target group ${aws_lb_target_group.booking.name} has an unhealthy target for 5 minutes in a row.${local.runbook_suffix.api_5xx}"
   namespace           = "AWS/ApplicationELB"
   metric_name         = "UnHealthyHostCount"
   dimensions          = { TargetGroup = aws_lb_target_group.booking.arn_suffix, LoadBalancer = module.alb.alb_arn_suffix }
@@ -155,7 +155,7 @@ resource "aws_cloudwatch_metric_alarm" "booking_unhealthy_hosts" {
 
 resource "aws_cloudwatch_metric_alarm" "booking_cpu_high" {
   alarm_name          = "${local.bk_name_prefix}-cpu-high"
-  alarm_description   = "AA-Booking ECS service ${local.bk_service} CPU above 85% for 15 minutes."
+  alarm_description   = "AA-Booking ECS service ${local.bk_service} CPU above 85% for 15 minutes.${local.runbook_suffix.api_5xx}"
   namespace           = "AWS/ECS"
   metric_name         = "CPUUtilization"
   dimensions          = { ClusterName = module.ecs.cluster_name, ServiceName = local.bk_service }
@@ -175,7 +175,7 @@ resource "aws_cloudwatch_metric_alarm" "booking_cpu_high" {
 # detailed metrics. 5 or more 5XX in 5 minutes on Dev traffic is a real failure, not noise.
 resource "aws_cloudwatch_metric_alarm" "booking_api_5xx" {
   alarm_name          = "${local.bk_name_prefix}-api-5xx"
-  alarm_description   = "AA-Booking REST API ${aws_api_gateway_rest_api.booking.name} stage ${aws_api_gateway_stage.booking.stage_name}: 5 or more 5XX responses in 5 minutes."
+  alarm_description   = "AA-Booking REST API ${aws_api_gateway_rest_api.booking.name} stage ${aws_api_gateway_stage.booking.stage_name}: 5 or more 5XX responses in 5 minutes.${local.runbook_suffix.api_5xx}"
   namespace           = "AWS/ApiGateway"
   metric_name         = "5XXError"
   dimensions          = { ApiName = aws_api_gateway_rest_api.booking.name, Stage = aws_api_gateway_stage.booking.stage_name }
@@ -198,7 +198,7 @@ resource "aws_cloudwatch_metric_alarm" "booking_api_5xx" {
 # 2 standard alarms, about 0.20 USD/month (D-19).
 resource "aws_cloudwatch_metric_alarm" "cis_api_5xx" {
   alarm_name          = "${local.name_prefix}-api-5xx"
-  alarm_description   = "AA-CIS REST API ${module.api_gateway.api_name} stage ${module.api_gateway.stage_name}: 5 or more 5XX responses in 5 minutes."
+  alarm_description   = "AA-CIS REST API ${module.api_gateway.api_name} stage ${module.api_gateway.stage_name}: 5 or more 5XX responses in 5 minutes.${local.runbook_suffix.api_5xx}"
   namespace           = "AWS/ApiGateway"
   metric_name         = "5XXError"
   dimensions          = { ApiName = module.api_gateway.api_name, Stage = module.api_gateway.stage_name }
@@ -216,7 +216,7 @@ resource "aws_cloudwatch_metric_alarm" "cis_api_5xx" {
 
 resource "aws_cloudwatch_metric_alarm" "cis_api_latency_p95" {
   alarm_name          = "${local.name_prefix}-api-latency-p95"
-  alarm_description   = "AA-CIS REST API ${module.api_gateway.api_name}: IntegrationLatency p95 above 5 s for 15 minutes."
+  alarm_description   = "AA-CIS REST API ${module.api_gateway.api_name}: IntegrationLatency p95 above 5 s for 15 minutes.${local.runbook_suffix.api_5xx}"
   namespace           = "AWS/ApiGateway"
   metric_name         = "IntegrationLatency"
   dimensions          = { ApiName = module.api_gateway.api_name, Stage = module.api_gateway.stage_name }
@@ -238,7 +238,7 @@ resource "aws_cloudwatch_metric_alarm" "tripplanner_lambda_errors" {
   for_each = local.tp_functions
 
   alarm_name          = "${each.value}-errors"
-  alarm_description   = "TripPlanner Lambda ${each.value}: 3 or more invocation errors in 5 minutes."
+  alarm_description   = "TripPlanner Lambda ${each.value}: 3 or more invocation errors in 5 minutes.${local.runbook_suffix.api_5xx}"
   namespace           = "AWS/Lambda"
   metric_name         = "Errors"
   dimensions          = { FunctionName = each.value }
@@ -264,7 +264,7 @@ resource "aws_cloudwatch_metric_alarm" "tripplanner_lambda_throttles" {
   for_each = local.tp_functions
 
   alarm_name          = "${each.value}-throttles"
-  alarm_description   = "TripPlanner Lambda ${each.value}: more than 5 throttles (account or reserved concurrency limit) in at least 2 of 3 consecutive 5-minute periods. No OK notification."
+  alarm_description   = "TripPlanner Lambda ${each.value}: more than 5 throttles (account or reserved concurrency limit) in at least 2 of 3 consecutive 5-minute periods. No OK notification.${local.runbook_suffix.api_5xx}"
   namespace           = "AWS/Lambda"
   metric_name         = "Throttles"
   dimensions          = { FunctionName = each.value }
@@ -287,7 +287,7 @@ resource "aws_cloudwatch_metric_alarm" "tripplanner_lambda_throttles" {
 # base size, not the autoscaled size.
 resource "aws_cloudwatch_metric_alarm" "rds_free_storage_low" {
   alarm_name          = "${local.name_prefix}-rds-free-storage-low"
-  alarm_description   = "RDS ${module.rds.db_identifier} free storage below 50% of the ${module.rds.allocated_storage} GB base allocation (shared by CIS, TripPlanner, Booking; autoscaling up to 100 GB)."
+  alarm_description   = "RDS ${module.rds.db_identifier} free storage below 50% of the ${module.rds.allocated_storage} GB base allocation (shared by CIS, TripPlanner, Booking; autoscaling up to 100 GB).${local.runbook_suffix.database}"
   namespace           = "AWS/RDS"
   metric_name         = "FreeStorageSpace"
   dimensions          = { DBInstanceIdentifier = module.rds.db_identifier }
@@ -310,7 +310,7 @@ resource "aws_cloudwatch_metric_alarm" "rds_free_storage_low" {
 # a single app exhausting its own CONNECTION LIMIT long before the instance total gets here.
 resource "aws_cloudwatch_metric_alarm" "rds_connections_high" {
   alarm_name          = "${local.name_prefix}-rds-connections-high"
-  alarm_description   = "RDS ${module.rds.db_identifier} peak connections above ${floor(local.rds_max_connections * 0.6)} (60% of max_connections ${local.rds_max_connections}) within a 5-minute period (shared by CIS, TripPlanner, Booking)."
+  alarm_description   = "RDS ${module.rds.db_identifier} peak connections above ${floor(local.rds_max_connections * 0.6)} (60% of max_connections ${local.rds_max_connections}) within a 5-minute period (shared by CIS, TripPlanner, Booking).${local.runbook_suffix.database}"
   namespace           = "AWS/RDS"
   metric_name         = "DatabaseConnections"
   dimensions          = { DBInstanceIdentifier = module.rds.db_identifier }
@@ -330,7 +330,7 @@ resource "aws_cloudwatch_metric_alarm" "rds_connections_high" {
 # the t3.micro row; t4g.small is < 200 MB), so the alarm fires before the instance starts swapping.
 resource "aws_cloudwatch_metric_alarm" "rds_freeable_memory_low" {
   alarm_name          = "${local.name_prefix}-rds-freeable-memory-low"
-  alarm_description   = "RDS ${module.rds.db_identifier} freeable memory below 200 MB for 10 minutes (too many connections or work_mem pressure)."
+  alarm_description   = "RDS ${module.rds.db_identifier} freeable memory below 200 MB for 10 minutes (too many connections or work_mem pressure).${local.runbook_suffix.database}"
   namespace           = "AWS/RDS"
   metric_name         = "FreeableMemory"
   dimensions          = { DBInstanceIdentifier = module.rds.db_identifier }
@@ -351,7 +351,7 @@ resource "aws_cloudwatch_metric_alarm" "rds_freeable_memory_low" {
 # for its sustained load.
 resource "aws_cloudwatch_metric_alarm" "rds_cpu_surplus_credits_charged" {
   alarm_name          = "${local.name_prefix}-rds-cpu-surplus-credits-charged"
-  alarm_description   = "RDS ${module.rds.db_identifier} is being charged for CPU surplus credits (T-class Unlimited mode: sustained CPU above baseline)."
+  alarm_description   = "RDS ${module.rds.db_identifier} is being charged for CPU surplus credits (T-class Unlimited mode: sustained CPU above baseline).${local.runbook_suffix.database}"
   namespace           = "AWS/RDS"
   metric_name         = "CPUSurplusCreditsCharged"
   dimensions          = { DBInstanceIdentifier = module.rds.db_identifier }
@@ -395,7 +395,7 @@ resource "aws_cloudwatch_metric_alarm" "rds_cpu_surplus_credits_charged" {
 # ReadLatency / WriteLatency are published in SECONDS: 0.020 = 20 ms, averaged over 15 minutes.
 resource "aws_cloudwatch_metric_alarm" "rds_read_latency_high" {
   alarm_name          = "${local.name_prefix}-rds-read-latency-high"
-  alarm_description   = "RDS ${module.rds.db_identifier} average read latency above 20 ms for 15 minutes (storage I/O saturated; shared by CIS, TripPlanner, Booking)."
+  alarm_description   = "RDS ${module.rds.db_identifier} average read latency above 20 ms for 15 minutes (storage I/O saturated; shared by CIS, TripPlanner, Booking).${local.runbook_suffix.database}"
   namespace           = "AWS/RDS"
   metric_name         = "ReadLatency"
   dimensions          = { DBInstanceIdentifier = module.rds.db_identifier }
@@ -413,7 +413,7 @@ resource "aws_cloudwatch_metric_alarm" "rds_read_latency_high" {
 
 resource "aws_cloudwatch_metric_alarm" "rds_write_latency_high" {
   alarm_name          = "${local.name_prefix}-rds-write-latency-high"
-  alarm_description   = "RDS ${module.rds.db_identifier} average write latency above 20 ms for 15 minutes (storage I/O saturated; shared by CIS, TripPlanner, Booking)."
+  alarm_description   = "RDS ${module.rds.db_identifier} average write latency above 20 ms for 15 minutes (storage I/O saturated; shared by CIS, TripPlanner, Booking).${local.runbook_suffix.database}"
   namespace           = "AWS/RDS"
   metric_name         = "WriteLatency"
   dimensions          = { DBInstanceIdentifier = module.rds.db_identifier }
@@ -431,7 +431,7 @@ resource "aws_cloudwatch_metric_alarm" "rds_write_latency_high" {
 
 resource "aws_cloudwatch_metric_alarm" "rds_disk_queue_depth_high" {
   alarm_name          = "${local.name_prefix}-rds-disk-queue-depth-high"
-  alarm_description   = "RDS ${module.rds.db_identifier} average disk queue depth above 10 for 15 minutes (I/O requests waiting on gp storage)."
+  alarm_description   = "RDS ${module.rds.db_identifier} average disk queue depth above 10 for 15 minutes (I/O requests waiting on gp storage).${local.runbook_suffix.database}"
   namespace           = "AWS/RDS"
   metric_name         = "DiskQueueDepth"
   dimensions          = { DBInstanceIdentifier = module.rds.db_identifier }
@@ -451,7 +451,7 @@ resource "aws_cloudwatch_metric_alarm" "rds_disk_queue_depth_high" {
 # 1 billion means autovacuum is not freezing some table and leaves weeks of headroom to find it.
 resource "aws_cloudwatch_metric_alarm" "rds_max_used_xid_high" {
   alarm_name          = "${local.name_prefix}-rds-max-used-xid-high"
-  alarm_description   = "RDS ${module.rds.db_identifier} MaximumUsedTransactionIDs above 1,000,000,000 (wraparound guard: check autovacuum / age(datfrozenxid))."
+  alarm_description   = "RDS ${module.rds.db_identifier} MaximumUsedTransactionIDs above 1,000,000,000 (wraparound guard: check autovacuum / age(datfrozenxid)).${local.runbook_suffix.database}"
   namespace           = "AWS/RDS"
   metric_name         = "MaximumUsedTransactionIDs"
   dimensions          = { DBInstanceIdentifier = module.rds.db_identifier }
@@ -480,7 +480,7 @@ resource "aws_cloudwatch_metric_alarm" "rds_role_connections_high" {
   for_each = local.rds_role_connection_limits
 
   alarm_name          = "${local.name_prefix}-rds-role-connections-${each.key}"
-  alarm_description   = "RDS ${module.rds.db_identifier} role ${each.key} above 80% of its CONNECTION LIMIT ${each.value} (more than ${floor(each.value * 0.8)} sessions) in a 5-minute sample. New connections for this role fail at ${each.value}."
+  alarm_description   = "RDS ${module.rds.db_identifier} role ${each.key} above 80% of its CONNECTION LIMIT ${each.value} (more than ${floor(each.value * 0.8)} sessions) in a 5-minute sample. New connections for this role fail at ${each.value}.${local.runbook_suffix.database}"
   namespace           = "AA/RDS"
   metric_name         = "RoleConnectionLimitPct"
   dimensions          = { Role = each.key }
@@ -526,7 +526,7 @@ resource "aws_iam_role_policy" "cis_ecs_task_put_metric_aa_rds" {
 # cost block above).
 resource "aws_cloudwatch_metric_alarm" "rds_role_connections_sampling_stopped" {
   alarm_name          = "${local.name_prefix}-rds-role-connections-sampling-stopped"
-  alarm_description   = "No AA/RDS RoleConnections sample for 45 minutes: the CIS api sampler (api/core/ops_metrics_sampler.py) is not publishing, so the per-role connection alarms are blind. Check the api is running and its ops_metrics_sampled log lines (and sampler errors) in /ecs/${local.name_prefix}."
+  alarm_description   = "No AA/RDS RoleConnections sample for 45 minutes: the CIS api sampler (api/core/ops_metrics_sampler.py) is not publishing, so the per-role connection alarms are blind. Check the api is running and its ops_metrics_sampled log lines (and sampler errors) in /ecs/${local.name_prefix}.${local.runbook_suffix.database}"
   namespace           = "AA/RDS"
   metric_name         = "RoleConnections"
   dimensions          = { Role = "aa_app_user" }
@@ -604,7 +604,7 @@ resource "aws_cloudwatch_metric_alarm" "jobs_queue_age" {
   for_each = local.job_backlog_owners
 
   alarm_name          = "${each.value.prefix}-jobs-queue-age"
-  alarm_description   = "${each.value.queue}: a due queued job has been starved for more than 15 minutes (${each.value.namespace} OldestQueuedAgeSeconds, capacity-aware: no live worker, an unregistered kind, or a free slot that is not claiming it). Check the queue and the worker logs in ${each.value.log_group}."
+  alarm_description   = "${each.value.queue}: a due queued job has been starved for more than 15 minutes (${each.value.namespace} OldestQueuedAgeSeconds, capacity-aware: no live worker, an unregistered kind, or a free slot that is not claiming it). Check the queue and the worker logs in ${each.value.log_group}.${local.runbook_suffix.queue_stuck}"
   namespace           = each.value.namespace
   metric_name         = "OldestQueuedAgeSeconds"
   statistic           = "Maximum"
@@ -624,7 +624,7 @@ resource "aws_cloudwatch_metric_alarm" "jobs_overdue_running" {
   for_each = local.job_backlog_owners
 
   alarm_name          = "${each.value.prefix}-jobs-overdue-running"
-  alarm_description   = "${each.value.queue}: at least one running job has run longer than 2 x its kind's expected seconds in the current attempt (${each.value.namespace} OverdueRunningJobs). It may be stuck holding a worker slot. Check the running rows and ${each.value.log_group}."
+  alarm_description   = "${each.value.queue}: at least one running job has run longer than 2 x its kind's expected seconds in the current attempt (${each.value.namespace} OverdueRunningJobs). It may be stuck holding a worker slot. Check the running rows and ${each.value.log_group}.${local.runbook_suffix.queue_stuck}"
   namespace           = each.value.namespace
   metric_name         = "OverdueRunningJobs"
   statistic           = "Maximum"
@@ -644,7 +644,7 @@ resource "aws_cloudwatch_metric_alarm" "jobs_sampling_stopped" {
   for_each = local.job_backlog_owners
 
   alarm_name          = "${each.value.prefix}-jobs-sampling-stopped"
-  alarm_description   = "No ${each.value.namespace} OldestQueuedAgeSeconds sample for 45 minutes: ${each.value.sampler} is not publishing, so the queue-age and overdue-running alarms are blind. Expected while the service is scaled to 0${each.value.app == "booking" ? " or the Booking worker is off (WORKER_ENABLED false)" : ""}. Check ${each.value.log_group}."
+  alarm_description   = "No ${each.value.namespace} OldestQueuedAgeSeconds sample for 45 minutes: ${each.value.sampler} is not publishing, so the queue-age and overdue-running alarms are blind. Expected while the service is scaled to 0${each.value.app == "booking" ? " or the Booking worker is off (WORKER_ENABLED false)" : ""}. Check ${each.value.log_group}.${local.runbook_suffix.queue_stuck}"
   namespace           = each.value.namespace
   metric_name         = "OldestQueuedAgeSeconds"
   statistic           = "SampleCount"

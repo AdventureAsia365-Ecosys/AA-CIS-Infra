@@ -239,7 +239,7 @@ resource "aws_lambda_function_event_invoke_config" "rds_snapshot_expiry" {
 # the topic (AA-872); for a daily job the OK mail only means "no new error in the last 5 minutes".
 resource "aws_cloudwatch_metric_alarm" "rds_snapshot_expiry_errors" {
   alarm_name          = "${local.rds_snapshot_expiry_fn_name}-errors"
-  alarm_description   = "AA-869: the RDS manual-snapshot expiry Lambda failed. Check its log group (one JSON line per snapshot)."
+  alarm_description   = "AA-869: the RDS manual-snapshot expiry Lambda failed. Check its log group (one JSON line per snapshot).${local.runbook_suffix.database}"
   namespace           = "AWS/Lambda"
   metric_name         = "Errors"
   dimensions          = { FunctionName = aws_lambda_function.rds_snapshot_expiry.function_name }

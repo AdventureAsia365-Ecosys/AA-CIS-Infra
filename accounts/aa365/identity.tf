@@ -960,7 +960,7 @@ resource "aws_cloudwatch_log_metric_filter" "identity_trigger_unexpected" {
 
 resource "aws_cloudwatch_metric_alarm" "identity_trigger_unexpected" {
   alarm_name          = "${local.id_prefix}-trigger-unexpected-error"
-  alarm_description   = "An identity trigger hit an unexpected exception (fail closed: sign-ins are being refused). AA-703."
+  alarm_description   = "An identity trigger hit an unexpected exception (fail closed: sign-ins are being refused). AA-703.${local.runbook_suffix.cognito_login}"
   namespace           = "AA/Identity"
   metric_name         = "TriggerUnexpectedError"
   statistic           = "Sum"
@@ -977,7 +977,7 @@ resource "aws_cloudwatch_metric_alarm" "identity_trigger_unexpected" {
 resource "aws_cloudwatch_metric_alarm" "identity_trigger_errors" {
   for_each            = local.id_triggers
   alarm_name          = "${local.id_prefix}-${each.key}-errors"
-  alarm_description   = "Burst of refusals/errors from ${each.key} (abuse or a broken release). AA-703."
+  alarm_description   = "Burst of refusals/errors from ${each.key} (abuse or a broken release). AA-703.${local.runbook_suffix.cognito_login}"
   namespace           = "AWS/Lambda"
   metric_name         = "Errors"
   dimensions          = { FunctionName = aws_lambda_function.identity_trigger[each.key].function_name }
@@ -995,7 +995,7 @@ resource "aws_cloudwatch_metric_alarm" "identity_trigger_errors" {
 resource "aws_cloudwatch_metric_alarm" "identity_trigger_throttles" {
   for_each            = local.id_triggers
   alarm_name          = "${local.id_prefix}-${each.key}-throttles"
-  alarm_description   = "${each.key} is throttled: sign-ins are refused. AA-703."
+  alarm_description   = "${each.key} is throttled: sign-ins are refused. AA-703.${local.runbook_suffix.cognito_login}"
   namespace           = "AWS/Lambda"
   metric_name         = "Throttles"
   dimensions          = { FunctionName = aws_lambda_function.identity_trigger[each.key].function_name }
@@ -1013,7 +1013,7 @@ resource "aws_cloudwatch_metric_alarm" "identity_trigger_throttles" {
 resource "aws_cloudwatch_metric_alarm" "identity_trigger_duration" {
   for_each            = local.id_triggers
   alarm_name          = "${local.id_prefix}-${each.key}-duration-p99"
-  alarm_description   = "${each.key} p99 duration above 3 s (Cognito kills triggers at 5 s). AA-703."
+  alarm_description   = "${each.key} p99 duration above 3 s (Cognito kills triggers at 5 s). AA-703.${local.runbook_suffix.cognito_login}"
   namespace           = "AWS/Lambda"
   metric_name         = "Duration"
   dimensions          = { FunctionName = aws_lambda_function.identity_trigger[each.key].function_name }
@@ -1044,7 +1044,7 @@ resource "aws_cloudwatch_log_metric_filter" "identity_breakglass" {
 
 resource "aws_cloudwatch_metric_alarm" "identity_breakglass" {
   alarm_name          = "${local.id_prefix}-breakglass-token-issued"
-  alarm_description   = "A token was issued to the break-glass account. Log the use in the session log (ADR 0006 decision 11). AA-703."
+  alarm_description   = "A token was issued to the break-glass account. Log the use in the session log (ADR 0006 decision 11). AA-703.${local.runbook_suffix.break_glass}"
   namespace           = "AA/Identity"
   metric_name         = "BreakglassTokenIssued"
   statistic           = "Sum"
