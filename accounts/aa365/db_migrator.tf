@@ -15,7 +15,13 @@
 # roles below (IAMRoleManageStack, aa-*-dev-*), both already granted.
 #
 # Command. The default command exits non-zero on purpose: every run supplies its own command in
-# containerOverrides, and a run without one must not start the api server with the master DSN.
+# containerOverrides, and a run without one must not start the api server with a DB login.
+#
+# X1 S22 (AA-860): the container's DATABASE_URL is db_migrator's DSN (aa-cis/dev/db-migrator, LOGIN, NOCREATEROLE,
+# member of every owner role, catalog_owner, cis_app and pg_read_all_stats; rl-002). DB Migrate runs each owner-dir
+# file as the live owner of its anchor schema (XD8), DB Schema Dump and the isolation probe's catalog cells read as
+# db_migrator. The master (aa-cis/dev/rds) is no longer injected: db/run_migration.py reads it in the task, with
+# the task role below, only for roles/ files, mode=set-password and mode=run-script (db/owners.yaml master_secret).
 #
 # Roles: names inside aa-*-dev-* and the workload boundary, so the CI apply role may create and pass
 # them (cicd_split.tf DenyCreateRoleWithoutWorkloadBoundary, tf_managed_role_arns). No Bedrock, no
@@ -39,9 +45,10 @@ locals {
   # Secret ARN pattern of a secret Terraform does not manage (Secrets Manager appends "-" + 6 chars).
   secret_arn_prefix = "arn:aws:secretsmanager:${var.aws_region}:${var.account_id}:secret:"
 
-  # DSN secrets the task itself reads with boto3 (isolation probe logins, S12 set-password):
-  # master (probe catalog login + the CIS runtime secret while the api still runs on it), the tenant
-  # pool, the two new X1 logins, and the Booking / TripPlanner runtime logins.
+  # DSN secrets the task itself reads with boto3: the master (X1 S22: the runner's in-task master
+  # login for roles/ files, set-password and run-script; the probe's CIS-runtime cell if the api ever
+  # ran on it again), the tenant pool, the two X1 logins (probe logins, set-password), and the Booking /
+  # TripPlanner runtime logins (probe logins).
   db_migrate_task_secret_arns = [
     module.secrets.rds_secret_arn,
     "${local.secret_arn_prefix}${var.project}/${var.environment}/rds-app-user-??????",
@@ -110,8 +117,8 @@ resource "aws_iam_role" "db_migrate_execution" {
 }
 
 # ECS agent: pull the CIS image, write stream prefix "migrate" of the CIS log group, inject the
-# master DSN (S11..S21). aa-cis/dev/db-migrator is added to InjectMigratorDsn in S22, together with
-# the switch of the task definition's secrets entry (plan S11 item 3), not before.
+# DB Migrate login's DSN. X1 S22: aa-cis/dev/db-migrator only (was the master, aa-cis/dev/rds, S11..S21),
+# switched together with the task definition's secrets entry below (plan S22, H6).
 # AmazonECSTaskExecutionRolePolicy is NOT attached (ECR pull on every repo, logs on every group).
 resource "aws_iam_role_policy" "db_migrate_execution" {
   name = "${local.db_migrate_family}-execution"
@@ -143,7 +150,7 @@ resource "aws_iam_role_policy" "db_migrate_execution" {
         Sid      = "InjectMigratorDsn"
         Effect   = "Allow"
         Action   = ["secretsmanager:GetSecretValue"]
-        Resource = [module.secrets.rds_secret_arn]
+        Resource = [aws_secretsmanager_secret.db_migrator.arn]
       },
     ]
   })
@@ -200,8 +207,9 @@ resource "aws_ecs_task_definition" "db_migrate" {
     command   = ["python3", "-c", "raise SystemExit('aa-cis-dev-db-migrate: the command is supplied per run (containerOverrides)')"]
     # ⚠️ HAND EDIT: the name comes from local.db_migrate_dsn_env_name (top of this file), which
     # Nghiệp edits by hand; it must be the DSN variable db/run_migration.py reads.
+    # X1 S22 (H6, edited by the agent with Nghiệp's OK in S244): valueFrom = db_migrator's DSN, not the master's.
     secrets = [
-      { name = local.db_migrate_dsn_env_name, valueFrom = module.secrets.rds_secret_arn },
+      { name = local.db_migrate_dsn_env_name, valueFrom = aws_secretsmanager_secret.db_migrator.arn },
     ]
     logConfiguration = {
       logDriver = "awslogs"
