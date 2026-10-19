@@ -18,6 +18,8 @@
 #      (read live 18/10/2026: one __default_statement_ID, no KMS). That statement is reproduced
 #      verbatim so every CloudWatch alarm keeps publishing, plus one statement letting
 #      events.amazonaws.com publish from the identity rules only.
+#   4. (AA-816, S243) Root ADR 0006a A8: EventBridge rule on CloudTrail AdminCreateUser on the
+#      WORKFORCE pool with a temporary password, RESEND or no SUPPRESS -> the same SNS topic.
 #
 # Cost: rule + SNS e-mail + secret policy = $0/month (a handful of events).
 # CI: the apply role needs events:* on rule/aa-identity-* (cicd_split.tf, Sid
@@ -175,4 +177,76 @@ data "aws_iam_policy_document" "alerts_topic" {
 resource "aws_sns_topic_policy" "alerts" {
   arn    = aws_sns_topic.alerts.arn
   policy = data.aws_iam_policy_document.alerts_topic.json
+}
+
+# ── 4. A8 detective alarm: AdminCreateUser with a caller-set password ────────
+# Root ADR 0006a A8 (AA-816, S243). IAM has no condition key for MessageAction / TemporaryPassword,
+# and PASSWORD is a pool-wide first factor (break-glass needs it), so a compromised CIS task role
+# (identity_iam.tf allows AdminCreateUser) could mint a staff login without a mailbox:
+#   - AdminCreateUser with its own TemporaryPassword, then NEW_PASSWORD_REQUIRED; or
+#   - MessageAction=RESEND, which sets a new temporary password on a FORCE_CHANGE_PASSWORD user.
+# Every legitimate WORKFORCE create (CIS directory, staff_directory.py; tools/identity create-staff
+# and breakglass-init) sends MessageAction=SUPPRESS and no TemporaryPassword, so this rule should
+# never fire in normal operation.
+#
+# CloudTrail shape (read live 19/10/2026, 3 AdminCreateUser events of 18/10): requestParameters
+# carries userPoolId and messageAction in clear; username / userAttributes (and, by the same rule,
+# temporaryPassword) are "HIDDEN_DUE_TO_SECURITY_REASONS". A hidden value still has its key, so
+# `exists: true` matches it. Branches:
+#   a. temporaryPassword present (any value);
+#   b. messageAction is anything but SUPPRESS (RESEND, or any future value);
+#   c. messageAction absent: Cognito then mails its own invite with a generated temporary password,
+#      which bypasses the SUPPRESS rule (identity.tf header) even though it needs the mailbox.
+# Denied attempts match too (no errorCode filter): an AccessDenied AdminCreateUser on this pool is
+# itself worth an e-mail.
+#
+# AdminCreateUser is a WRITE management event, so the default state ENABLED receives it (the
+# read-only-events state above is only needed for GetSecretValue). Same trail (aws_cloudtrail.main,
+# us-west-1, the pool's region), same SNS topic; the topic policy statement
+# AllowIdentityEventBridgeRules already allows rule/aa-identity-dev-*, and the CI apply role's
+# EventBridgeIdentityRuleManage already covers rule/aa-identity-* (no new grant, no MFA apply).
+# Cost: $0/month (no events expected).
+resource "aws_cloudwatch_event_rule" "identity_workforce_admincreateuser_password" {
+  name        = "${local.id_prefix}-workforce-admincreateuser-password"
+  description = "WORKFORCE AdminCreateUser with a temporary password, RESEND or no SUPPRESS (CloudTrail). Root ADR 0006a A8, AA-816."
+  state       = "ENABLED"
+
+  event_pattern = jsonencode({
+    source        = ["aws.cognito-idp"]
+    "detail-type" = ["AWS API Call via CloudTrail"]
+    detail = {
+      eventSource = ["cognito-idp.amazonaws.com"]
+      eventName   = ["AdminCreateUser"]
+      requestParameters = {
+        userPoolId = [aws_cognito_user_pool.workforce.id]
+        "$or" = [
+          { temporaryPassword = [{ exists = true }] },
+          { messageAction = [{ "anything-but" = "SUPPRESS" }] },
+          { messageAction = [{ exists = false }] },
+        ]
+      }
+    }
+  })
+
+  tags = local.id_tags
+}
+
+resource "aws_cloudwatch_event_target" "identity_workforce_admincreateuser_password" {
+  rule      = aws_cloudwatch_event_rule.identity_workforce_admincreateuser_password.name
+  target_id = "alerts-sns"
+  arn       = aws_sns_topic.alerts.arn
+
+  input_transformer {
+    # temporaryPassword prints as HIDDEN_DUE_TO_SECURITY_REASONS when set (CloudTrail masks it) and
+    # empty when absent; the username is masked by CloudTrail, so look the user up by event time.
+    input_paths = {
+      principal = "$.detail.userIdentity.arn"
+      ip        = "$.detail.sourceIPAddress"
+      time      = "$.detail.eventTime"
+      action    = "$.detail.requestParameters.messageAction"
+      temp      = "$.detail.requestParameters.temporaryPassword"
+      error     = "$.detail.errorCode"
+    }
+    input_template = "\"[aa-identity] WORKFORCE pool ${aws_cognito_user_pool.workforce.id}: AdminCreateUser by <principal> from <ip> at <time> with messageAction=<action> temporaryPassword=<temp> (errorCode: <error>). Staff users are always created with SUPPRESS and no password, so unless this was a planned admin action, treat it as an incident: find the user created at that time (ListUsers, UserCreateDate), disable it and sign it out everywhere (root ADR 0006a A8).\""
+  }
 }
