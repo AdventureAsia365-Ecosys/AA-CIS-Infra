@@ -214,6 +214,17 @@ resource "aws_s3_object" "tripplanner_browse_zip" {
   lifecycle {
     ignore_changes = [etag, source]
   }
+
+  # AA-846: the App deploy workflow uploads with `aws s3 cp`, which replaces the object and drops
+  # its object tags. With the provider default_tags, every plan then showed `tags_all` +4 tags on
+  # both zips and every apply re-tagged them. These two objects carry no tags at all (S3 object
+  # tags are not used for cost allocation; the bucket keeps its tags), so the plan matches what
+  # the deploy leaves and stays "No changes".
+  override_provider {
+    default_tags {
+      tags = {}
+    }
+  }
 }
 
 resource "aws_s3_object" "tripplanner_assembly_zip" {
@@ -224,6 +235,13 @@ resource "aws_s3_object" "tripplanner_assembly_zip" {
 
   lifecycle {
     ignore_changes = [etag, source]
+  }
+
+  # AA-846: same as tripplanner_browse_zip (no object tags; `aws s3 cp` drops them).
+  override_provider {
+    default_tags {
+      tags = {}
+    }
   }
 }
 

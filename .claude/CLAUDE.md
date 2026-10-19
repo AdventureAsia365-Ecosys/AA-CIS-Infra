@@ -36,7 +36,8 @@ Always check first: `aws sts get-caller-identity --profile aa365-admin --region 
 - ALB `aa-cis-dev-alb` is **internet-facing** (AA-585); APIs enter through API Gateway + the VPC link NLB.
   Look IDs and DNS names up (CLI or Terraform outputs); do not paste them into docs.
 - State backend for `accounts/aa365`: S3 bucket `aa-cis-tfstate-005097885195`, key `dev/terraform.tfstate`,
-  lock table `aa-cis-tfstate-lock-005097885195`; no profile in the backend block (CI uses OIDC).
+  S3 lockfile locking only (`use_lockfile`; the DynamoDB lock table is retired, AA-846); Terraform pinned
+  exactly to the CI version (`required_version`); no profile in the backend block (CI uses OIDC).
 - Secrets: names, owners and readers are in `AA-Ecosys/docs/security/secrets-register.md` (AA-878). Never
   read a secret value; never list secret values in a doc.
 

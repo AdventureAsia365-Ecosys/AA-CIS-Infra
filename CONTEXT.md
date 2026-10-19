@@ -233,8 +233,10 @@ makes CI Terraform Plan fail with 403.
 ## State backend
 
 - **S3 backend** for the main stack: bucket `aa-cis-tfstate-005097885195`, key
-  `dev/terraform.tfstate`, region `us-west-1`, with DynamoDB lock table
-  `aa-cis-tfstate-lock-005097885195`.
+  `dev/terraform.tfstate`, region `us-west-1`, locked with the S3 native lockfile
+  (`use_lockfile = true`, object `<key>.tflock`). The DynamoDB lock table
+  `aa-cis-tfstate-lock-005097885195` is no longer used (AA-846, S245); its IAM grants and the
+  table itself are removed in separate steps.
 - No `profile` is hardcoded in the aa365 backend: CI (GitHub Actions OIDC) uses ambient env-var
   credentials; locally you `export AWS_PROFILE=aa365-admin` before running Terraform.
 - The acc1/acc3 roots are applied only by a human and **must** set `profile` in the backend
@@ -242,7 +244,10 @@ makes CI Terraform Plan fail with 403.
   provider's `profile` does not apply to backend init; without it Terraform falls back to
   `[default]` (acc2, MFA assume-role) and fails with a confusing MFA error (fixed for acc1 in
   PR #70). Copy the backend block from `acc3-bedrock/versions.tf` when creating a new root.
-- Provider pins: Terraform `>= 1.7.0, < 2.0.0`, AWS provider `~> 5.40`.
+- Version pins: the aa365 root pins Terraform exactly (`required_version = "1.15.5"`, the same
+  version as `terraform_version` in `terraform-plan.yml` and `terraform-apply.yml`; bump all three
+  in one PR) and AWS provider `~> 6.69`. The acc1/acc3 roots (applied by a human only) keep
+  `>= 1.7.0, < 2.0.0`.
 
 ## CI/CD and OIDC
 
