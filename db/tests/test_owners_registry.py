@@ -146,6 +146,7 @@ class RegistryShapeTest(unittest.TestCase):
 class MirrorsAgreeTest(unittest.TestCase):
     def test_run_migration_constants(self):
         self.assertEqual(rm.MASTER_ROLE, REGISTRY["master_role"])
+        self.assertEqual(rm.MASTER_SECRET, REGISTRY["master_secret"])          # X1 S22 in-task master DSN
         self.assertEqual(rm.ROLES_DIR, "roles")
         self.assertEqual(set(rm.OWNER_DIRS), set(SCHEMA_OWNERS))
         for name, o in SCHEMA_OWNERS.items():
@@ -194,6 +195,29 @@ class MirrorsAgreeTest(unittest.TestCase):
             self.assertIn(t.split(".")[0], probe.CIS_RUNTIME_SCHEMAS, t)
         for v in (str(o["owner_transfer_key"]) for o in SCHEMA_OWNERS.values()):
             self.assertIn(v, probe.VERSION_KEYS)
+
+    def test_migrator_task_definition_secrets(self):
+        """X1 S22: the migrator task definition injects db_migrator's DSN; the master stays readable in the task
+        (task role) only, for roles/ files, set-password and run-script (rm.MASTER_SECRET)."""
+        self.assertEqual(REGISTRY["password_roles"][REGISTRY["migrator_role"]], REGISTRY["migrator_secret"])
+        self.assertNotEqual(REGISTRY["migrator_secret"], REGISTRY["master_secret"])
+        tf = (ROOT / "accounts" / "aa365" / "db_migrator.tf").read_text(encoding="utf-8")
+        self.assertIn('name                    = "${var.project}/${var.environment}/db-migrator"', tf)
+        self.assertRegex(tf, r"\{ name = local\.db_migrate_dsn_env_name, valueFrom = "
+                             r"aws_secretsmanager_secret\.db_migrator\.arn \}")
+        execution = tf.split('Sid      = "InjectMigratorDsn"', 1)[1].split("}", 1)[0]
+        self.assertIn("Resource = [aws_secretsmanager_secret.db_migrator.arn]", execution)
+        self.assertNotIn("rds_secret_arn", execution)
+        task_secrets = tf.split("db_migrate_task_secret_arns = [", 1)[1].split("]", 1)[0]
+        self.assertIn("module.secrets.rds_secret_arn", task_secrets)            # the in-task master read
+        self.assertIn("aws_secretsmanager_secret.db_migrator.arn", task_secrets)  # set-password db_migrator
+        # The isolation probe never logs in as the master: its catalog login is the task's DATABASE_URL
+        # (db_migrator), every isolation cell uses a runtime role's own secret.
+        self.assertNotIn(REGISTRY["master_secret"], probe.RUNTIME_SECRETS.values())
+        self.assertNotIn(REGISTRY["migrator_secret"], probe.RUNTIME_SECRETS.values())
+        src = (ROOT / "db" / "isolation_probe.py").read_text(encoding="utf-8")
+        self.assertIn('else os.environ.get("DATABASE_URL")', src)
+        self.assertNotIn(REGISTRY["master_secret"] + '"', src)
 
     def test_password_roles(self):
         # X1 S12 set-password: runner allowlist, workflow role regex and the probe marker agree with the registry.

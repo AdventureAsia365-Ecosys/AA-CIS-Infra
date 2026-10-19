@@ -8,7 +8,8 @@ name: DB Isolation Probe (shared RDS)
 # db/isolation_probe.py: READ ONLY transactions, rolled back, no row values. It logs in
 # AS EACH RUNTIME ROLE WITH ITS OWN DSN SECRET (aa_app_user, booking, tripplanner, cis_app from X1 S17,
 # and the CIS runtime = the secret the running api task definition injects), never through the
-# master's memberships; the task's own database login reads the catalog only. Cells: runtime role
+# master's memberships; the task's own database login (db_migrator since X1 S22, the RDS master before; the
+# step summary's "catalog login") reads the catalog only. Cells: runtime role
 # attributes (incl. CREATEROLE) / memberships / owned objects / connection limit, cross-app reads
 # (42501), ownership of each owner's schemas, runtime grants + default privileges of each runtime role
 # in its own schemas, contract consumer grants, owner-role registry grants, the standing "ENABLE-only

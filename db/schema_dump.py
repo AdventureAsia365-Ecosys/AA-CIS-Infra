@@ -5,6 +5,12 @@ the workflow uploads this file to S3, the task (migrator task definition since X
 the migrator task role, DATABASE_URL secret)
 downloads it through a presigned URL and execs it. Uses only the image's Python + asyncpg + boto3.
 
+Login (X1 S22): DATABASE_URL is db_migrator's DSN (the RDS master before S22). db_migrator is an INHERIT
+member of every owner role (cis_owner, bk_owner, tp_owner, catalog_owner) and of pg_read_all_stats, so the
+catalog reads, the soft-key counts and the state / query columns of pg_stat_activity (Connections table)
+are what the master saw; pg_*_relation_size takes no privilege. The first line `DUMP login=<role>` says
+which role ran the dump.
+
 What it captures, for every non-system schema (extension-owned objects left out):
   schemas (owner, USAGE/CREATE grants) · tables/views/matviews (kind, owner, RLS enabled/forced,
   estimated rows, total/table/index size) · columns (format_type, NOT NULL) · indexes (definition,
@@ -358,6 +364,7 @@ async def main() -> int:
     import boto3
     conn = await asyncpg.connect(os.environ["DATABASE_URL"], timeout=30, server_settings=SESSION_SETTINGS)
     try:
+        print(f"DUMP login={await conn.fetchval('SELECT session_user::text')}", flush=True)   # X1 S22: db_migrator
         async with conn.transaction(isolation="repeatable_read", readonly=True):
             dump = await collect(conn)
     finally:

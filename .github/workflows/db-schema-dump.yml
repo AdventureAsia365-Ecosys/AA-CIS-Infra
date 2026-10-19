@@ -4,7 +4,8 @@ name: DB Schema Dump (shared RDS)
 # 1. A one-off ECS Fargate task (the migrator task definition, X1 S12: a revision of
 #    aa-cis-dev-db-migrate with the CIS api service's current image, registered by
 #    .github/scripts/migrator-task.sh and deregistered at the end; api subnets, security group
-#    aa-cis-dev-sg-db-migrate, the same master DSN as DB Migrate) runs db/schema_dump.py: read-only (default_transaction_read_only + one REPEATABLE READ READ ONLY
+#    aa-cis-dev-sg-db-migrate, the same DATABASE_URL as DB Migrate: db_migrator since X1 S22, the RDS master
+#    before; first task line `DUMP login=<role>`) runs db/schema_dump.py: read-only (default_transaction_read_only + one REPEATABLE READ READ ONLY
 #    transaction), catalog queries only, no row values. It writes JSON to the bronze bucket with the
 #    task role: columns, indexes, constraints, policies, table + column grants, owners, default
 #    privileges, roles, functions, sizes, pg_stat_user_tables activity, sessions per

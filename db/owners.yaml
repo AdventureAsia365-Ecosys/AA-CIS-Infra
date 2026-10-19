@@ -26,11 +26,19 @@ version: 1
 # DB Migrate `environment` input (DM-8.2). Only dev exists; a prod entry comes with the prod blueprint.
 environments: [dev]
 
-# RDS master. Runs roles/ files and DB Migrate mode=set-password / run-script; break-glass only after X1 S22
+# RDS master. Runs roles/ files (role bootstrap, CREATE/ALTER/DROP EXTENSION, undo files) and DB Migrate
+# mode=set-password (ALTER ROLE … PASSWORD needs CREATEROLE) / run-script; otherwise break-glass only from X1 S22
 # (DM-8.9). Owns the public extensions (vector, pg_stat_statements) and the public.* leftovers.
 master_role: aa_cis_admin
+# Where the master DSN lives. From X1 S22 the migrator task definition injects db_migrator's DSN (migrator_secret)
+# as DATABASE_URL, and the runner reads this secret itself, in the task (migrator task role only), for the three
+# master uses above and nothing else. Mirrored by db/run_migration.py MASTER_SECRET.
+master_secret: aa-cis/dev/rds
 
-# DB Migrate login from X1 S22 (rl-002, X1 S20, creates it, NOCREATEROLE). PostgreSQL checks
+# DB Migrate / DB Schema Dump / DB Isolation Probe login from X1 S22 (rl-002, X1 S20, creates it, NOCREATEROLE):
+# the migrator task definition's DATABASE_URL secret is migrator_secret (accounts/aa365/db_migrator.tf). The runner
+# switches every owner-dir file to the live owner of the dir's anchor schema (XD8), so a dir whose anchor schema
+# is still the master's is refused under this login (not a member of the master). PostgreSQL checks
 # SET ROLE against the SESSION user's memberships, so it must be a member of every role a file can be
 # switched to: each owner_role (the runner's live-owner switch, XD8) and every set_local_roles entry
 # (catalog_owner for the S22 catalog recipe, cis_owner the way back, cis_app for the 244-style guard
@@ -39,6 +47,7 @@ master_role: aa_cis_admin
 # the owners above and, once a roles/ file creates the role, against that file's grants; DB Migrate
 # refuses (exit 8, also in check mode) a file whose SET LOCAL ROLE target the login cannot reach.
 migrator_role: db_migrator
+migrator_secret: aa-cis/dev/db-migrator
 migrator_member_of: [bk_owner, catalog_owner, cis_app, cis_owner, pg_read_all_stats, tp_owner]
 
 # DB Migrate mode=set-password (X1 S12, plan XD2): the LOGIN roles whose password the workflow sets, and the
@@ -56,7 +65,7 @@ owners:
     schemas: [acp_contract, acp_deliver, acp_gold_output, acp_shared, acp_silver_s2, acp_silver_s3,
               acp_silver_s4, catalog, geo, gold_aa_internal, shared, silver_aa_internal]
     owner_role: cis_owner                # X1 S20 (rl-002) + S21 (245)
-    owner_role_today: aa_cis_admin
+    owner_role_today: cis_owner          # since CIS 245 (X1 S21, applied 19/10/2026)
     owner_transfer_key: "245"            # schema_versions key that moves the objects to owner_role (probe state key)
     runtime_roles: [cis_app, aa_app_user]          # cis_app from X1 S18 (api + worker), aa_app_user = tenant pool
     runtime_roles_today: [aa_cis_admin, aa_app_user]

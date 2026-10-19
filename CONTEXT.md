@@ -325,7 +325,10 @@ makes CI Terraform Plan fail with 403.
   **DB Schema Dump** (`db-schema-dump.yml`, AA-807 N1) runs a read-only catalog dump in a one-off ECS
   task nightly and after every apply, and opens a PR on the root repo that regenerates
   `docs/architecture/db-schema-reference.md`. Owners and version keys:
-  `AA-Ecosys/docs/database/schema-ownership.md`.
+  `AA-Ecosys/docs/database/schema-ownership.md`. DB Migrate, the dump and the isolation probe run from the
+  migrator task definition (`accounts/aa365/db_migrator.tf`) and log in as **`db_migrator`** since X1 S22
+  (AA-860); the RDS master is break-glass plus three automated uses (`roles/` files, `set-password`,
+  `run-script`), whose DSN the runner reads in the task (`db/README.md`, `db/owners.yaml` `master_secret`).
 - No auto-apply on merge — apply is manual/`workflow_dispatch`, and destructive changes need
   explicit human confirmation.
 - Run Terraform from the WSL path (`/home/nghiep/...`), never a Windows UNC path.

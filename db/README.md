@@ -3,8 +3,13 @@
 RDS is VPC-private, so migrations are applied by the **DB Migrate** workflow
 (`.github/workflows/db-migrate.yml`): it starts a one-off ECS Fargate task from the **migrator task
 definition** `aa-cis-dev-db-migrate` (X1 S12; `accounts/aa365/db_migrator.tf`), which downloads
-`run_migration.py` and the SQL via presigned S3 URLs and runs it with the task's own `DATABASE_URL`
-(the master DSN until X1 S22).
+`run_migration.py` and the SQL via presigned S3 URLs and runs it with the task's own `DATABASE_URL`:
+**`db_migrator`** since X1 S22 (`aa-cis/dev/db-migrator`; the master DSN before). `db_migrator` runs every
+owner-dir file as the live owner of its anchor schema (`cis_owner`, `bk_owner`, `tp_owner`). The RDS master
+is kept for three things only, and the runner reads its DSN itself, in the task, from `aa-cis/dev/rds`
+(`owners.yaml` `master_secret`; the migrator **task** role may read it, the execution role no longer injects
+it): `roles/` files (role bootstrap, extensions, undo files), `mode=set-password` (`ALTER ROLE … PASSWORD`
+needs CREATEROLE) and `mode=run-script`. Those runs log `master login: in-task DSN from aa-cis/dev/rds`.
 
 Migrator task (DB Migrate, DB Schema Dump, DB Isolation Probe): `.github/scripts/migrator-task.sh prepare`
 registers a revision of the family copied from its latest ACTIVE revision with only the image replaced by
@@ -165,7 +170,9 @@ Before each file (check and apply) the task reads the **live owner of the dir's 
   Both paths take the snapshot once more **after COMMIT**: anything that still ran at COMMIT shows up
   there → exit 9 with "ownership check after COMMIT" (the file is committed and registered; clean up by
   hand). With the settle step nothing of the file is left to run at COMMIT; this is the backstop.
-- `roles/` files run only when the login role is the master (`master_role`), else exit 8.
+- `roles/` files run only when the login role is the master (`master_role`), else exit 8. Since X1 S22
+  the task's login is `db_migrator`, so the runner opens the master session from `master_secret` first
+  (unreadable, empty or failing secret → exit 8, nothing ran).
 - The idle check and the `shared.schema_versions` reads run as the login role.
 
 So the very next file after an ownership transfer runs as the new owner, with no runner change and

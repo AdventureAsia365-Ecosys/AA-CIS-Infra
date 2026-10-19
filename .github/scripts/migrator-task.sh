@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # X1 plan S12 (AA-852, ADR 0004b decision 4): DB Migrate, DB Schema Dump and DB Isolation Probe run their
 # one-off ECS task from the migrator task definition (accounts/aa365/db_migrator.tf: family
-# aa-cis-dev-db-migrate, container "migrate", own execution + task role, master DSN secret, log stream
-# migrate/migrate/<task id>) instead of an override of the CIS api service's task definition.
+# aa-cis-dev-db-migrate, container "migrate", own execution + task role, DSN secret DATABASE_URL = the
+# db_migrator login since X1 S22 (the master before), log stream migrate/migrate/<task id>) instead of an
+# override of the CIS api service's task definition.
 #
 # run-task cannot override the image, and the CIS tag changes on every deploy (immutable dev-<sha>,
 # AA-869), so the Terraform revision carries a ":latest" placeholder. Per run this script registers a

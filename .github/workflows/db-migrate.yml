@@ -2,7 +2,8 @@ name: DB Migrate (shared RDS)
 # Applies ONE reviewed migration from db/migrations/<owner>/ to the shared acc2 RDS.
 # RDS is VPC-private, so the SQL runs in a one-off ECS Fargate task of the migrator task definition
 # (X1 S12, accounts/aa365/db_migrator.tf: family aa-cis-dev-db-migrate, container migrate, own roles,
-# the master DSN secret): .github/scripts/migrator-task.sh registers a revision with the image the CIS
+# DATABASE_URL = the db_migrator login since X1 S22, the master before; roles/ files, set-password and
+# run-script read the master DSN in the task, db/owners.yaml master_secret): .github/scripts/migrator-task.sh registers a revision with the image the CIS
 # api service runs now, the task runs in the api service's subnets with the security group
 # aa-cis-dev-sg-db-migrate, and the revision is deregistered at the end. The runner script and the
 # SQL reach the task through short-lived presigned S3 URLs; the task's exit code is the job result
@@ -26,8 +27,9 @@ name: DB Migrate (shared RDS)
 # Owners (X1, db/owners.yaml): dirs cis/ (key NNN), tripplanner/ (tp-NNN), booking/ (bk-NNN) and the
 # Infra-native roles/ (rl-NNN: role bootstrap, extensions, undo files). Before each file the task reads
 # the live owner of the dir's anchor schema and runs the file as that role (SET LOCAL ROLE inside the
-# file's transaction, then an ownership post-check before COMMIT); while the login role owns the
-# anchor schema (today, every dir) nothing changes. roles/ files run only as the RDS master. The step
+# file's transaction, then an ownership post-check before COMMIT). Since X1 S22 the login is db_migrator,
+# so every owner dir is switched (cis_owner, bk_owner, tp_owner) and a dir whose anchor schema is still the
+# master's is refused. roles/ files run only as the RDS master (in-task master DSN, "master login:" line). The step
 # summary shows `ran as: <role>`. Exit 8 = role refused (incl. an owner that cannot register the
 # version), 9 = ownership post-check failed (rolled back; a no-transaction file is left unregistered),
 # or the check after COMMIT found something that ran at COMMIT (committed: clean up by hand).
@@ -317,7 +319,7 @@ jobs:
           STATUS=$(jq -r '.tasks[0].lastStatus' <<<"$DESC")
           echo "exit code: $EXIT  status: $STATUS  stopped: $(jq -r '.tasks[0].stoppedReason' <<<"$DESC")"
           if [ "$STATUS" != "STOPPED" ]; then
-            echo "::error::the task is still $STATUS after the 30-minute wait and keeps running with the master DSN (the log above is partial). Watch $STREAM in CloudWatch; stop the task in the ECS Console only if it must not finish"
+            echo "::error::the task is still $STATUS after the 30-minute wait and keeps running with its DB login (db_migrator, or the master for roles/, set-password and run-script; the log above is partial). Watch $STREAM in CloudWatch; stop the task in the ECS Console only if it must not finish"
             exit 1
           fi
           if [ "$EXIT" = "7" ]; then
@@ -325,7 +327,7 @@ jobs:
             exit 1
           fi
           if [ "$EXIT" = "8" ]; then
-            echo "::error::role refused (see the MIGRATE ERROR: role line): roles/, set-password and run-script run only as the master, the login role must be a member of the anchor schema's live owner, the owner needs USAGE on shared + INSERT on shared.schema_versions (CIS 243), and a switched file must be one BEGIN … COMMIT block"
+            echo "::error::role refused (see the MIGRATE ERROR: role line): roles/, set-password and run-script run only as the master (since X1 S22 from the master DSN the task reads from aa-cis/dev/rds), the login role must be a member of the anchor schema's live owner, the owner needs USAGE on shared + INSERT on shared.schema_versions (CIS 243), and a switched file must be one BEGIN … COMMIT block"
             exit 1
           fi
           if [ "$EXIT" = "9" ]; then
