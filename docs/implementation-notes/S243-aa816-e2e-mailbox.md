@@ -88,21 +88,32 @@ MailChannels) to `e2e@e2e-mail.lumiguides.it.com`, which this PR makes real.
      `C=$(aws configure export-credentials --profile aa365-admin --format env) || exit 1; export $C`.
   3. Terraform Apply workflow.
   4. Re-plan → No changes.
-- **Expected plan** (CI plan on the PR, before the bootstrap apply): Plan: 13 to add, 1 to change,
+- **Expected plan** (CI plan on the PR, before the bootstrap apply): Plan: 13 to add, 5 to change,
   1 to destroy, and 2 new outputs.
-  - 12 creates:
+  - 13 add = 12 creates + the `time_sleep` replacement:
     - `aws_route53_record.e2e_mail_mx`;
     - `aws_s3_bucket.e2e_mail`, plus its `_public_access_block`, `_ownership_controls`,
       `_server_side_encryption_configuration`, `_lifecycle_configuration` and `_policy`;
     - `aws_ses_receipt_rule_set.e2e`, `aws_ses_active_receipt_rule_set.e2e`,
       `aws_ses_receipt_rule.e2e_cognito`;
-    - `aws_iam_role.e2e_mail_reader`, `aws_iam_role_policy.e2e_mail_reader`.
-  - `~ aws_iam_role_policy.tf_apply` (one statement added).
-  - `-/+ time_sleep.wait_for_iam_propagation` (its trigger is the md5 of that policy).
+    - `aws_iam_role.e2e_mail_reader`, `aws_iam_role_policy.e2e_mail_reader`;
+    - `-/+ time_sleep.wait_for_iam_propagation` (its trigger is the md5 of the tf_apply policy;
+      this is also the 1 destroy).
+  - 5 change:
+    - `~ aws_iam_role_policy.tf_apply` (one statement added);
+    - the AA-402 gate ripple: the new `time_sleep` id flows through `main.tf`
+      `iam_propagation_gate` into the `_iam_gate` tag of `module.eventbridge`
+      `aws_cloudwatch_event_bus.acp_events`, `aws_iam_role.scheduler` and
+      `aws_scheduler_schedule_group.acp` (tags only, in place), and
+      `module.eventbridge.aws_iam_role_policy.scheduler` shows "known after apply" because its data
+      source re-reads (content unchanged). Same ripple as the S242 #194 plan
+      (`AA-816-staff-auth-domain.md`, "Plan" section).
+  - 1 destroy: the `time_sleep` above.
   - Anything else = stop.
   - After the local targeted apply of `aws_iam_role_policy.tf_apply`, the CI apply shows
-    13 add / 0 change / 1 destroy (the time_sleep still replaces). The rule set `depends_on` that
-    time_sleep, so it waits 15 s for propagation.
+    13 add / 4 change / 1 destroy: the `time_sleep` replacement and the 4 `module.eventbridge`
+    ripples still happen in that run (the targeted apply only touches the policy). The rule set
+    `depends_on` that time_sleep, so it waits 15 s for propagation.
 - **After apply (main session)**:
   1. Create GitHub environment `e2e` on AA-CIS-App (deployment branch rule: main).
   2. Set the environment secret `E2E_MAIL_ROLE_ARN` = output `e2e_mail_reader_role_arn`.
