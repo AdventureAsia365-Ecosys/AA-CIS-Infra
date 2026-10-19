@@ -65,6 +65,31 @@ resource "aws_api_gateway_integration" "health" {
   uri                     = "http://${var.nlb_dns_name}/health"
 }
 
+# /health/ready — unauthenticated readiness (DB + newest CIS migration, AA-884). Deploy Dev smoke calls it.
+resource "aws_api_gateway_resource" "health_ready" {
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  parent_id   = aws_api_gateway_resource.health.id
+  path_part   = "ready"
+}
+
+resource "aws_api_gateway_method" "health_ready" {
+  rest_api_id   = aws_api_gateway_rest_api.this.id
+  resource_id   = aws_api_gateway_resource.health_ready.id
+  http_method   = "GET"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "health_ready" {
+  rest_api_id             = aws_api_gateway_rest_api.this.id
+  resource_id             = aws_api_gateway_resource.health_ready.id
+  http_method             = aws_api_gateway_method.health_ready.http_method
+  type                    = "HTTP_PROXY"
+  integration_http_method = "GET"
+  connection_type         = "VPC_LINK"
+  connection_id           = var.vpc_link_id
+  uri                     = "http://${var.nlb_dns_name}/health/ready"
+}
+
 # /auth/{auth_proxy+} — login, refresh, verify (no API key required)
 resource "aws_api_gateway_resource" "auth" {
   rest_api_id = aws_api_gateway_rest_api.this.id
@@ -376,6 +401,7 @@ resource "aws_api_gateway_deployment" "this" {
   depends_on = [
     aws_api_gateway_integration.root,
     aws_api_gateway_integration.health,
+    aws_api_gateway_integration.health_ready,
     aws_api_gateway_integration.auth,
     aws_api_gateway_integration.admin,
     aws_api_gateway_integration.content,
@@ -389,6 +415,7 @@ resource "aws_api_gateway_deployment" "this" {
     redeployment = sha1(join(",", [
       aws_api_gateway_integration.root.uri,
       aws_api_gateway_integration.health.uri,
+      aws_api_gateway_integration.health_ready.uri, # AA-884: new resource must redeploy the stage
       aws_api_gateway_integration.auth.uri,
       aws_api_gateway_integration.admin.uri,
       aws_api_gateway_integration.content.uri,
