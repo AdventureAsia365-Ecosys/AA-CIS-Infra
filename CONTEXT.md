@@ -157,7 +157,8 @@ weekly export, Gate C veto window — not the dead AA-180 orchestration), the op
 `observability_ecosys.tf` (S235 Phase 0) covers what is not CIS: NAT status check, Booking target
 health / CPU / REST 5XX, TripPlanner Lambda errors + sustained throttles (AA-833: > 5 in 2 of 3
 5-minute periods), shared RDS storage + connections, job backlog per owner (AA-751),
-and 14-day retention on the TripPlanner Lambda and CIS API Gateway execution log groups (imported).
+and 30-day retention (application class, S241 D-09 / AA-872; it was 14 days before AA-872) on the TripPlanner
+Lambda and CIS API Gateway execution log groups (imported).
 Its resources carry the blueprint tags (`Project = AA-Ecosys`, `App`); TripPlanner and Booking
 resources also carry `App`. Provider `default_tags` are unchanged (re-tagging every resource needs
 a wider CI-role grant). ECS runs the CIS API service

@@ -111,6 +111,8 @@ one finding. A real secret is never ignored: drop it from the branch and rotate 
 ## Rules
 
 - `terraform plan` before every apply; destructive changes need explicit human confirmation.
-- ECR images: task definitions use `:latest`; Deploy Dev pins the built image per revision.
+- ECR images: both repositories are IMMUTABLE (AA-869). The `:latest` in the Terraform task definitions is a
+  placeholder only (services ignore `task_definition`); every Deploy Dev registers a revision pinned to the
+  git-SHA tag (`dev-<sha>` for CIS). Never push or deploy `:latest`.
 - Never start/stop the environment (ECS desired count, RDS, NAT) without Nghiệp asking.
 - Container access through SSM (`aws ecs execute-command`), never SSH.
