@@ -750,3 +750,277 @@ def test_breakglass_init_listusers_miss_takes_rotation_path(stubbed, ctx_factory
     assert "already exists (not found by ListUsers)" in out
     assert "created (SUPPRESS" not in out
     assert "breakglass-init: done" in out
+
+
+# --------------------------------------------------------------------------------------------
+# breakglass-otp-probe (AA-816 I-C, root ADR 0006a A4)
+# --------------------------------------------------------------------------------------------
+BG_CLIENT_SECRET = "BG-CLIENT-SECRET-do-not-print-0123456789"
+
+
+def _bg_hash(client_id):
+    secret = BG_CLIENT_SECRET if client_id == BG_CLIENT_ID else CLIENT_SECRET
+    return wb.secret_hash(BG_EMAIL, client_id, secret)
+
+
+def _stub_probe_start(idp_stub, enabled=False, status="CONFIRMED"):
+    """Client lookups, ListUsers, both client secrets, then AdminEnableUser if the user is disabled."""
+    idp_stub.add_response("list_user_pool_clients", CLIENTS_PAGE, {"UserPoolId": POOL, "MaxResults": 60})
+    idp_stub.add_response("list_user_pool_clients", CLIENTS_PAGE, {"UserPoolId": POOL, "MaxResults": 60})
+    idp_stub.add_response("list_users", {"Users": [{"Username": USER_SUB, "UserStatus": status, "Enabled": enabled}]},
+                          {"UserPoolId": POOL, "Filter": f'email = "{BG_EMAIL}"', "Limit": 2})
+    idp_stub.add_response("describe_user_pool_client",
+                          {"UserPoolClient": {"ClientId": BG_CLIENT_ID, "ClientSecret": BG_CLIENT_SECRET}},
+                          {"UserPoolId": POOL, "ClientId": BG_CLIENT_ID})
+    idp_stub.add_response("describe_user_pool_client",
+                          {"UserPoolClient": {"ClientId": CIS_CLIENT_ID, "ClientSecret": CLIENT_SECRET}},
+                          {"UserPoolId": POOL, "ClientId": CIS_CLIENT_ID})
+    if not enabled:
+        idp_stub.add_response("admin_enable_user", {}, {"UserPoolId": POOL, "Username": BG_EMAIL})
+
+
+def _stub_probe_call(idp_stub, client_id, response=None, preferred=None, error=None):
+    """InitiateAuth USER_AUTH with USERNAME + SECRET_HASH (+ PREFERRED_CHALLENGE) and NOTHING else.
+
+    The exact expected params prove that no PASSWORD (or any other credential) is ever sent.
+    """
+    params = {"USERNAME": BG_EMAIL, "SECRET_HASH": _bg_hash(client_id)}
+    if preferred:
+        params["PREFERRED_CHALLENGE"] = preferred
+    expected = {"AuthFlow": "USER_AUTH", "ClientId": client_id, "AuthParameters": params}
+    if error:
+        idp_stub.add_client_error("initiate_auth", service_error_code=error, service_message=f"{error} msg",
+                                  http_status_code=400, expected_params=expected)
+    else:
+        idp_stub.add_response("initiate_auth", response, expected)
+
+
+def _stub_restore(idp_stub, disable_fails=False):
+    idp_stub.add_response("admin_user_global_sign_out", {}, {"UserPoolId": POOL, "Username": BG_EMAIL})
+    if disable_fails:
+        idp_stub.add_client_error("admin_disable_user", service_error_code="InternalErrorException",
+                                  http_status_code=500)
+    else:
+        idp_stub.add_response("admin_disable_user", {}, {"UserPoolId": POOL, "Username": BG_EMAIL})
+
+
+def _select(*challenges, session=S1):
+    return {"ChallengeName": "SELECT_CHALLENGE", "Session": session, "ChallengeParameters": {},
+            "AvailableChallenges": list(challenges)}
+
+
+@pytest.fixture
+def probe_ctx(stubbed, monkeypatch):
+    """Ctx with NO Secrets Manager client, and RespondToAuthChallenge / AdminInitiateAuth trapped."""
+    idp, _, _, _ = stubbed
+    forbidden: list[str] = []
+
+    def trap(name):
+        def _call(*args, **kwargs):
+            forbidden.append(name)
+            raise AssertionError(f"{name} must never be called by breakglass-otp-probe")
+        return _call
+
+    for name in ("respond_to_auth_challenge", "admin_respond_to_auth_challenge", "admin_initiate_auth",
+                 "admin_set_user_password"):
+        monkeypatch.setattr(idp, name, trap(name))
+    ctx = wb.Ctx(idp=idp, sm=None, pool_id=POOL, env="dev", out=wb.Output())
+    return ctx, forbidden
+
+
+def _probe_json(captured):
+    return json.loads(captured.out)  # stdout is exactly one JSON document
+
+
+def test_otp_probe_not_offered_exits_0_and_disables_again(stubbed, probe_ctx, capsys):
+    _, idp_stub, _, _ = stubbed
+    ctx, forbidden = probe_ctx
+    _stub_probe_start(idp_stub)
+    _stub_probe_call(idp_stub, BG_CLIENT_ID, _select("PASSWORD"))
+    _stub_probe_call(idp_stub, BG_CLIENT_ID, _select("PASSWORD", session=S2), preferred="EMAIL_OTP")
+    _stub_probe_call(idp_stub, CIS_CLIENT_ID, {"ChallengeName": "PASSWORD", "Session": S1, "ChallengeParameters": {}})
+    _stub_probe_call(idp_stub, CIS_CLIENT_ID, preferred="EMAIL_OTP", error="InvalidParameterException")
+    _stub_restore(idp_stub)
+    assert wb.cmd_breakglass_otp_probe(ctx, BG_EMAIL) == 0
+    idp_stub.assert_no_pending_responses()
+    captured = capsys.readouterr()
+    report = _probe_json(captured)
+    assert report["verdict"] == "email_otp_not_offered" and report["email_otp_offered"] is False
+    assert report["enabled_at_start"] is False and report["restored"] is True
+    bg, cis = report["clients"]
+    assert bg["client"] == "aa-workforce-dev-breakglass" and bg["email_otp_offered"] is False
+    assert bg["no_preference"] == {"challenge": "SELECT_CHALLENGE", "available_challenges": ["PASSWORD"],
+                                   "error": None, "tokens_issued": False}
+    assert cis["client"] == "aa-workforce-dev-cis-admin" and cis["no_preference"]["challenge"] == "PASSWORD"
+    assert cis["prefer_email_otp"]["error"] == "InvalidParameterException"
+    assert "user: DISABLED" in captured.err and "breakglass-otp-probe: OK" in captured.err
+    assert forbidden == []
+    assert_clean(captured, S1, S2, BG_CLIENT_SECRET, CLIENT_SECRET)
+
+
+def test_otp_probe_email_otp_offered_is_a_finding_exit_1(stubbed, probe_ctx, capsys):
+    _, idp_stub, _, _ = stubbed
+    ctx, forbidden = probe_ctx
+    _stub_probe_start(idp_stub)
+    # breakglass lists EMAIL_OTP already: the preferred call is skipped (no extra code e-mail).
+    _stub_probe_call(idp_stub, BG_CLIENT_ID, _select("EMAIL_OTP", "PASSWORD"))
+    _stub_probe_call(idp_stub, CIS_CLIENT_ID, _select("PASSWORD"))
+    _stub_probe_call(idp_stub, CIS_CLIENT_ID, {
+        "ChallengeName": "EMAIL_OTP", "Session": S2,
+        "ChallengeParameters": {"CODE_DELIVERY_DESTINATION": "a***@a***", "CODE_DELIVERY_DELIVERY_MEDIUM": "EMAIL"},
+    }, preferred="EMAIL_OTP")
+    _stub_restore(idp_stub)
+    assert wb.cmd_breakglass_otp_probe(ctx, BG_EMAIL) == 1
+    idp_stub.assert_no_pending_responses()
+    captured = capsys.readouterr()
+    report = _probe_json(captured)
+    assert report["verdict"] == "email_otp_offered" and report["email_otp_offered"] is True
+    bg, cis = report["clients"]
+    assert bg["email_otp_offered"] is True and "skipped" in bg["prefer_email_otp"]
+    assert cis["email_otp_offered"] is True and cis["prefer_email_otp"]["challenge"] == "EMAIL_OTP"
+    assert "FINDING EMAIL_OTP is offered" in captured.err
+    assert "CODE_DELIVERY" not in captured.out
+    assert forbidden == []
+    assert_clean(captured, S1, S2, BG_CLIENT_SECRET, CLIENT_SECRET)
+
+
+def test_otp_probe_error_still_disables_and_reraises(stubbed, probe_ctx, capsys):
+    _, idp_stub, _, _ = stubbed
+    ctx, _ = probe_ctx
+    idp_stub.add_response("list_user_pool_clients", CLIENTS_PAGE, None)
+    idp_stub.add_response("list_user_pool_clients", CLIENTS_PAGE, None)
+    idp_stub.add_response("list_users", {"Users": [{"Username": USER_SUB, "Enabled": False}]}, None)
+    idp_stub.add_response("describe_user_pool_client",
+                          {"UserPoolClient": {"ClientId": BG_CLIENT_ID, "ClientSecret": BG_CLIENT_SECRET}}, None)
+    idp_stub.add_response("describe_user_pool_client",
+                          {"UserPoolClient": {"ClientId": CIS_CLIENT_ID, "ClientSecret": CLIENT_SECRET}}, None)
+    idp_stub.add_client_error("admin_enable_user", service_error_code="InternalErrorException", http_status_code=500)
+    _stub_restore(idp_stub)
+    with pytest.raises(Exception, match="InternalErrorException"):
+        wb.cmd_breakglass_otp_probe(ctx, BG_EMAIL)
+    idp_stub.assert_no_pending_responses()
+    captured = capsys.readouterr()
+    report = _probe_json(captured)
+    assert report["verdict"] == "inconclusive" and report["restored"] is True
+    assert "user: DISABLED" in captured.err
+
+
+def test_otp_probe_initiate_auth_error_is_inconclusive_and_disables(stubbed, probe_ctx, capsys):
+    _, idp_stub, _, _ = stubbed
+    ctx, _ = probe_ctx
+    _stub_probe_start(idp_stub)
+    _stub_probe_call(idp_stub, BG_CLIENT_ID, error="NotAuthorizedException")
+    _stub_probe_call(idp_stub, BG_CLIENT_ID, preferred="EMAIL_OTP", error="NotAuthorizedException")
+    _stub_probe_call(idp_stub, CIS_CLIENT_ID, _select("PASSWORD"))
+    _stub_probe_call(idp_stub, CIS_CLIENT_ID, _select("PASSWORD", session=S2), preferred="EMAIL_OTP")
+    _stub_restore(idp_stub)
+    assert wb.cmd_breakglass_otp_probe(ctx, BG_EMAIL) == 1
+    idp_stub.assert_no_pending_responses()
+    captured = capsys.readouterr()
+    report = _probe_json(captured)
+    assert report["verdict"] == "inconclusive"
+    assert report["clients"][0]["no_preference"]["error"] == "NotAuthorizedException"
+    assert "INCONCLUSIVE" in captured.err and "user: DISABLED" in captured.err
+
+
+def test_otp_probe_user_enabled_at_start_is_left_enabled(stubbed, probe_ctx, capsys):
+    _, idp_stub, _, _ = stubbed
+    ctx, _ = probe_ctx
+    _stub_probe_start(idp_stub, enabled=True)
+    _stub_probe_call(idp_stub, BG_CLIENT_ID, _select("PASSWORD"))
+    _stub_probe_call(idp_stub, BG_CLIENT_ID, _select("PASSWORD", session=S2), preferred="EMAIL_OTP")
+    _stub_probe_call(idp_stub, CIS_CLIENT_ID, _select("PASSWORD"))
+    _stub_probe_call(idp_stub, CIS_CLIENT_ID, _select("PASSWORD", session=S2), preferred="EMAIL_OTP")
+    # No admin_enable_user, admin_user_global_sign_out or admin_disable_user stubbed: any call fails.
+    assert wb.cmd_breakglass_otp_probe(ctx, BG_EMAIL) == 0
+    idp_stub.assert_no_pending_responses()
+    captured = capsys.readouterr()
+    report = _probe_json(captured)
+    assert report["enabled_at_start"] is True and report["restored"] is True
+    assert "already ENABLED" in captured.err and "user: DISABLED" not in captured.err
+
+
+def test_otp_probe_unknown_user_changes_nothing(stubbed, probe_ctx):
+    _, idp_stub, _, _ = stubbed
+    ctx, _ = probe_ctx
+    idp_stub.add_response("list_user_pool_clients", CLIENTS_PAGE, None)
+    idp_stub.add_response("list_user_pool_clients", CLIENTS_PAGE, None)
+    idp_stub.add_response("list_users", {"Users": []}, None)
+    with pytest.raises(wb.ToolError, match="nothing was changed"):
+        wb.cmd_breakglass_otp_probe(ctx, BG_EMAIL)
+    idp_stub.assert_no_pending_responses()
+
+
+def test_otp_probe_refuses_out_of_domain_before_any_call(stubbed, probe_ctx):
+    ctx, _ = probe_ctx
+    with pytest.raises(wb.ToolError, match="outside the staff domain"):
+        wb.cmd_breakglass_otp_probe(ctx, "admin@example.com")
+
+
+class _FakeSts:
+    def get_caller_identity(self):
+        return {"Account": wb.DEFAULT_ACCOUNT}
+
+
+class _FakeSession:
+    """boto3.Session stand-in: records every client the tool creates."""
+
+    created: list[str] = []
+    idp = None
+
+    def __init__(self, profile_name=None, region_name=None):
+        self._session = None  # the assume-role cache hook is best effort and skipped
+
+    def client(self, name):
+        _FakeSession.created.append(name)
+        if name == "sts":
+            return _FakeSts()
+        if name == "cognito-idp":
+            return _FakeSession.idp
+        raise AssertionError(f"unexpected client {name}")
+
+
+def test_otp_probe_main_creates_no_secretsmanager_client_and_cleanup_failure_exits_2(stubbed, monkeypatch, capsys):
+    import boto3
+
+    idp, idp_stub, _, sm_stub = stubbed
+    _FakeSession.created = []
+    _FakeSession.idp = idp
+    monkeypatch.setattr(boto3, "Session", _FakeSession)
+    monkeypatch.setattr(idp, "respond_to_auth_challenge",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("RespondToAuthChallenge called")))
+    _stub_probe_start(idp_stub)
+    _stub_probe_call(idp_stub, BG_CLIENT_ID, _select("PASSWORD"))
+    _stub_probe_call(idp_stub, BG_CLIENT_ID, _select("PASSWORD", session=S2), preferred="EMAIL_OTP")
+    _stub_probe_call(idp_stub, CIS_CLIENT_ID, _select("PASSWORD"))
+    _stub_probe_call(idp_stub, CIS_CLIENT_ID, _select("PASSWORD", session=S2), preferred="EMAIL_OTP")
+    _stub_restore(idp_stub, disable_fails=True)
+    rc = wb.main(["--pool-id", POOL, "breakglass-otp-probe"])
+    assert rc == 2
+    idp_stub.assert_no_pending_responses()
+    sm_stub.assert_no_pending_responses()
+    assert "secretsmanager" not in _FakeSession.created
+    assert _FakeSession.created == ["sts", "cognito-idp"]
+    captured = capsys.readouterr()
+    report = _probe_json(captured)  # the account preamble went to stderr, stdout is still pure JSON
+    assert report["restored"] is False
+    assert report["cleanup_failures"] == ["admin_disable_user InternalErrorException"]
+    assert "breakglass-otp-probe: cleanup INCOMPLETE (admin_disable_user InternalErrorException)" in captured.err
+    assert "admin-disable-user" in captured.err and "aws: account" in captured.err
+    assert "breakglass-otp-probe: OK" not in captured.err
+    assert_clean(captured, S1, S2, BG_CLIENT_SECRET, CLIENT_SECRET)
+
+
+def test_main_still_creates_secretsmanager_client_for_breakglass_verify(monkeypatch):
+    import boto3
+
+    def client(self, name):
+        _FakeSession.created.append(name)
+        return _FakeSts() if name == "sts" else object()
+
+    _FakeSession.created = []
+    monkeypatch.setattr(boto3, "Session", _FakeSession)
+    monkeypatch.setattr(_FakeSession, "client", client)
+    args = wb.build_parser().parse_args(["breakglass-verify"])
+    _, sm = wb._aws_clients(args, wb.Output(out=lambda s: None, err=lambda s: None))
+    assert sm is not None and _FakeSession.created == ["sts", "cognito-idp", "secretsmanager"]

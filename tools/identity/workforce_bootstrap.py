@@ -12,6 +12,12 @@ Subcommands
                                           then tokens revoked and the user DISABLED (always, finally).
   breakglass-verify                       Enable, sign in with password + TOTP on the breakglass client,
                                           print the claim summary, revoke, sign out, DISABLE (finally).
+  breakglass-otp-probe                    ADR 0006a A4 check (AA-816): enable if disabled, ask the
+                                          breakglass + cis-admin clients for first factors with
+                                          InitiateAuth USER_AUTH + USERNAME only (never a password, never
+                                          an answer, never the secret), print JSON, then restore the
+                                          Enabled state (finally). Exit 0 no EMAIL_OTP, 1 finding or
+                                          inconclusive, 2 cleanup incomplete.
   authorize-url --client C --redirect R   Spike helper: managed-login authorize URL with PKCE S256;
                                           verifier + state go to a 0600 file under
                                           .tmp-session/identity-spike/ (or --state-dir).
@@ -20,7 +26,8 @@ Subcommands
                                           the access + ID tokens, then revoke the refresh token.
 
 Fail closed: if a cleanup step (revoke, global sign-out, disable) fails, the command exits 1 and does
-not print "done"/"OK", even when the main work succeeded.
+not print "done"/"OK", even when the main work succeeded (breakglass-otp-probe exits 2 instead, so a
+script can tell "user may still be enabled" apart from a finding).
 
 Secret hygiene: passwords, TOTP seeds, client secrets, codes and tokens are never printed. Every line
 goes through a redactor that masks any registered secret, and errors are printed without a traceback.
@@ -79,6 +86,11 @@ STAFF_GROUPS = (
     "booking-content_creator",
 )
 BREAKGLASS_GROUPS = ("cis-admin", "booking-admin")  # ADR 0006 decision 11
+# breakglass-otp-probe asks these app clients (aa-workforce-<env>-<name>) for first factors: the
+# break-glass client, and cis-admin, whose managed login is the one a mailbox holder would use.
+OTP_PROBE_CLIENTS = ("breakglass", "cis-admin")
+# Commands that must never create a Secrets Manager client (the break-glass secret stays unread).
+NO_SECRETS_MANAGER_COMMANDS = ("breakglass-otp-probe",)
 OAUTH_SCOPES = "openid email profile"
 TOTP_STEP = 30
 TOTP_DIGITS = 6
@@ -106,6 +118,14 @@ SAFE_CLAIMS = (
 
 class ToolError(Exception):
     """Expected failure: printed as one line, exit code 1."""
+
+    exit_code = 1
+
+
+class CleanupIncomplete(ToolError):
+    """breakglass-otp-probe could not put the user back to disabled: exit code 2 (fail closed)."""
+
+    exit_code = 2
 
 
 # --------------------------------------------------------------------------------------------
@@ -646,6 +666,147 @@ def cmd_breakglass_verify(ctx: Ctx, email: str) -> int:
     return 0
 
 
+def _email_otp_offered(call: dict) -> bool:
+    return call.get("challenge") == "EMAIL_OTP" or "EMAIL_OTP" in (call.get("available_challenges") or [])
+
+
+def _otp_probe_call(idp, *, client_id: str, client_secret: str, username: str, preferred: str | None,
+                    log: Output) -> dict:
+    """One InitiateAuth USER_AUTH with USERNAME only (no PASSWORD). Never answers the challenge.
+
+    Returns only safe fields: the challenge name, the available first factors and an error code. The
+    Session string (and any token, which cannot be issued without a credential) is registered with
+    the redactor and dropped.
+    """
+    params = {"USERNAME": username, "SECRET_HASH": secret_hash(username, client_id, client_secret)}
+    if preferred:
+        params["PREFERRED_CHALLENGE"] = preferred
+    try:
+        resp = idp.initiate_auth(AuthFlow="USER_AUTH", ClientId=client_id, AuthParameters=params)
+    except Exception as exc:  # noqa: BLE001 - a refusal is a probe result, not a tool failure
+        error = (getattr(exc, "response", None) or {}).get("Error") or {}
+        return {
+            "challenge": None,
+            "available_challenges": [],
+            "error": error.get("Code") or type(exc).__name__,
+            "error_message": log.redact(str(error.get("Message") or ""))[:200],
+        }
+    log.register(resp.get("Session"))
+    result = resp.get("AuthenticationResult") or {}
+    log.register(result.get("AccessToken"), result.get("IdToken"), result.get("RefreshToken"))
+    return {
+        "challenge": resp.get("ChallengeName"),
+        "available_challenges": sorted(resp.get("AvailableChallenges") or []),
+        "error": None,
+        "tokens_issued": bool(result),
+    }
+
+
+def cmd_breakglass_otp_probe(ctx: Ctx, email: str) -> int:
+    """ADR 0006a A4 check: does Cognito offer EMAIL_OTP as a first factor to the TOTP-enrolled user?
+
+    Enables the user if it is disabled, asks each client (breakglass, cis-admin) for its first factors
+    with InitiateAuth USER_AUTH and USERNAME only, first with no preference, then (only if EMAIL_OTP
+    was not already offered) with PREFERRED_CHALLENGE=EMAIL_OTP. It never answers a challenge, never
+    reads the break-glass secret (no Secrets Manager client exists for this command) and so never
+    issues a token. A `finally` block puts the user back to disabled (global sign-out + disable) when
+    it was disabled at the start; a user that was already enabled is left enabled.
+
+    stdout is one JSON document; progress goes to stderr. Exit 0 = EMAIL_OTP not offered on any
+    client, 1 = offered (the finding) or inconclusive, 2 = cleanup incomplete (user may be enabled).
+    If EMAIL_OTP is offered, Cognito sends one code e-mail to the user's mailbox: that is the finding.
+    """
+    email = require_staff_email(email)
+    log = Output(out=ctx.out.err, err=ctx.out.err, _secrets=ctx.out._secrets)  # progress -> stderr
+    clients = []
+    for short in OTP_PROBE_CLIENTS:
+        name = f"aa-workforce-{ctx.env}-{short}"
+        clients.append((name, find_client_id(ctx.idp, ctx.pool_id, name)))
+    user = find_user(ctx.idp, ctx.pool_id, email)
+    if user is None:
+        raise ToolError(f"no WORKFORCE user with email {email}; nothing was changed")
+    enabled_at_start = bool(user.get("Enabled"))
+    secrets_by_client = {cid: client_secret_of(ctx.idp, ctx.pool_id, cid, log) for _, cid in clients}
+    username = email
+    report: dict = {
+        "probe": "breakglass-otp-probe",
+        "user": email,
+        "user_status": user.get("UserStatus"),
+        "enabled_at_start": enabled_at_start,
+        "clients": [],
+    }
+    error: Exception | None = None
+    failures: list[str] = []
+    try:
+        if enabled_at_start:
+            log.warn("WARNING user was already ENABLED: it is left enabled afterwards. Is a break-glass "
+                     "sign-in running at the same time? (the probe and that test must not overlap)")
+        else:
+            ctx.idp.admin_enable_user(UserPoolId=ctx.pool_id, Username=username)
+            log.info("user: enabled for the probe")
+        for name, cid in clients:
+            kwargs = dict(client_id=cid, client_secret=secrets_by_client[cid], username=username, log=log)
+            first = _otp_probe_call(ctx.idp, preferred=None, **kwargs)
+            if _email_otp_offered(first):
+                second = {"skipped": "EMAIL_OTP already offered without a preference"}
+            else:
+                second = _otp_probe_call(ctx.idp, preferred="EMAIL_OTP", **kwargs)
+            report["clients"].append({
+                "client": name,
+                "client_id": cid,
+                "no_preference": first,
+                "prefer_email_otp": second,
+                "email_otp_offered": _email_otp_offered(first) or _email_otp_offered(second),
+            })
+            log.info(f"probe: {name} done")
+    except Exception as exc:  # noqa: BLE001 - re-raised after cleanup
+        error = exc
+    finally:
+        if not enabled_at_start:
+            failures = close_out(ctx.idp, pool_id=ctx.pool_id, username=username, client_id=None,
+                                 client_secret=None, refresh_token=None, out=log)
+    report["restored"] = not failures
+    report["cleanup_failures"] = failures
+    entries = report["clients"]
+    offered = any(c["email_otp_offered"] for c in entries)
+    tokens = any(c[k].get("tokens_issued") for c in entries for k in ("no_preference", "prefer_email_otp"))
+    conclusive = len(entries) == len(clients) and all(c["no_preference"]["error"] is None for c in entries)
+    if tokens:
+        report["verdict"] = "tokens_issued"
+    elif offered:
+        report["verdict"] = "email_otp_offered"
+    elif error is None and conclusive:
+        report["verdict"] = "email_otp_not_offered"
+    else:
+        report["verdict"] = "inconclusive"
+    report["email_otp_offered"] = offered
+    if error is not None:
+        report["error"] = log.redact(f"{type(error).__name__}: {error}")[:300]
+    ctx.out.info(json.dumps(report, indent=2, sort_keys=True))
+    if failures:
+        note = f" The probe also failed: {report['error']}." if error is not None else ""
+        raise CleanupIncomplete(
+            cleanup_failed_error("breakglass-otp-probe", failures, ctx.pool_id, username, note=note).args[0]
+        )
+    if error is not None:
+        raise error
+    if tokens:
+        log.warn("WARNING Cognito issued a token without a credential: sign the user out everywhere "
+                 f"(aws cognito-idp admin-user-global-sign-out --user-pool-id {ctx.pool_id} --username "
+                 f"{username} --profile aa365-admin --region us-west-1) and report it")
+        return 1
+    if offered:
+        log.warn("FINDING EMAIL_OTP is offered to this user: anyone holding the mailbox could sign in "
+                 "with an e-mail code. One code e-mail was sent. Bring the fix options to Nghiep "
+                 "(ADR 0006a A4).")
+        return 1
+    if report["verdict"] != "email_otp_not_offered":
+        log.warn("probe INCONCLUSIVE: at least one client returned an error without a challenge")
+        return 1
+    log.info("breakglass-otp-probe: OK (EMAIL_OTP not offered on any client)")
+    return 0
+
+
 def _default_http_post(url: str, form: dict, basic: tuple[str, str]) -> dict:
     data = urllib.parse.urlencode(form).encode()
     auth = base64.b64encode(f"{basic[0]}:{basic[1]}".encode()).decode()
@@ -782,6 +943,11 @@ def build_parser() -> argparse.ArgumentParser:
         bp = sub.add_parser(name, help=text)
         bp.add_argument("--email", default=DEFAULT_BREAKGLASS_EMAIL)
 
+    op = sub.add_parser("breakglass-otp-probe",
+                        help="ADR 0006a A4: is EMAIL_OTP offered to break-glass? No secret read, no token; "
+                             "restores the Enabled state")
+    op.add_argument("--email", default=DEFAULT_BREAKGLASS_EMAIL)
+
     au = sub.add_parser("authorize-url", help="spike: managed-login authorize URL with PKCE S256")
     # breakglass is left out on purpose: its managed-login test belongs to C4 (production callback only).
     au.add_argument("--client", default="cis-admin", choices=["cis-admin", "booking-staff"])
@@ -810,8 +976,11 @@ def _aws_clients(args, out: Output):
     account = session.client("sts").get_caller_identity()["Account"]
     if args.expect_account and account != args.expect_account:
         raise ToolError(f"refused: credentials are for account {account}, expected {args.expect_account}")
-    out.info(f"aws: account {account}, region {args.region}, pool {args.pool_id}")
-    return session.client("cognito-idp"), session.client("secretsmanager")
+    no_sm = args.cmd in NO_SECRETS_MANAGER_COMMANDS
+    # The probe keeps stdout for its JSON document, so its preamble goes to stderr.
+    (out.warn if no_sm else out.info)(f"aws: account {account}, region {args.region}, pool {args.pool_id}")
+    idp = session.client("cognito-idp")
+    return idp, (None if no_sm else session.client("secretsmanager"))
 
 
 def main(argv: list[str] | None = None, out: Output | None = None) -> int:
@@ -823,7 +992,7 @@ def main(argv: list[str] | None = None, out: Output | None = None) -> int:
         return dispatch(ctx, args)
     except ToolError as exc:
         out.warn(f"ERROR {exc}")
-        return 1
+        return exc.exit_code
     except Exception as exc:  # noqa: BLE001 - no traceback: locals/params could carry secrets
         out.warn(f"ERROR {type(exc).__name__}: {exc}")
         return 1
@@ -837,6 +1006,8 @@ def dispatch(ctx: Ctx, args) -> int:
         return cmd_breakglass_init(ctx, args.email)
     if args.cmd == "breakglass-verify":
         return cmd_breakglass_verify(ctx, args.email)
+    if args.cmd == "breakglass-otp-probe":
+        return cmd_breakglass_otp_probe(ctx, args.email)
     state_dir = Path(args.state_dir) if args.state_dir else find_state_dir(Path(__file__).resolve().parent)
     if args.cmd == "authorize-url":
         return cmd_authorize_url(ctx, args.client, args.redirect, args.domain, state_dir)
