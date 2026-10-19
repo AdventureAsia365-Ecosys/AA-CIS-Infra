@@ -82,6 +82,13 @@ WORKFORCE identity from `shared.admin_users.cognito_iss / cognito_sub` (needs AA
 `READ_ONLY = True` = DRY RUN (prints the mapping); a one-line follow-up PR sets `READ_ONLY = False` to apply.
 Idempotent; never rebinds or merges rows. Notes: `docs/implementation-notes/AA-680-backfill.md`.
 
+`aa680_staff_users_readonly_check.py` (AA-680 staff half, read-only evidence): shows that Booking holds no
+`booking.staff_users` row for the "E2E Cognito" WORKFORCE user (CIS reviewer, no `booking-*` group) that the CIS
+Cognito E2E gets refused by Booking (`no_booking_role`), matching by CIS id, Cognito identity, `cog:<sub>` key or
+e-mail; and lists every Booking staff row (key kind, role, active, linked, CIS username, last seen; subs cut to 8
+characters, no e-mail). Ends with `SCRIPT verdict e2e_has_no_booking_row=true|false`; returns 1 only when a Booking
+row matches the E2E identity. Dispatch after the E2E run. Notes: `docs/implementation-notes/AA-680-s245.md`.
+
 `aa816_clear_breakglass_password.py` (AA-816 checklist B6, decision N-B, one-time): sets `password_hash` NULL on
 the CIS break-glass row of `shared.admin_users` (root ADR 0006a A4) and writes one `acp_shared.audit_log` row
 (`staff.legacy_password_cleared`) in the same transaction. Refuses unless exactly one row matches the break-glass
