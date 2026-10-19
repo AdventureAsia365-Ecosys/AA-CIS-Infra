@@ -4,7 +4,7 @@
 # =============================================================================
 
 terraform {
-  required_version = ">= 1.7.0, < 2.0.0"
+  required_version = ">= 1.10.0, < 2.0.0" # use_lockfile needs >= 1.10
 
   required_providers {
     aws = {
@@ -30,6 +30,10 @@ terraform {
     key            = "dev/terraform.tfstate"
     region         = "us-west-1"
     dynamodb_table = "aa-cis-tfstate-lock-005097885195"
+    # S244 chore: S3 native state locking (<key>.tflock). Both locks are taken while
+    # dynamodb_table stays; drop dynamodb_table (and the table + StateLock grants) in a
+    # later PR once CI plan/apply have run green with the lockfile.
+    use_lockfile = true
     # Không hardcode profile — CI (GitHub Actions OIDC) dùng ambient credentials
     # qua env var, không có ~/.aws/config. Local: export AWS_PROFILE=aa365-admin
     # trước khi chạy terraform.
