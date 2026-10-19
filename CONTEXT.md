@@ -163,7 +163,12 @@ Its resources carry the blueprint tags (`Project = AA-Ecosys`, `App`); TripPlann
 resources also carry `App`. Provider `default_tags` are unchanged (re-tagging every resource needs
 a wider CI-role grant). ECS runs the CIS API service
 (`aa-cis-dev-api` on cluster `aa-cis-dev-cluster`) with `stopTimeout = 90` so in-flight requests
-drain on deploy (AA-310, `modules/ecs/main.tf`). The old S3 → Lambda → Step Functions pipeline
+drain on deploy (AA-310, `modules/ecs/main.tf`). The CIS api and worker `DATABASE_URL` is the DSN of
+the runtime role `cis_app` (`secret_rds_arn` → `aws_secretsmanager_secret.rds_cis_app`, X1 S18), and the CIS task
+role has an explicit Deny on `GetSecretValue` for the master, `db-migrator`, `booking/*` and `tripplanner/*` secrets
+(`DenyMasterAndOtherAppSecrets`, X1 S19), so ECS-exec scripts run as `cis_app` too. A Terraform Apply that touches
+`aws_ecs_service`, `aws_ecs_task_definition` or `aws_lambda_function` rolls services and has no job guard: run the
+manual idle gate first (root `skill/aa-ship`, X1 plan standing rules). The old S3 → Lambda → Step Functions pipeline
 (ingestion/seo/validation/content/export Lambdas, the state machine, 6 SQS queues) and the
 `authorizer` / `brand-brief-parser` Lambdas were retired in AA-750; the pipeline runs in the API
 and the durable job worker.
@@ -301,8 +306,7 @@ makes CI Terraform Plan fail with 403.
   - Locally, applying the aa365 stack needs MFA-exported credentials because Terraform will not
     prompt for MFA on its own:
     ```
-    export $(aws configure export-credentials --profile aa365-admin --format env | xargs) \
-      && unset AWS_PROFILE
+    export $(aws configure export-credentials --profile aa365-admin --format env | xargs) && unset AWS_PROFILE
     ```
     then `terraform -chdir=accounts/aa365 apply`.
 - **prod**: there is no separate prod apply pipeline wired to merges; a `workflow_dispatch` apply
@@ -312,7 +316,10 @@ makes CI Terraform Plan fail with 403.
 
 - No application code and no content-pipeline logic (that is AA-CIS-App).
 - No application DB schema migrations (`acp_*`, `*_aa_internal`, `tripplanner.*` are owned by the
-  app repos). It owns the RDS instance, not what lives inside it. It does own the **DB Migrate**
+  app repos). It owns the RDS instance, not what lives inside it. The one exception is the Infra-native
+  `db/migrations/roles/` dir (key `rl-NNN`, X1): role bootstrap and attributes (`rl-001` owner roles + `cis_app`,
+  `rl-002` `cis_owner` + `db_migrator`), extensions, the `public.*` leftovers and the prepared X1 undo files; it always
+  runs as the RDS master, and no owner dir may create a role or an extension. It does own the **DB Migrate**
   workflow (`.github/workflows/db-migrate.yml`): `db/migrations/<owner>/` holds byte-identical copies
   of a reviewed app migration, applied from `main` by a one-off ECS task (S225). The
   **Migration Copy Guard** workflow (AA-807) checks each copy byte for byte against the owner
@@ -329,6 +336,9 @@ makes CI Terraform Plan fail with 403.
   migrator task definition (`accounts/aa365/db_migrator.tf`) and log in as **`db_migrator`** since X1 S22
   (AA-860); the RDS master is break-glass plus three automated uses (`roles/` files, `set-password`,
   `run-script`), whose DSN the runner reads in the task (`db/README.md`, `db/owners.yaml` `master_secret`).
+  Every owner file runs as the live owner of its dir's anchor schema (`cis_owner`, `bk_owner`, `tp_owner`); the
+  nightly DB Isolation Probe cell `sessions.master_break_glass_only` flags any other master session. The CIS
+  migration freeze and the `catalog.*` view freeze (XD9) ended with CIS 246 (S22, 19/10/2026).
 - No auto-apply on merge — apply is manual/`workflow_dispatch`, and destructive changes need
   explicit human confirmation.
 - Run Terraform from the WSL path (`/home/nghiep/...`), never a Windows UNC path.
