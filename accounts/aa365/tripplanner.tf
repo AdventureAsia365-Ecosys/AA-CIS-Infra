@@ -339,6 +339,9 @@ resource "aws_lambda_function" "tripplanner_browse" {
       ENVIRONMENT                  = var.environment
       TRIPPLANNER_DATABASE_URL_ARN = aws_secretsmanager_secret.tripplanner_db.arn
       BEDROCK_REGION               = var.aws_region
+      # AA-902: account IDs left the public TripPlanner repo; browse embeds through the same satellites.
+      BEDROCK_ACCT_PRIMARY  = local.bedrock_acct_primary
+      BEDROCK_ACCT_FALLBACK = local.bedrock_acct_fallback
     }
   }
 
@@ -378,8 +381,8 @@ resource "aws_lambda_function" "tripplanner_assembly" {
       ENVIRONMENT                  = var.environment
       TRIPPLANNER_DATABASE_URL_ARN = aws_secretsmanager_secret.tripplanner_db.arn
       BEDROCK_REGION               = var.aws_region
-      BEDROCK_ACCT_PRIMARY         = "786888028788"
-      BEDROCK_ACCT_FALLBACK        = "867490540162"
+      BEDROCK_ACCT_PRIMARY         = local.bedrock_acct_primary
+      BEDROCK_ACCT_FALLBACK        = local.bedrock_acct_fallback
       # acc3 and acc1 use DIFFERENT invoker role names — pass both (a single
       # name breaks the fallback path).
       BEDROCK_ROLE_NAME_PRIMARY    = "AA3-Bedrock-Invoker"
