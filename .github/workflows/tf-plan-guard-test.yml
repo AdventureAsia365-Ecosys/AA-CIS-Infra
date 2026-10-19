@@ -1,0 +1,55 @@
+name: Terraform Plan Guard Tests
+
+# AA-846: unit tests of tools/terraform/plan_guard.py, the check that refuses a CI apply whose plan
+# changes a guarded type (aws_secretsmanager_secret_version, random_password, aws_db_instance).
+# The guarded fixture must exit non-zero, the clean and no-op fixtures must exit 0, and the guard
+# must stay wired in front of the apply step in terraform-apply.yml. Offline, no AWS access.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "tools/terraform/**"
+      - ".github/workflows/terraform-apply.yml"
+      - ".github/workflows/tf-plan-guard-test.yml"
+  push:
+    branches: [main]
+    paths:
+      - "tools/terraform/**"
+      - ".github/workflows/terraform-apply.yml"
+      - ".github/workflows/tf-plan-guard-test.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  plan-guard-tests:
+    name: Terraform plan guard tests (pytest)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install pytest and PyYAML
+        run: python -m pip install "pytest>=8,<10" pyyaml==6.0.2
+
+      - name: Run guard tests
+        run: python -m pytest -p no:cacheprovider -q tools/terraform/tests
+
+      # The same command the apply workflow's self-test runs; it must refuse.
+      - name: Guarded fixture is refused
+        run: |
+          set +e
+          python3 -B tools/terraform/plan_guard.py tools/terraform/tests/fixtures/plan_guarded.json
+          RC=$?
+          set -e
+          if [ "$RC" -ne 1 ]; then
+            echo "expected exit 1 (refused), got $RC" >&2
+            exit 1
+          fi

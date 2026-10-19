@@ -2,6 +2,22 @@ name: Terraform Apply Prod
 
 on:
   workflow_dispatch:
+    inputs:
+      # AA-846: plan guard. The apply is refused when the plan changes a guarded resource type
+      # (aws_secretsmanager_secret_version, random_password, aws_db_instance), see
+      # tools/terraform/plan_guard.py. Set both inputs to let an intended change through.
+      allow_guarded:
+        description: "Allow changes to guarded types (secret versions, random_password, RDS instance)"
+        type: boolean
+        default: false
+      allow_reason:
+        description: "Required with allow_guarded: why (echoed to the job summary)"
+        type: string
+        default: ""
+      guard_selftest:
+        description: "Self-test only: run the plan guard on the committed guarded fixture (expect a red run), no AWS access"
+        type: boolean
+        default: false
 
 concurrency:
   group: terraform-apply-prod
@@ -27,25 +43,48 @@ jobs:
 
     env:
       TF_VAR_db_password: ${{ secrets.TF_VAR_DB_PASSWORD }}
+      # AA-846: plan guard inputs, passed via env (never interpolated into a script).
+      GUARD_SELFTEST: ${{ inputs.guard_selftest && 'true' || 'false' }}
+      ALLOW_GUARDED: ${{ inputs.allow_guarded && 'true' || 'false' }}
+      ALLOW_REASON: ${{ inputs.allow_reason }}
 
     steps:
       - uses: actions/checkout@v7
 
+      # AA-846: fail fast, before any AWS step, when allow_guarded comes without a reason.
+      - name: Check guard inputs
+        run: |
+          if [ "$ALLOW_GUARDED" = "true" ] && [ "$GUARD_SELFTEST" != "true" ] && [ -z "$(printf '%s' "$ALLOW_REASON" | tr -d '[:space:]')" ]; then
+            echo "allow_guarded=true needs a non-empty allow_reason" >&2
+            exit 1
+          fi
+
+      # AA-846 self-test: feed the committed synthetic plan (it changes all three guarded types) to the
+      # same guard step the real apply uses. Expected result: this run goes red at "Plan guard" with
+      # REFUSED. Every AWS / Terraform step below is skipped in self-test mode.
+      - name: Select self-test plan
+        if: env.GUARD_SELFTEST == 'true'
+        run: echo "PLAN_JSON=$GITHUB_WORKSPACE/tools/terraform/tests/fixtures/plan_guarded.json" >> "$GITHUB_ENV"
+
       - name: Configure AWS credentials (OIDC)
+        if: env.GUARD_SELFTEST != 'true'
         uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ secrets.AWS_REGION }}
 
       - name: Verify AWS identity
+        if: env.GUARD_SELFTEST != 'true'
         run: aws sts get-caller-identity
 
       - name: Setup Terraform
+        if: env.GUARD_SELFTEST != 'true'
         uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: "1.15.5"
 
       - name: Terraform Init
+        if: env.GUARD_SELFTEST != 'true'
         run: |
           terraform init \
             -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
@@ -53,10 +92,12 @@ jobs:
             -backend-config="region=${{ secrets.AWS_REGION }}"
 
       - name: Terraform Validate
+        if: env.GUARD_SELFTEST != 'true'
         run: terraform validate
 
       - name: Terraform Plan
         id: plan
+        if: env.GUARD_SELFTEST != 'true'
         run: |
           terraform plan \
             -out=tfplan \
@@ -64,6 +105,7 @@ jobs:
         continue-on-error: true
 
       - name: Check plan exit code
+        if: env.GUARD_SELFTEST != 'true'
         run: |
           EXIT_CODE=${{ steps.plan.outputs.exitcode }}
           if [ "$EXIT_CODE" == "1" ]; then
@@ -72,16 +114,57 @@ jobs:
           elif [ "$EXIT_CODE" == "0" ]; then
             echo "No changes to apply"
           elif [ "$EXIT_CODE" == "2" ]; then
-            echo "Changes detected, applying..."
+            echo "Changes detected, checking the plan guard before applying..."
+          else
+            echo "Unexpected plan exit code: '$EXIT_CODE'" >&2
+            exit 1
           fi
 
+      # AA-846: plan JSON for the guard. terraform-bin is the real binary next to the
+      # setup-terraform wrapper; the wrapper adds a "[command]..." line to stdout, which is not JSON.
+      # The JSON holds sensitive values in clear text: it stays in RUNNER_TEMP, is never printed or
+      # uploaded, and is deleted right after the guard.
+      - name: Export plan JSON
+        if: env.GUARD_SELFTEST != 'true' && steps.plan.outputs.exitcode == '2'
+        run: |
+          umask 077
+          if ! command -v terraform-bin >/dev/null; then
+            echo "terraform-bin not found (setup-terraform wrapper layout changed?); refusing to apply" >&2
+            exit 1
+          fi
+          terraform-bin show -json tfplan > "$RUNNER_TEMP/tfplan.json"
+          echo "PLAN_JSON=$RUNNER_TEMP/tfplan.json" >> "$GITHUB_ENV"
+
+      - name: Plan guard
+        if: env.GUARD_SELFTEST == 'true' || steps.plan.outputs.exitcode == '2'
+        working-directory: ${{ github.workspace }}
+        run: |
+          REASON=""
+          if [ "$ALLOW_GUARDED" = "true" ] && [ "$GUARD_SELFTEST" != "true" ]; then
+            REASON="$ALLOW_REASON"
+          fi
+          set +e
+          python3 tools/terraform/plan_guard.py "$PLAN_JSON" --allow-reason="$REASON" --summary "$GITHUB_STEP_SUMMARY"
+          RC=$?
+          set -e
+          if [ "$GUARD_SELFTEST" != "true" ]; then rm -f "$PLAN_JSON"; fi
+          exit $RC
+
+      # Reached only when the guard passed. In self-test mode that means the guard accepted a plan
+      # that changes guarded types, so the guard is broken.
+      - name: Self-test result
+        if: env.GUARD_SELFTEST == 'true'
+        run: |
+          echo "SELF-TEST FAILED: the plan guard accepted the guarded fixture" | tee -a "$GITHUB_STEP_SUMMARY" >&2
+          exit 1
+
       - name: Terraform Apply
-        if: steps.plan.outputs.exitcode == '2'
+        if: env.GUARD_SELFTEST != 'true' && steps.plan.outputs.exitcode == '2'
         run: |
           terraform apply \
             -auto-approve \
             tfplan
 
       - name: Print outputs
-        if: steps.plan.outputs.exitcode == '2'
+        if: env.GUARD_SELFTEST != 'true' && steps.plan.outputs.exitcode == '2'
         run: terraform output

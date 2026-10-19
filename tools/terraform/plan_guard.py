@@ -1,0 +1,158 @@
+#!/usr/bin/env python3
+"""Terraform plan guard for the CI apply (AA-846).
+
+Reads the JSON of a saved plan (`terraform show -json tfplan`) and refuses the apply when the plan
+touches a guarded resource type with any action other than no-op or read. Guarded by default:
+
+  aws_secretsmanager_secret_version   a secret value (rotation, overwrite, forget, delete)
+  random_password                     a generated credential (a replace changes the password)
+  aws_db_instance                     the shared RDS instance (all three apps)
+
+Matching is on the resource type, so module addresses (module.rds.aws_db_instance.main) count too.
+`forget` (a `removed` block) and imports of a guarded type are refused as well: they change what
+Terraform owns, which deserves the same explicit opt-in.
+
+The guard prints only addresses, types and actions, never attribute values: the plan JSON holds
+sensitive values in clear text.
+
+Exit codes:
+  0  nothing guarded is touched, or it is but --allow-reason was given (each change is listed as a
+     warning together with the reason)
+  1  refused: a guarded resource would change
+  2  bad input (missing file, not JSON, not a Terraform plan JSON); fail closed
+
+Stdlib only. Usage:
+  terraform show -json tfplan > plan.json
+  python3 tools/terraform/plan_guard.py plan.json [--allow-reason "why"] [--summary $GITHUB_STEP_SUMMARY]
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from dataclasses import dataclass
+from typing import Iterable, Optional
+
+GUARDED_TYPES = frozenset(
+    {
+        "aws_secretsmanager_secret_version",
+        "random_password",
+        "aws_db_instance",
+    }
+)
+
+# Actions that leave the real resource and its state untouched.
+_SAFE_ACTIONS = (["no-op"], ["read"])
+
+
+class InputError(Exception):
+    """The plan JSON cannot be read or is not a Terraform plan."""
+
+
+@dataclass(frozen=True)
+class GuardedChange:
+    address: str
+    type: str
+    action: str  # e.g. "update", "delete,create", "forget", "import"
+
+
+def _action_label(actions: list[str], importing: bool) -> Optional[str]:
+    """The action text for a guarded resource, or None when it is safe."""
+    if actions in _SAFE_ACTIONS and not importing:
+        return None
+    label = ",".join(actions)
+    if importing:
+        label = "import" if actions == ["no-op"] else f"import+{label}"
+    return label
+
+
+def find_guarded_changes(plan: dict, guarded_types: Iterable[str] = GUARDED_TYPES) -> list[GuardedChange]:
+    """Every resource change on a guarded type whose action is not no-op/read."""
+    if not isinstance(plan, dict) or "format_version" not in plan:
+        raise InputError("not a Terraform plan JSON (no format_version); use `terraform show -json <planfile>`")
+    if "planned_values" not in plan and "resource_changes" not in plan:
+        # `terraform show -json` on a state (not a plan) has values but no planned_values.
+        raise InputError("JSON has no planned_values/resource_changes: is this a state, not a plan?")
+    changes = plan.get("resource_changes")
+    if changes is None:  # a plan with no changes may omit the key
+        changes = []
+    if not isinstance(changes, list):
+        raise InputError("resource_changes is not a list")
+
+    guarded = frozenset(guarded_types)
+    found: list[GuardedChange] = []
+    for rc in changes:
+        if not isinstance(rc, dict):
+            raise InputError("resource_changes entry is not an object")
+        rtype = rc.get("type")
+        if rtype not in guarded:
+            continue
+        change = rc.get("change")
+        if not isinstance(change, dict) or not isinstance(change.get("actions"), list):
+            raise InputError(f"{rc.get('address', '?')}: change.actions missing")
+        label = _action_label(change["actions"], bool(change.get("importing")))
+        if label is not None:
+            found.append(GuardedChange(address=str(rc.get("address", "?")), type=rtype, action=label))
+    return found
+
+
+def render(changes: list[GuardedChange], allow_reason: Optional[str]) -> tuple[str, int]:
+    """Report text (Markdown-friendly) and the exit code."""
+    types = ", ".join(sorted(GUARDED_TYPES))
+    if not changes:
+        return f"Plan guard: OK, no change on a guarded type ({types}).", 0
+    lines = [f"- `{c.address}` ({c.type}): {c.action}" for c in changes]
+    if allow_reason:
+        head = (
+            f"Plan guard: ALLOWED by dispatch input (allow_guarded) with reason: {allow_reason}\n"
+            f"{len(changes)} guarded change(s) will be applied:"
+        )
+        return head + "\n" + "\n".join(lines), 0
+    head = (
+        f"Plan guard: REFUSED. The plan changes {len(changes)} guarded resource(s) ({types}):"
+    )
+    tail = (
+        "Nothing was applied. If the change is intended, re-run Terraform Apply Prod with "
+        "allow_guarded=true and allow_reason set (it is echoed to the job summary)."
+    )
+    return head + "\n" + "\n".join(lines) + "\n" + tail, 1
+
+
+def _load(path: str) -> dict:
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+    except FileNotFoundError as exc:
+        raise InputError(f"plan JSON not found: {path}") from exc
+    except json.JSONDecodeError as exc:
+        raise InputError(f"plan JSON is not valid JSON ({exc.msg} at line {exc.lineno})") from exc
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("plan_json", help="output of `terraform show -json <planfile>`")
+    ap.add_argument(
+        "--allow-reason",
+        default="",
+        help="let guarded changes through (exit 0) and record this reason; empty = refuse",
+    )
+    ap.add_argument("--summary", help="append the report to this file (e.g. $GITHUB_STEP_SUMMARY)")
+    args = ap.parse_args(argv)
+
+    allow_reason = args.allow_reason.strip() or None
+    try:
+        changes = find_guarded_changes(_load(args.plan_json))
+    except InputError as exc:
+        text, code = f"Plan guard: ERROR, {exc}. Refusing to apply (fail closed).", 2
+    else:
+        text, code = render(changes, allow_reason)
+
+    print(text, file=sys.stderr if code else sys.stdout)
+    if args.summary:
+        with open(args.summary, "a", encoding="utf-8") as fh:
+            fh.write("### Terraform plan guard\n\n" + text + "\n\n")
+    return code
+
+
+if __name__ == "__main__":
+    sys.exit(main())
