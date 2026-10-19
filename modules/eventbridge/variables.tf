@@ -47,3 +47,9 @@ variable "permissions_boundary_arn" {
   type        = string
   default     = null
 }
+
+variable "alarm_runbook_url" {
+  description = "AA-893: runbook URL appended to the DLQ alarm description (empty = no link). The root passes local.runbook_url.queue_stuck."
+  type        = string
+  default     = ""
+}

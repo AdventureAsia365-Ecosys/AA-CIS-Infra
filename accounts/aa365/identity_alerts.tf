@@ -17,7 +17,8 @@
 #   3. aws_sns_topic_policy for aws_sns_topic.alerts: the topic had only the AWS default policy
 #      (read live 18/10/2026: one __default_statement_ID, no KMS). That statement is reproduced
 #      verbatim so every CloudWatch alarm keeps publishing, plus one statement letting
-#      events.amazonaws.com publish from the identity rules only.
+#      events.amazonaws.com publish from the identity rules only. (AA-896, S243: plus one statement
+#      letting costalerts.amazonaws.com publish Cost Anomaly Detection alerts, cost_anomaly.tf.)
 #   4. (AA-816, S243) Root ADR 0006a A8: EventBridge rule on CloudTrail AdminCreateUser on the
 #      WORKFORCE pool with a temporary password, RESEND or no SUPPRESS -> the same SNS topic.
 #
@@ -170,6 +171,27 @@ data "aws_iam_policy_document" "alerts_topic" {
       test     = "ArnLike"
       variable = "aws:SourceArn"
       values   = ["arn:aws:events:${var.aws_region}:${var.account_id}:rule/${local.id_prefix}-*"]
+    }
+  }
+
+  # AA-896 (S243): AWS Cost Anomaly Detection publishes IMMEDIATE alerts here (cost_anomaly.tf).
+  # Statement from the AWS guide "Creating an Amazon SNS topic for anomaly notifications", limited to
+  # subscriptions owned by this account.
+  statement {
+    sid       = "AllowCostAnomalyDetection"
+    effect    = "Allow"
+    actions   = ["SNS:Publish"]
+    resources = [aws_sns_topic.alerts.arn]
+
+    principals {
+      type        = "Service"
+      identifiers = ["costalerts.amazonaws.com"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceAccount"
+      values   = [var.account_id]
     }
   }
 }

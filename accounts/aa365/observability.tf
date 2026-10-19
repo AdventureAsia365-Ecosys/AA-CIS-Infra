@@ -77,7 +77,7 @@ resource "aws_cloudwatch_metric_alarm" "rds_cpu_high" {
   statistic           = "Average"
   threshold           = 80
   treat_missing_data  = "notBreaching" # AA-832: data standard C4.1a (was the default "missing")
-  alarm_description   = "RDS ${local.name_prefix}-db CPU above 80% for 15 minutes"
+  alarm_description   = "RDS ${local.name_prefix}-db CPU above 80% for 15 minutes.${local.runbook_suffix.database}"
   alarm_actions       = [aws_sns_topic.alerts.arn]
   ok_actions          = [aws_sns_topic.alerts.arn]
 
@@ -103,7 +103,7 @@ resource "aws_cloudwatch_metric_alarm" "ecs_task_count_low" {
   period              = 300
   statistic           = "Average"
   threshold           = var.service_desired_count
-  alarm_description   = "ECS ${local.name_prefix}-api running task count below desired (requires Container Insights)"
+  alarm_description   = "ECS ${local.name_prefix}-api running task count below desired (requires Container Insights).${local.runbook_suffix.api_5xx}"
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
   ok_actions          = [aws_sns_topic.alerts.arn]
@@ -150,7 +150,7 @@ resource "aws_cloudwatch_metric_alarm" "acp_piece_held_rate_high" {
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 1
   threshold           = 20
-  alarm_description   = "N7 piece held-rate above 20% over 1h (UNVERIFIED placeholder threshold) — possible prompt/gate drift or brief quality regression"
+  alarm_description   = "N7 piece held-rate above 20% over 1h (UNVERIFIED placeholder threshold) — possible prompt/gate drift or brief quality regression.${local.runbook_suffix.incident}"
   treat_missing_data  = "notBreaching"
 
   metric_query {
@@ -202,7 +202,7 @@ resource "aws_cloudwatch_metric_alarm" "acp_grounding_score_floor" {
   period              = 300
   statistic           = "Minimum"
   threshold           = 1.0
-  alarm_description   = "N7 F1 grounding gate failed on at least 1 piece (HARD FLOOR = 1.0) — fabrication risk, investigate immediately"
+  alarm_description   = "N7 F1 grounding gate failed on at least 1 piece (HARD FLOOR = 1.0) — fabrication risk, investigate immediately.${local.runbook_suffix.incident}"
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
   ok_actions          = [aws_sns_topic.alerts.arn]
@@ -223,7 +223,7 @@ resource "aws_cloudwatch_metric_alarm" "acp_repair_count_high" {
   period              = 3600
   statistic           = "Average"
   threshold           = 1.0
-  alarm_description   = "N7 average repair_count per piece above 1.0 for 3 consecutive hours (UNVERIFIED placeholder threshold) — possible prompt/gate drift"
+  alarm_description   = "N7 average repair_count per piece above 1.0 for 3 consecutive hours (UNVERIFIED placeholder threshold) — possible prompt/gate drift.${local.runbook_suffix.incident}"
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
   ok_actions          = [aws_sns_topic.alerts.arn]
@@ -510,7 +510,7 @@ resource "aws_cloudwatch_metric_alarm" "log_write_failed" {
   period              = 300
   statistic           = "Sum"
   threshold           = 0
-  alarm_description   = "${each.value} logged in /ecs/${local.name_prefix} — a billed call/decision was not recorded (cost under-reported; for decision_log the Jev cache entry is lost too). Check the ECS logs for the error."
+  alarm_description   = "${each.value} logged in /ecs/${local.name_prefix} — a billed call/decision was not recorded (cost under-reported; for decision_log the Jev cache entry is lost too). Check the ECS logs for the error.${local.runbook_suffix.llm_cost_spike}"
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
   ok_actions          = [aws_sns_topic.alerts.arn]
