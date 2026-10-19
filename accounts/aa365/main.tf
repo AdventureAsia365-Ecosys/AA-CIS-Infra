@@ -176,6 +176,10 @@ module "ecs" {
 
   redis_host = module.elasticache.redis_endpoint
 
+  # AA-902: satellite account IDs as env (the public CIS repo no longer carries them)
+  bedrock_acct_primary  = local.bedrock_acct_primary
+  bedrock_acct_fallback = local.bedrock_acct_fallback
+
   task_cpu              = var.task_cpu
   task_memory           = var.task_memory
   service_desired_count = var.service_desired_count
