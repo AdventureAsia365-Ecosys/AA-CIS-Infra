@@ -16,7 +16,6 @@ applies reviewed app migrations to the shared RDS.
 | `accounts/aa365/` | acc2 `005097885195`, us-west-1 | **Live stack**: CIS (ECS api + worker, RDS, ALB, API GW, WAF, S3, ops-probe Lambda, alarms) and TripPlanner (2 Lambdas, HTTP API, artifacts, OIDC role) | CI workflow `Terraform Apply Prod` |
 | `accounts/acc3-bedrock/` | acc3 `786888028788` | Bedrock invoker role (primary), Bedrock Batch, Cost Explorer reader | a human, locally (profile `nghiep_aa365`) |
 | `accounts/acc1-bedrock/` | acc1 `867490540162` | Bedrock invoker role (fallback), Cost Explorer reader | a human, locally (profile `pqnghiep-admin`) |
-| repo-root `main.tf.bak*` | — | historical, **not live** — do not run Terraform there (`envs/*` removed in AA-841) | — |
 
 ```
 accounts/aa365/   main.tf, cicd.tf, tripplanner.tf, booking.tf, observability.tf, observability_ecosys.tf, dfs_balance.tf, … (+ lambda_src/)
@@ -112,6 +111,8 @@ one finding. A real secret is never ignored: drop it from the branch and rotate 
 ## Rules
 
 - `terraform plan` before every apply; destructive changes need explicit human confirmation.
-- ECR images: task definitions use `:latest`; Deploy Dev pins the built image per revision.
+- ECR images: both repositories are IMMUTABLE (AA-869). The `:latest` in the Terraform task definitions is a
+  placeholder only (services ignore `task_definition`); every Deploy Dev registers a revision pinned to the
+  git-SHA tag (`dev-<sha>` for CIS). Never push or deploy `:latest`.
 - Never start/stop the environment (ECS desired count, RDS, NAT) without Nghiệp asking.
 - Container access through SSM (`aws ecs execute-command`), never SSH.
