@@ -94,7 +94,9 @@ accounts/
     identity_alerts.tf             (AA-854 I1: break-glass secret resource policy — Get/PutSecretValue
                                    only for the MFA admin role; EventBridge rule on CloudTrail
                                    management events incl. read-only -> SNS alerts topic; the
-                                   alerts topic policy = AWS default statement + events.amazonaws.com)
+                                   alerts topic policy = AWS default statement + events.amazonaws.com;
+                                   AA-816 S243: root ADR 0006a A8 rule on CloudTrail AdminCreateUser on
+                                   the WORKFORCE pool with a temporary password / RESEND / no SUPPRESS)
     observability.tf, observability_ecosys.tf (S235 alarms + log retention; RDS alarms per data standard
                                    C4.1 + per-role AA/RDS RoleConnectionLimitPct alarms, AA-832; job
                                    backlog alarms per owner AA/Jobs/CIS + AA/Jobs/Booking and the
@@ -116,7 +118,9 @@ modules/          ← reusable building blocks, consumed by the account roots
 tools/
   identity/       ← workforce_bootstrap.py (AA-854): admin-run, MFA, stdlib + boto3. create-staff
                     (AdminCreateUser SUPPRESS + groups), breakglass-init / -verify (password + TOTP
-                    into aa-identity/dev/breakglass, user left DISABLED), PKCE spike helpers; tests
+                    into aa-identity/dev/breakglass, user left DISABLED), breakglass-otp-probe
+                    (AA-816: is EMAIL_OTP offered to break-glass; no secret read, no token, Enabled
+                    state restored), PKCE spike helpers; tests
                     in tools/identity/tests (job in identity-triggers-test.yml). Tracked on purpose:
                     scripts/ is gitignored, so hand-run tools that must be kept go in tools/.
 ```
@@ -197,7 +201,7 @@ console / alarm history. Exception: the 14 `aa-identity-dev-*` alarms (identity.
 have `ok_actions` per S241 D-20 (e-mail on OK too), which the other alarms adopt in the D-20 lane. **Alerts topic policy:** `aws_sns_topic.alerts` has exactly one
 `aws_sns_topic_policy` — `aws_sns_topic_policy.alerts` in `identity_alerts.tf` (AWS default statement
 for same-account publishers + EventBridge from `rule/aa-identity-dev-*`, which sends the break-glass
-secret access alerts). A new service publisher adds a statement there; never add a second
+secret access alerts and the A8 AdminCreateUser alert). A new service publisher adds a statement there; never add a second
 `aws_sns_topic_policy` for this topic (they overwrite each other).
 
 The **DFS balance alert** (AA-627) is a small in-VPC Lambda `aa-cis-dev-dfs-balance-check`

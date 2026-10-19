@@ -18,6 +18,7 @@ It reuses the AWS CLI assume-role cache, so one MFA prompt covers both the tool 
 | `$PY $T create-staff --email x@example.com --groups cis-admin --trigger-refusal-test` | Skips the client-side domain check only (the address must be outside `@adventure.asia`) and never adds groups. Prints `trigger: refused server-side (UserLambdaValidationException): ...` and exits 0 when the pre sign-up trigger refuses. If Cognito accepts the user instead, the tool disables it, prints the `admin-delete-user` command and exits 1. Client-side refusals always start with `refused client-side:`, so they cannot be mistaken for the trigger's. | A5 |
 | `$PY $T breakglass-init` | Creates the break-glass user (`admin@adventure.asia`, decision D1) or rotates it, adds it to cis-admin and booking-admin, sets a random permanent password, signs in on `aa-workforce-dev-breakglass`, enrols and verifies TOTP, and stores `{username, password, totp_seed, created_at}` in `aa-identity/dev/breakglass`. First it checks that the secret exists (DescribeSecret, metadata only), so a missing secret fails before the user is touched. A `finally` block then revokes the refresh token, signs the user out everywhere and **disables** the user. | A2 |
 | `$PY $T breakglass-verify` | Reads the secret, enables the user, waits for a fresh TOTP window, signs in with password + TOTP, prints the access-token claim summary, then revokes, signs out and **disables** the user (`finally`). | A2 |
+| `$PY $T breakglass-otp-probe` | Root ADR 0006a A4 check (AA-816): does Cognito offer `EMAIL_OTP` (an e-mail code) as a first factor to the TOTP-enrolled break-glass user? Enables the user if it is disabled, then for each of `aa-workforce-dev-breakglass` and `aa-workforce-dev-cis-admin` calls InitiateAuth `USER_AUTH` with **USERNAME + SECRET_HASH only** (client secret read with DescribeUserPoolClient, kept in memory): once with no preference, then with `PREFERRED_CHALLENGE=EMAIL_OTP` unless EMAIL_OTP was already listed. It never sends a password, never answers a challenge, never creates a Secrets Manager client (so no I1 secret alert) and so never gets a token (no token alarm). A `finally` block puts the user back: global sign-out + **disable** if it was disabled at the start; a user that was already enabled is left enabled (with a warning). stdout is one JSON document (`verdict`, per client `no_preference` / `prefer_email_otp` with `challenge`, `available_challenges`, `error`), progress goes to stderr. Exit **0** = EMAIL_OTP not offered on any client, **1** = offered (the finding; Cognito then sends one code e-mail to the mailbox) or inconclusive, **2** = cleanup incomplete (run the printed `admin-disable-user`). Never run it while a break-glass sign-in test is running. | A4 |
 | `$PY $T authorize-url` | Spike: prints the managed-login authorize URL for `cis-admin` with `http://localhost:3000/api/auth/callback/cognito`, PKCE S256. The verifier and state go to `.tmp-session/identity-spike/pkce-pending.json` (mode 0600). | A3 |
 | `$PY $T exchange-code` | Spike: paste the callback URL from the browser (prompted, so it stays out of shell history). The tool checks the state and the redirect URI, exchanges the code with the client secret (read with DescribeUserPoolClient, kept in memory), prints the non-secret claims of the access and ID tokens, then revokes the refresh token. The pending file is deleted. | A3 |
 
@@ -31,9 +32,12 @@ It reuses the AWS CLI assume-role cache, so one MFA prompt covers both the tool 
   traceback.
 - A re-run of `breakglass-init` rotates both the password and the TOTP seed: it clears the old TOTP
   preference first, so it never needs the old secret value.
-- **Fail closed.** If any cleanup step (revoke, global sign-out, disable) fails, the command exits 1,
-  prints `cleanup INCOMPLETE` with the `admin-disable-user` command to run by hand, and does not print
-  `done`/`OK`, even when the main work succeeded.
+- **Fail closed.** If any cleanup step (revoke, global sign-out, disable) fails, the command exits 1
+  (`breakglass-otp-probe`: exit 2), prints `cleanup INCOMPLETE` with the `admin-disable-user` command to
+  run by hand, and does not print `done`/`OK`, even when the main work succeeded.
+- `breakglass-otp-probe` raises neither break-glass alert. After it, confirm the user is disabled:
+  `aws cognito-idp admin-get-user --user-pool-id us-west-1_bCcFvbSOS --username admin@adventure.asia --profile aa365-admin --region us-west-1 --query Enabled`
+  (AdminGetUser counts as one MAU; the tool itself uses ListUsers).
 - If `breakglass-init` fails after the new password is set but before the secret is written, it warns
   `break-glass credentials NOT stored`: the previous password is already invalid, so re-run `breakglass-init`.
 
@@ -45,7 +49,9 @@ $PY -m pytest -p no:cacheprovider -q tools/identity/tests
 ```
 
 The tests cover the RFC 6238 vectors, botocore Stubber checks (SUPPRESS and `email_verified` always sent,
-out-of-domain addresses refused before any call, the user disabled even when a step fails) and a
+out-of-domain addresses refused before any call, the user disabled even when a step fails; for
+`breakglass-otp-probe`: exact InitiateAuth parameters with no PASSWORD, RespondToAuthChallenge trapped,
+no Secrets Manager client created, an enabled user left enabled, exit 2 on a failed disable) and a
 capsys check that no secret value reaches stdout or stderr. They make no AWS calls.
 
 `scripts/` is gitignored in this repo, so this tool lives in `tools/`. Check with `git ls-files tools/identity`.
