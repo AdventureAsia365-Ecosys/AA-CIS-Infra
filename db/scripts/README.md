@@ -81,3 +81,10 @@ session settings): use it to check the mode after a change to the runner or the 
 WORKFORCE identity from `shared.admin_users.cognito_iss / cognito_sub` (needs AA-Booking bk-016). Merged with
 `READ_ONLY = True` = DRY RUN (prints the mapping); a one-line follow-up PR sets `READ_ONLY = False` to apply.
 Idempotent; never rebinds or merges rows. Notes: `docs/implementation-notes/AA-680-backfill.md`.
+
+`aa816_clear_breakglass_password.py` (AA-816 checklist B6, decision N-B, one-time): sets `password_hash` NULL on
+the CIS break-glass row of `shared.admin_users` (root ADR 0006a A4) and writes one `acp_shared.audit_log` row
+(`staff.legacy_password_cleared`) in the same transaction. Refuses unless exactly one row matches the break-glass
+username / e-mail and it has both. Merged as apply (`READ_ONLY = False`); `READ_ONLY = True` is a DRY RUN.
+Idempotent (`already_null`, writes nothing). Prints booleans and the audit row id only. Notes:
+`docs/implementation-notes/AA-816-breakglass-hash.md`.
