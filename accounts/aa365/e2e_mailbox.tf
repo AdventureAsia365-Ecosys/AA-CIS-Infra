@@ -213,9 +213,9 @@ resource "aws_ses_receipt_rule" "e2e_cognito" {
   recipients    = [local.e2e_mail_recipient]
   enabled       = true
   scan_enabled  = true
-  # Optional: the forwarding host (adventure.asia, MailChannels) may relay without TLS; the codes
-  # are single-use and short-lived. Tighten to Require once a forwarded mail shows TLS in its headers.
-  tls_policy = "Optional"
+  # Require (S243 option B): the code mail now comes straight from Cognito/SES, which delivers over
+  # TLS; there is no forwarder any more, so a plaintext relay has no legitimate reason to deliver here.
+  tls_policy = "Require"
 
   s3_action {
     position          = 1
