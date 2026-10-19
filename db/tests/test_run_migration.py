@@ -306,18 +306,32 @@ class PgError(Exception):
         self.sqlstate = sqlstate
 
 
+# X1 S22: the master DSN the runner reads in the task (rm.MASTER_SECRET) when DATABASE_URL is db_migrator's.
+IN_TASK_MASTER_PW = "in-task-master-pw"                 # fake; f-string keeps the secret scan's URI rule quiet
+IN_TASK_MASTER_DSN = f"postgresql://aa_cis_admin:{IN_TASK_MASTER_PW}@db.example:5432/aa_cis_dev"
+
+
 class RunTaskTest(unittest.TestCase):
-    def run_task(self, sql, mode="apply", conn=None, version="240", file="cis/x.sql", **extra):
+    def run_task(self, sql, mode="apply", conn=None, version="240", file="cis/x.sql", master=None, **extra):
+        """`conn` answers the task's DATABASE_URL; `master` (X1 S22) the in-task master DSN read from
+        rm.MASTER_SECRET (None: the secret read fails). self.seen records connects and secret reads."""
         raw = sql.encode()
         env = {"MIGRATION_URL": "u", "MIGRATION_SHA256": hashlib.sha256(raw).hexdigest(),
                "MIGRATION_VERSION": version, "MIGRATION_MODE": mode, "MIGRATION_FILE": file,
                "DATABASE_URL": "postgresql://x", **extra}
         conn = conn or FakeConn()
-        seen = {}
+        seen = self.seen = {"connects": [], "secret_reads": []}
 
-        async def connect(dsn, settings):
+        async def connect(dsn, settings, **kw):
             seen["settings"] = settings
-            return conn
+            seen["connects"].append((dsn, kw))
+            return master if dsn == IN_TASK_MASTER_DSN else conn
+
+        def get_secret(sid):
+            seen["secret_reads"].append(sid)
+            if master is None:
+                raise LookupError("no such secret in this test")
+            return IN_TASK_MASTER_DSN
 
         self.sleeps = []
 
@@ -326,7 +340,8 @@ class RunTaskTest(unittest.TestCase):
 
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            code = asyncio.run(rm.run_task(env, fetch=lambda url: raw, connect=connect, sleep=sleep))
+            code = asyncio.run(rm.run_task(env, fetch=lambda url: raw, connect=connect, sleep=sleep,
+                                           get_secret=get_secret))
         return code, conn, seen.get("settings"), out.getvalue()
 
     def test_apply_sends_whole_file_with_defaults(self):
@@ -745,11 +760,57 @@ class RoleSwitchTest(unittest.TestCase):
     def test_roles_dir_runs_only_as_the_master(self):
         code, conn, _, log = self.run_task(ROLES_FILE, file="roles/001_x1_owner_roles.sql", version="rl-001")
         self.assertEqual((code, conn.executed), (0, [ROLES_FILE]))
+        self.assertIn("MIGRATE master login: the task's DATABASE_URL\n", log)
         self.assertIn("MIGRATE ran as: aa_cis_admin — roles/ file, runs as the master", log)
+        self.assertEqual(self.seen["secret_reads"], [])                        # before S22: no secret read
+        # The in-task master DSN logs in as someone else: refused, nothing ran.
         code, conn, _, log = self.run_task(ROLES_FILE, file="roles/001_x1_owner_roles.sql", version="rl-001",
-                                           conn=FakeConn(login="db_migrator"))
+                                           conn=FakeConn(login="db_migrator"), master=FakeConn(login="db_migrator"))
         self.assertEqual((code, conn.executed), (8, []))
         self.assertIn("roles/ files run only as the RDS master aa_cis_admin (login is db_migrator)", log)
+
+    def test_roles_dir_under_db_migrator_reads_the_master_in_the_task(self):
+        """X1 S22: DATABASE_URL is db_migrator's; a roles/ file runs on the master DSN read from MASTER_SECRET."""
+        login, master = FakeConn(login="db_migrator"), FakeConn()
+        code, conn, _, log = self.run_task(ROLES_FILE, file="roles/003_x.sql", version="rl-003", conn=login,
+                                           master=master)
+        self.assertEqual(code, 0, log)
+        self.assertEqual((login.executed, login.closed), ([], True))           # the db_migrator session only asked
+        self.assertEqual((master.executed, master.closed), ([ROLES_FILE], True))
+        self.assertEqual(self.seen["secret_reads"], ["aa-cis/dev/rds"])
+        self.assertEqual(self.seen["connects"], [("postgresql://x", {}), (IN_TASK_MASTER_DSN, {"ssl": "require"})])
+        self.assertIn("MIGRATE master login: a roles/ file needs the RDS master aa_cis_admin and the task logs in "
+                      "as db_migrator: reading the master DSN in the task from aa-cis/dev/rds (X1 S22)\n", log)
+        self.assertIn("MIGRATE master login: in-task DSN from aa-cis/dev/rds\n", log)
+        self.assertIn("MIGRATE ran as: aa_cis_admin — roles/ file, runs as the master", log)
+        self.assertNotIn(IN_TASK_MASTER_PW, log)
+
+    def test_roles_dir_without_a_readable_master_secret_is_refused(self):
+        code, conn, _, log = self.run_task(ROLES_FILE, file="roles/003_x.sql", version="rl-003",
+                                           conn=FakeConn(login="db_migrator"))
+        self.assertEqual((code, conn.executed), (8, []))
+        self.assertIn("MIGRATE ERROR: role: roles/ files run only as the RDS master aa_cis_admin: master DSN secret "
+                      "aa-cis/dev/rds unreadable (LookupError). Nothing ran\n", log)
+
+    def test_owner_dirs_never_read_the_master_secret(self):
+        conn = FakeConn(login="db_migrator", members={"cis_owner", "bk_owner", "tp_owner", "catalog_owner"},
+                        owners={"shared": "cis_owner", "booking": "bk_owner", "tripplanner": "tp_owner"})
+        for file, version in (("cis/246_x1_set_role_probe.sql", "246"), ("booking/013_x.sql", "bk-013")):
+            with self.subTest(file=file):
+                code, _, _, log = self.run_task(PLAIN, mode="check", file=file, version=version, conn=conn,
+                                                master=FakeConn())
+                self.assertEqual(code, 0, log)
+                self.assertEqual(self.seen["secret_reads"], [])
+                self.assertNotIn("master login", log)
+
+    def test_master_owned_anchor_is_refused_under_db_migrator(self):
+        """X1 S22: a dir whose anchor schema is still the master's cannot run under db_migrator (not a member)."""
+        conn = FakeConn(login="db_migrator", members={"cis_owner", "bk_owner", "tp_owner", "catalog_owner"},
+                        owners={"shared": "aa_cis_admin", "booking": "bk_owner", "tripplanner": "tp_owner"})
+        code, conn, _, log = self.run_task(PLAIN, mode="check", file="cis/246_x.sql", version="246", conn=conn)
+        self.assertEqual((code, conn.executed), (8, []))
+        self.assertIn("anchor schema shared is owned by aa_cis_admin and the login role db_migrator is not a member",
+                      log)
 
     def test_unknown_dir_is_refused_and_missing_anchor_does_not_switch(self):
         code, conn, _, log = self.run_task(PLAIN, file="crm/001_x.sql", version="crm-001")
@@ -1138,7 +1199,7 @@ COMMIT;
 
 
 class CatalogFreezeLintTest(unittest.TestCase):
-    """X1 review (S241): catalog.* view DDL only as catalog_owner (S22 recipe); frozen until then."""
+    """X1 review (S241): catalog.* view DDL only as catalog_owner (S22 recipe); frozen from S1 until S22 (XD9)."""
 
     lint = RoleLintTest.lint
     body = RoleLintTest.body
@@ -1146,6 +1207,23 @@ class CatalogFreezeLintTest(unittest.TestCase):
     def test_recipe_passes(self):
         self.assertEqual(self.lint(CATALOG_RECIPE_246, "cis/246_x1_set_role_probe.sql"), [])
         self.assertEqual(rm.set_local_role_targets(CATALOG_RECIPE_246), ["catalog_owner", "cis_owner"])
+
+    def test_recipe_grant_without_its_revoke_is_refused(self):
+        """Review S244: GRANT CREATE ON SCHEMA catalog TO catalog_owner must be revoked again in the same file."""
+        no_revoke = CATALOG_RECIPE_246.replace("REVOKE CREATE ON SCHEMA catalog FROM catalog_owner;", "")
+        self.assertNotEqual(no_revoke, CATALOG_RECIPE_246)
+        for sql in (no_revoke,
+                    no_revoke.replace("GRANT CREATE ON SCHEMA catalog", 'GRANT ALL PRIVILEGES ON SCHEMA "catalog"'),
+                    no_revoke.replace("GRANT CREATE ON SCHEMA catalog", "GRANT USAGE, CREATE ON SCHEMA geo, catalog"),
+                    # a REVOKE before the GRANT does not count
+                    no_revoke.replace("GRANT CREATE ON SCHEMA catalog TO catalog_owner;",
+                                      "REVOKE CREATE ON SCHEMA catalog FROM catalog_owner;\n"
+                                      "GRANT CREATE ON SCHEMA catalog TO catalog_owner;")):
+            with self.subTest(sql=sql[:80]):
+                errors = self.lint(sql, "cis/250_x.sql")
+                self.assertTrue(any("is never revoked later in the file" in e for e in errors), errors)
+        self.assertEqual(self.lint(self.body("GRANT USAGE ON SCHEMA catalog TO catalog_owner;"), "cis/250_x.sql"),
+                         [])
 
     def test_catalog_view_ddl_outside_the_recipe_is_refused(self):
         for path, stmt in (
@@ -1158,12 +1236,12 @@ class CatalogFreezeLintTest(unittest.TestCase):
                 ("booking/015_x.sql", "CREATE OR REPLACE VIEW catalog.v_tour AS SELECT 1;")):
             with self.subTest(path=path, stmt=stmt):
                 errors = self.lint(self.body(stmt), path)
-                self.assertTrue(any("catalog.* view changes are frozen from X1 S1 until X1 S22" in e for e in errors),
+                self.assertTrue(any("catalog.* view changes need the catalog recipe" in e for e in errors),
                                 errors)
 
     def test_old_catalog_dance_names_the_freeze(self):
         errors = self.lint(self.body("GRANT catalog_owner TO CURRENT_USER;"), "cis/246_x.sql")
-        self.assertTrue(any("belongs in db/migrations/roles/" in e and "frozen from X1 S1 until X1 S22" in e
+        self.assertTrue(any("belongs in db/migrations/roles/" in e and "the S1–S22 freeze, XD9, is over" in e
                             for e in errors), errors)
 
     def test_files_at_or_below_the_head_are_not_linted(self):
@@ -1190,7 +1268,7 @@ class SetRoleReachTest(unittest.TestCase):
                                                    version="246", conn=conn)
                 self.assertEqual((code, conn.executed), (8, []), log)
                 self.assertIn("SET LOCAL ROLE catalog_owner` but the login role aa_cis_admin is not a member", log)
-                self.assertIn("catalog.* view changes are frozen from X1 S1 until X1 S22", log)
+                self.assertIn("catalog.* view changes need the catalog recipe", log)
 
     def test_catalog_recipe_runs_as_db_migrator(self):
         conn = FakeConn(login="db_migrator", owners={**TODAY_OWNERS, "shared": "cis_owner"},

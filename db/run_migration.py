@@ -3,8 +3,17 @@
 Started by .github/workflows/db-migrate.yml, which uploads this file and the migration to S3 and
 passes presigned URLs. The task is a revision of the migrator task definition aa-cis-dev-db-migrate
 (X1 S12: container migrate, own roles, the image the api service runs). Uses only the image's own
-Python + asyncpg (+ boto3 for set-password) and the task's DATABASE_URL (Secrets Manager, task
+Python + asyncpg (+ boto3 for the secret reads) and the task's DATABASE_URL (Secrets Manager, task
 definition) — nothing from the app code.
+
+Logins (X1 S22, plan XD8 / S242 amendment): the task's DATABASE_URL is the login of check / apply of
+cis/, booking/, tripplanner/ files — db_migrator from S22 (the RDS master before), switched per file
+to the live owner (below). Three things still need the RDS master: roles/ files (roles, extensions,
+undo files), mode=set-password (ALTER ROLE … PASSWORD needs CREATEROLE; db_migrator is NOCREATEROLE)
+and mode=run-script (master-level scripts since X1 S19). For those the runner uses DATABASE_URL when
+it already logs in as the master (before S22), and otherwise reads the master DSN itself, in the
+task, from MASTER_SECRET (aa-cis/dev/rds: readable by the migrator task role only, never injected
+since S22) and connects with ssl=require. It logs `master login: …` either way and never prints the DSN.
 
 Modes (MIGRATION_MODE): check, apply (below), and two X1 S12 modes whose argument is folded into the
 same value, so no new environment variable reaches the task:
@@ -70,7 +79,8 @@ settled and post-checked before its COMMIT, so a failed check leaves the version
 paths snapshot once more after COMMIT (exit 9 if anything still ran at COMMIT).
 The switch follows an owner transfer (bk-014, tp-013, 245) on the very next file, with no flip PR.
 `roles/` files (Infra-native, key `rl-NNN`: role bootstrap, extensions, undo files) always run as
-the RDS master and are refused under any other login. The idle check and the registry reads run as
+the RDS master (from S22 through the in-task master DSN above) and are refused under any other
+login. The idle check and the registry reads run as
 the login role. Every run logs `ran as: <role>`.
 
 Role lint (files above today's heads, role_lint_from; applied files never re-run): in an owner dir no
@@ -89,14 +99,17 @@ in the PR rather than with exit 8 at apply. Obfuscated dynamic
 SQL (chr(), reverse(), …) is beyond a lint; the post-check is the backstop.
 Before running such a file (check and apply), the login role must be a member of every `SET LOCAL
 ROLE` target (PostgreSQL checks the session user), else exit 8: this is where the catalog.* view
-freeze from S1 to S22 bites (the master is not a member of catalog_owner and never becomes one; from
-S22 db_migrator is), and where a db_migrator without cis_app would show up.
+freeze from S1 to S22 bit (the master is not a member of catalog_owner and never becomes one; since
+S22 the login db_migrator is, which ended the freeze), and where a db_migrator without cis_app would
+show up.
 
 Exit codes (10–13: X1 S12): 10 mode input refused (unknown MIGRATION_MODE, role or script path outside the
 allowlists, MIGRATION_FILE not the script, script without async def main(conn)) · 11 set-password refused
 before any change (role missing or NOLOGIN, secret unreadable/empty/not a DSN of that role, weak password) ·
 12 set-password: password set but the test login failed (role not marked) · 13 run-script raised or
-returned non-zero · 8 also covers set-password / run-script under a login other than the master.
+returned non-zero · 8 also covers set-password / run-script under a login other than the master, and (X1 S22)
+a roles/ file, set-password or run-script whose in-task master DSN (MASTER_SECRET) is unreadable, empty or
+fails to log in, or logs in as someone other than the master.
 Exit codes: 0 ok · 2 sha256 mismatch · 3 file ran but did not register · 4 lint error ·
 5 destructive apply without a snapshot · 6 PostgreSQL error (lock/statement timeout included) ·
 7 apply refused: a job table is busy or a rerun wave is open · 8 role refused (roles/ under a
@@ -186,6 +199,9 @@ OPEN_WAVES_SQL = "SELECT count(*)::int FROM shared.rerun_wave WHERE status = 'op
 # The task gets only this file and the SQL (presigned URLs), so the registry facts it needs are
 # constants here, not a YAML read (no PyYAML in the runner, no new env var).
 MASTER_ROLE = "aa_cis_admin"      # RDS master: runs roles/ files, set-password, run-script; break-glass after X1 S22
+# owners.yaml master_secret: the master DSN the runner reads in the task (migrator task role) when DATABASE_URL is
+# not the master (X1 S22: db_migrator), for roles/ files, set-password and run-script only.
+MASTER_SECRET = "aa-cis/dev/rds"
 ROLES_DIR = "roles"               # Infra-native files, key rl-NNN
 # owners.yaml password_roles: LOGIN roles whose password mode=set-password sets from their DSN secret (XD2).
 PASSWORD_ROLES = {"cis_app": "aa-cis/dev/rds-cis-app", "db_migrator": "aa-cis/dev/db-migrator"}
@@ -361,16 +377,26 @@ GRANT_RE = re.compile(r"\b(GRANT|REVOKE)\b")
 # catalog.* views belong to catalog_owner (CIS 225). DDL on one runs only as catalog_owner (the S22
 # catalog recipe), and only once the DB Migrate login is a member of catalog_owner (db_migrator, X1
 # S22). The master is not a member since 225 and must never become one (X1 plan §1.4), so from S1 to
-# S22 catalog.* view changes are frozen (X1 review, S241): the lint asks for the recipe, the runner's
-# membership pre-check (SET_ROLE_REACH_SQL) refuses it at `check` time while the login is the master.
+# S22 catalog.* view changes were frozen (X1 review, S241, XD9). The lint asks for the recipe; the
+# runner's membership pre-check (SET_ROLE_REACH_SQL) refuses it at `check` time under any login that is
+# not a member of catalog_owner (the master, i.e. a migrator task definition rolled back before S22).
 CATALOG_VIEW_DDL_RE = re.compile(
     r"\b(?:CREATE(?:\s+OR\s+REPLACE)?(?:\s+(?:TEMP|TEMPORARY|RECURSIVE))*|ALTER|DROP)\s+(?:MATERIALIZED\s+)?"
     r"VIEW\s+(?:IF\s+(?:NOT\s+)?EXISTS\s+)?CATALOG\s*\.")
-CATALOG_FREEZE = ("catalog.* view changes are frozen from X1 S1 until X1 S22: a cis/ file changes a catalog view "
-                  "only with the catalog recipe (GRANT CREATE ON SCHEMA catalog TO catalog_owner; SET LOCAL ROLE "
-                  "catalog_owner; …; SET LOCAL ROLE cis_owner; REVOKE CREATE …), which needs the DB Migrate login "
-                  "to be a member of catalog_owner — db_migrator from S22; the master never is (X1 plan §1.4, "
-                  "AA-CIS-App CONTEXT.md)")
+CATALOG_FREEZE = ("catalog.* view changes need the catalog recipe: a cis/ file changes a catalog view only with "
+                  "GRANT CREATE ON SCHEMA catalog TO catalog_owner; SET LOCAL ROLE catalog_owner; …; SET LOCAL "
+                  "ROLE cis_owner; REVOKE CREATE … (never RESET ROLE), and only under a DB Migrate login that is a "
+                  "member of catalog_owner — db_migrator since X1 S22 (the S1–S22 freeze, XD9, is over); the "
+                  "master never is (X1 plan §1.4, AA-CIS-App CONTEXT.md)")
+# The recipe's GRANT CREATE ON SCHEMA catalog TO catalog_owner must be revoked again in the same file (review S244):
+# a file that forgets the REVOKE commits a standing CREATE on schema catalog for catalog_owner, which no post-check
+# sees (it checks owners, not ACLs). Code views are upper case; ALL [PRIVILEGES] grants CREATE too.
+CATALOG_CREATE_GRANT_RE = re.compile(
+    r"\bGRANT\s+(?:ALL(?:\s+PRIVILEGES)?|(?:\w+\s*,\s*)*CREATE(?:\s*,\s*\w+)*)\s+ON\s+SCHEMA\s+(?:[\w\"]+\s*,\s*)*"
+    r"\"?CATALOG\b\"?[^;]*?\bTO\b[^;]*\"?CATALOG_OWNER\b")
+CATALOG_CREATE_REVOKE_RE = re.compile(
+    r"\bREVOKE\s+(?:ALL(?:\s+PRIVILEGES)?|(?:\w+\s*,\s*)*CREATE(?:\s*,\s*\w+)*)\s+ON\s+SCHEMA\s+(?:[\w\"]+\s*,\s*)*"
+    r"\"?CATALOG\b\"?[^;]*?\bFROM\b[^;]*\"?CATALOG_OWNER\b")
 # Work queued for COMMIT runs after the post-check, as whatever role is current then (review S241,
 # round 2). The runner settles it under the owner role before RESET ROLE (SETTLE_ROUNDS); the lint
 # refuses the deferral itself in files that may run under the switch (belt and braces).
@@ -750,6 +776,7 @@ def role_lint(sql: str, owner_dir: str) -> list:
     allowed_txt = ", ".join(sorted(allowed)) or "none"
     errors = []
     current = None                         # the last SET LOCAL ROLE target, in file order
+    open_grant = None                      # line of a catalog recipe GRANT CREATE not yet revoked (review S244)
     for s in split_statements(sql):
         strings: list = []
         code = _role_view(s.text, strings)
@@ -785,6 +812,14 @@ def role_lint(sql: str, owner_dir: str) -> list:
             errors.append(f"{here}: role membership `{g[:80]}` belongs in db/migrations/roles/ (DM-8.1){hint}")
         errors.extend(_dynamic_errors(code, strings, here))
         errors.extend(_deferral_errors(code, strings, here))
+        if CATALOG_CREATE_GRANT_RE.search(code):
+            open_grant = here
+        if CATALOG_CREATE_REVOKE_RE.search(code):
+            open_grant = None
+    if open_grant:
+        errors.append(f"{open_grant}: `GRANT CREATE ON SCHEMA catalog TO catalog_owner` is never revoked later in "
+                      f"the file: the catalog recipe ends with `SET LOCAL ROLE cis_owner; REVOKE CREATE ON SCHEMA "
+                      f"catalog FROM catalog_owner` (X1 S22), else catalog_owner keeps CREATE on schema catalog")
     return errors
 
 
@@ -1015,7 +1050,7 @@ async def set_role_reach_error(conn, sql: str, file: str, plan: RolePlan) -> str
     only: at or above role_lint_from). PostgreSQL checks the session user's membership, so a target
     the login role is not a member of fails at apply with 42501 "permission denied to set role" — found
     here instead, in `check` mode too (X1 review, S241): catalog_owner while the login is the master
-    (catalog view freeze until S22), cis_app once the login is db_migrator (rl-002 must grant it)."""
+    (the S1–S22 catalog view freeze), cis_app once the login is db_migrator (rl-002 grants it)."""
     owner_dir, number = migration_path(file)
     od = OWNER_DIRS.get(owner_dir)
     if od is None or number is None or number < od.role_lint_from:
@@ -1311,14 +1346,19 @@ def _redact(text: str, secrets) -> str:
     return text
 
 
-def _master_secrets(env) -> tuple:
-    """The master DSN and its password (decoded + as written), for _redact."""
-    dsn = env.get("DATABASE_URL") or ""
-    try:
-        who = dsn_login(dsn)
-        return dsn, who.password, who.raw_password
-    except ValueError:
-        return (dsn,)
+def _dsn_secrets(*dsns) -> tuple:
+    """Each DSN and its password (decoded + as written), for _redact."""
+    out = []
+    for dsn in dsns:
+        if not dsn:
+            continue
+        out.append(dsn)
+        try:
+            who = dsn_login(dsn)
+            out += [who.password, who.raw_password]
+        except ValueError:
+            pass
+    return tuple(out)
 
 
 def _quote_literal(text: str) -> str:
@@ -1341,6 +1381,66 @@ def _get_secret(secret_id: str) -> str:
         SecretId=secret_id).get("SecretString") or ""
 
 
+class MasterUnavailable(Exception):
+    """No RDS master session for a roles/ file, set-password or run-script (exit 8). The message never holds
+    any part of a DSN."""
+
+
+@dataclass
+class MasterLogin:
+    conn: object
+    dsn: str            # the DSN the session logged in with (redaction, set-password's target check)
+    how: str            # where it came from, for the log
+
+
+async def connect_master(env, settings: dict, connect, get_secret, purpose: str) -> MasterLogin:
+    """An RDS master session for `purpose` (X1 S22, S242 amendment). The task's DATABASE_URL first: before S22 it
+    is the master's and nothing changes. When it logs in as anyone else (db_migrator from S22), that session is
+    closed and the master DSN is read here, in the task, from MASTER_SECRET (the migrator task role may read it,
+    the execution role no longer injects it) and used with ssl=require. The caller still checks session_user.
+
+    The master path never depends on the DATABASE_URL login working (review S244): a DATABASE_URL that names
+    another user (db_migrator) is not opened at all (no session against its CONNECTION LIMIT 5), and one that
+    fails to log in (28P01 after the db-migrator secret drifted, 53300 at its limit) falls back to the in-task
+    master DSN. That keeps `set-password role=db_migrator` — the fix for a drifted db_migrator secret — working."""
+    dsn = env["DATABASE_URL"]
+    try:
+        login = dsn_login(dsn).user
+    except ValueError:
+        login = None                            # not a plain URL DSN: ask the server below
+    if login in (None, MASTER_ROLE):
+        try:
+            conn = await connect(dsn, settings)
+        except Exception as e:                  # class + SQLSTATE only: the text may echo the DSN
+            state = getattr(e, "sqlstate", "") or ""
+            log(f"master login: the task's DATABASE_URL did not log in ({type(e).__name__} {state}".rstrip() + ")")
+            login = "nobody (its login failed)"
+        else:
+            try:
+                login = await conn.fetchval(SESSION_USER_SQL)
+            except BaseException:
+                await conn.close()
+                raise
+            if login == MASTER_ROLE:
+                return MasterLogin(conn, dsn, "the task's DATABASE_URL")
+            await conn.close()
+    log(f"master login: {purpose} needs the RDS master {MASTER_ROLE} and the task logs in as {login}: "
+        f"reading the master DSN in the task from {MASTER_SECRET} (X1 S22)")
+    try:
+        master_dsn = (get_secret(MASTER_SECRET) or "").strip()
+    except Exception as e:                      # botocore ClientError: the error code only
+        raise MasterUnavailable(f"master DSN secret {MASTER_SECRET} unreadable ({_aws_err(e)})") from None
+    if not master_dsn:
+        raise MasterUnavailable(f"master DSN secret {MASTER_SECRET} is empty")
+    try:
+        conn = await connect(master_dsn, settings, ssl="require")   # read by code, never in cleartext
+    except Exception as e:                      # class + SQLSTATE only: the text may echo the DSN
+        state = getattr(e, "sqlstate", "") or ""
+        raise MasterUnavailable(f"master login with {MASTER_SECRET} failed: {type(e).__name__} {state}".rstrip()) \
+            from None
+    return MasterLogin(conn, master_dsn, f"in-task DSN from {MASTER_SECRET}")
+
+
 async def run_set_password(env, role: str, connect, get_secret) -> int:
     """XD2: the DSN Nghiệp wrote in the Console (S17 / S20) becomes the role's password; only a SCRAM
     verifier leaves the task. Order: checks (master login, role exists + LOGIN, secret readable, DSN user
@@ -1350,14 +1450,21 @@ async def run_set_password(env, role: str, connect, get_secret) -> int:
     (new salt, same password)."""
     secret_id = PASSWORD_ROLES[role]
     log(f"set-password: role={role} secret={secret_id}")
-    conn = await connect(env["DATABASE_URL"], dict(DEFAULT_SETTINGS))
-    hide: tuple = ()
+    try:
+        master = await connect_master(env, dict(DEFAULT_SETTINGS), connect, get_secret, "set-password")
+    except MasterUnavailable as e:
+        log(f"ERROR: role: set-password needs the RDS master {MASTER_ROLE} (ALTER ROLE … PASSWORD needs "
+            f"CREATEROLE): {e}. Nothing changed")
+        return 8
+    conn = master.conn
+    hide: tuple = _dsn_secrets(master.dsn)
     try:
         login = await conn.fetchval(SESSION_USER_SQL)
         if login != MASTER_ROLE:
             log(f"ERROR: role: set-password runs only as the RDS master {MASTER_ROLE} (login is {login}): "
                 f"ALTER ROLE … PASSWORD needs CREATEROLE")
             return 8
+        log(f"master login: {login} ({master.how})")
         can_login = await conn.fetchval(ROLE_LOGIN_SQL, role)
         if can_login is None:
             log(f"ERROR: role {role} does not exist (rl-001 creates cis_app, rl-002 db_migrator): nothing changed")
@@ -1374,13 +1481,13 @@ async def run_set_password(env, role: str, connect, get_secret) -> int:
         if not dsn:
             log(f"ERROR: secret {secret_id} is empty: nothing changed")
             return 11
-        hide = (dsn,)
+        hide += (dsn,)
         try:
             who = dsn_login(dsn)
         except ValueError as e:
             log(f"ERROR: secret {secret_id}: {e}. Nothing changed")
             return 11
-        hide = (dsn, who.password, who.raw_password)
+        hide += (who.password, who.raw_password)
         if who.user != role:
             log(f"ERROR: secret {secret_id} names a user other than {role}: nothing changed")
             return 11
@@ -1391,7 +1498,7 @@ async def run_set_password(env, role: str, connect, get_secret) -> int:
         # The test login must reach the server and database the master is on: a mistyped host would otherwise
         # mark the role on this database while the password went to (and was tested against) another server.
         try:
-            target, master_target = dsn_target(dsn), dsn_target(env["DATABASE_URL"])
+            target, master_target = dsn_target(dsn), dsn_target(master.dsn)
         except ValueError as e:
             log(f"ERROR: secret {secret_id} or the master DSN: {e}. Nothing changed")
             return 11
@@ -1400,7 +1507,7 @@ async def run_set_password(env, role: str, connect, get_secret) -> int:
                 f"(they must be equal): nothing changed")
             return 11
         verifier = scram_sha256_verifier(who.password)
-        hide = (dsn, who.password, who.raw_password, verifier)
+        hide += (verifier,)
         await conn.execute(f"ALTER ROLE {_quote_ident(role)} PASSWORD {_quote_literal(verifier)}")
         log(f"set-password: ALTER ROLE {role} PASSWORD '<SCRAM-SHA-256 verifier, {SCRAM_ITERATIONS} iterations>' done")
         try:
@@ -1490,7 +1597,7 @@ def script_is_read_only(source: str) -> bool:
     return _read_only_decl(ast.parse(source)) is True
 
 
-async def run_script(env, path: str, fetch, connect, sleep) -> int:
+async def run_script(env, path: str, fetch, connect, sleep, get_secret=_get_secret) -> int:
     """XD5 / S19: a reviewed db/scripts/ file runs as the master, after the same idle check as apply
     (exit 7 while busy, MIGRATION_IDLE_OVERRIDE applies). A script that declares `READ_ONLY = True` runs
     with default_transaction_read_only=on instead and skips the wait (the busy report is still logged).
@@ -1516,12 +1623,20 @@ async def run_script(env, path: str, fetch, connect, sleep) -> int:
     settings = dict(DEFAULT_SETTINGS)
     if read_only:
         settings["default_transaction_read_only"] = "on"
-    conn = await connect(env["DATABASE_URL"], settings)
+    try:
+        master = await connect_master(env, settings, connect, get_secret, "run-script")
+    except MasterUnavailable as e:
+        log(f"ERROR: role: run-script runs only as the RDS master {MASTER_ROLE}: {e}. Nothing ran")
+        return 8
+    conn = master.conn
+    # A script's error text could carry either DSN (the master's, or the task's own when it read os.environ).
+    hide = _dsn_secrets(master.dsn, env.get("DATABASE_URL"))
     try:
         login = await conn.fetchval(SESSION_USER_SQL)
         if login != MASTER_ROLE:
             log(f"ERROR: role: run-script runs only as the RDS master {MASTER_ROLE} (login is {login})")
             return 8
+        log(f"master login: {login} ({master.how})")
         log(f"ran as: {login} (run-script{', READ_ONLY: default_transaction_read_only=on' if read_only else ''})")
         report = await job_tables_busy(conn)
         log_report(report)
@@ -1546,13 +1661,13 @@ async def run_script(env, path: str, fetch, connect, sleep) -> int:
             result = await ns["main"](conn)
         except Exception as e:                  # a script's error text could carry the master DSN: redacted
             state = getattr(e, "sqlstate", "") or ""
-            log(_redact(f"ERROR: script raised {type(e).__name__} {state} {e}".rstrip(), _master_secrets(env)))
+            log(_redact(f"ERROR: script raised {type(e).__name__} {state} {e}".rstrip(), hide))
             if state == "55P03":
                 log("hint: lock_timeout (5s) hit — retry when the job tables are idle, or SET LOCAL lock_timeout "
                     "inside the script's own transaction")
             return 13
         if result not in (None, 0):
-            log(_redact(f"ERROR: script main() returned {result!r}", _master_secrets(env)))
+            log(_redact(f"ERROR: script main() returned {result!r}", hide))
             return 13
         log("run-script: done")
         return 0
@@ -1580,7 +1695,7 @@ async def run_task(env=None, fetch=_fetch, connect=_connect, sleep=asyncio.sleep
     if m.kind == SET_PASSWORD:
         return await run_set_password(env, m.arg, connect=connect, get_secret=get_secret)
     if m.kind == RUN_SCRIPT:
-        return await run_script(env, m.arg, fetch=fetch, connect=connect, sleep=sleep)
+        return await run_script(env, m.arg, fetch=fetch, connect=connect, sleep=sleep, get_secret=get_secret)
     raw = fetch(env["MIGRATION_URL"])
     digest = hashlib.sha256(raw).hexdigest()
     if digest != env["MIGRATION_SHA256"]:
@@ -1602,8 +1717,18 @@ async def run_task(env=None, fetch=_fetch, connect=_connect, sleep=asyncio.sleep
             log(f"ERROR: {e}")
         return 4
 
-    conn = await connect(env["DATABASE_URL"], d.settings)
     owner_dir = file.split("/", 1)[0]
+    if owner_dir == ROLES_DIR:
+        # X1 S22: roles/ files keep the RDS master; from S22 its DSN is read in the task (connect_master).
+        try:
+            master = await connect_master(env, d.settings, connect, get_secret, "a roles/ file")
+        except MasterUnavailable as e:
+            log(f"ERROR: role: roles/ files run only as the RDS master {MASTER_ROLE}: {e}. Nothing ran")
+            return 8
+        conn = master.conn
+        log(f"master login: {master.how}")
+    else:
+        conn = await connect(env["DATABASE_URL"], d.settings)
     try:
         plan = await resolve_role(conn, owner_dir)
         if plan.error:
