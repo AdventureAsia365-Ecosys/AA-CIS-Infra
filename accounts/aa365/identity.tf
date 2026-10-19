@@ -75,8 +75,8 @@
 #     cycle). It logs every break-glass token issue (alarm below).
 #   - Managed login v2 needs a branding style per client before its pages render. WORKFORCE clients
 #     carry the AA style below (AA-816 S242, was a CLI --use-cognito-provided-values workaround,
-#     now imported). EXTERNAL clients have NO style yet (no live users; needs its own non-"staff"
-#     header logo): their managed login pages do not render until one is added here.
+#     imported then replaced in #194). EXTERNAL clients have NO style yet (no live users; needs its
+#     own non-"staff" header logo): their managed login pages do not render until one is added here.
 #   - The break-glass USER is not created here (Terraform would hold its password). One-off script
 #     in Phase 1 (ADR 0006 migration plan).
 #
@@ -721,8 +721,10 @@ resource "aws_route53_record" "identity_custom_domain" {
 # on the gold primary button (2.5:1) matches adventure.asia and /login on purpose.
 #
 # One style per client (Cognito allows exactly one). The three styles were first created with the
-# CLI (--use-cognito-provided-values) and are imported below; the asset set forces a replacement,
-# so the first apply deletes and recreates each style (new managed_login_branding_id, a few
+# CLI (--use-cognito-provided-values) in S242, adopted into state by an import block, and replaced
+# by the first apply of #194 (new managed_login_branding_id per client); the import block and its
+# id map were removed in S243 (the addresses are in state, so it was dead code). Any future change
+# to the asset set still forces a replacement: the apply deletes and recreates each style (a few
 # seconds without a style per client). Because the delete runs before the create, a payload Cognito
 # rejects would leave all three clients (breakglass included) without a style: pre-validate the
 # exact payload on an EXTERNAL client first (runbook + rollback commands in
@@ -803,21 +805,6 @@ locals {
       favicon = { enabledTypes = ["SVG"] }
     }
   }
-
-  # Styles created by the CLI workaround (S242), adopted instead of deleted by hand. After the first
-  # apply these IDs no longer exist (the styles are replaced): remove this map and the import block
-  # in a follow-up PR, as observability_ecosys.tf did with its imports.
-  id_branding_existing_workforce = {
-    "cis-admin"     = "70d07784-581a-4407-8646-5332cd767f47"
-    "booking-staff" = "a965331a-0208-4dc0-bc1f-c11c1ef48c39"
-    "breakglass"    = "01c3d2c1-2127-4f04-84b7-7b7c750f2f6c"
-  }
-}
-
-import {
-  for_each = local.id_branding_existing_workforce
-  to       = aws_cognito_managed_login_branding.workforce[each.key]
-  id       = "${aws_cognito_user_pool.workforce.id},${each.value}"
 }
 
 resource "aws_cognito_managed_login_branding" "workforce" {

@@ -1,9 +1,10 @@
 # =============================================================================
-# AA-398 (child of AA-397) — import the existing aa-cis-dev-ecs-assume-bedrock-
-# invoker inline policy (hand-created for AA-296, never Terraform-tracked —
-# confirmed by repo-wide grep before writing this file) into state, then add a
-# second statement granting AssumeRole into acc3's AA3-Bedrock-Invoker
-# (786888028788) — parallel to the existing acc1 grant, not a replacement.
+# AA-398 (child of AA-397) — the existing aa-cis-dev-ecs-assume-bedrock-invoker
+# inline policy (hand-created for AA-296, never Terraform-tracked — confirmed by
+# repo-wide grep before writing this file) was imported into state (the import
+# block was removed in S243 once the address was in state), then a second
+# statement grants AssumeRole into acc3's AA3-Bedrock-Invoker (786888028788) —
+# parallel to the existing acc1 grant, not a replacement.
 #
 # Statement "AssumeSatelliteBedrockInvoker" (acc1) copied byte-for-byte from a
 # live read (`aws iam get-role-policy --role-name aa-cis-dev-ecs-task-role
@@ -11,11 +12,6 @@
 # 2026-08-12) — do NOT edit that statement without re-verifying against live
 # state first.
 # =============================================================================
-
-import {
-  to = aws_iam_role_policy.ecs_assume_bedrock_invoker
-  id = "aa-cis-dev-ecs-task-role:aa-cis-dev-ecs-assume-bedrock-invoker"
-}
 
 resource "aws_iam_role_policy" "ecs_assume_bedrock_invoker" {
   name = "aa-cis-dev-ecs-assume-bedrock-invoker"

@@ -80,16 +80,16 @@ locals {
   ]
 
   # Secret values terraform plan reads on refresh: every aws_secretsmanager_secret_version in this
-  # root and the dfs_balance admin-secret data source. Nothing else (no RDS DSN, JWT, OpenAI key).
-  # A new aws_secretsmanager_secret_version must be added here (bootstrap: local apply), or plan
-  # fails with AccessDenied on refresh after it is first applied.
+  # root. Nothing else (no RDS DSN, JWT, OpenAI key, and since AA-878 (S243) no admin secret: the
+  # ops-probe Lambda reads it by ARN at run time, so the dfs_balance data source is gone).
+  # A new aws_secretsmanager_secret_version (or secret-version data source) must be added here
+  # (bootstrap: local apply), or plan fails with AccessDenied on refresh after it is first applied.
   tf_plan_secret_arns = [
     aws_secretsmanager_secret.tripplanner_db.arn,
     aws_secretsmanager_secret.tripplanner_api_key.arn,
     aws_secretsmanager_secret.tripplanner_mapbox.arn,
     module.secrets.acp_webhook_secret_arn,
     module.secrets.acp_partner_api_secret_arn,
-    var.secret_admin_arn,
   ]
 
   # CIS app objects the app deploy role may touch.
@@ -485,11 +485,20 @@ resource "aws_iam_role_policy" "tf_plan" {
         Resource = "arn:aws:dynamodb:${var.aws_region}:${var.account_id}:table/aa-cis-tfstate-lock-${var.account_id}"
       },
       {
-        # Refresh of the aws_secretsmanager_secret_version resources and the dfs_balance
-        # admin-secret data source reads these values; ReadOnlyAccess has no GetSecretValue. This
-        # role is assumed from any PR branch of AA-CIS-Infra, whose workflow file the PR can edit,
-        # so it is limited to exactly the secrets Terraform reads (residual risk:
-        # docs/ci-role-split.md).
+        # S243 chore: use_lockfile (S3 native state locking, Terraform >= 1.10) writes and deletes
+        # <key>.tflock next to the state. ReadOnlyAccess already gives GetObject. Granted ahead of
+        # the use_lockfile backend change (a later PR), so no plan fails with 403 on the lockfile.
+        # Bootstrap role: applied locally with MFA (CI apply is denied writes on tf_plan).
+        Sid      = "StateLockfile"
+        Effect   = "Allow"
+        Action   = ["s3:PutObject", "s3:DeleteObject"]
+        Resource = "arn:aws:s3:::aa-cis-tfstate-${var.account_id}/dev/terraform.tfstate.tflock"
+      },
+      {
+        # Refresh of the aws_secretsmanager_secret_version resources reads these values;
+        # ReadOnlyAccess has no GetSecretValue. This role is assumed from any PR branch of
+        # AA-CIS-Infra, whose workflow file the PR can edit, so it is limited to exactly the
+        # secrets Terraform reads (residual risk: docs/ci-role-split.md).
         Sid      = "ReadStackSecretValues"
         Effect   = "Allow"
         Action   = ["secretsmanager:GetSecretValue"]

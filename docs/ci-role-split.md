@@ -10,7 +10,7 @@ Status (S239): steps 1, 2 and 4 applied (S236-S237). Step 3 + phase 3 are in the
 | Role | Caller (OIDC sub context) | Rights |
 |---|---|---|
 | `aa-cis-dev-app-deploy` | AA-CIS-App `deploy-dev.yml`, `eval-regression.yml` (`environment:dev`) | push to `aa-cis-dev-*` ECR repos; register revisions of `aa-cis-dev-api` / `aa-cis-dev-worker`; update / describe those two services; list / describe / exec tasks in `aa-cis-dev-cluster`; PassRole on the CIS ECS execution + task roles only. Carries the workload boundary. |
-| `aa-cis-infra-tf-plan` | AA-CIS-Infra `terraform-plan.yml` (`pull_request`) | `ReadOnlyAccess` + state lock table + `GetSecretValue` on exactly the secrets Terraform refreshes (`local.tf_plan_secret_arns`: the three `tripplanner/dev/*` secret versions, the two ACP secrets, the admin secret). |
+| `aa-cis-infra-tf-plan` | AA-CIS-Infra `terraform-plan.yml` (`pull_request`) | `ReadOnlyAccess` + state lock table + `PutObject`/`DeleteObject` on the S3 lockfile `dev/terraform.tfstate.tflock` (S243, ahead of `use_lockfile`) + `GetSecretValue` on exactly the secrets Terraform refreshes (`local.tf_plan_secret_arns`: the three `tripplanner/dev/*` secret versions and the two ACP secrets; the admin secret left the list in AA-878, S243, when the ops-probe Lambda moved to a run-time read by ARN). |
 | `aa-cis-infra-tf-apply` | AA-CIS-Infra `terraform-apply.yml`, `db-migrate.yml` (`environment:prod`) | the same managed policies and inline statements as `aa-cis-dev-role`, except that IAM role writes / PassRole / TagRole are scoped to `role/aa-*-dev-*` (+ the legacy `aa-cis-nat-instance-role`), OIDC provider rights are read only, plus `apigateway:SetWebACL`. Capped by `aa-cis-infra-tf-apply-boundary`. |
 
 All three trust the GitHub OIDC provider with `StringEquals` on one exact immutable subject
@@ -178,7 +178,8 @@ most workload-boundary rights.
 `terraform-plan.yml` itself, so any collaborator with push access to a branch of AA-CIS-Infra can
 run arbitrary AWS calls as the plan role: read everything `ReadOnlyAccess` covers (including S3
 objects such as the Terraform state, which holds the TripPlanner API key and other values) and the
-secret values in `local.tf_plan_secret_arns` (including the admin secret). This is the same
+secret values in `local.tf_plan_secret_arns` (the admin secret is no longer one of them since
+AA-878, S243). This is the same
 exposure as today's `aa-cis-dev-role` (which is far broader) and is not a regression. It is narrowed
 to the secrets Terraform actually reads — the RDS DSN, JWT and OpenAI secrets are no longer
 readable from a PR. Further hardening, if wanted: run plan only after a label / from a protected
