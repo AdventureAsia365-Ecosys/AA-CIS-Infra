@@ -21,7 +21,7 @@ tenant matrix run through that role's own login (its own DSN secret): `aa-cis/de
 `aa-cis/dev/rds-cis-app` (cis_app, from X1 S17) and the CIS runtime = whatever secret the running api
 task definition injects. The "catalog" login (the task's own database DSN: the RDS master until X1 S22,
 then db_migrator) only reads the catalog (attributes, memberships, owners, grants, policies, sessions)
-and one reference count. The master and db_migrator are members of owner roles (and db_migrator of
+and reference counts (tenant_tour_versions; the RLS parity tables of rls.force_parity.cis_app). The master and db_migrator are members of owner roles (and db_migrator of
 catalog_owner, whose catalog_owner_aa_master_read policies apply to its members), so rows they can see
 are never tenant-isolation evidence; the probe never grants itself a role and never uses SET ROLE.
 
@@ -50,6 +50,13 @@ read but a runtime role losing a grant — an object the new owner creates that 
 has_*_privilege catalog facts) and default_acl.<owner> (pg_default_acl FOR ROLE <live owner> grants the
 runtime role; no FOR ROLE master row left once transferred) cover it; consumer.contract_grants keeps
 the contract reads of other apps (booking → tripplanner.v_inquiry_outbox, …).
+
+RLS parity (X1 S16, S243 correction): the master reads the FORCE RLS tables unfiltered (rds_superuser,
+AA-817 probe v2) and most CIS code sets no tenant GUC, so CIS 244 gives cis_app a permissive USING (true)
+policy on every RLS table. Cell rls.force_parity.cis_app counts each table of RLS_PARITY_TABLES (the 8
+FORCE tables + tenant_tour_versions) through cis_app's own login, without a GUC and under a forged one,
+and compares with the catalog login's reference counts taken before and after (a concurrent insert falls
+between them). Expected from 244 + the cis_app password (S17).
 
 Mirrors db/owners.yaml (schemas, anchor schemas, owner roles, transfer keys, runtime secrets, view
 owners, runtime privileges, contract consumer grants on single objects, RLS allowlist, master role):
@@ -147,6 +154,13 @@ PASSWORD_MARKER = "x1:password-set"
 # CIS tables with ENABLE (not FORCE) row level security that need no policy TO cis_app (owners.yaml
 # cis.rls_enable_only_allowlist). Empty: every such table gets one in CIS 244 (X1 S16).
 RLS_ENABLE_ONLY_ALLOWLIST = frozenset()
+# Tables where cis_app must read every row like the platform runtime does today (owners.yaml
+# cis.rls_parity_tables; CIS 244 parity policies, S243): the 8 FORCE RLS tables + tenant_tour_versions.
+RLS_PARITY_TABLES = ("gold_aa_internal.content_exports", "gold_aa_internal.published_tours",
+                     "gold_aa_internal.tenant_tour_versions", "gold_aa_internal.webhook_deliveries",
+                     "shared.pipeline_runs", "silver_aa_internal.generated_content",
+                     "silver_aa_internal.quality_scores", "silver_aa_internal.raw_tours",
+                     "silver_aa_internal.seo_context")
 
 CIS_SCHEMAS = OWNERS["cis"].schemas
 CIS_APP = "cis_app"
@@ -712,6 +726,22 @@ def build_cells(facts: dict, keys: dict) -> list:
                               "cross_tenant": cross[:SAMPLE], "errors": errors[:SAMPLE],
                               "matrix": "see the `matrix` records (one per table)"}))
 
+    fp = facts.get("force_parity", {})
+    ref, got = fp.get("reference", {}), fp.get("cis_app", {})
+    mismatch = []
+    for t in RLS_PARITY_TABLES:
+        r, g = ref.get(t, []), got.get(t, {})
+        if g.get("error") or not r or "plain" not in g:
+            mismatch.append(f"{t}: {g.get('error') or ('no reference count' if not r else 'not counted')}")
+        elif g["plain"] not in r or g["forged"] not in r:
+            mismatch.append(f"{t}: cis_app {g['plain']} (no GUC) / {g['forged']} (forged GUC), reference {r}")
+    cells.append(Cell("rls.force_parity.cis_app", "rls",
+                      f"cis_app (own login) reads every row of the {len(RLS_PARITY_TABLES)} RLS parity tables (FORCE "
+                      f"+ tenant_tour_versions) without a GUC and under a forged one (= catalog login count; 244)",
+                      ("244",) + CIS_APP_LOGIN_KEYS, ok=not fp.get("error") and not mismatch,
+                      error=fp.get("error", ""), detail={"tables": len(RLS_PARITY_TABLES),
+                                                         "mismatch": mismatch[:SAMPLE]}))
+
     ttv = facts["ttv"]
     cells.append(Cell("tenant.cis_runtime_sees_all_ttv", "tenant",
                       f"CIS runtime sees every row of {TTV} without a GUC (ENABLE-only owner exemption / 244 policy)",
@@ -908,6 +938,20 @@ async def ttv_count(conn):
     return v
 
 
+async def parity_counts(conn, facts: dict) -> None:
+    """cis_app's own count(*) of each RLS parity table, without a GUC and under a forged tenant."""
+    forged = str(uuid.uuid4())
+    out = facts["force_parity"].setdefault("cis_app", {})
+    for t in RLS_PARITY_TABLES:
+        async def count(t=t, guc=""):
+            await conn.execute("SELECT pg_catalog.set_config('app.tenant_id', $1, true)", guc)
+            return await conn.fetchval(f"SELECT count(*)::bigint FROM {t}")
+        plain, e1 = await _savepoint(conn, count)
+        forged_n, e2 = await _savepoint(conn, lambda t=t: count(t, forged))
+        e = e1 or e2
+        out[t] = {"error": safe_err(e)} if e else {"plain": plain, "forged": forged_n}
+
+
 async def probe_login(role: str, sid: str, cfg: dict, secrets: Secrets, facts: dict, tenants: list) -> None:
     """Everything that must be evidence of isolation: through `role`'s own login only."""
     out = facts["logins"].setdefault(role, {"secret": secret_name(sid)})
@@ -939,6 +983,8 @@ async def probe_login(role: str, sid: str, cfg: dict, secrets: Secrets, facts: d
                                     **({"error": safe_err(e)} if e else {})}
         if role == TENANT_POOL:
             await tenant_matrix(conn, facts, tenants)
+        if role == CIS_APP:
+            await parity_counts(conn, facts)
         if role == CIS_RUNTIME:
             try:
                 facts["ttv"]["runtime"] = await ttv_count(conn)
@@ -1015,6 +1061,15 @@ async def collect(cfg: dict, facts: dict) -> int:
                 facts["ttv"].setdefault("reference", []).append(await ttv_count(conn))
             except Exception as e:  # noqa: BLE001
                 facts["ttv"]["error"] = "reference count: " + safe_err(e)
+            try:
+                refs = facts["force_parity"].setdefault("reference", {})
+                for t in RLS_PARITY_TABLES:
+                    v, e = await _savepoint(conn, lambda t=t: conn.fetchval(f"SELECT count(*)::bigint FROM {t}"))
+                    if e:
+                        raise e
+                    refs.setdefault(t, []).append(v)
+            except Exception as e:  # noqa: BLE001
+                facts["force_parity"]["error"] = "reference count: " + safe_err(e)
             finally:
                 await tr.rollback()
 
@@ -1042,8 +1097,8 @@ async def collect(cfg: dict, facts: dict) -> int:
 def empty_facts() -> dict:
     return {"catalog": {"login": None, "registered": [], "anchor_owner": {}}, "roles": {}, "ownership": {},
             "owner_grants": {}, "runtime_grants": {}, "default_acl": {}, "consumer": {},
-            "registry_writes": {}, "rls_enable_only": {}, "tenant_matrix": {}, "ttv": {}, "sessions": {},
-            "logins": {}, "cis_runtime": {}}
+            "registry_writes": {}, "rls_enable_only": {}, "tenant_matrix": {}, "ttv": {}, "force_parity": {},
+            "sessions": {}, "logins": {}, "cis_runtime": {}}
 
 
 def parse_config(argv: list) -> dict:
