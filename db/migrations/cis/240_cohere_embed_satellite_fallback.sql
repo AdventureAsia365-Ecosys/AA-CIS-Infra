@@ -1,7 +1,7 @@
 -- Migration 240: AA-862 (S239) — Cohere Embed v4 falls through acc2 -> acc3 when acc2 throttles.
 --
--- Why. acc2 (005097885195) serves cohere.embed-v4:0 at 20 requests per minute (global profile quota
--- L-7089DC7D; the S239 increase request was declined). acc3 (786888028788, main LLM satellite) has
+-- Why. acc2 serves cohere.embed-v4:0 at 20 requests per minute (global profile quota
+-- L-7089DC7D; the S239 increase request was declined). acc3 (main LLM satellite) has
 -- 2,000 rpm on both the `us.` and the `global.` Cohere Embed v4 profiles, both ACTIVE. Agreed chain per
 -- embed call: TripPlanner query cache -> acc2 -> acc3 -> TripPlanner keyword fallback. acc1 is not used
 -- (Nghiệp, S239: acc3's 2,000 rpm is enough).
