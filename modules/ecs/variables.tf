@@ -197,3 +197,15 @@ variable "ses_configuration_set" {
   type        = string
   default     = ""
 }
+
+variable "bedrock_acct_primary" {
+  description = "AA-902: acc3 (Bedrock satellite primary) account ID, env BEDROCK_ACCT_PRIMARY on api and worker"
+  type        = string
+  default     = ""
+}
+
+variable "bedrock_acct_fallback" {
+  description = "AA-902: acc1 (Bedrock satellite fallback) account ID, env BEDROCK_ACCT_FALLBACK on api and worker"
+  type        = string
+  default     = ""
+}

@@ -13,6 +13,13 @@ locals {
     { name = "SES_FROM_ADDRESS", value = var.ses_from_address },
     { name = "SES_CONFIGURATION_SET", value = var.ses_configuration_set },
   ]
+
+  # AA-902: the Bedrock / Cost Explorer satellite account IDs (shared/llm_client/bedrock_satellite.py
+  # builds every satellite ARN from these; the public repo carries no account ID).
+  bedrock_satellite_env = [
+    { name = "BEDROCK_ACCT_PRIMARY", value = var.bedrock_acct_primary },
+    { name = "BEDROCK_ACCT_FALLBACK", value = var.bedrock_acct_fallback },
+  ]
 }
 
 # ── ECS Exec session log (S241 D-07) ──────────────────────────
@@ -436,6 +443,7 @@ resource "aws_ecs_task_definition" "api" {
       { name = "JOB_WORKER_IN_API", value = "false" },
       ],
       local.ops_alert_mail_env,
+      local.bedrock_satellite_env,
       var.redis_host != null ? [{ name = "REDIS_HOST", value = var.redis_host }] : []
     )
     secrets = [
@@ -638,6 +646,7 @@ resource "aws_ecs_task_definition" "worker" {
       { name = "T3_BACKGROUND_FACTS", value = "on" },
       ],
       local.ops_alert_mail_env,
+      local.bedrock_satellite_env,
       var.redis_host != null ? [{ name = "REDIS_HOST", value = var.redis_host }] : []
     )
     secrets = [

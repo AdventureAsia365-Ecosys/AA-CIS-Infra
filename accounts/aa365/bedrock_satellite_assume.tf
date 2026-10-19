@@ -38,3 +38,11 @@ resource "aws_iam_role_policy" "ecs_assume_bedrock_invoker" {
     ]
   })
 }
+
+# AA-902 (S244): the satellite account IDs in ONE place. The public app repos no longer carry them; the
+# CIS api/worker task definitions and both TripPlanner Lambdas get them as env (BEDROCK_ACCT_PRIMARY =
+# acc3, BEDROCK_ACCT_FALLBACK = acc1).
+locals {
+  bedrock_acct_primary  = "786888028788" # acc3
+  bedrock_acct_fallback = "867490540162" # acc1
+}
