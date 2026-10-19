@@ -12,6 +12,6 @@ variable "custom_domain_vercel_hosts" {
   default = {
     tripplanner = "a1520bcb29624260.vercel-dns-017.com" # project-specific target, domain added to aa-tripplanner first
     booking     = "faa59191f1f73e21.vercel-dns-017.com" # S239 AA-818: staff admin, domain added to aa-booking-admin first (verified)
-    portal      = "cname.vercel-dns.com"                # PLACEHOLDER, do not push: set aa-cis-portal recommendedCNAME + comment "S243 AA-885: tenant portal, domain added to aa-cis-portal first (verified)"
+    portal      = "22ba595c1afe124b.vercel-dns-017.com" # S243 AA-885: tenant portal, domain added to aa-cis-portal first (verified)
   }
 }
