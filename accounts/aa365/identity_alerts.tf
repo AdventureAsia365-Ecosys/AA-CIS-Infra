@@ -92,14 +92,6 @@ resource "aws_cloudwatch_event_rule" "identity_breakglass_secret" {
           requestParameters = { secretId = local.id_breakglass_secret_id_match }
         },
         {
-          # Safety net: a DENIED value call logged without requestParameters.secretId (the secret
-          # cannot be identified, so alert on any). Not verified live which shape CloudTrail uses
-          # for a resource-policy deny; denied calls that do carry secretId match the branch above.
-          eventName         = ["GetSecretValue", "PutSecretValue"]
-          errorCode         = [{ prefix = "AccessDenied" }]
-          requestParameters = { secretId = [{ exists = false }] }
-        },
-        {
           # BatchGetSecretValue by explicit id list (a filter-based batch is covered by the
           # per-secret GetSecretValue event CloudTrail also writes).
           eventName         = ["BatchGetSecretValue"]
@@ -126,6 +118,51 @@ resource "aws_cloudwatch_event_target" "identity_breakglass_secret" {
       error     = "$.detail.errorCode"
     }
     input_template = "\"[aa-identity] Break-glass secret ${aws_secretsmanager_secret.identity_breakglass.name}: <event> by <principal> from <ip> at <time> (errorCode: <error>). If this was not a planned break-glass use or bootstrap, treat it as an incident (ADR 0006 decision 11).\""
+  }
+}
+
+# ── 2b. Denied secret read whose secret CloudTrail does not name ─────────────
+# S243 (AA-816 / AA-860 S19): CloudTrail logs an AccessDenied GetSecretValue/PutSecretValue WITHOUT
+# requestParameters (verified live 19/10/2026: the X1 S19 checks from the CIS task role, denied by its
+# identity policy, carry no secretId). Such a call cannot be tied to one secret, so it used to sit as a
+# "safety net" branch of the break-glass rule above and every denied read of ANY secret was reported as
+# "Break-glass secret aa-identity/dev/breakglass" — wrong. It is now its own rule with its own wording.
+# Still alert on every one: after X1 S19 the CIS runtime has no reason to touch the master, db-migrator,
+# booking/* or tripplanner/* secrets, so a denied read is either a planned test or worth a look.
+# Cost: EventBridge rules on AWS service (CloudTrail) events are free; SNS email stays in the free tier.
+resource "aws_cloudwatch_event_rule" "identity_denied_secret_read" {
+  name        = "${local.id_prefix}-denied-secret-read"
+  description = "A Secrets Manager value read/write was DENIED and CloudTrail did not log which secret (may include the break-glass secret). S243, ADR 0006 decision 11."
+  state       = "ENABLED_WITH_ALL_CLOUDTRAIL_MANAGEMENT_EVENTS"
+
+  event_pattern = jsonencode({
+    source        = ["aws.secretsmanager"]
+    "detail-type" = ["AWS API Call via CloudTrail"]
+    detail = {
+      eventSource       = ["secretsmanager.amazonaws.com"]
+      eventName         = ["GetSecretValue", "PutSecretValue"]
+      errorCode         = [{ prefix = "AccessDenied" }]
+      requestParameters = { secretId = [{ exists = false }] }
+    }
+  })
+
+  tags = local.id_tags
+}
+
+resource "aws_cloudwatch_event_target" "identity_denied_secret_read" {
+  rule      = aws_cloudwatch_event_rule.identity_denied_secret_read.name
+  target_id = "alerts-sns"
+  arn       = aws_sns_topic.alerts.arn
+
+  input_transformer {
+    input_paths = {
+      event     = "$.detail.eventName"
+      principal = "$.detail.userIdentity.arn"
+      ip        = "$.detail.sourceIPAddress"
+      time      = "$.detail.eventTime"
+      error     = "$.detail.errorCode"
+    }
+    input_template = "\"[aa-identity] Denied secret access: <event> by <principal> from <ip> at <time> (errorCode: <error>). CloudTrail does not log which secret a denied call asked for, so it may be any protected secret, including the break-glass one. Planned test (e.g. an X1 S19 deny check)? Nothing to do. Otherwise check who made the call (CloudTrail, same time) and treat an unknown principal as an incident (ADR 0006 decision 11).\""
   }
 }
 
