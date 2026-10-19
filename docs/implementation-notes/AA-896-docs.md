@@ -27,8 +27,9 @@ Root docs that go with it: AA-Ecosys `docs/ops/finops.md`, `docs/ops/cost/README
   `arn:aws:ce::<account>:anomalymonitor/*` and `anomalysubscription/*`.
 - **Runbook links:** one local map in `alarm_runbooks.tf`, appended to each description as
   ` Runbook: <url>`. Paths follow the root catalog (OPS-01..OPS-11) and the AA-892 ops lane names:
-  `playbooks/{5xx-spike,queue-stuck,llm-cost-spike,cognito-login,ses-bounce}.md`,
-  `runbooks/{restore-rds-pitr,break-glass}.md`, `database-operations.md`, `incident-response.md`.
+  `playbooks/{5xx-spike,queue-stuck,llm-cost-spike,cognito-login}.md`,
+  `runbooks/{ses-bounce,restore-rds-pitr,break-glass}.md`, `database-operations.md`, `incident-response.md`
+  (checked against root branch `docs/aa892-ops-runbooks` @ 4e184ba: all nine files exist there).
 
 ## Changed
 
@@ -50,8 +51,11 @@ directly (a restore is a decision taken from the database page, not an alarm ref
 
 ## Tradeoffs
 
-- A link to a page that AA-892 is still writing is better than no link: the alarm text does not change
-  when the page lands, and the ops lane uses the same names.
+- The links resolve once the AA-892 ops PR (root branch `docs/aa892-ops-runbooks`) merges; until then
+  eight of the nine return 404 (only `incident-response.md` is on `master`). A link that starts working
+  on merge is better than no link, and the alarm text does not change when the pages land. The SES path
+  was first written as `playbooks/ses-bounce.md`; the S243 review found the ops lane uses
+  `runbooks/ses-bounce.md`, so it was corrected before merge.
 - Links point at the private root repo on `master`. Anyone who gets the alarm e-mail and has repo access
   can open them; there is no public copy (security pages stay private, D-25).
 - Anomaly threshold $5 may be noisy in the first weeks (the model learns per service). Raise

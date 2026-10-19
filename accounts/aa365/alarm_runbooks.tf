@@ -25,7 +25,7 @@ locals {
     queue_stuck    = "${local.runbook_base_url}/playbooks/queue-stuck.md"
     llm_cost_spike = "${local.runbook_base_url}/playbooks/llm-cost-spike.md"
     cognito_login  = "${local.runbook_base_url}/playbooks/cognito-login.md"
-    ses_bounce     = "${local.runbook_base_url}/playbooks/ses-bounce.md"
+    ses_bounce     = "${local.runbook_base_url}/runbooks/ses-bounce.md"
     restore_pitr   = "${local.runbook_base_url}/runbooks/restore-rds-pitr.md"
     database       = "${local.runbook_base_url}/database-operations.md"
     break_glass    = "${local.runbook_base_url}/runbooks/break-glass.md"
