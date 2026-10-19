@@ -61,5 +61,12 @@ Exit codes of the task: 0 ok · 2 sha256 mismatch · 7 busy · 8 not the master 
 needs the runner to open its own master connection from `aa-cis/dev/rds` (plan S22 runner change). Until
 that change lands both modes exit 8 under the `db_migrator` login.
 
+`x1_connection_snapshot.py` (X1 S15, AA-860, read-only): one snapshot of client sessions per role /
+`application_name` / state, each login role's `rolconnlimit` and `max_connections`, for the `cis_app` limit
+decision before S18; dispatch it 2–3 times (busy and idle).
+
+`x1_photo_itinerary_parity.py` (X1 S15, AA-860, read-only): per country, distinct (tour, destination) pairs of
+the old photo-sync itinerary read (`tripplanner.*`) vs the new one (`geo.*`), with overlap; counts only.
+
 `session_info.py` is a read-only smoke test (prints `session_user`, database, server version and the
 session settings): use it to check the mode after a change to the runner or the migrator task definition.
