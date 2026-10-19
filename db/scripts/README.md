@@ -68,6 +68,12 @@ decision before S18; dispatch it 2–3 times (busy and idle).
 `x1_photo_itinerary_parity.py` (X1 S15, AA-860, read-only): per country, distinct (tour, destination) pairs of
 the old photo-sync itinerary read (`tripplanner.*`) vs the new one (`geo.*`), with overlap; counts only.
 
+`x1_245_cis_owner_objects.py` (X1 S21, AA-860, read-only): before the CIS 245 apply (after rl-002), lists every
+object 245 will move to `cis_owner` (the migration's own step-4 query, verbatim; `db/tests/test_x1_245_cis_owner_objects.py`
+compares them once `db/migrations/cis/245_x1_cis_owner.sql` is copied) and every condition one of 245's guards would
+refuse (`SCRIPT refuse …`, a third owner, a SECURITY DEFINER routine, the FORCE set, default ACL rows, rl-002's shape),
+ending with `SCRIPT summary move=<n> refuse=<n> ok=<t|f>`. Compare its `move` lines with the 245 apply's NOTICE lines.
+
 `session_info.py` is a read-only smoke test (prints `session_user`, database, server version and the
 session settings): use it to check the mode after a change to the runner or the migrator task definition.
 
