@@ -130,3 +130,69 @@ def test_default_staff_groups_match_terraform_groups():
     assert tf_groups == set(workforce.DEFAULT_STAFF_GROUPS.split(","))
     booking_roles = {"admin", "sales", "contracting", "content_creator"}
     assert {g.removeprefix("booking-") for g in tf_groups if g.startswith("booking-")} == booking_roles
+
+
+# ------------------------------------------------------------------ TEMPORARY E2E test address (AA-816)
+E2E = "e2e@e2e-mail.lumiguides.it.com"
+E2E_ATTRS = {"email": E2E, "email_verified": "true"}
+
+
+def test_e2e_constant_is_the_one_test_address():
+    assert workforce.E2E_TEST_STAFF_EMAIL == E2E
+    assert workforce.E2E_TEST_STAFF_GROUPS == ("cis-reviewer",)
+
+
+@pytest.mark.parametrize("email", [E2E, "E2E@E2E-Mail.Lumiguides.IT.com"])
+def test_e2e_test_address_may_be_admin_created(email):
+    out = workforce.pre_sign_up(admin_create(email))
+    assert out["response"] == {"autoConfirmUser": False, "autoVerifyEmail": False, "autoVerifyPhone": False}
+
+
+@pytest.mark.parametrize("email", [
+    "e2e2@e2e-mail.lumiguides.it.com",
+    "x.e2e@e2e-mail.lumiguides.it.com",
+    "e2e@lumiguides.it.com",
+    "e2e@e2e-mail.lumiguides.it.com.evil.com",
+    "e2e@x.e2e-mail.lumiguides.it.com",
+])
+def test_other_addresses_near_the_e2e_one_are_still_denied(email):
+    denied(workforce.pre_sign_up, admin_create(email))
+    denied(workforce.pre_token_generation, token_event({"email": email, "email_verified": "true"}, ["cis-reviewer"]))
+
+
+def test_e2e_self_sign_up_is_still_denied():
+    event = sign_up_event("PreSignUp_SignUp", user_name=E2E, attrs={"email": E2E})
+    denied(workforce.pre_sign_up, event)
+
+
+def test_e2e_missing_domain_config_still_fails_closed(monkeypatch):
+    monkeypatch.setenv("ALLOWED_EMAIL_DOMAIN", "")
+    denied(workforce.pre_sign_up, admin_create(E2E))
+    denied(workforce.pre_token_generation, token_event(E2E_ATTRS, ["cis-reviewer"]))
+
+
+@pytest.mark.parametrize("source", ["TokenGeneration_HostedAuth", "TokenGeneration_RefreshTokens"])
+def test_e2e_reviewer_gets_a_token(source, capsys):
+    out = workforce.pre_token_generation(token_event(E2E_ATTRS, ["cis-reviewer", "rogue"], source=source))
+    details = out["response"]["claimsAndScopeOverrideDetails"]
+    assert details["groupOverrideDetails"]["groupsToOverride"] == ["cis-reviewer"]
+    assert details["accessTokenGeneration"]["claimsToAddOrOverride"] == {"email": E2E}
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert any(line["event"] == "workforce_e2e_test_token_issued" for line in lines)
+
+
+@pytest.mark.parametrize("groups", [
+    ["cis-admin"],
+    ["cis-content"],
+    ["cis-reviewer", "cis-admin"],
+    ["cis-reviewer", "booking-sales"],
+    ["booking-admin"],
+    [],
+    ["rogue"],
+])
+def test_e2e_with_any_other_staff_group_is_denied(groups):
+    denied(workforce.pre_token_generation, token_event(E2E_ATTRS, groups))
+
+
+def test_e2e_unverified_email_is_denied():
+    denied(workforce.pre_token_generation, token_event({"email": E2E, "email_verified": "false"}, ["cis-reviewer"]))
