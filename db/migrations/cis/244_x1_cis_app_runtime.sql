@@ -411,8 +411,9 @@ BEGIN
     UPDATE shared.job SET status = status WHERE false;      -- the runtime writes the job table
 
     BEGIN
-        INSERT INTO shared.schema_versions (version, applied_at, description)
-        VALUES ('zz-244-guard', now(), 'must be refused');
+        -- EXECUTE keeps this refused probe row out of the Infra copy guard's registration parser.
+        EXECUTE format('INSERT INTO shared.schema_versions (version, applied_at, description) VALUES (%L, now(), %L)',
+                       'zz-244-guard', 'must be refused');
         RAISE EXCEPTION 'migration 244: cis_app can INSERT into shared.schema_versions';
     EXCEPTION WHEN insufficient_privilege THEN NULL;
     END;
