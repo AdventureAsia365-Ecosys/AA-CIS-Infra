@@ -82,14 +82,13 @@ locals {
   # Secret values terraform plan reads on refresh: every aws_secretsmanager_secret_version in this
   # root. Nothing else (no RDS DSN, JWT, OpenAI key, and since AA-878 (S243) no admin secret: the
   # ops-probe Lambda reads it by ARN at run time, so the dfs_balance data source is gone).
+  # AA-878 I2 (S243): the Mapbox and the two ACP secrets are forgotten (removed blocks), so their
+  # versions are no longer refreshed and their ARNs leave this list (5 -> 2).
   # A new aws_secretsmanager_secret_version (or secret-version data source) must be added here
   # (bootstrap: local apply), or plan fails with AccessDenied on refresh after it is first applied.
   tf_plan_secret_arns = [
     aws_secretsmanager_secret.tripplanner_db.arn,
     aws_secretsmanager_secret.tripplanner_api_key.arn,
-    aws_secretsmanager_secret.tripplanner_mapbox.arn,
-    module.secrets.acp_webhook_secret_arn,
-    module.secrets.acp_partner_api_secret_arn,
   ]
 
   # CIS app objects the app deploy role may touch.
