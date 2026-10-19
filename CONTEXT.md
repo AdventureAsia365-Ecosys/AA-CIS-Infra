@@ -303,6 +303,15 @@ makes CI Terraform Plan fail with 403.
 - **Apply** is done deliberately, not on merge:
   - `terraform-apply.yml` is `workflow_dispatch` only (manual trigger), against the same
     `accounts/aa365` root and `dev/terraform.tfstate` state.
+  - **Plan guard (AA-846):** between plan and apply, `tools/terraform/plan_guard.py` reads
+    `terraform show -json tfplan` and refuses the apply (the run goes red, nothing is applied) when
+    the plan changes an `aws_secretsmanager_secret_version`, a `random_password` or an
+    `aws_db_instance` with any action other than no-op/read (forget and import included). An
+    intended change is dispatched with `allow_guarded=true` plus a non-empty `allow_reason`, which
+    is written to the job summary. `guard_selftest=true` runs only the guard, on the committed
+    fixture `tools/terraform/tests/fixtures/plan_guarded.json`, with no AWS step; the expected
+    result is a red run at "Plan guard". Tests: `tf-plan-guard-test.yml`. The guard covers the CI
+    apply only; a local admin apply is not guarded, so read the plan.
   - Locally, applying the aa365 stack needs MFA-exported credentials because Terraform will not
     prompt for MFA on its own:
     ```

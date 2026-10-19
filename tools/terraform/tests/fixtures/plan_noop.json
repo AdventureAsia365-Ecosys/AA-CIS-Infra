@@ -1,0 +1,96 @@
+{
+ "format_version": "1.2",
+ "terraform_version": "1.15.5",
+ "planned_values": {
+  "root_module": {}
+ },
+ "configuration": {},
+ "resource_changes": [
+  {
+   "address": "aws_secretsmanager_secret_version.example",
+   "mode": "managed",
+   "type": "aws_secretsmanager_secret_version",
+   "name": "example",
+   "provider_name": "registry.terraform.io/hashicorp/aws",
+   "change": {
+    "actions": [
+     "no-op"
+    ],
+    "before": {},
+    "after": {},
+    "after_unknown": {},
+    "before_sensitive": {},
+    "after_sensitive": {}
+   }
+  },
+  {
+   "address": "random_password.example",
+   "mode": "managed",
+   "type": "random_password",
+   "name": "example",
+   "provider_name": "registry.terraform.io/hashicorp/random",
+   "change": {
+    "actions": [
+     "no-op"
+    ],
+    "before": {},
+    "after": {},
+    "after_unknown": {},
+    "before_sensitive": {},
+    "after_sensitive": {}
+   }
+  },
+  {
+   "address": "module.rds.aws_db_instance.main",
+   "mode": "managed",
+   "type": "aws_db_instance",
+   "name": "main",
+   "provider_name": "registry.terraform.io/hashicorp/aws",
+   "change": {
+    "actions": [
+     "no-op"
+    ],
+    "before": {},
+    "after": {},
+    "after_unknown": {},
+    "before_sensitive": {},
+    "after_sensitive": {}
+   },
+   "module_address": "module.rds"
+  },
+  {
+   "address": "data.aws_db_instance.lookup",
+   "mode": "data",
+   "type": "aws_db_instance",
+   "name": "lookup",
+   "provider_name": "registry.terraform.io/hashicorp/aws",
+   "change": {
+    "actions": [
+     "read"
+    ],
+    "before": {},
+    "after": {},
+    "after_unknown": {},
+    "before_sensitive": {},
+    "after_sensitive": {}
+   }
+  },
+  {
+   "address": "aws_s3_object.example_zip",
+   "mode": "managed",
+   "type": "aws_s3_object",
+   "name": "example_zip",
+   "provider_name": "registry.terraform.io/hashicorp/aws",
+   "change": {
+    "actions": [
+     "no-op"
+    ],
+    "before": {},
+    "after": {},
+    "after_unknown": {},
+    "before_sensitive": {},
+    "after_sensitive": {}
+   }
+  }
+ ]
+}
