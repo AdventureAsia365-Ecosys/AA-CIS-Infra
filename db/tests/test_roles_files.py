@@ -10,7 +10,9 @@ They run as the RDS master, so review is the only gate besides these checks:
     user). Never to the master, cis_owner, cis_app, booking, tripplanner or any *_owner role;
   * db_migrator's memberships equal db/owners.yaml migrator_member_of, which covers every owner role
     and every set_local_roles target (the roles a file can be switched to after S22);
-  * rl-001 creates exactly the roles S3 lists, and restates the N3 limits with the values of CIS 234.
+  * rl-001 creates exactly the roles S3 lists, and restates the N3 limits with the values of CIS 234;
+  * rl-002 creates exactly the roles S20 lists (cis_owner NOLOGIN, db_migrator LOGIN NOCREATEROLE limit 5),
+    grants exactly the S20 memberships, and its guard's membership list equals migrator_member_of.
 
 Run: python3 -m unittest discover -s db/tests -v
 """
@@ -26,6 +28,7 @@ import run_migration as rm  # noqa: E402
 
 ROLES = ROOT / "db" / "migrations" / "roles"
 RL001 = ROLES / "001_x1_owner_roles.sql"
+RL002 = ROLES / "002_x1_cis_owner_db_migrator.sql"
 CIS234 = ROOT / "db" / "migrations" / "cis" / "234_connection_limits_pg_stat_statements.sql"
 # Granted role -> the only grantees allowed in a roles/ file (X1 plan §1.4, review S241). aa_app_user:
 # nobody (the tenant pool's policies would reach the member). catalog_owner: only db_migrator, whose
@@ -176,10 +179,19 @@ class MigratorMembershipTest(unittest.TestCase):
         views = [code_view(f.read_text(encoding="utf-8")) for f in sorted(ROLES.glob("*.sql"))]
         created = any(re.search(r"\bCREATE ROLE DB_MIGRATOR\b", v) for v in views)
         granted = {r.lower() for v in views for roles, to in memberships(v) if "DB_MIGRATOR" in to for r in roles}
-        if created:
-            self.assertEqual(granted, self.members)
-        else:
-            self.assertEqual(granted, set())            # rl-002 (X1 S20) not written yet
+        self.assertTrue(created, "no roles/ file creates db_migrator (rl-002, X1 S20)")
+        self.assertEqual(granted, self.members)
+
+    def test_rl002_guard_list_is_its_own_grants(self):
+        # The guard compares db_migrator's direct memberships with a literal array (sorted, COLLATE "C"): it must
+        # list exactly what rl-002 grants (a later roles/ file that extends migrator_member_of leaves rl-002 as is;
+        # the test above checks the union of all files against the registry).
+        m = re.search(r"expected\s+text\[\]\s*:=\s*ARRAY\[([^\]]*)\]", RL002.read_text(encoding="utf-8"))
+        self.assertIsNotNone(m, "rl-002 guard: `expected text[] := ARRAY[...]` not found")
+        listed = [s.strip().strip("'") for s in m.group(1).split(",")]
+        granted = {r.lower() for roles, to in memberships(code_view(RL002.read_text(encoding="utf-8")))
+                   if "DB_MIGRATOR" in to for r in roles}
+        self.assertEqual(listed, sorted(granted))
 
 
 class Rl001Test(unittest.TestCase):
@@ -210,6 +222,45 @@ class Rl001Test(unittest.TestCase):
         self.assertRegex(RL001.read_text(encoding="utf-8"),
                          r"INSERT INTO shared\.schema_versions \(version, applied_at, description\)\s+"
                          r"VALUES \('rl-001',")
+        self.assertRegex(self.view, r"ON CONFLICT \(VERSION\) DO NOTHING")
+
+
+class Rl002Test(unittest.TestCase):
+    """X1 plan S20: cis_owner + db_migrator, no password, no object ownership."""
+    view = code_view(RL002.read_text(encoding="utf-8"))
+
+    def test_creates_the_s20_roles(self):
+        self.assertRegex(self.view, r"\bCREATE ROLE CIS_OWNER NOLOGIN;")
+        self.assertRegex(self.view, r"\bCREATE ROLE DB_MIGRATOR LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS "
+                                    r"CONNECTION LIMIT 5;")
+        self.assertEqual(re.findall(r"\bCREATE ROLE (\w+)", self.view), ["CIS_OWNER", "DB_MIGRATOR"])
+        self.assertRegex(self.view, r"\bALTER ROLE CIS_OWNER NOLOGIN;")
+        self.assertNotRegex(self.view, r"\bNOINHERIT\b")              # review A1: db_migrator stays INHERIT
+
+    def test_memberships(self):
+        self.assertEqual(membership_grants(self.view), [
+            "GRANT CIS_OWNER TO AA_CIS_ADMIN",
+            "GRANT BK_OWNER, TP_OWNER, CIS_OWNER, CATALOG_OWNER, CIS_APP TO DB_MIGRATOR",
+            "GRANT PG_READ_ALL_STATS TO DB_MIGRATOR",
+        ])
+        # Same membership lines as the plan text kept above (PLANNED_RL002).
+        self.assertEqual(membership_grants(code_view(PLANNED_RL002)), membership_grants(self.view)[1:])
+
+    def test_create_on_database_only_to_cis_owner(self):
+        object_grants = [s for s in statements(self.view) if re.match(r"^GRANT\b", s) and re.search(r"\bON\b", s)]
+        self.assertEqual(object_grants, ["GRANT CREATE ON DATABASE AA_CIS_DEV TO CIS_OWNER"])
+
+    def test_connection_limit(self):
+        self.assertEqual(connection_limits(self.view), {"db_migrator": 5})
+
+    def test_owns_nothing_and_no_default_privileges(self):
+        # Ownership and default privileges FOR ROLE cis_owner come with CIS 245 (S21), not here.
+        self.assertNotRegex(self.view, r"\bOWNER TO\b|\bAUTHORIZATION\b|\bALTER DEFAULT PRIVILEGES\b")
+
+    def test_registers_rl_002(self):
+        self.assertRegex(RL002.read_text(encoding="utf-8"),
+                         r"INSERT INTO shared\.schema_versions \(version, applied_at, description\)\s+"
+                         r"VALUES \('rl-002',")
         self.assertRegex(self.view, r"ON CONFLICT \(VERSION\) DO NOTHING")
 
 
