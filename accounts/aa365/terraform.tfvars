@@ -45,9 +45,9 @@ redis_url           = ""
 dataforseo_login    = "REPLACE_ME"
 dataforseo_password = "REPLACE_ME"
 
-# Not Terraform-managed at all (read at runtime via boto3, see
-# api/main.py — secret name "aa-cis/dev/api-keys"). Created manually
-# (placeholder) — update with a real APIFY_API_TOKEN key before relying on S2.
+# "aa-cis/dev/api-keys" (APIFY_API_TOKEN placeholder, created by hand, never Terraform-managed):
+# AA-878 (S243) found no reader on main of any repo (api/main.py no longer reads it); it is an
+# orphan, deleted by hand with a 30-day recovery window after a DRY RUN (AA-878 step M2).
 
 # AA-Booking (S235): immutable GitHub repo id — pins the aa-booking-dev-app-deploy OIDC trust to this repo.
 booking_github_repo_id = "1418188499"

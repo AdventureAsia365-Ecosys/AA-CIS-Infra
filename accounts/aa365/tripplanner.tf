@@ -107,8 +107,9 @@ resource "aws_secretsmanager_secret_version" "tripplanner_db" {
 # this value (backend/shared/auth.py); the Vercel BFF sends it. API Gateway
 # itself stays authorization = NONE (MVP; a JWT/authorizer is the later
 # hardening). Generated here (random_password) so the value is managed, and
-# also stored in Secrets Manager so the BFF's value can be fetched to set the
-# Vercel env without reading Lambda config.
+# stored in Secrets Manager, the single source of truth: since AA-878 (S243) the
+# Lambdas read it by name at run time (IAM grant ReadApiKeySecret below), and
+# Nghiep copies the same value into the Vercel TRIPPLANNER_API_KEY by hand.
 # -----------------------------------------------------------------------------
 resource "aws_secretsmanager_secret" "tripplanner_api_key" {
   name                    = "tripplanner/${var.environment}/api-key"
@@ -123,24 +124,27 @@ resource "aws_secretsmanager_secret_version" "tripplanner_api_key" {
 }
 
 # -----------------------------------------------------------------------------
-# AA-675: Mapbox geocoding token for the assembly Lambda's tour-day extraction
-# (backend/extraction/lambda_entry.py geocodes each overnight place into
-# shared.destinations). Placeholder value; the real token is set out-of-band
-# (put-secret-value) and ignore_changes keeps Terraform from reverting it.
-# The app reads it by ARN (MAPBOX_GEOCODING_TOKEN_ARN), never as a plain env var.
+# AA-878 (S243): the Mapbox geocoding token secret (AA-675, tour-day extraction) has had no reader
+# since AA-712 slice 6a moved extraction to CIS: no code on main reads MAPBOX_GEOCODING_TOKEN_ARN,
+# and CloudTrail since 18/10 shows only the plan role (refresh) reading it. Terraform FORGETS the
+# secret and its version here; it does not delete them (recovery_window_in_days was 0 in dev, so a
+# plain resource removal would have deleted the secret at once, with no recovery). The secret is
+# then deleted by hand with a 30-day recovery window after a DRY RUN (AA-878 step M2), and the
+# token itself is revoked in the Mapbox account.
 # -----------------------------------------------------------------------------
-resource "aws_secretsmanager_secret" "tripplanner_mapbox" {
-  name                    = "tripplanner/${var.environment}/mapbox-geocoding-token"
-  description             = "AA-TripPlanner Mapbox geocoding token (tour-day extraction, AA-675)"
-  recovery_window_in_days = var.environment == "dev" ? 0 : 30
-  tags                    = local.tp_tags
+removed {
+  from = aws_secretsmanager_secret.tripplanner_mapbox
+
+  lifecycle {
+    destroy = false
+  }
 }
 
-resource "aws_secretsmanager_secret_version" "tripplanner_mapbox" {
-  secret_id     = aws_secretsmanager_secret.tripplanner_mapbox.id
-  secret_string = "REPLACE_ME"
+removed {
+  from = aws_secretsmanager_secret_version.tripplanner_mapbox
+
   lifecycle {
-    ignore_changes = [secret_string]
+    destroy = false
   }
 }
 
@@ -268,10 +272,12 @@ resource "aws_iam_role_policy" "tripplanner_lambda_permissions" {
         Resource = [aws_secretsmanager_secret.tripplanner_db.arn]
       },
       {
-        Sid      = "ReadMapboxSecret"
+        # AA-878: the edge key is read by name (tripplanner/<ENVIRONMENT>/api-key) at run time,
+        # never passed as a plaintext env value (backend/shared/auth.py in AA-TripPlanner-Web).
+        Sid      = "ReadApiKeySecret"
         Effect   = "Allow"
         Action   = ["secretsmanager:GetSecretValue"]
-        Resource = [aws_secretsmanager_secret.tripplanner_mapbox.arn]
+        Resource = [aws_secretsmanager_secret.tripplanner_api_key.arn]
       },
       {
         Sid      = "Logs"
@@ -328,10 +334,11 @@ resource "aws_lambda_function" "tripplanner_browse" {
 
   environment {
     variables = {
+      # ENVIRONMENT also names the edge-key secret the app reads (tripplanner/<ENVIRONMENT>/api-key,
+      # AA-878): no plaintext key in the function config.
       ENVIRONMENT                  = var.environment
       TRIPPLANNER_DATABASE_URL_ARN = aws_secretsmanager_secret.tripplanner_db.arn
       BEDROCK_REGION               = var.aws_region
-      TRIPPLANNER_API_KEY          = random_password.tripplanner_api_key.result
     }
   }
 
@@ -381,8 +388,8 @@ resource "aws_lambda_function" "tripplanner_assembly" {
       BEDROCK_EXTERNAL_ID_FALLBACK = "aa296-satellite-bedrock"
       # No ADVISOR_NOTIFY_EMAIL: the advisor e-mail is sent by AA-Booking (bk_notify_email, AA-811 S238).
       REQUIRE_REGISTRATION_BEFORE_HANDOFF = "true"
-      TRIPPLANNER_API_KEY                 = random_password.tripplanner_api_key.result
-      MAPBOX_GEOCODING_TOKEN_ARN          = aws_secretsmanager_secret.tripplanner_mapbox.arn
+      # AA-878: no TRIPPLANNER_API_KEY here (read by name from Secrets Manager, see browse) and no
+      # MAPBOX_GEOCODING_TOKEN_ARN (no reader since AA-712 slice 6a).
     }
   }
 

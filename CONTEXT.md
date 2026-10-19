@@ -64,7 +64,10 @@ accounts/
                                    legacy shared CI role aa-cis-dev-role retired in AA-806 step 3)
     cicd_split.tf                 (AA-806: aa-cis-dev-app-deploy, aa-cis-infra-tf-plan/-apply,
                                    permissions boundaries; bootstrap, applied by a human)
-    tripplanner.tf                (TripPlanner OIDC deploy role + TripPlanner-specific resources)
+    tripplanner.tf                (TripPlanner OIDC deploy role + TripPlanner-specific resources.
+                                   AA-878: no secret value in the Lambda env; the edge key is read by
+                                   name tripplanner/<ENVIRONMENT>/api-key (grant ReadApiKeySecret);
+                                   the Mapbox secret is forgotten via a removed block, not deleted)
     booking.tf                    (AA-Booking ECS service, ECR, ALB rule /booking/*, REST API on the
                                    existing VPC link, OIDC deploy role — AA-678)
     bedrock_satellite_assume.tf   (cross-account Bedrock assume-role trust)
@@ -131,6 +134,10 @@ tools/
                     state restored), PKCE spike helpers; tests
                     in tools/identity/tests (job in identity-triggers-test.yml). Tracked on purpose:
                     scripts/ is gitignored, so hand-run tools that must be kept go in tools/.
+  secrets/        ← register_check.py (AA-878): metadata-only drift check of the root repo's
+                    docs/security/secrets-register.yaml against Secrets Manager list-secrets, GitHub
+                    secret lists, Vercel env names and Lambda env keys collected beforehand; never
+                    reads a value. Tests in tools/secrets/tests (secrets-register-check-test.yml).
 ```
 
 The **active dev stack** is `accounts/aa365` — it is the root Terraform actually applies against
