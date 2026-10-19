@@ -248,6 +248,28 @@ resource "aws_iam_role_policy" "ecs_task_policy" {
           "secretsmanager:PutSecretValue"
         ]
         Resource = "arn:aws:secretsmanager:${var.aws_region}:005097885195:secret:aa-cis/dev/e2e-tenant/*"
+      },
+      # X1 S19 (AA-860, plan XD5): the GetSecretValue grant above is on "*", so without this a compromised
+      # CIS runtime could read the RDS master DSN and every other app's DSN, and the DB role split (cis_app,
+      # S18) would be cosmetic. An explicit Deny wins over any Allow. Secrets Manager ARNs end in "-" plus 6
+      # random characters, so `rds-??????` matches only the master secret aa-cis/<env>/rds, never rds-app-user
+      # or rds-cis-app (more characters after "rds-"); likewise db-migrator-??????. The CIS code reads only
+      # aa-cis/<env>/{rds-app-user, booking-jwt-signing-key, e2e-tenant/*, gdrive-photo-reader, geoapify,
+      # jwt-secret, sentry-dsn-api, typesafe, dataforseo} and acp/{cms,social}/* (grep 19/10/2026): none is
+      # denied. DATABASE_URL itself is injected by the EXECUTION role, which this does not touch. The only
+      # code naming the master secret is services/acp_produce/sweeper_lambda.py, a Lambda handler that is
+      # neither deployed nor imported by the api / worker. Master-level scripts go through DB Migrate
+      # mode=run-script (db/scripts/README.md), no longer through ECS exec.
+      {
+        Sid    = "DenyMasterAndOtherAppSecrets"
+        Effect = "Deny"
+        Action = ["secretsmanager:GetSecretValue"]
+        Resource = [
+          "arn:aws:secretsmanager:${var.aws_region}:005097885195:secret:${var.project}/${var.environment}/rds-??????",
+          "arn:aws:secretsmanager:${var.aws_region}:005097885195:secret:${var.project}/${var.environment}/db-migrator-??????",
+          "arn:aws:secretsmanager:${var.aws_region}:005097885195:secret:booking/*",
+          "arn:aws:secretsmanager:${var.aws_region}:005097885195:secret:tripplanner/*",
+        ]
       }
     ]
   })
