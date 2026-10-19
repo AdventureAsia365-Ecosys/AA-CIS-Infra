@@ -7,10 +7,14 @@ variable "custom_domains_enabled" {
 }
 
 variable "custom_domain_vercel_hosts" {
-  description = "Frontend hosts on Vercel, as { label under dns_zone_name = CNAME target }. Created only when custom_domains_enabled = true. Add the domain to the Vercel project FIRST and use the target Vercel shows (project-specific *.vercel-dns-0xx.com, or cname.vercel-dns.com); a CNAME to Vercel with no project claiming the host is a takeover risk. booking (staff admin) added S239 (AA-818)."
+  description = "Frontend hosts on Vercel, as { label under dns_zone_name = CNAME target }. Created only when custom_domains_enabled = true. Add the domain to the Vercel project FIRST and use the target Vercel shows (project-specific *.vercel-dns-0xx.com, or cname.vercel-dns.com); a CNAME to Vercel with no project claiming the host is a takeover risk. booking (staff admin) added S239 (AA-818); portal (CIS tenant portal, Vercel project aa-cis-portal) added S243 (AA-885)."
   type        = map(string)
   default = {
     tripplanner = "a1520bcb29624260.vercel-dns-017.com" # project-specific target, domain added to aa-tripplanner first
     booking     = "faa59191f1f73e21.vercel-dns-017.com" # S239 AA-818: staff admin, domain added to aa-booking-admin first (verified)
+    # S243 AA-885: CIS tenant portal (Vercel project aa-cis-portal). Generic Vercel target until the domain is
+    # added to aa-cis-portal; swap in its project-specific recommendedCNAME before merge. Never apply before
+    # aa-cis-portal claims portal.lumiguides.it.com (takeover risk, see description).
+    portal = "cname.vercel-dns.com"
   }
 }
