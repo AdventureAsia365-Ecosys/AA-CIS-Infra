@@ -63,3 +63,8 @@ that change lands both modes exit 8 under the `db_migrator` login.
 
 `session_info.py` is a read-only smoke test (prints `session_user`, database, server version and the
 session settings): use it to check the mode after a change to the runner or the migrator task definition.
+
+`aa680_link_staff_cognito.py` (AA-680, one-time): links bridge-era `booking.staff_users` rows to their Cognito
+WORKFORCE identity from `shared.admin_users.cognito_iss / cognito_sub` (needs AA-Booking bk-016). Merged with
+`READ_ONLY = True` = DRY RUN (prints the mapping); a one-line follow-up PR sets `READ_ONLY = False` to apply.
+Idempotent; never rebinds or merges rows. Notes: `docs/implementation-notes/AA-680-backfill.md`.
