@@ -8,6 +8,9 @@
 #   AA-720  /admin/jev-canary/check  — one real Jev probe; 402 -> credit bell + breaker.
 #   AA-720  /admin/jev/402-sweep     — count decision_log 402s in 24h; bell if any.
 #   AA-727  /admin/waves/check       — open rerun waves; bell on a stuck tour.
+#   AA-816  /admin/job-runner/staff-reconcile/schedule — enqueue the daily staff directory
+#           reconcile (WORKFORCE pool vs shared.admin_users, report only; idempotent per UTC day).
+#           S243: one more _PATHS entry, no new schedule, role or variable.
 # AA-825 adds a SECOND schedule on the same Lambda (retention_daily, 20:30 UTC) whose
 # event names one path, /admin/job-runner/retention/schedule (enqueue the CIS
 # retention kinds, idempotent per UTC day). Its own hour keeps the retention jobs off
@@ -18,8 +21,11 @@
 # (api/core/ops_metrics_sampler.py), so the Lambda, API Gateway, WAF and shared.job are no longer
 # in the metrics path; the path is gone from the handler allowlist too.
 # All schedules pass secret_id in the event, so the handler reads X-Admin-Secret from
-# Secrets Manager at run time (the role already has GetSecretValue on it); the
-# deploy-time env value stays as the fallback.
+# Secrets Manager at run time by ARN (the role has GetSecretValue on exactly that ARN).
+# AA-878 (S243): that is the ONLY source. The ADMIN_SECRET env and the secret-version data
+# source are gone, so the plaintext is neither in the Lambda configuration nor in Terraform
+# state, and terraform plan no longer reads the value (tf_plan_secret_arns in cicd_split.tf
+# shrank with it). No secret_id or a failed read -> the handler fails closed, no API call.
 # Kept as ONE function (name unchanged: renaming the IAM role would destroy+create
 # it, a permission gap — S200). AA-720 only widened the handler's _PATHS; no new
 # AWS resource, role or schedule — the archive_file re-zips on the handler change
@@ -76,11 +82,6 @@ data "archive_file" "dfs_balance" {
   # while a local checkout has 0644, so CI and local applies kept re-uploading the same code
   # (hash oTsj... in CI vs Qekb... locally). A fixed mode makes the hash the same everywhere.
   output_file_mode = "0666"
-}
-
-# ── Read the admin secret value to inject as the Lambda env (authorizer pattern) ─
-data "aws_secretsmanager_secret_version" "dfs_balance_admin" {
-  secret_id = var.secret_admin_arn
 }
 
 # ── Lambda execution role ────────────────────────────────────────────────────
@@ -156,9 +157,9 @@ resource "aws_lambda_function" "dfs_balance_check" {
   }
 
   environment {
+    # AA-878: no ADMIN_SECRET here; the handler reads it by ARN (event secret_id) at run time.
     variables = {
       API_BASE_URL = var.dfs_balance_api_base_url
-      ADMIN_SECRET = data.aws_secretsmanager_secret_version.dfs_balance_admin.secret_string
     }
   }
 
@@ -229,8 +230,9 @@ resource "aws_scheduler_schedule" "dfs_balance_daily" {
     arn      = aws_lambda_function.dfs_balance_check.arn
     role_arn = aws_iam_role.dfs_balance_scheduler.arn
 
-    # AA-825: no "paths" -> the handler's default probe set; secret_id -> read the
-    # admin secret at run time (env value is the fallback).
+    # AA-825: no "paths" -> the handler's default probe set (incl. the AA-816 staff
+    # reconcile); secret_id -> read the admin secret at run time (AA-878: required, no
+    # fallback; removing it makes every run fail closed).
     input = jsonencode({ secret_id = var.secret_admin_arn })
 
     retry_policy {

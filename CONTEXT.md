@@ -69,9 +69,14 @@ accounts/
                                    existing VPC link, OIDC deploy role — AA-678)
     bedrock_satellite_assume.tf   (cross-account Bedrock assume-role trust)
     cost_explorer_satellite_assume.tf (acc2 → acc1/acc3 Cost Explorer read roles, AA-623)
-    dfs_balance.tf                (ops-probe Lambda: 06:15 UTC schedule POSTs the admin probes, AA-627/720/727;
+    dfs_balance.tf                (ops-probe Lambda: 06:15 UTC schedule POSTs the admin probes, AA-627/720/727,
+                                   plus the daily staff directory reconcile enqueue, AA-816;
                                    20:30 UTC schedule POSTs /admin/job-runner/retention/schedule, AA-825;
-                                   the AA-832 every-5-min schedule was removed in AA-751)
+                                   the AA-832 every-5-min schedule was removed in AA-751. AA-878: the
+                                   admin secret is read only by ARN at run time (event secret_id), no
+                                   env copy, no Terraform data source; no secret_id or a failed read =
+                                   fail closed, no API call. lambda_src/dfs_balance_check + _tests,
+                                   .github/workflows/ops-probe-test.yml)
     rds_snapshot_expiry.tf        (AA-869, DM-7.5: daily 22:00 UTC Lambda that expires manual
                                    aa-cis-dev-db snapshots after 30 d unless keep-* / aa:retain=keep /
                                    aa:retain-until; keeps and reports snapshots of a deleted or

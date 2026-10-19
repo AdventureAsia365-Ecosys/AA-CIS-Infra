@@ -6,8 +6,8 @@
 #   1. Log retention 14 days on groups that AWS created implicitly (so Terraform never managed
 #      them): the 2 TripPlanner Lambda groups and the CIS REST API execution-log group. They are
 #      brought under Terraform with `import` blocks (Terraform >= 1.5; CI pins 1.7.5): the plan
-#      shows "will be imported" + an in-place update (retention + tags), never a create/replace.
-#      Once applied, the import blocks are no-ops and can be deleted in a later PR.
+#      showed "will be imported" + an in-place update (retention + tags), never a create/replace.
+#      Once applied the import blocks were no-ops; they were deleted in S243.
 #   2. Alarms -> the existing SNS topic aws_sns_topic.alerts (aa-cis-dev-acp-alerts, email).
 #      AA-832 completes the RDS rows of data standard C4.1 (latency, disk queue, XID wraparound,
 #      per-role connections) and grants the CIS task role PutMetricData on namespace AA/RDS.
@@ -68,18 +68,9 @@ locals {
 }
 
 # -----------------------------------------------------------------------------
-# 1. Log retention (import existing, unmanaged groups)
+# 1. Log retention (groups that existed unmanaged; adopted by import blocks in S235, which
+#    were removed in S243 once the addresses were in state)
 # -----------------------------------------------------------------------------
-
-import {
-  to = aws_cloudwatch_log_group.tripplanner_lambda["browse"]
-  id = "/aws/lambda/${local.tp_name_prefix}-browse"
-}
-
-import {
-  to = aws_cloudwatch_log_group.tripplanner_lambda["assembly"]
-  id = "/aws/lambda/${local.tp_name_prefix}-assembly"
-}
 
 resource "aws_cloudwatch_log_group" "tripplanner_lambda" {
   for_each = local.tp_functions
@@ -88,11 +79,6 @@ resource "aws_cloudwatch_log_group" "tripplanner_lambda" {
   retention_in_days = 30 # AA-872 (S241 D-09): app logs 30 days
 
   tags = merge(local.ecosys_tags, { App = "tripplanner" })
-}
-
-import {
-  to = aws_cloudwatch_log_group.cis_apigw_execution
-  id = local.cis_apigw_exec_log_group
 }
 
 resource "aws_cloudwatch_log_group" "cis_apigw_execution" {

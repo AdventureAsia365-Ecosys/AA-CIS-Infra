@@ -1,4 +1,4 @@
-"""AA-627 + AA-720 + AA-825 — ops-probe trigger.
+"""AA-627 + AA-720 + AA-825 + AA-816 — ops-probe trigger.
 
 EventBridge Scheduler -> this Lambda -> a short list of secret-gated admin POSTs. Each backend
 endpoint does its own work (read a balance, probe a vendor, sweep a log, enqueue jobs) and raises its
@@ -13,6 +13,8 @@ non-2xx is logged, not raised, so one flaky endpoint can't suppress the rest or 
   AA-720  POST /admin/jev/402-sweep     — count decision_log 402s in the last 24h; bell if any.
   AA-727  POST /admin/waves/check       — evaluate open rerun waves; one bell when a wave's jobs
           finished but some expected tour is not in a terminal state.
+  AA-816  POST /admin/job-runner/staff-reconcile/schedule — enqueue one staff directory reconcile
+          job (WORKFORCE pool vs shared.admin_users, report only), idempotent per UTC day.
 
 Called by their own schedules (the event names the path):
   AA-825  POST /admin/job-runner/retention/schedule — enqueue one job per CIS retention kind,
@@ -26,8 +28,11 @@ Event (the Scheduler target input; every key optional):
   {"paths": ["/admin/..."], "secret_id": "<Secrets Manager ARN or name>"}
   - paths: which admin paths to POST. Only paths in _ALLOWED_PATHS are called; any other is logged
     and skipped, so an invoke can never aim the admin secret at an arbitrary route.
-  - secret_id: read the X-Admin-Secret value from Secrets Manager at run time (a rotated secret is
-    picked up without a redeploy). If the read fails, the deploy-time env value is used instead.
+  - secret_id: the Secrets Manager ARN (or name) of the X-Admin-Secret value, read at run time (a
+    rotated secret is picked up without a redeploy). AA-878: this is the ONLY source of the secret.
+    With no secret_id, or when the read fails, the run logs `admin_secret_unavailable` and returns a
+    failure without calling the API (fail closed). There is no env fallback any more, so the
+    plaintext value is not in the Lambda configuration or in Terraform state.
 
 Kept as ONE Lambda (not one per concern): all of these are the same "in-VPC, admin-secret POST"
 shape, so adding a path (or a schedule that names one) is cheaper than a new function + role. The
@@ -36,8 +41,6 @@ permission gap — S200).
 
 Env:
   API_BASE_URL  — e.g. https://api-cis.lumiguides.it.com (no trailing slash needed)
-  ADMIN_SECRET  — the X-Admin-Secret value injected at deploy time (fallback when no secret_id or
-                  the run-time read fails)
 """
 import json
 import logging
@@ -49,7 +52,6 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 _API = os.environ["API_BASE_URL"].rstrip("/")
-_ENV_SECRET = os.environ.get("ADMIN_SECRET", "")
 
 # The default run (06:15 UTC probe schedule, no "paths" in the event). Independent: a failure in one
 # is logged and the rest still run.
@@ -58,6 +60,7 @@ _PATHS = (
     "/admin/jev-canary/check",    # AA-720
     "/admin/jev/402-sweep",       # AA-720
     "/admin/waves/check",         # AA-727
+    "/admin/job-runner/staff-reconcile/schedule",   # AA-816 C7
 )
 
 # Paths a schedule may name in its event. Anything else is refused.
@@ -66,9 +69,9 @@ _ALLOWED_PATHS = frozenset(_PATHS + (RETENTION_SCHEDULE_PATH,))
 
 
 def _read_secret(secret_id):
-    """Read the admin secret at run time. Returns None on any failure (the caller falls back to the
-    deploy-time env value). boto3 ships with the Lambda Python runtime; imported lazily so the
-    module still loads where it is absent."""
+    """Read the admin secret at run time. Returns None on any failure (the caller then fails closed).
+    boto3 ships with the Lambda Python runtime; imported lazily so the module still loads where it
+    is absent."""
     try:
         import boto3
         resp = boto3.client("secretsmanager").get_secret_value(SecretId=secret_id)
@@ -80,12 +83,11 @@ def _read_secret(secret_id):
 
 
 def _resolve_secret(event):
+    """The X-Admin-Secret value for this run, or None (AA-878: Secrets Manager only, no fallback)."""
     secret_id = event.get("secret_id")
-    if secret_id:
-        value = _read_secret(secret_id)
-        if value:
-            return value, "secrets_manager"
-    return _ENV_SECRET, "env"
+    if not secret_id or not isinstance(secret_id, str):
+        return None
+    return _read_secret(secret_id)
 
 
 def _select_paths(event):
@@ -132,8 +134,13 @@ def _post(path, secret):
 def handler(event, context):
     event = event if isinstance(event, dict) else {}
     paths = _select_paths(event)
-    secret, source = _resolve_secret(event)
-    logger.info("ops_probe run paths=%s secret_source=%s", list(paths), source)
+    secret = _resolve_secret(event)
+    if not secret:
+        # Fail closed (AA-878): never POST without the secret, never with a stale copy.
+        logger.error("ops_probe admin_secret_unavailable secret_id_present=%s paths=%s",
+                     bool(event.get("secret_id")), list(paths))
+        return {"statusCode": 500, "body": json.dumps({"error": "admin_secret_unavailable"})}
+    logger.info("ops_probe run paths=%s secret_source=secrets_manager", list(paths))
     results = {}
     any_ok = False
     for path in paths:

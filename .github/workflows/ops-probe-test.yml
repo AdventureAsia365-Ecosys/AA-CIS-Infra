@@ -1,0 +1,45 @@
+name: Ops Probe Lambda Tests
+
+# AA-878 + AA-816: the ops-probe Lambda (dfs_balance_check) POSTs admin routes with the admin secret.
+# Its path allowlist and the fail-closed secret read (Secrets Manager by ARN only, no env fallback)
+# are unit-tested on every PR and push that touches them, before Terraform re-zips the handler.
+# Stdlib unittest, no AWS access, no pip install.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "accounts/aa365/lambda_src/dfs_balance_check/**"
+      - "accounts/aa365/lambda_src/dfs_balance_check_tests/**"
+      - ".github/workflows/ops-probe-test.yml"
+  push:
+    branches: [main]
+    paths:
+      - "accounts/aa365/lambda_src/dfs_balance_check/**"
+      - "accounts/aa365/lambda_src/dfs_balance_check_tests/**"
+      - ".github/workflows/ops-probe-test.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  ops-probe-tests:
+    name: Ops probe Lambda tests (unittest)
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: accounts/aa365
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Python (Lambda runtime python3.12)
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      # -B + sys.dont_write_bytecode (test file) keep __pycache__ out of the archive_file source dir.
+      - name: Run ops-probe handler tests
+        run: python -B -m unittest discover -s lambda_src/dfs_balance_check_tests -v
