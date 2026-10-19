@@ -1,107 +1,81 @@
 # AA-CIS-Infra — Claude Code Context
 
-## ⚠️ RESTRUCTURE 15/09/2026 — ĐỌC TRƯỚC
-- **Workspace gom lại:** repo này giờ ở `~/projects/AA-Ecosys/infra/AA-CIS-Infra` (KHÔNG còn
-  `~/projects/aa-cis/AA-CIS-Infra`). Multi-repo, mỗi repo `.git` riêng.
-- **Org GitHub đổi tên:** `AdventureAsia365-CIS` → **`AdventureAsia365-Ecosys`** (redirect còn
-  chạy). Tên repo giữ nguyên. Remote origin đã trỏ org mới. Lệnh gh: `--repo AdventureAsia365-Ecosys/AA-CIS-Infra`.
-- **OIDC transitional (đã apply 15/09/2026, LỊCH SỬ — `aa-cis-dev-role` đã gỡ ở AA-806 bước 3, S239;
-  role CI hiện tại: `cicd_split.tf`):** 2 role trong `accounts/aa365/` (`cicd.tf` →
-  `aa-cis-dev-role`; `tripplanner.tf` → `aa-tripplanner-dev-app-deploy`) đã mở rộng `sub` nhận CẢ
-  `repo:AdventureAsia365-CIS...` VÀ `repo:AdventureAsia365-Ecosys...` (apply: 0 add/4 change/0 destroy).
-  `cicd.tf` dùng dạng phẳng `repo:<org>/*:*`; `tripplanner.tf` dùng `@id`-wildcard (repo
-  AA-TripPlanner-Web bật "include repo ID in subject"; org KHÔNG bật — đã xác minh).
-  **G5 (chờ vài ngày): gỡ tên org cũ** theo `~/projects/AA-Ecosys/docs/g5-remove-old-trust.md`.
-- **CI/CD:** `configure-aws-credentials` đã nâng `@v4`→`@v6` (Node 24) trong terraform-plan/apply.yml.
-- **TripPlanner** dùng chung acc2 (Lambda/API GW/S3 trong `accounts/aa365/tripplanner.tf`); repo
-  AA-TripPlanner-Web owns Lambda code. Sơ đồ tổng: `~/projects/AA-Ecosys/docs/ecosystem-architecture.md`.
+Updated 19/10/2026 (S243, AA-889). Short, current rules only. History lives in git, Linear and the
+AA-Ecosys session logs, not here.
 
-# Updated: 11/09/2026 (AA-587 — corrected stale account/profile, confirmed live root)
+**Read [`CONTEXT.md`](../CONTEXT.md) before any change** — layout, accounts, every module, OIDC roles,
+how a change is applied and the boundaries ("apps own code, Infra owns resources"). The ecosystem view
+is `AA-Ecosys/docs/ecosystem-architecture.md`; data rules are `AA-Ecosys/docs/architecture/data-standards/`.
+This repo is private (the app repos are public): inventories, ARNs and security notes belong here or in
+the root repo, never in an app repo.
 
-## LIVE ROOT — accounts/aa365/
-The Terraform root that actually manages live infrastructure is **`accounts/aa365/`**,
-NOT the repo-root `main.tf`/`versions.tf` (that root is stale — see "STALE REPO-ROOT" below).
-CI workflows (`terraform-plan.yml`/`terraform-apply.yml`) already run with
-`working-directory: accounts/aa365` — confirmed via `.github/workflows/*.yml`.
+## Where things are
 
-## LIVE STATE
-- Account: **005097885195** (aa365, Acc2 — CIS DEV hạ tầng chính) | Region: us-west-1 | Profile: **aa365-admin**
-- ECS cluster: aa-cis-dev-cluster | service: aa-cis-dev-api
-- RDS: aa-cis-dev-db (PostgreSQL 15)
-- ECR: 005097885195.dkr.ecr.us-west-1.amazonaws.com/aa-cis-dev-api
-- ALB: aa-cis-dev-alb-281090825.us-west-1.elb.amazonaws.com (**internet-facing** — confirmed AA-585,
-  11/09/2026; do not assume "internal ALB" means VPN/VPC-only)
+- Workspace: `~/projects/AA-Ecosys/infra/AA-CIS-Infra` (own `.git`, org `AdventureAsia365-Ecosys`,
+  default branch `main`).
+- **Live root: `accounts/aa365/`** (acc2). CI runs plan/apply there. The old repo-root Terraform was
+  removed in AA-587; the `main.tf.bak*` files left at the root are history (cleanup: AA-890). `envs/` was
+  removed in AA-841 — do not recreate it.
+- Other roots, applied by a human locally with MFA: `accounts/acc3-bedrock/` (acc3, Bedrock primary +
+  Batch + Cost Explorer reader) and `accounts/acc1-bedrock/` (acc1, Bedrock fallback + Cost Explorer
+  reader). acc1 hosts **no** app infrastructure.
 
-## TERRAFORM BACKEND (accounts/aa365)
-```
-backend "s3" {
-  bucket         = "aa-cis-tfstate-005097885195"
-  key            = "dev/terraform.tfstate"
-  region         = "us-west-1"
-  dynamodb_table = "aa-cis-tfstate-lock-005097885195"
-}
-```
-No hardcoded profile in the backend block — CI (GitHub Actions OIDC) uses ambient credentials.
-Local runs: `export AWS_PROFILE=aa365-admin` before `terraform` commands, always from
-`accounts/aa365/` (never the repo root).
-Always: `terraform plan` before `apply`.
+| Account | ID | Region | Profile | Holds |
+|---|---|---|---|---|
+| acc2 | 005097885195 | us-west-1 | `aa365-admin` | all app infrastructure (only account with infra) |
+| acc3 | 786888028788 | us-west-1 | `nghiep_aa365` | Bedrock satellite (primary) |
+| acc1 | 867490540162 | us-west-1 | `pqnghiep-admin` | Bedrock satellite (fallback) |
 
-## STALE REPO-ROOT — main.tf / versions.tf / variables.tf / outputs.tf (KHÔNG DÙNG)
-The repo-root Terraform files point at S3 state bucket `aa-cis-tfstate-867490540162`, which
-**no longer exists** (`NoSuchBucket`, confirmed via `aws s3api head-bucket`, AA-587 11/09/2026) —
-it belonged to account 1 (867490540162)'s old, since-destroyed infrastructure (AA-271 cutover).
-This root also hardcodes account-1 ARNs throughout (bronze/gold bucket names, ALB ARN, WAF ARN,
-ACM cert ARN, ECS task-def ARN, old ALB DNS `...-1114303360...`) — none of it reflects live
-infra. No CI workflow, script, or Makefile references it (confirmed via repo-wide grep, AA-587).
-Kept as historical reference only (predates the AA-246/AA-271 account-2 cutover) — **do not run
-`terraform` from the repo root, do not treat anything in it as live config**. See
-`docs/implementation-notes/AA-587.md` for the full investigation.
+Always check first: `aws sts get-caller-identity --profile aa365-admin --region us-west-1`.
 
-## ⚠️ Old tech-debt note (AA-22) — DOES NOT APPLY to accounts/aa365
-The repo-root's hardcoded `api_task_def_arn` (revision `:21`) was AA-22's known tech debt.
-`accounts/aa365/main.tf` already resolves this dynamically
-(`arn:aws:ecs:${var.aws_region}:${var.account_id}:task-definition/${local.name_prefix}-api`) —
-confirmed AA-587, 11/09/2026. Not an open issue on the live root.
+## Live state (pointers, not numbers — checked 19/10/2026)
 
-## RESOURCE NAMING
-Pattern: aa-cis-{env}-{resource}
-Examples: aa-cis-dev-api, aa-cis-dev-db, aa-cis-dev-cluster, aa-cis-dev-redis
+- ECS cluster `aa-cis-dev-cluster`, services `aa-cis-dev-api`, `aa-cis-dev-worker`, `aa-booking-dev-api`.
+  Current revisions: `aws ecs describe-services --cluster aa-cis-dev-cluster --services aa-cis-dev-api aa-cis-dev-worker aa-booking-dev-api --profile aa365-admin --region us-west-1 --query 'services[].[serviceName,taskDefinition]' --output text`.
+- RDS `aa-cis-dev-db` (PostgreSQL 15, `db.t4g.small`, parameter group `aa-cis-dev-pg15`), shared by all three apps.
+- ALB `aa-cis-dev-alb` is **internet-facing** (AA-585); APIs enter through API Gateway + the VPC link NLB.
+  Look IDs and DNS names up (CLI or Terraform outputs); do not paste them into docs.
+- State backend for `accounts/aa365`: S3 bucket `aa-cis-tfstate-005097885195`, key `dev/terraform.tfstate`,
+  lock table `aa-cis-tfstate-lock-005097885195`; no profile in the backend block (CI uses OIDC).
+- Secrets: names, owners and readers are in `AA-Ecosys/docs/security/secrets-register.md` (AA-878). Never
+  read a secret value; never list secret values in a doc.
 
-## ECR — ALWAYS :latest
-NEVER use commit hash as image tag in task definitions.
-Always use :latest so ECS pulls correct image after CI push.
+## ECR — immutable, one tag per git SHA
 
-## SECRETS (Secrets Manager)
-aa-cis/dev/rds          → plain DSN string (postgresql://user:pwd@host/db)
-aa-cis/dev/anthropic-key → Anthropic API key (legacy — migrate to Bedrock)
-aa-cis/dev/dataforseo   → DataForSEO credentials
-aa-cis/dev/admin-secret → Admin panel secret
+Both repositories (`aa-cis-dev-api`, `aa-booking-dev-api`) are **IMMUTABLE** (AA-869). CIS deploys tag
+`dev-<git sha>`, Booking tags the git SHA; each deploy registers a task-definition revision pinned to that
+tag and the api and worker run the same SHA. The `:latest` in the Terraform task definitions is only a
+placeholder (services ignore `task_definition`); never push or deploy `:latest`.
 
-## COST TARGETS
-Phase 1: ~$73-100/month
-ECS: REMIND user to stop desired=0 after session — do NOT auto-execute
-RDS: REMIND user to stop instance after session — do NOT auto-execute
-Lambda: on-demand (no cost when idle)
+## How changes land
 
-## WAF IAM — CHICKEN-AND-EGG PATTERN
-WAFReadPolicy must be granted manually via CLI BEFORE running Terraform on first deploy.
-`accounts/aa365/cicd.tf`'s WAFv2Manage statement — do not remove.
-Pattern: grant WAF read manually → terraform apply → policy self-manages thereafter.
+- Branch → PR → required CI (Terraform Plan, guards, gitleaks) → squash merge to `main`.
+- **Merge rights (S241 D-13, data standards DM-11.5, v1.1 wording pending N-1):** in the dev phase the
+  orchestrating agent merges its own PRs after green CI, infra and IAM included, after an agent review for
+  risky changes; subagents never merge. From the first prod environment or paying tenant, Nghiệp approves
+  every Terraform/IAM PR before merge.
+- **Apply is deliberate, never on merge:** `terraform-apply.yml` (manual dispatch, `environment: prod`,
+  role `aa-cis-infra-tf-apply`) or locally from `accounts/aa365/` with MFA credentials
+  (`export $(aws configure export-credentials --profile aa365-admin --format env | xargs) && unset AWS_PROFILE`).
+  `terraform plan` before every apply; read the plan for destroys.
+- Bootstrap objects (CI roles, both permission boundaries, the OIDC provider, `local.cicd_managed_policies` /
+  `local.cicd_inline_statements` in `cicd.tf`, the agent session role) are applied locally; CI apply cannot
+  change them. Every new `aws_iam_role` sets `permissions_boundary = aws_iam_policy.workload_boundary.arn`.
+- Migrations: byte-identical copies in `db/migrations/<owner>/`, applied by **DB Migrate**; the registry
+  of owners, prefixes and roles is `db/owners.yaml`. The schema reference is regenerated by
+  **DB Schema Dump** (nightly and after each apply).
 
-## LAMBDA STATE
-- aa-cis-dev-acp-s3-campaign-planner: DEPLOYED ✅ (AA-45)
-- aa-cis-dev-acp-s4-evaluate: DEPLOYED ✅ (AA-49)
-- aa-cis-dev-acp-s4-trigger: DEPLOYED ✅
+## Cost and logs
 
-## OTHER TERRAFORM ROOTS IN THIS REPO (separate, unrelated — do not confuse with the above)
-- `accounts/acc1-bedrock/` — account **867490540162** (Acc1), profile `pqnghiep-admin` IS
-  correct here. Deliberately kept alive for the Bedrock LLM satellite FALLBACK pattern (AA-296),
-  NOT for CIS's main app infra. State bucket `aa-cis-tfstate-acc1-bedrock-867490540162`.
-- `accounts/acc3-bedrock/` — account **786888028788** (Acc3), profile `nghiep_aa365`. Bedrock
-  satellite CHÍNH. State bucket `aa-cis-tfstate-acc3-bedrock-786888028788`.
-- `envs/` (dev/staging/prod) — REMOVED in AA-841 (S238): dead scaffold (empty `.tf` files, no
-  backend) whose `envs/dev/terraform.tfvars` held plaintext acc1-era credentials. Do not recreate it.
+- State the monthly cost of any new AWS resource in the PR before applying it (D-19); prefer zero-cost options.
+- Every new CloudWatch log group sets `retention_in_days`: **365** for security/audit logs, **30** for
+  application logs (S241 D-09, AA-872, data standards Part B §7).
+- Tags: use the existing `Environment` / `App` tags; do not add an `Env` tag.
+- Do not start, stop or scale ECS, RDS or the NAT instance unless Nghiệp asks.
 
-## SSM ONLY
-Never use SSH. All container access via:
-aws ecs execute-command --cluster aa-cis-dev-cluster --task {TASK_ARN} --container api --interactive --command "/bin/bash" --profile aa365-admin --region us-west-1
+## Access
+
+SSM only, never SSH. Container access with ECS Exec (sessions are logged for 365 days; never print env
+or secret values), one line:
+`aws ecs execute-command --cluster aa-cis-dev-cluster --task <TASK_ARN> --container api --interactive --command "/bin/bash" --profile aa365-admin --region us-west-1`
+Scripts against the DB use the S3-mediated pattern in `AA-Ecosys/skill/aa-cis-schema/`.
