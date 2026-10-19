@@ -302,6 +302,27 @@ resource "aws_iam_role_policy" "ecs_task_infra_status_readonly" {
         Effect   = "Allow"
         Action   = ["ce:GetCostAndUsage"]
         Resource = "*"
+      },
+      # AA-858 — GET /admin/overview/ops (AA-CIS-App api/services/ops_overview/) shows request / error / p95 /
+      # throttle numbers per app (API Gateway aa-cis-dev-api + aa-booking-dev-api, Lambdas
+      # aa-tripplanner-dev-browse/-assembly) and an "alarm firing" pill per app. Read-only, cached in Redis
+      # (5 min), so a page view is not an API call. cloudwatch:GetMetricData has no resource-level permission
+      # in IAM (Resource="*" is the only form AWS accepts; it returns metric values only). Cost: $0.01 per
+      # 1,000 metrics requested, ~16 per cache miss, worst case ≈ $0.60/month.
+      {
+        Effect   = "Allow"
+        Action   = ["cloudwatch:GetMetricData"]
+        Resource = "*"
+      },
+      # DescribeAlarms (names, states, thresholds; free within the API free tier) supports the alarm ARN, so it is
+      # scoped to this account's alarms in this region rather than "*". Not narrowed to per-prefix ARNs
+      # (aa-cis-dev-*, aa-booking-dev-*, …): DescribeAlarms is a list call made with AlarmNamePrefix, and whether
+      # IAM matches a prefix-pattern ARN for it is unverified; alarm:* also covers the aa-identity-dev-* /
+      # aa-email-dev-* alarms if the overview adds them. No lambda:GetFunctionConfiguration (it returns env vars).
+      {
+        Effect   = "Allow"
+        Action   = ["cloudwatch:DescribeAlarms"]
+        Resource = "arn:aws:cloudwatch:${var.aws_region}:005097885195:alarm:*"
       }
     ]
   })
