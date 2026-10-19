@@ -74,6 +74,14 @@ compares them once `db/migrations/cis/245_x1_cis_owner.sql` is copied) and every
 refuse (`SCRIPT refuse …`, a third owner, a SECURITY DEFINER routine, the FORCE set, default ACL rows, rl-002's shape),
 ending with `SCRIPT summary move=<n> refuse=<n> ok=<t|f>`. Compare its `move` lines with the 245 apply's NOTICE lines.
 
+`dm65_consent_capture.py` (DM-6.5, AA-886, read-only): the consent capture check. Per app and source, how many
+customers have `contact_consent` true/false and a `contact_consent_at` (`SCRIPT coverage`), rows whose value and time
+disagree (`SCRIPT integrity`), whether each `tripplanner.customers` row reached the Booking master with the same value,
+time and `source = 'tripplanner_lead'` (`SCRIPT chain`), and the trail of a live test inquiry sent with an
+`aa886-consent-test…@example.com` address through `tripplanner.customers` → `booking.inbox_events` → `booking.customers`
+(`SCRIPT test_inquiry`). Prints ids, booleans, timestamps and counts only; e-mail is a filter, never printed. The query
+text and its run steps live in the root repo, `docs/legal/consent-capture-query.md`; keep the two identical.
+
 `session_info.py` is a read-only smoke test (prints `session_user`, database, server version and the
 session settings): use it to check the mode after a change to the runner or the migrator task definition.
 
