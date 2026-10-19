@@ -93,6 +93,17 @@ owners:
     # ENABLE-without-FORCE RLS tables that need no permissive policy TO cis_app (probe cell
     # rls.enable_only_has_cis_app_policy, CIS standing CI check, X1 S15/S16). Empty: 244 covers all 8.
     rls_enable_only_allowlist: []
+    # Tables where cis_app must read every row, as the platform runtime does today (X1 S16, S243 correction of
+    # plan §1.4): the master reads the 8 FORCE RLS tables unfiltered (rds_superuser, AA-817 probe v2) and most
+    # CIS code sets no tenant GUC, so CIS 244 gives cis_app a permissive USING (true) WITH CHECK (true) policy
+    # on every RLS table, FORCE ones included (<table>_cis_app_all). Probe cell rls.force_parity.cis_app:
+    # cis_app's count(*) through its own DSN, without a GUC and under a forged one, equals the catalog login's.
+    # Mirrored by db/isolation_probe.py RLS_PARITY_TABLES.
+    rls_parity_tables: [gold_aa_internal.content_exports, gold_aa_internal.published_tours,
+                        gold_aa_internal.tenant_tour_versions, gold_aa_internal.webhook_deliveries,
+                        shared.pipeline_runs, silver_aa_internal.generated_content,
+                        silver_aa_internal.quality_scores, silver_aa_internal.raw_tours,
+                        silver_aa_internal.seo_context]
     # Grants to other apps' roles (input for the X2 grant guard; not enforced yet). contract = the
     # intended reads (schema-ownership.md rule 2); grandfathered = removed by X4 (TripPlanner decoupling).
     consumer_grants:

@@ -34,7 +34,8 @@ OWNER_KEYS = {"repo", "path", "key_prefix", "anchor_schema", "schemas", "owner_r
               "owner_transfer_key", "runtime_roles", "runtime_roles_today", "runtime_secrets",
               "runtime_privileges", "job_table", "job_kind_prefix", "idle_exempt_kinds", "set_local_roles",
               "role_lint_from", "consumer_grants"}
-OPTIONAL_KEYS = {"view_owner_roles", "rls_enable_only_allowlist", "runtime_privileges_from", "owner_grants"}
+OPTIONAL_KEYS = {"view_owner_roles", "rls_enable_only_allowlist", "runtime_privileges_from", "owner_grants",
+                 "rls_parity_tables"}
 
 
 def validate_step():
@@ -175,6 +176,11 @@ class MirrorsAgreeTest(unittest.TestCase):
         self.assertEqual(set(probe.CONSUMER_GRANTS), expected)
         self.assertEqual(probe.RLS_ENABLE_ONLY_ALLOWLIST,
                          frozenset(OWNERS["cis"].get("rls_enable_only_allowlist", [])))
+        # X1 S16 (CIS 244, S243): the RLS parity tables, sorted, all in CIS runtime schemas.
+        self.assertEqual(list(probe.RLS_PARITY_TABLES), OWNERS["cis"]["rls_parity_tables"])
+        self.assertEqual(OWNERS["cis"]["rls_parity_tables"], sorted(OWNERS["cis"]["rls_parity_tables"]))
+        for t in probe.RLS_PARITY_TABLES:
+            self.assertIn(t.split(".")[0], probe.CIS_RUNTIME_SCHEMAS, t)
         for v in (str(o["owner_transfer_key"]) for o in SCHEMA_OWNERS.values()):
             self.assertIn(v, probe.VERSION_KEYS)
 

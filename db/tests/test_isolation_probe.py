@@ -399,6 +399,38 @@ class BuildCellsTest(unittest.TestCase):
         st, _ = statuses(f)
         self.assertEqual(st["sessions.master_break_glass_only"], "pass")
 
+    def test_rls_force_parity_keyed_on_244_and_the_cis_app_password(self):
+        f = today_facts()
+        st, _ = statuses(f)
+        self.assertEqual(st["rls.force_parity.cis_app"], "pending")          # no 244, no cis_app login yet
+        f["catalog"]["registered"] = ["rl-001", "244"]
+        f["roles"]["cis_app"] = role("cis_app", connlimit=90,
+                                     comment=f"{p.PASSWORD_MARKER} 2026-10-20T08:00:00Z by DB Migrate set-password")
+        f["logins"]["cis_app"] = {"secret": "aa-cis/dev/rds-cis-app", "secret_user": "cis_app",
+                                  "current_user": "cis_app",
+                                  "cross": {"booking.customers": denied("b"), "tripplanner.sessions": denied("t")}}
+        f["force_parity"] = {"reference": {t: [10, 11] for t in p.RLS_PARITY_TABLES},
+                             "cis_app": {t: {"plain": 10, "forged": 11} for t in p.RLS_PARITY_TABLES}}
+        st, keys = statuses(f)
+        self.assertTrue(keys["244"] and keys["cis_app_secret_ready"] and keys["cis_app_password_set"])
+        self.assertEqual(st["rls.force_parity.cis_app"], "pass")             # a concurrent insert between refs
+        # The X1 plan's original premise: FORCE RLS filters cis_app without a GUC (no parity policy).
+        f["force_parity"]["cis_app"]["silver_aa_internal.raw_tours"] = {"plain": 0, "forged": 0}
+        st, keys = statuses(f)
+        self.assertEqual(st["rls.force_parity.cis_app"], "FAIL")
+        cells = {c.id: c for c in p.build_cells(f, keys)}
+        self.assertIn("silver_aa_internal.raw_tours", cells["rls.force_parity.cis_app"].detail["mismatch"][0])
+        f["force_parity"]["cis_app"]["silver_aa_internal.raw_tours"] = {"error": "42501 InsufficientPrivilegeError"}
+        st, _ = statuses(f)
+        self.assertEqual(st["rls.force_parity.cis_app"], "FAIL")
+        f["force_parity"] = {"error": "reference count: 57014 QueryCanceledError"}
+        st, _ = statuses(f)
+        self.assertEqual(st["rls.force_parity.cis_app"], "FAIL")
+
+    def test_parity_tables_are_the_force_tables_and_ttv(self):
+        self.assertIn(p.TTV, p.RLS_PARITY_TABLES)
+        self.assertEqual(len(p.RLS_PARITY_TABLES), 9)
+
     def test_enable_only_allowlist(self):
         f = today_facts()
         f["catalog"]["registered"] = ["244"]
