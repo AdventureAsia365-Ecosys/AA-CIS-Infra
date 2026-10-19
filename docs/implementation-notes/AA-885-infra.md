@@ -15,8 +15,10 @@ adds the DNS record and re-points the (still unused) Cognito `cis-portal` app cl
   (read-only `list_projects search=portal` → empty), so the project-specific `*.vercel-dns-017.com`
   target was unknown. The value committed is Vercel's generic `cname.vercel-dns.com`, which Vercel
   accepts for any project-attached sub-domain. The main session swaps in the `recommendedCNAME` from
-  `get_project_domain` / `get_domain_config` after S0 (one-line edit, amend before push), to match
-  the tripplanner / booking entries.
+  `get_project_domain` / `get_domain_config` after S0, to match the tripplanner / booking entries.
+  It is one line: replace the whole `portal = ...` line (value and its PLACEHOLDER comment) with
+  `portal = "<recommendedCNAME>" # S243 AA-885: tenant portal, domain added to aa-cis-portal first (verified)`,
+  commit, and only then push, so the CI plan shows the real target. The placeholder is never pushed.
 - **Callback / logout paths for `cis-portal`** (EXTERNAL pool, confidential client):
   - callback `https://portal.lumiguides.it.com/api/auth/callback/cognito` and
     `http://localhost:3004/api/auth/callback/cognito`;
@@ -38,7 +40,7 @@ adds the DNS record and re-points the (still unused) Cognito `cis-portal` app cl
 ## Tradeoffs
 
 - Generic vs project-specific CNAME target: both resolve to Vercel's edge; project-specific is
-  Vercel's current recommendation and what the other two hosts use, hence the swap before merge.
+  Vercel's current recommendation and what the other two hosts use, hence the swap before push.
   Shipping the generic target is safe functionally but still needs the project to claim the host first.
 - Keeping the same `/api/auth/callback/cognito` path name for admin and portal: different hosts,
   different clients, different pools, so no clash; it keeps one convention for AA-813.
