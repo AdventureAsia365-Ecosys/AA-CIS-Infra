@@ -49,7 +49,9 @@ read but a runtime role losing a grant — an object the new owner creates that 
 (42501 after deploy). Cells runtime_grants.<owner> (baseline privilege on every existing object, as
 has_*_privilege catalog facts) and default_acl.<owner> (pg_default_acl FOR ROLE <live owner> grants the
 runtime role; no FOR ROLE master row left once transferred) cover it; consumer.contract_grants keeps
-the contract reads of other apps (booking → tripplanner.v_inquiry_outbox, …).
+the contract reads of other apps (booking → tripplanner.v_inquiry_outbox, …); a grant whose migration is
+newer than the cell set (owners.yaml expected_from, e.g. cis_app → booking.v_ops_* from bk-017, AA-858) has
+its own cell consumer.contract_grants.<key>, pending until that key is registered.
 
 RLS parity (X1 S16, S243 correction): the master reads the FORCE RLS tables unfiltered (rds_superuser,
 AA-817 probe v2) and most CIS code sets no tenant GUC, so CIS 244 gives cis_app a permissive USING (true)
@@ -142,12 +144,20 @@ OBJECT_KINDS = ("relation", "sequence", "function")
 # Contract consumer grants on ONE named object (owners.yaml consumer_grants, status contract): the
 # grantee must keep them through every transfer (an ACL is rewritten to the new owner, not dropped).
 # Wildcard objects (catalog.* views) are left out: the helper view catalog._tour_day_text is not granted.
+# Fourth field = owners.yaml expected_from: the owner's schema_versions key of the migration that creates the
+# object and the grant. "" = always expected (cell consumer.contract_grants); a key = its own cell
+# consumer.contract_grants.<key>, pending until the key is registered, so merging the registry entry before the
+# DB Migrate apply never turns the nightly probe red (AA-858).
 CONSUMER_GRANTS = (
-    ("booking", ("EXECUTE",), "geo.name_norm(text)"),
-    ("booking", ("USAGE", "SELECT"), "tripplanner.v_inquiry_outbox"),
-    ("tripplanner", ("EXECUTE",), "geo.name_norm(text)"),
-    ("tripplanner", ("INSERT",), "shared.llm_call_log"),
+    ("booking", ("EXECUTE",), "geo.name_norm(text)", ""),
+    ("booking", ("USAGE", "SELECT"), "tripplanner.v_inquiry_outbox", ""),
+    ("tripplanner", ("EXECUTE",), "geo.name_norm(text)", ""),
+    ("tripplanner", ("INSERT",), "shared.llm_call_log", ""),
+    ("cis_app", ("USAGE", "SELECT"), "booking.v_ops_funnel_daily", "bk-017"),
+    ("cis_app", ("USAGE", "SELECT"), "booking.v_ops_case_status", "bk-017"),
+    ("cis_app", ("USAGE", "SELECT"), "tripplanner.v_ops_traffic_daily", "tp-015"),
 )
+CONSUMER_GRANT_KEYS = tuple(sorted({k for *_, k in CONSUMER_GRANTS if k}))
 # DB Migrate mode=set-password (X1 S12) ends with COMMENT ON ROLE <role> IS '<marker> <UTC time> …': a
 # role without it has never had a password set, so its login is not expected yet (X1 S17 window).
 PASSWORD_MARKER = "x1:password-set"
@@ -186,7 +196,7 @@ CROSS_APP = (
     (CIS_RUNTIME, "tripplanner.sessions", ("cis_runtime_on_cis_app",)),
 )
 
-VERSION_KEYS = ("rl-001", "243", "bk-014", "tp-013", "244", "rl-002", "245")
+VERSION_KEYS = ("rl-001", "243", "bk-014", "tp-013", "244", "rl-002", "245") + CONSUMER_GRANT_KEYS
 TRANSFER_KEYS = {name: f"{name}_transferred" for name in OWNERS}
 KEY_TEXT = {
     "rl-001": "rl-001 registered (X1 S3, first apply of the S8 train)",
@@ -204,6 +214,7 @@ KEY_TEXT = {
                              f"mode=set-password (X1 S17)"),
     "cis_runtime_on_cis_app": "the running api task definition injects aa-cis/dev/rds-cis-app (X1 S18)",
     "catalog_login_not_master": "the probe's catalog login is not the RDS master (X1 S22, db_migrator)",
+    **{k: f"{k} registered (creates contract consumer grants, owners.yaml expected_from)" for k in CONSUMER_GRANT_KEYS},
 }
 NOTES = [
     "Isolation evidence (cross-app reads, RLS counts, tenant matrix) comes only from each role's own login.",
@@ -377,6 +388,8 @@ SELECT coalesce(nullif(application_name, ''), '(empty)') AS app, count(*)::int A
  GROUP BY 1 ORDER BY 1"""
 CONNLIMIT_SQL = "SELECT rolconnlimit FROM pg_catalog.pg_roles WHERE rolname = $1"
 CONSUMER_SQL = {
+    "exists_relation": "SELECT pg_catalog.to_regclass($1) IS NOT NULL",
+    "exists_function": "SELECT pg_catalog.to_regprocedure($1) IS NOT NULL",
     "USAGE": "SELECT pg_catalog.has_schema_privilege($1, pg_catalog.split_part($2, '.', 1), 'USAGE')",
     "relation": "SELECT pg_catalog.has_table_privilege($1, $2, $3)",
     "function": "SELECT pg_catalog.has_function_privilege($1, $2, $3)",
@@ -681,11 +694,15 @@ def build_cells(facts: dict, keys: dict) -> list:
                               f"transferred", (key,), ok=not d.get("error") and not found, error=d.get("error", ""),
                               detail={"live_owner": live, "findings": found[:SAMPLE * 2]}))
     cg = facts["consumer"]
-    bad = [f"{c['grantee']} {c['object']}: {', '.join(c['missing'])}" for c in cg.get("grants", []) if c["missing"]]
-    cells.append(Cell("consumer.contract_grants", "runtime grants",
-                      "contract consumer grants on single objects still held (owners.yaml consumer_grants)", (),
-                      ok=not cg.get("error") and not bad and bool(cg.get("grants")), error=cg.get("error", ""),
-                      detail={"checked": len(cg.get("grants", [])), "missing": bad}))
+    for key in ("",) + CONSUMER_GRANT_KEYS:
+        grants = [c for c in cg.get("grants", []) if c.get("from", "") == key]
+        bad = [f"{c['grantee']} {c['object']}: {', '.join(c['missing'])}" for c in grants if c["missing"]]
+        cells.append(Cell(f"consumer.contract_grants.{key}" if key else "consumer.contract_grants", "runtime grants",
+                          f"contract consumer grants created by {key} held (owners.yaml consumer_grants)" if key else
+                          "contract consumer grants on single objects still held (owners.yaml consumer_grants)",
+                          (key,) if key else (),
+                          ok=not cg.get("error") and not bad and bool(grants), error=cg.get("error", ""),
+                          detail={"checked": len(grants), "missing": bad}))
 
     # Owner roles may register their own keys (CIS 243); cis_app may not write the registry (244).
     for owner in ("bk_owner", "tp_owner"):
@@ -874,8 +891,14 @@ async def collect_catalog(conn, cfg: dict, facts: dict, runtime_user) -> list:
 
     async def consumer():
         out = []
-        for grantee, privs, obj in CONSUMER_GRANTS:
+        for grantee, privs, obj, key in CONSUMER_GRANTS:
             kind = consumer_kind(obj)
+            # An object its migration has not created yet: "absent", never an error that would hide the other
+            # grants (has_*_privilege raises on a missing object). Expected only once its key is registered.
+            if not await conn.fetchval(CONSUMER_SQL[f"exists_{kind}"], obj):
+                out.append({"grantee": grantee, "object": obj, "privileges": list(privs), "missing": ["absent"],
+                            "from": key})
+                continue
             missing = []
             for priv in privs:
                 if priv == "USAGE":
@@ -884,7 +907,8 @@ async def collect_catalog(conn, cfg: dict, facts: dict, runtime_user) -> list:
                     ok = await conn.fetchval(CONSUMER_SQL[kind], grantee, obj, priv)
                 if not ok:
                     missing.append(priv)
-            out.append({"grantee": grantee, "object": obj, "privileges": list(privs), "missing": missing})
+            out.append({"grantee": grantee, "object": obj, "privileges": list(privs), "missing": missing,
+                        "from": key})
         return out
     v, e = await _savepoint(conn, consumer)
     facts["consumer"] = {"error": safe_err(e)} if e else {"grants": v}
