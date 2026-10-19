@@ -64,6 +64,11 @@ locals {
     # real peak and the limit (max(90, 2 x peak + one deploy set)) is restated here in the same PR.
     # No sessions until S18, so the alarm stays OK (treat_missing_data = notBreaching).
     cis_app = 90
+    # X1 S20 (AA-860): db_migrator (rl-002), the DB Migrate / Schema Dump / probe login from S22. 5 = the
+    # rl-002 limit (three workflows with separate concurrency groups can overlap). Before S22 only the
+    # set-password test login uses it, so the alarm stays OK (notBreaching). At 5 the alarm fires only at
+    # 5/5 sessions (> 80 %), i.e. when the next workflow task would be refused.
+    db_migrator = 5
   }
 }
 
