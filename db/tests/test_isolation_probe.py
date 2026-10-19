@@ -80,8 +80,9 @@ def today_facts():
         "default_acl": {"cis": {"cis_app": {"error": "role cis_app does not exist"}},
                         "booking": {"booking": {"rows": defacl("booking", "aa_cis_admin", BK_DEFACL)}},
                         "tripplanner": {"tripplanner": {"rows": defacl("tripplanner", "aa_cis_admin", TP_DEFACL)}}},
-        "consumer": {"grants": [{"grantee": g, "object": o, "privileges": list(pr), "missing": []}
-                                for g, pr, o in p.CONSUMER_GRANTS]},
+        # Grants keyed on a later migration (AA-858 bk-017 / tp-015) are not applied yet: their views are absent.
+        "consumer": {"grants": [{"grantee": g, "object": o, "privileges": list(pr), "missing": ["absent"] if k else [],
+                                 "from": k} for g, pr, o, k in p.CONSUMER_GRANTS]},
         "rls_enable_only": {"tables": [{"fq": "gold_aa_internal.tenant_tour_versions", "has_policy": False}]},
         "tenant_matrix": {"modes": ["unset", "empty", "forged", "tenant:master", "tenant:t1"], "tables": {
             "gold_aa_internal.published_tours": {
@@ -330,6 +331,45 @@ class BuildCellsTest(unittest.TestCase):
         f["consumer"]["grants"][1]["missing"] = ["SELECT"]                # booking on v_inquiry_outbox
         st, _ = statuses(f)
         self.assertEqual(st["consumer.contract_grants"], "FAIL")
+
+    def test_keyed_consumer_grants_wait_for_their_migration(self):
+        # AA-858: cis_app reads booking.v_ops_* (bk-017) and tripplanner.v_ops_traffic_daily (tp-015). Merged into
+        # the registry before the DB Migrate apply, the views are absent: pending, never FAIL, and the always-expected
+        # cell is unaffected.
+        self.assertEqual(p.CONSUMER_GRANT_KEYS, ("bk-017", "tp-015"))
+        for k in p.CONSUMER_GRANT_KEYS:
+            self.assertIn(k, p.VERSION_KEYS)
+            self.assertIn(k, p.KEY_TEXT)
+        st, keys = statuses(today_facts())
+        self.assertFalse(keys["bk-017"] or keys["tp-015"])
+        self.assertEqual(st["consumer.contract_grants.bk-017"], "pending")
+        self.assertEqual(st["consumer.contract_grants.tp-015"], "pending")
+        self.assertEqual(st["consumer.contract_grants"], "pass")
+
+    def test_keyed_consumer_grants_expected_once_registered(self):
+        f = today_facts()
+        f["catalog"]["registered"] = ["bk-017"]
+        for c in f["consumer"]["grants"]:
+            if c["from"] == "bk-017":
+                c["missing"] = []
+        st, _ = statuses(f)
+        self.assertEqual(st["consumer.contract_grants.bk-017"], "pass")
+        self.assertEqual(st["consumer.contract_grants.tp-015"], "pending")
+        f["consumer"]["grants"][-2]["missing"] = ["SELECT"]              # cis_app on booking.v_ops_case_status
+        st, _ = statuses(f)
+        self.assertEqual(st["consumer.contract_grants.bk-017"], "FAIL")
+        f = today_facts()
+        f["catalog"]["registered"] = ["tp-015"]                          # registered but the view is absent
+        st, _ = statuses(f)
+        self.assertEqual(st["consumer.contract_grants.tp-015"], "FAIL")
+
+    def test_keyed_consumer_grant_ready_before_its_key(self):
+        f = today_facts()
+        for c in f["consumer"]["grants"]:
+            if c["from"] == "tp-015":
+                c["missing"] = []
+        st, _ = statuses(f)
+        self.assertEqual(st["consumer.contract_grants.tp-015"], "ready")
 
     def test_cis_app_login_waits_for_set_password(self):
         f = today_facts()

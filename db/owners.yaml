@@ -156,7 +156,11 @@ owners:
     idle_exempt_kinds: [bk_inquiry_pull] # always queued at +60 s (bk-002 intake, Booking intake.RECURRING)
     set_local_roles: []
     role_lint_from: 14
-    consumer_grants: []
+    # expected_from (optional): the owner's schema_versions key that creates the grant; the isolation probe checks
+    # the grant in cell consumer.contract_grants.<key>, pending until that key is registered (no key = always).
+    consumer_grants:
+      - {grantee: cis_app, privilege: "USAGE, SELECT", object: booking.v_ops_funnel_daily, status: contract, source: "bk-017 (AA-858)", expected_from: bk-017}
+      - {grantee: cis_app, privilege: "USAGE, SELECT", object: booking.v_ops_case_status,  status: contract, source: "bk-017 (AA-858)", expected_from: bk-017}
 
   tripplanner:
     repo: AA-TripPlanner-Web
@@ -188,6 +192,7 @@ owners:
     role_lint_from: 13
     consumer_grants:
       - {grantee: booking, privilege: "USAGE, SELECT", object: tripplanner.v_inquiry_outbox, status: contract, source: "tp-009"}
+      - {grantee: cis_app, privilege: "USAGE, SELECT", object: tripplanner.v_ops_traffic_daily, status: contract, source: "tp-015 (AA-858)", expected_from: tp-015}
 
   roles:
     # Infra-native (no owner repo): role bootstrap (LOGIN/NOLOGIN roles, attributes, memberships,
