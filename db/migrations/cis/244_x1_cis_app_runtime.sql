@@ -312,10 +312,34 @@ BEGIN
             RAISE EXCEPTION 'migration 244: cis_app has no USAGE on schema %', s;
         END IF;
     END LOOP;
-    FOREACH s IN ARRAY ARRAY['booking', 'tripplanner', 'catalog'] LOOP
+    -- catalog: no USAGE at all (CIS code reads no catalog.* view). booking / tripplanner: USAGE only for the
+    -- consumer contract views `v_ops_*` the owning app grants to cis_app (AA-858 ops.overview.v1, bk-017 /
+    -- tp-015); any other privilege there (table, sequence, function, non-contract view) fails.
+    IF EXISTS (SELECT 1 FROM pg_catalog.pg_namespace WHERE nspname = 'catalog')
+       AND pg_catalog.has_schema_privilege('cis_app', 'catalog', 'USAGE') THEN
+        RAISE EXCEPTION 'migration 244: cis_app has USAGE on schema catalog (outside the CIS runtime scope)';
+    END IF;
+    FOREACH s IN ARRAY ARRAY['booking', 'tripplanner'] LOOP
         IF EXISTS (SELECT 1 FROM pg_catalog.pg_namespace WHERE nspname = s)
            AND pg_catalog.has_schema_privilege('cis_app', s, 'USAGE') THEN
-            RAISE EXCEPTION 'migration 244: cis_app has USAGE on schema % (outside the CIS runtime scope)', s;
+            SELECT string_agg(c.relname, ', ' ORDER BY c.relname) INTO bad
+              FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+             WHERE n.nspname = s AND c.relkind IN ('r', 'p', 'v', 'm', 'f', 'S')
+               AND pg_catalog.has_table_privilege('cis_app', c.oid,
+                       'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER')
+               AND NOT (c.relkind = 'v' AND c.relname LIKE 'v\_ops\_%'
+                        AND NOT pg_catalog.has_table_privilege('cis_app', c.oid,
+                                'INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER'));
+            IF bad IS NOT NULL THEN
+                RAISE EXCEPTION 'migration 244: cis_app has privileges on %.% beyond the v_ops_* contract views', s, bad;
+            END IF;
+            SELECT string_agg(p.proname, ', ') INTO bad
+              FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+             WHERE n.nspname = s AND pg_catalog.has_function_privilege('cis_app', p.oid, 'EXECUTE')
+               AND NOT pg_catalog.has_function_privilege('public', p.oid, 'EXECUTE');
+            IF bad IS NOT NULL THEN
+                RAISE EXCEPTION 'migration 244: cis_app can EXECUTE %.% (outside the CIS runtime scope)', s, bad;
+            END IF;
         END IF;
     END LOOP;
 
