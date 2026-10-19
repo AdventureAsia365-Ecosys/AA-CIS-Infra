@@ -1208,6 +1208,23 @@ class CatalogFreezeLintTest(unittest.TestCase):
         self.assertEqual(self.lint(CATALOG_RECIPE_246, "cis/246_x1_set_role_probe.sql"), [])
         self.assertEqual(rm.set_local_role_targets(CATALOG_RECIPE_246), ["catalog_owner", "cis_owner"])
 
+    def test_recipe_grant_without_its_revoke_is_refused(self):
+        """Review S244: GRANT CREATE ON SCHEMA catalog TO catalog_owner must be revoked again in the same file."""
+        no_revoke = CATALOG_RECIPE_246.replace("REVOKE CREATE ON SCHEMA catalog FROM catalog_owner;", "")
+        self.assertNotEqual(no_revoke, CATALOG_RECIPE_246)
+        for sql in (no_revoke,
+                    no_revoke.replace("GRANT CREATE ON SCHEMA catalog", 'GRANT ALL PRIVILEGES ON SCHEMA "catalog"'),
+                    no_revoke.replace("GRANT CREATE ON SCHEMA catalog", "GRANT USAGE, CREATE ON SCHEMA geo, catalog"),
+                    # a REVOKE before the GRANT does not count
+                    no_revoke.replace("GRANT CREATE ON SCHEMA catalog TO catalog_owner;",
+                                      "REVOKE CREATE ON SCHEMA catalog FROM catalog_owner;\n"
+                                      "GRANT CREATE ON SCHEMA catalog TO catalog_owner;")):
+            with self.subTest(sql=sql[:80]):
+                errors = self.lint(sql, "cis/250_x.sql")
+                self.assertTrue(any("is never revoked later in the file" in e for e in errors), errors)
+        self.assertEqual(self.lint(self.body("GRANT USAGE ON SCHEMA catalog TO catalog_owner;"), "cis/250_x.sql"),
+                         [])
+
     def test_catalog_view_ddl_outside_the_recipe_is_refused(self):
         for path, stmt in (
                 ("cis/246_x.sql", "CREATE OR REPLACE VIEW catalog.v_tour AS SELECT 1;"),

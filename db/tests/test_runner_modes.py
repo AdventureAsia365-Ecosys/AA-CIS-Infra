@@ -198,7 +198,8 @@ class PgError(Exception):
 
 class SetPasswordTest(unittest.TestCase):
     def run_sp(self, secret=CIS_APP_DSN, role="cis_app", master=None, test=None, test_error=None,
-               migrator=None, master_secret=MASTER_DSN, master_error=None):
+               migrator=None, master_secret=MASTER_DSN, master_error=None, migrator_error=None,
+               migrator_dsn=MIGRATOR_DSN):
         """migrator (X1 S22): the task's DATABASE_URL is MIGRATOR_DSN and logs in as this connection; the master
         DSN is then read from rm.MASTER_SECRET (master_secret: its value or an exception to raise)."""
         self.master = master or PwConn()
@@ -209,7 +210,9 @@ class SetPasswordTest(unittest.TestCase):
         async def connect(dsn, settings, **kw):
             self.connects.append((dsn, settings))
             self.connect_kw.append(kw)
-            if dsn == MIGRATOR_DSN:
+            if dsn == migrator_dsn:
+                if migrator_error:
+                    raise migrator_error
                 return self.migrator
             if dsn == MASTER_DSN:
                 if master_error:
@@ -226,7 +229,7 @@ class SetPasswordTest(unittest.TestCase):
                 raise value
             return value
 
-        env = {"MIGRATION_MODE": f"set-password:{role}", "DATABASE_URL": MIGRATOR_DSN if migrator else MASTER_DSN,
+        env = {"MIGRATION_MODE": f"set-password:{role}", "DATABASE_URL": migrator_dsn if migrator else MASTER_DSN,
                "RUNNER_URL": RUNNER_URL,
                "MIGRATION_URL": "", "MIGRATION_FILE": "", "MIGRATION_VERSION": "", "MIGRATION_SHA256": ""}
         out = io.StringIO()
@@ -308,9 +311,12 @@ class SetPasswordTest(unittest.TestCase):
         """X1 S22: DATABASE_URL is db_migrator's; set-password opens the master from aa-cis/dev/rds (ssl=require)."""
         self.assertEqual(self.run_sp(migrator=PwConn(login="db_migrator")), 0, self.out)
         self.assertEqual(self.secret_reads, ["aa-cis/dev/rds", "aa-cis/dev/rds-cis-app"])
-        self.assertEqual([d for d, _ in self.connects], [MIGRATOR_DSN, MASTER_DSN, CIS_APP_DSN])
-        self.assertEqual(self.connect_kw, [{}, {"ssl": "require"}, {"ssl": "require"}])
-        self.assertEqual((self.migrator.executed, self.migrator.closed), ([], True))
+        # The DATABASE_URL names db_migrator: never opened (no session against its CONNECTION LIMIT 5).
+        self.assertEqual([d for d, _ in self.connects], [MASTER_DSN, CIS_APP_DSN])
+        self.assertEqual(self.connect_kw, [{"ssl": "require"}, {"ssl": "require"}])
+        self.assertEqual((self.migrator.executed, self.migrator.closed), ([], False))
+        self.assertIn("MIGRATE master login: set-password needs the RDS master aa_cis_admin and the task logs in as "
+                      "db_migrator: reading the master DSN in the task from aa-cis/dev/rds (X1 S22)\n", self.out)
         alter, comment = self.master.executed
         self.assertTrue(alter.startswith('ALTER ROLE "cis_app" PASSWORD \'SCRAM-SHA-256$'))
         self.assertIn(rm.PASSWORD_MARKER, comment)
@@ -318,6 +324,27 @@ class SetPasswordTest(unittest.TestCase):
         self.assertIn("MIGRATE set-password: test login current_user=cis_app rolconnlimit=90\n", self.out)
         self.assertTrue(self.master.closed and self.test.closed)
         self.assertNoSecret("master-not-used", "migrator-not-used")
+
+    def test_s22_drifted_db_migrator_secret_is_fixed_through_the_master(self):
+        """Review S244: the db-migrator secret drifted (its DSN no longer logs in). set-password role=db_migrator is
+        the fix, so it must not touch the DATABASE_URL login at all."""
+        new = "postgresql://db_migrator:" + "n" * 32 + "@db.example:5432/aa_cis_dev"
+        self.assertEqual(self.run_sp(secret=new, role="db_migrator", migrator=PwConn(login="db_migrator"),
+                                     migrator_error=PgError("28P01", "password authentication failed"),
+                                     test=TestConn("db_migrator", 5)), 0, self.out)
+        self.assertNotIn(MIGRATOR_DSN, [d for d, _ in self.connects])
+        self.assertEqual(self.secret_reads, ["aa-cis/dev/rds", "aa-cis/dev/db-migrator"])
+        self.assertTrue(self.master.executed[0].startswith('ALTER ROLE "db_migrator" PASSWORD'))
+        self.assertIn("MIGRATE set-password: test login current_user=db_migrator rolconnlimit=5\n", self.out)
+        self.assertNoSecret("n" * 32)
+
+    def test_s22_unparseable_database_url_that_fails_falls_back_to_the_master(self):
+        self.assertEqual(self.run_sp(migrator=PwConn(login="db_migrator"), migrator_dsn="postgresql://x",
+                                     migrator_error=PgError("53300", "too many connections for role")), 0, self.out)
+        self.assertEqual([d for d, _ in self.connects], ["postgresql://x", MASTER_DSN, CIS_APP_DSN])
+        self.assertIn("MIGRATE master login: the task's DATABASE_URL did not log in (PgError 53300)\n", self.out)
+        self.assertIn("the task logs in as nobody (its login failed): reading the master DSN", self.out)
+        self.assertIn("MIGRATE master login: aa_cis_admin (in-task DSN from aa-cis/dev/rds)\n", self.out)
 
     def test_s22_master_unavailable_changes_nothing(self):
         class ClientError(Exception):

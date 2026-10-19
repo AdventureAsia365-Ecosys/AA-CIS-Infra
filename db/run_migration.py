@@ -388,6 +388,15 @@ CATALOG_FREEZE = ("catalog.* view changes need the catalog recipe: a cis/ file c
                   "ROLE cis_owner; REVOKE CREATE … (never RESET ROLE), and only under a DB Migrate login that is a "
                   "member of catalog_owner — db_migrator since X1 S22 (the S1–S22 freeze, XD9, is over); the "
                   "master never is (X1 plan §1.4, AA-CIS-App CONTEXT.md)")
+# The recipe's GRANT CREATE ON SCHEMA catalog TO catalog_owner must be revoked again in the same file (review S244):
+# a file that forgets the REVOKE commits a standing CREATE on schema catalog for catalog_owner, which no post-check
+# sees (it checks owners, not ACLs). Code views are upper case; ALL [PRIVILEGES] grants CREATE too.
+CATALOG_CREATE_GRANT_RE = re.compile(
+    r"\bGRANT\s+(?:ALL(?:\s+PRIVILEGES)?|(?:\w+\s*,\s*)*CREATE(?:\s*,\s*\w+)*)\s+ON\s+SCHEMA\s+(?:[\w\"]+\s*,\s*)*"
+    r"\"?CATALOG\b\"?[^;]*?\bTO\b[^;]*\"?CATALOG_OWNER\b")
+CATALOG_CREATE_REVOKE_RE = re.compile(
+    r"\bREVOKE\s+(?:ALL(?:\s+PRIVILEGES)?|(?:\w+\s*,\s*)*CREATE(?:\s*,\s*\w+)*)\s+ON\s+SCHEMA\s+(?:[\w\"]+\s*,\s*)*"
+    r"\"?CATALOG\b\"?[^;]*?\bFROM\b[^;]*\"?CATALOG_OWNER\b")
 # Work queued for COMMIT runs after the post-check, as whatever role is current then (review S241,
 # round 2). The runner settles it under the owner role before RESET ROLE (SETTLE_ROUNDS); the lint
 # refuses the deferral itself in files that may run under the switch (belt and braces).
@@ -767,6 +776,7 @@ def role_lint(sql: str, owner_dir: str) -> list:
     allowed_txt = ", ".join(sorted(allowed)) or "none"
     errors = []
     current = None                         # the last SET LOCAL ROLE target, in file order
+    open_grant = None                      # line of a catalog recipe GRANT CREATE not yet revoked (review S244)
     for s in split_statements(sql):
         strings: list = []
         code = _role_view(s.text, strings)
@@ -802,6 +812,14 @@ def role_lint(sql: str, owner_dir: str) -> list:
             errors.append(f"{here}: role membership `{g[:80]}` belongs in db/migrations/roles/ (DM-8.1){hint}")
         errors.extend(_dynamic_errors(code, strings, here))
         errors.extend(_deferral_errors(code, strings, here))
+        if CATALOG_CREATE_GRANT_RE.search(code):
+            open_grant = here
+        if CATALOG_CREATE_REVOKE_RE.search(code):
+            open_grant = None
+    if open_grant:
+        errors.append(f"{open_grant}: `GRANT CREATE ON SCHEMA catalog TO catalog_owner` is never revoked later in "
+                      f"the file: the catalog recipe ends with `SET LOCAL ROLE cis_owner; REVOKE CREATE ON SCHEMA "
+                      f"catalog FROM catalog_owner` (X1 S22), else catalog_owner keeps CREATE on schema catalog")
     return errors
 
 
@@ -1379,17 +1397,33 @@ async def connect_master(env, settings: dict, connect, get_secret, purpose: str)
     """An RDS master session for `purpose` (X1 S22, S242 amendment). The task's DATABASE_URL first: before S22 it
     is the master's and nothing changes. When it logs in as anyone else (db_migrator from S22), that session is
     closed and the master DSN is read here, in the task, from MASTER_SECRET (the migrator task role may read it,
-    the execution role no longer injects it) and used with ssl=require. The caller still checks session_user."""
+    the execution role no longer injects it) and used with ssl=require. The caller still checks session_user.
+
+    The master path never depends on the DATABASE_URL login working (review S244): a DATABASE_URL that names
+    another user (db_migrator) is not opened at all (no session against its CONNECTION LIMIT 5), and one that
+    fails to log in (28P01 after the db-migrator secret drifted, 53300 at its limit) falls back to the in-task
+    master DSN. That keeps `set-password role=db_migrator` — the fix for a drifted db_migrator secret — working."""
     dsn = env["DATABASE_URL"]
-    conn = await connect(dsn, settings)
     try:
-        login = await conn.fetchval(SESSION_USER_SQL)
-    except BaseException:
-        await conn.close()
-        raise
-    if login == MASTER_ROLE:
-        return MasterLogin(conn, dsn, "the task's DATABASE_URL")
-    await conn.close()
+        login = dsn_login(dsn).user
+    except ValueError:
+        login = None                            # not a plain URL DSN: ask the server below
+    if login in (None, MASTER_ROLE):
+        try:
+            conn = await connect(dsn, settings)
+        except Exception as e:                  # class + SQLSTATE only: the text may echo the DSN
+            state = getattr(e, "sqlstate", "") or ""
+            log(f"master login: the task's DATABASE_URL did not log in ({type(e).__name__} {state}".rstrip() + ")")
+            login = "nobody (its login failed)"
+        else:
+            try:
+                login = await conn.fetchval(SESSION_USER_SQL)
+            except BaseException:
+                await conn.close()
+                raise
+            if login == MASTER_ROLE:
+                return MasterLogin(conn, dsn, "the task's DATABASE_URL")
+            await conn.close()
     log(f"master login: {purpose} needs the RDS master {MASTER_ROLE} and the task logs in as {login}: "
         f"reading the master DSN in the task from {MASTER_SECRET} (X1 S22)")
     try:
