@@ -182,7 +182,10 @@ module "ecs" {
 
   # Wired via module outputs (no hardcoded account-1 ARNs) — the two
   # exceptions are ecs_cluster/task_def <-> step_functions, see locals above.
-  secret_rds_arn        = module.secrets.rds_secret_arn
+  # X1 S18 (AA-860): api + worker DATABASE_URL = the cis_app DSN (db_migrator.tf). Was the RDS master
+  # (module.secrets.rds_secret_arn, aa-cis/dev/rds), which DB Migrate keeps until S22. Rollback: put the
+  # master back here, or update-service to the revision recorded before the apply (plan S18).
+  secret_rds_arn        = aws_secretsmanager_secret.rds_cis_app.arn
   secret_openai_arn     = var.secret_openai_arn
   secret_admin_arn      = var.secret_admin_arn
   secret_jwt_arn        = var.secret_jwt_arn
