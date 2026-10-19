@@ -140,7 +140,7 @@ variable "identity_facebook_api_version" {
 
 # ── App client URLs ──────────────────────────────────────────────────────────
 variable "identity_client_urls" {
-  description = "Callback and sign-out URLs per app client key (cis-admin, booking-staff, breakglass, cis-portal, booking-customer, tripplanner). Hosts follow the S237 hostname decision (AA-818); they need not resolve yet. Paths are placeholders until each app implements its callback route. booking-staff points at the aa-booking-admin Vercel hosts (S242); booking-customer stays on localhost until its frontend host is chosen."
+  description = "Callback and sign-out URLs per app client key (cis-admin, booking-staff, breakglass, cis-portal, booking-customer, tripplanner). Hosts follow the S237 hostname decision (AA-818); they need not resolve yet. Paths are placeholders until each app implements its callback route. booking-staff points at the aa-booking-admin Vercel hosts (S242); cis-portal points at portal.lumiguides.it.com (S243, AA-885); booking-customer stays on localhost until its frontend host is chosen."
   type = map(object({
     callback_urls = list(string)
     logout_urls   = list(string)
@@ -161,8 +161,11 @@ variable "identity_client_urls" {
       logout_urls   = ["https://booking.lumiguides.it.com/login", "https://aa-booking-admin.vercel.app/login", "http://localhost:3001/login"]
     }
     "cis-portal" = {
-      callback_urls = ["https://aa-cis.lumiguides.it.com/portal/api/auth/callback/cognito", "http://localhost:3000/portal/api/auth/callback/cognito"]
-      logout_urls   = ["https://aa-cis.lumiguides.it.com/portal/login", "http://localhost:3000/portal/login"]
+      # S243 AA-885: the tenant portal is its own Vercel project (aa-cis-portal, root portal/) on
+      # portal.lumiguides.it.com; local dev port 3004. Still placeholders: tenants sign in with an API key
+      # until AA-813 (Phase 3) adds the Cognito callback route at this path.
+      callback_urls = ["https://portal.lumiguides.it.com/api/auth/callback/cognito", "http://localhost:3004/api/auth/callback/cognito"]
+      logout_urls   = ["https://portal.lumiguides.it.com/tenant-login", "http://localhost:3004/tenant-login"]
     }
     "booking-customer" = {
       callback_urls = ["http://localhost:3002/auth/callback"]
