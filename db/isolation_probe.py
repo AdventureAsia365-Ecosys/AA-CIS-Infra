@@ -137,6 +137,11 @@ OWNERS = {
                               runtime_privileges=(RuntimePrivileges(
                                   "tripplanner", ("tripplanner",), BASELINE,
                                   (("tables", DML), ("sequences", ("SELECT", "USAGE")))),)),
+    # AA-826 DRY RUN, never merged
+    "dryrun": ProbeOwner(("dryrun",), "dryrun", "dr_owner", "dr-001", (("dryrun_app", "dryrun/dev/database-url"),),
+                         runtime_privileges=(RuntimePrivileges(
+                             "dryrun_app", ("dryrun",), BASELINE,
+                             (("tables", DML), ("sequences", ("SELECT", "USAGE")), ("functions", ("EXECUTE",)))),)),
 }
 # pg_default_acl.defaclobjtype of each owners.yaml default_acl word.
 DEFACL_OBJTYPE = {"tables": "r", "sequences": "S", "functions": "f"}
@@ -196,7 +201,7 @@ CROSS_APP = (
     (CIS_RUNTIME, "tripplanner.sessions", ("cis_runtime_on_cis_app",)),
 )
 
-VERSION_KEYS = ("rl-001", "243", "bk-014", "tp-013", "244", "rl-002", "245") + CONSUMER_GRANT_KEYS
+VERSION_KEYS = ("rl-001", "243", "bk-014", "tp-013", "244", "rl-002", "245", "dr-001") + CONSUMER_GRANT_KEYS
 TRANSFER_KEYS = {name: f"{name}_transferred" for name in OWNERS}
 KEY_TEXT = {
     "rl-001": "rl-001 registered (X1 S3, first apply of the S8 train)",
@@ -206,6 +211,8 @@ KEY_TEXT = {
     "244": "CIS 244 registered (X1 S16)",
     "rl-002": "rl-002 registered (X1 S20)",
     "245": "CIS 245 registered (X1 S21)",
+    "dr-001": "dr-001 registered (AA-826 DRY RUN, never merged)",
+    "dryrun_transferred": "dr-001 registered and schema dryrun owned by dr_owner (AA-826 DRY RUN, never merged)",
     "booking_transferred": "bk-014 registered and schema booking owned by bk_owner (X1 S6)",
     "tripplanner_transferred": "tp-013 registered and schema tripplanner owned by tp_owner (X1 S7)",
     "cis_transferred": "245 registered and schema shared owned by cis_owner (X1 S21)",

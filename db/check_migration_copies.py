@@ -58,6 +58,7 @@ OWNERS: dict[str, Owner] = {
     "tripplanner": Owner("AA-TripPlanner-Web", "migrations", "tp-"),
     "booking": Owner("AA-Booking", "migrations", "bk-"),
     "roles": Owner("AA-CIS-Infra", "db/migrations/roles", "rl-", native=True),
+    "dryrun": Owner("AA-Dryrun-Fake", "migrations", "dr-"),          # AA-826 DRY RUN, never merged
 }
 
 # Code copies: Infra path -> (owner repo, path on its main). The owner file is canonical (it is what CI runs at
@@ -67,7 +68,7 @@ CODE_COPIES: dict[str, tuple[str, str]] = {
 }
 
 # Same shape db-migrate.yml accepts at dispatch time.
-PATH_RE = re.compile(r"^db/migrations/(cis|tripplanner|booking|roles)/([0-9]{3})_[a-z0-9_]+\.sql$")
+PATH_RE = re.compile(r"^db/migrations/(cis|tripplanner|booking|roles|dryrun)/([0-9]{3})_[a-z0-9_]+\.sql$")
 INSERT_RE = re.compile(r"INSERT\s+INTO\s+shared\.schema_versions\b(.*?);", re.IGNORECASE | re.DOTALL)
 KEY_RE = re.compile(r"\(\s*'([^']*)'\s*,")
 

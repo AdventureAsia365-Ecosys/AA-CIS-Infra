@@ -177,6 +177,7 @@ DELETE_RE = re.compile(r"^(WITH\b.*\b)?DELETE FROM\b")
 IDLE_EXEMPT_KINDS = {
     "shared": frozenset(),
     "booking": frozenset({"bk_inquiry_pull"}),            # always queued at +60 s (bk-002 intake)
+    "dryrun": frozenset(),                                # AA-826 DRY RUN, never merged
 }
 IDLE_WAITS = 3          # apply re-checks this many times before it refuses …
 IDLE_WAIT_S = 20        # … this many seconds apart
@@ -204,7 +205,8 @@ MASTER_ROLE = "aa_cis_admin"      # RDS master: runs roles/ files, set-password,
 MASTER_SECRET = "aa-cis/dev/rds"
 ROLES_DIR = "roles"               # Infra-native files, key rl-NNN
 # owners.yaml password_roles: LOGIN roles whose password mode=set-password sets from their DSN secret (XD2).
-PASSWORD_ROLES = {"cis_app": "aa-cis/dev/rds-cis-app", "db_migrator": "aa-cis/dev/db-migrator"}
+PASSWORD_ROLES = {"cis_app": "aa-cis/dev/rds-cis-app", "db_migrator": "aa-cis/dev/db-migrator",
+                  "dryrun_app": "dryrun/dev/database-url"}   # AA-826 DRY RUN, never merged
 
 
 @dataclass(frozen=True)
@@ -224,6 +226,7 @@ OWNER_DIRS = {
                     frozenset({"catalog_owner", "cis_owner", "cis_app"}), 243, frozenset({"catalog_owner"})),
     "booking": OwnerDir("booking", ("booking",), frozenset(), 14),
     "tripplanner": OwnerDir("tripplanner", ("tripplanner",), frozenset(), 13),
+    "dryrun": OwnerDir("dryrun", ("dryrun",), frozenset(), 1),          # AA-826 DRY RUN, never merged
 }
 OWNER_SCHEMAS = tuple(sorted({s for o in OWNER_DIRS.values() for s in o.schemas}))
 MIGRATION_PATH_RE = re.compile(r"(?:^|/)([a-z]+)/([0-9]{3})_[^/]*\.sql$")

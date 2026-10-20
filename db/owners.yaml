@@ -48,13 +48,13 @@ master_secret: aa-cis/dev/rds
 # refuses (exit 8, also in check mode) a file whose SET LOCAL ROLE target the login cannot reach.
 migrator_role: db_migrator
 migrator_secret: aa-cis/dev/db-migrator
-migrator_member_of: [bk_owner, catalog_owner, cis_app, cis_owner, pg_read_all_stats, tp_owner]
+migrator_member_of: [bk_owner, catalog_owner, cis_app, cis_owner, dr_owner, pg_read_all_stats, tp_owner]
 
 # DB Migrate mode=set-password (X1 S12, plan XD2): the LOGIN roles whose password the workflow sets, and the
 # DSN secret each one's password is read from inside the task (Nghiệp writes the DSN in the Console, S17 /
 # S20). Mirrored by db/run_migration.py PASSWORD_ROLES and the role regex of db-migrate.yml "Validate input".
 # The legacy runtime roles (booking, tripplanner, aa_app_user) keep the passwords they have (XD1).
-password_roles: {cis_app: aa-cis/dev/rds-cis-app, db_migrator: aa-cis/dev/db-migrator}
+password_roles: {cis_app: aa-cis/dev/rds-cis-app, db_migrator: aa-cis/dev/db-migrator, dryrun_app: dryrun/dev/database-url}
 
 owners:
   cis:

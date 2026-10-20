@@ -62,6 +62,7 @@ SCHEMA_OWNERS = {
                           "silver_aa_internal")},
     "booking": "booking",
     "tripplanner": "tripplanner",
+    "dryrun": "dryrun",
     "public": "platform",
 }
 # The app roles of each owner (owner role, runtime roles, view owner). Platform roles (the RDS master,
@@ -70,6 +71,7 @@ ROLE_OWNERS = {
     "cis_owner": "cis", "cis_app": "cis", "aa_app_user": "cis", "catalog_owner": "cis",
     "bk_owner": "booking", "booking": "booking",
     "tp_owner": "tripplanner", "tripplanner": "tripplanner",
+    "dr_owner": "dryrun", "dryrun_app": "dryrun",
 }
 CIS_PARITY_ROLES = {"cis_app": "_cis_app_all", "cis_owner": "_cis_owner_all"}   # rule t, CIS 244 / 245
 BASE_TABLE_KINDS = ("table", "partitioned table")

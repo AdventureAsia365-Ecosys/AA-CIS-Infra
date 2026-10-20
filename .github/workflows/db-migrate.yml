@@ -146,8 +146,8 @@ jobs:
             set-password)
               # Allowlist = db/owners.yaml password_roles (db/tests/test_owners_registry.py keeps them equal);
               # the runner checks it again in the task.
-              if ! [[ "$MIGRATION" =~ ^(cis_app|db_migrator)$ ]]; then
-                echo "::error::role must be cis_app or db_migrator (db/owners.yaml password_roles)"; exit 1
+              if ! [[ "$MIGRATION" =~ ^(cis_app|db_migrator|dryrun_app)$ ]]; then
+                echo "::error::role must be cis_app, db_migrator or dryrun_app (db/owners.yaml password_roles)"; exit 1
               fi
               echo "### set-password \`$MIGRATION\` ($ENVIRONMENT)" >> "$GITHUB_STEP_SUMMARY"
               echo "- environment: $ENVIRONMENT" >> "$GITHUB_STEP_SUMMARY"
@@ -174,15 +174,15 @@ jobs:
               exit 0
               ;;
           esac
-          if ! [[ "$MIGRATION" =~ ^(cis|tripplanner|booking|roles)/([0-9]{3})_[a-z0-9_]+\.sql$ ]]; then
-            echo "::error::migration must look like <cis|tripplanner|booking|roles>/215_name.sql"; exit 1
+          if ! [[ "$MIGRATION" =~ ^(cis|tripplanner|booking|roles|dryrun)/([0-9]{3})_[a-z0-9_]+\.sql$ ]]; then
+            echo "::error::migration must look like <cis|tripplanner|booking|roles|dryrun>/215_name.sql"; exit 1
           fi
           test -f "db/migrations/$MIGRATION" || { echo "::error::db/migrations/$MIGRATION not found on main"; exit 1; }
           # shared.schema_versions key per owner (AA-684, docs/database/schema-ownership.md rule 4):
           # CIS keeps plain numbers; other owners are prefixed so their 007 cannot collide with CIS 007.
           # roles/ = Infra-native role bootstrap (X1, db/owners.yaml), key rl-NNN.
           case "${BASH_REMATCH[1]}" in
-            cis) PREFIX="" ;; tripplanner) PREFIX="tp-" ;; booking) PREFIX="bk-" ;; roles) PREFIX="rl-" ;;
+            cis) PREFIX="" ;; tripplanner) PREFIX="tp-" ;; booking) PREFIX="bk-" ;; roles) PREFIX="rl-" ;; dryrun) PREFIX="dr-" ;;
           esac
           echo "version=${PREFIX}${BASH_REMATCH[2]}" >> "$GITHUB_OUTPUT"
           echo "sha256=$(sha256sum "db/migrations/$MIGRATION" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
