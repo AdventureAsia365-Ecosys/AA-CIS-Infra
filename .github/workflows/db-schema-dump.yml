@@ -11,7 +11,8 @@ name: DB Schema Dump (shared RDS)
 #    privileges, roles, functions, sizes, pg_stat_user_tables activity, sessions per
 #    application_name, shared.schema_versions, and the orphan counts of cross-app soft keys
 #    (data standards DM-4.2, AA-830: aggregate counts only; a warning when a key has orphans).
-# 2. db/gen_schema_reference.py renders the Markdown here on the runner.
+# 2. db/gen_schema_reference.py renders the Markdown here on the runner, including the X2 RLS catalogue guard
+#    section (db/rls_catalogue_rules.py, a byte copy of the CIS CI guard's rules; violations are warnings here).
 # 3. If the STRUCTURE changed (fingerprint in the file differs from the root repo's master, or
 #    publish=true), the file is pushed to the root repo branch bot/db-schema-reference and a PR is
 #    opened or updated. Nightly runs where only statistics moved open nothing. The root PR is merged
@@ -159,6 +160,11 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           # DM-4.2: orphans are reported, not fatal (the dump must still publish); the annotation shows on the run.
           jq -r '(.soft_keys // [])[] | select((.orphans // 0) > 0) | "::warning::soft key \(.name): \(.orphans) orphan row(s) of \(.total - .without_key) keyed"' schema.json
+          # X2 RLS catalogue guard (db/rls_catalogue_rules.py): violations are reported, not fatal, like the soft keys;
+          # the rendered file carries the full section (violations + allowlist entries in use).
+          python3 db/gen_schema_reference.py schema.json --rls-guard > rls-guard.txt
+          grep -v '^::' rls-guard.txt >> "$GITHUB_STEP_SUMMARY"
+          grep '^::' rls-guard.txt || true
 
       - name: Keep dump + rendered file as an artifact
         uses: actions/upload-artifact@v7

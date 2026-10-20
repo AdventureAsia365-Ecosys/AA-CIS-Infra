@@ -359,7 +359,9 @@ makes CI Terraform Plan fail with 403.
   ADR 0003a decision 5; exempt kinds and the `override_busy_jobs` input in `db/README.md`).
   **DB Schema Dump** (`db-schema-dump.yml`, AA-807 N1) runs a read-only catalog dump in a one-off ECS
   task nightly and after every apply, and opens a PR on the root repo that regenerates
-  `docs/architecture/db-schema-reference.md`. Owners and version keys:
+  `docs/architecture/db-schema-reference.md`. It also runs the X2 RLS catalogue guard (`db/rls_catalogue_rules.py`,
+  a byte copy of AA-CIS-App's CI guard rules kept equal by the Copy Guard's `CODE_COPIES`) and writes the result in
+  the file's *RLS catalogue guard (X2)* section; violations are warnings there and blocking in CIS CI. Owners and version keys:
   `AA-Ecosys/docs/database/schema-ownership.md`. DB Migrate, the dump and the isolation probe run from the
   migrator task definition (`accounts/aa365/db_migrator.tf`) and log in as **`db_migrator`** since X1 S22
   (AA-860); the RDS master is break-glass plus three automated uses (`roles/` files, `set-password`,

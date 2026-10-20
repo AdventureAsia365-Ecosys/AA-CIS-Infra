@@ -2,6 +2,8 @@ name: Migration Copy Guard
 # AA-807: every DB Migrate copy in db/migrations/<owner>/ must be byte-identical to the same file on
 # the owner repo's main (AA-CIS-App api/migrations, AA-TripPlanner-Web migrations, AA-Booking
 # migrations) and register its own version key (NNN / tp-NNN / bk-NNN) in shared.schema_versions.
+# The code copies in check_migration_copies.CODE_COPIES (db/rls_catalogue_rules.py, the X2 RLS catalogue
+# rules from AA-CIS-App) get the same byte compare.
 #
 # Migration flow (S237 D8): migration-file-only PR merged to the owner's main FIRST → Infra copy PR
 # (this check) → DB Migrate check → apply → the app PR that uses the new objects. A copy PR opened
@@ -23,6 +25,9 @@ on:
     paths:
       - "db/migrations/**"
       - "db/check_migration_copies.py"
+      - "db/rls_catalogue_rules.py"
+      - "db/gen_schema_reference.py"
+      - "db/schema_dump.py"
       - "db/check_migration_files.py"
       - "db/run_migration.py"
       - "db/tests/**"
@@ -75,7 +80,8 @@ jobs:
           set +e
           if [ "$EVENT" = "pull_request" ]; then
             # Added, copied, modified, renamed files only; a deleted copy has nothing to compare.
-            git diff --name-only --diff-filter=ACMR "$BASE_SHA"...HEAD -- db/migrations/ > changed.txt
+            # Plus the code copies of check_migration_copies.CODE_COPIES (X2 RLS catalogue rules).
+            git diff --name-only --diff-filter=ACMR "$BASE_SHA"...HEAD -- db/migrations/ db/rls_catalogue_rules.py > changed.txt
             # Editing a copy that is already on main is legal only before it is applied: DB Migrate
             # never re-runs a registered version, so an edit to an applied file is a silent no-op.
             git diff --name-only --diff-filter=M "$BASE_SHA"...HEAD -- db/migrations/ | while read -r f; do

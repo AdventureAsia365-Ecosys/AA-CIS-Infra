@@ -3,13 +3,16 @@
 Usage:
   python3 db/gen_schema_reference.py dump.json --out db-schema-reference.md [--source "run URL"]
   python3 db/gen_schema_reference.py dump.json --fingerprint     # print the structural fingerprint
+  python3 db/gen_schema_reference.py dump.json --rls-guard       # X2 RLS catalogue guard summary + annotations
 
 Standard library only (runs on the GitHub runner). Output is deterministic for a given dump.
 
 The file carries `<!-- schema-fingerprint: … -->`: a sha256 of the dump WITHOUT the volatile parts
 (row estimates, sizes, scan counters, sessions, timestamps). The workflow opens or updates the root
 PR only when the fingerprint differs from the one on the root repo's master, so a night where only
-statistics moved does not produce a PR.
+statistics moved does not produce a PR. The fingerprint also covers the outcome of the X2 RLS catalogue guard
+(db/rls_catalogue_rules.py, a byte copy of AA-CIS-App tests/integration/rls_catalogue_rules.py): a change to the
+rules or the allowlist reaches the file on the next run, even when the catalog did not change.
 """
 from __future__ import annotations
 
@@ -17,10 +20,14 @@ import argparse
 import copy
 import hashlib
 import json
+import os
 import re
 import sys
 from collections import defaultdict
 from typing import Optional
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # the rules module sits next to this file
+import rls_catalogue_rules as rls  # noqa: E402
 
 FINGERPRINT_RE = re.compile(r"<!-- schema-fingerprint: ([0-9a-f]{64}) -->")
 INDEX_RE = re.compile(r"^CREATE (UNIQUE )?INDEX \S+ ON (?:ONLY )?\S+ USING (.*)$")
@@ -52,9 +59,78 @@ def structural_view(dump: dict) -> dict:
     return d
 
 
+def rls_guard_state(dump: dict) -> dict:
+    """The X2 guard outcome in a stable form (part of the fingerprint)."""
+    result = rls.check(dump)
+    return {"violations": [list(f[:3]) for f in result.violations],
+            "allowlisted": [[f.rule, f.key, reason] for f, reason in result.allowlisted],
+            "stale": [list(x) for x in result.stale]}
+
+
 def fingerprint(dump: dict) -> str:
-    blob = json.dumps(structural_view(dump), sort_keys=True, default=str).encode("utf-8")
+    view = {"dump": structural_view(dump), "rls_guard": rls_guard_state(dump)}
+    blob = json.dumps(view, sort_keys=True, default=str).encode("utf-8")
     return hashlib.sha256(blob).hexdigest()
+
+
+def render_rls_guard(d: dict) -> list[str]:
+    """The '## RLS catalogue guard (X2)' section: violations (expected none), then every allowlist entry used."""
+    result = rls.check(d)
+    L = ["## RLS catalogue guard (X2)", ""]
+    L.append("Rules in AA-CIS-Infra `db/rls_catalogue_rules.py` (byte copy of AA-CIS-App "
+             "`tests/integration/rls_catalogue_rules.py`, which CIS CI runs on the replayed migrations). "
+             "A violation is a finding that is not on the allowlist; each allowlist entry carries a one-line reason. "
+             "Fix the object or allowlist it in the CIS file, then copy it here.")
+    L.append("")
+    used: dict = defaultdict(int)
+    for f, _ in result.allowlisted:
+        used[f.rule] += 1
+    viol: dict = defaultdict(int)
+    for f in result.violations:
+        viol[f.rule] += 1
+    L.append(f"**{len(result.violations)} unallowlisted violation(s)**, {len(result.allowlisted)} allowlisted "
+             f"finding(s), {len(result.stale)} stale allowlist entry(ies).")
+    L.append("")
+    L.append("| rule | meaning | violations | allowlisted |")
+    L.append("|---|---|---|---|")
+    for rule, meaning in rls.RULES.items():
+        L.append(f"| {rule} | {cell(meaning)} | {viol[rule]} | {used[rule]} |")
+    L.append("")
+    L.append("### Violations")
+    L.append("")
+    for f in result.violations:
+        L.append(f"- [{f.rule}] `{f.key}`: {cell(f.detail)}")
+    if not result.violations:
+        L.append("- none")
+    L.append("")
+    L.append("### Allowlist entries in use")
+    L.append("")
+    L.append("| rule | entry | findings | reason |")
+    L.append("|---|---|---|---|")
+    al = rls.ALLOWLIST
+    counts: dict = defaultdict(int)
+    for f, _ in result.allowlisted:
+        counts[(f.rule, rls._match(al.get(f.rule, {}), f.key))] += 1
+    for (rule, entry), n in sorted(counts.items()):
+        L.append(f"| {rule} | `{cell(entry)}` | {n} | {cell(al[rule][entry])} |")
+    if not counts:
+        L.append("| none | | | |")
+    L.append("")
+    if result.stale:
+        L.append("Stale entries (matched nothing on this database; remove them from the CIS file): "
+                 + ", ".join(f"[{r}] `{k}`" for r, k in result.stale) + ".")
+        L.append("")
+    return L
+
+
+def rls_guard_report(d: dict) -> str:
+    """CI text for the workflow: one summary line, then a ::warning:: annotation per violation (never fatal)."""
+    result = rls.check(d)
+    lines = [f"- RLS catalogue guard (X2): {len(result.violations)} unallowlisted violation(s), "
+             f"{len(result.allowlisted)} allowlisted, {len(result.stale)} stale allowlist entry(ies)"]
+    for f in result.violations:
+        lines.append(f"::warning::RLS catalogue guard [{f.rule}] {f.key}: {f.detail} ({rls.RULES[f.rule]})")
+    return "\n".join(lines) + "\n"
 
 
 def human_bytes(n) -> str:
@@ -120,7 +196,8 @@ def render(d: dict, source: Optional[str] = None) -> str:
       f"{n_rel} tables/views, {d['counts'].get('indexes', 0)} indexes, {len(fks)} FKs, "
       f"{d['counts'].get('policies', 0)} RLS policy(ies), {len(d.get('functions', []))} functions, "
       f"{len(d.get('enums', []))} enums. Database size {human_bytes(db.get('size_bytes'))}, "
-      f"max_connections {db.get('max_connections', '?')}.")
+      f"max_connections {db.get('max_connections', '?')}. RLS catalogue guard: "
+      f"{len(rls.check(d).violations)} unallowlisted violation(s) (see *RLS catalogue guard (X2)*).")
     w("")
     w("## Conventions")
     w("- Column format: `name type` — `NN` suffix = NOT NULL. Types are `format_type()` output "
@@ -303,6 +380,7 @@ def render(d: dict, source: Optional[str] = None) -> str:
     if not d.get("soft_keys"):
         w("| none | | | | | |")
     w("")
+    L.extend(render_rls_guard(d))
     w("## Connections at dump time")
     w("")
     w("Client sessions per `application_name` (`(empty)` = a pool without `application_name`, standards C1.1a).")
@@ -328,6 +406,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--out", help="Markdown file to write (default: stdout)")
     parser.add_argument("--source", help="provenance line, e.g. the workflow run URL")
     parser.add_argument("--fingerprint", action="store_true", help="print the structural fingerprint only")
+    parser.add_argument("--rls-guard", action="store_true",
+                        help="print the X2 RLS catalogue guard summary and ::warning:: annotations only")
     args = parser.parse_args(argv)
     with open(args.dump, encoding="utf-8") as f:
         dump = json.load(f)
@@ -336,6 +416,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 2
     if args.fingerprint:
         print(fingerprint(dump))
+        return 0
+    if args.rls_guard:
+        sys.stdout.write(rls_guard_report(dump))
         return 0
     text = render(dump, args.source)
     if args.out:
