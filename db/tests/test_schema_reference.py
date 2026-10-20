@@ -237,6 +237,87 @@ class RenderTest(unittest.TestCase):
         self.assertEqual(self.md, gen.render(json.loads(json.dumps(self.d)), source="https://example/run/1"))
 
 
+class RlsGuardSectionTest(unittest.TestCase):
+    """X2 RLS catalogue guard (db/rls_catalogue_rules.py) in the rendered file and the --rls-guard CLI mode."""
+
+    # One seeded violation per rule, on top of the test dump: (rule, mutation, key in the report).
+    SEEDS = (
+        ("a", lambda d: d["relations"]["shared"]["job"]["columns"].append(
+            {"name": "tenant_id", "type": "uuid", "not_null": True}), "shared.job"),
+        ("b", lambda d: d["relations"]["shared"]["job"]["policies"].append(
+            {"policy": "open", "permissive": "PERMISSIVE", "roles": ["public"], "cmd": "ALL", "qual": "(id > 0)",
+             "with_check": None}), "shared.job:open"),
+        ("c", lambda d: d["relations"]["shared"]["job"]["policies"].append(
+            {"policy": "old", "permissive": "PERMISSIVE", "roles": ["aa_app_user"], "cmd": "ALL",
+             "qual": "((x)::text = current_setting('app.current_tenant'::text, true))", "with_check": None}),
+         "shared.job:old"),
+        ("d", lambda d: d["relations"]["shared"]["job"]["policies"].append(
+            {"policy": "cast", "permissive": "PERMISSIVE", "roles": ["aa_app_user"], "cmd": "ALL",
+             "qual": "(x = (current_setting('app.tenant_id'::text, true))::uuid)", "with_check": None}),
+         "shared.job:cast"),
+        ("e", lambda d: d["relations"]["booking"]["legs"]["constraints"].append(
+            {"constraint": "legs_job_fkey", "type": "f", "definition": "FOREIGN KEY (a) REFERENCES shared.job(id)",
+             "validated": True, "ref_schema": "shared", "ref_name": "job", "columns": "a", "ref_columns": "id"}),
+         "booking.legs:legs_job_fkey->shared.job"),
+        ("p", lambda d: d["relations"]["shared"]["job"]["grants"].append(
+            {"grantee": "PUBLIC", "privileges": "SELECT"}), "shared.job"),
+        ("g", lambda d: d["relations"]["shared"]["job"]["grants"].append(
+            {"grantee": "tripplanner", "privileges": "SELECT"}), "shared.job:tripplanner"),
+        ("t", lambda d: d["relations"]["shared"]["job"]["policies"].append(
+            {"policy": "all", "permissive": "PERMISSIVE", "roles": ["aa_app_user"], "cmd": "ALL", "qual": "true",
+             "with_check": None}), "shared.job:all"),
+    )
+
+    def test_section_on_the_test_dump(self):
+        md = gen.render(dump())
+        self.assertIn("## RLS catalogue guard (X2)", md)
+        self.assertIn("RLS catalogue guard: ", md)
+        # The fixture grants booking catalog USAGE/SELECT (allowlisted contract) and shared.job columns to
+        # booking (not allowlisted: a cis object to a booking role).
+        self.assertIn("| g | `catalog.*:booking` | 1 | contract: catalog.* views for Booking (CIS 225, 228) |", md)
+        self.assertIn("- [g] `shared.job.id:booking`: cis object to booking role: SELECT", md)
+        self.assertNotIn("### Violations\n\n- none", md)
+
+    def test_each_seeded_rule_is_reported(self):
+        for rule, mutate, key in self.SEEDS:
+            with self.subTest(rule=rule):
+                d = dump()
+                mutate(d)
+                md = gen.render(d)
+                self.assertIn(f"- [{rule}] `{key}`:", md)
+                report = gen.rls_guard_report(d)
+                self.assertIn(f"::warning::RLS catalogue guard [{rule}] {key}:", report)
+
+    def test_clean_dump_reports_no_violation(self):
+        d = dump()
+        d["relations"]["shared"]["job"]["column_grants"] = []
+        md = gen.render(d)
+        self.assertIn("**0 unallowlisted violation(s)**", md)
+        self.assertIn("### Violations\n\n- none", md)
+        self.assertEqual(gen.rls_guard_report(d).count("::warning::"), 0)
+
+    def test_cli_mode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "dump.json"
+            p.write_text(json.dumps(dump()), encoding="utf-8")
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                self.assertEqual(gen.main([str(p), "--rls-guard"]), 0)
+            self.assertTrue(buf.getvalue().startswith("- RLS catalogue guard (X2): 2 unallowlisted violation(s)"))
+
+    def test_guard_outcome_moves_the_fingerprint(self):
+        d = dump()
+        base = gen.fingerprint(d)
+        original = dict(gen.rls.ALLOWLIST["g"])
+        try:
+            gen.rls.ALLOWLIST["g"]["shared.job.*:booking"] = "test entry"
+            self.assertNotEqual(base, gen.fingerprint(d))
+        finally:
+            gen.rls.ALLOWLIST["g"].clear()
+            gen.rls.ALLOWLIST["g"].update(original)
+        self.assertEqual(base, gen.fingerprint(d))
+
+
 class FingerprintTest(unittest.TestCase):
     def test_volatile_changes_keep_the_fingerprint(self):
         a = dump()

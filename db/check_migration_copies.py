@@ -9,7 +9,9 @@ db/migrations/<owner>/ holds copies of migrations that the owner repo reviewed a
     owner repo first, then the Infra copy);
   * differs from the owner's main by even one byte.
 db/migrations/roles/ (X1 role bootstrap, extensions, undo files; key `rl-NNN`) is Infra-native: no
-owner repo to compare with, so only the path and the registration are checked. The registry of
+owner repo to compare with, so only the path and the registration are checked.
+CODE_COPIES: code files Infra runs as byte copies of an owner repo's file (the X2 RLS catalogue rules,
+canonical in AA-CIS-App). Same byte compare, no registration; `--all` checks them too. The registry of
 owners is db/owners.yaml; OWNERS and PATH_RE mirror it (db/tests/test_owners_registry.py).
 
 Usage:
@@ -56,6 +58,12 @@ OWNERS: dict[str, Owner] = {
     "tripplanner": Owner("AA-TripPlanner-Web", "migrations", "tp-"),
     "booking": Owner("AA-Booking", "migrations", "bk-"),
     "roles": Owner("AA-CIS-Infra", "db/migrations/roles", "rl-", native=True),
+}
+
+# Code copies: Infra path -> (owner repo, path on its main). The owner file is canonical (it is what CI runs at
+# PR time); the Infra copy is refreshed byte for byte after the owner PR merges, like a migration copy.
+CODE_COPIES: dict[str, tuple[str, str]] = {
+    "db/rls_catalogue_rules.py": ("AA-CIS-App", "tests/integration/rls_catalogue_rules.py"),
 }
 
 # Same shape db-migrate.yml accepts at dispatch time.
@@ -106,8 +114,27 @@ def first_difference(a: bytes, b: bytes) -> str:
     return f"one file is a prefix of the other ({len(a)} vs {len(b)} bytes)"
 
 
+def check_code_copy(rel_path: str, repo_root: Path, fetch: Fetcher) -> list[str]:
+    """A CODE_COPIES file: byte-identical to its owner file on main (no registration to check)."""
+    repo, source_path = CODE_COPIES[rel_path]
+    local = (repo_root / rel_path).read_bytes()
+    where = f"{ORG}/{repo}@{BRANCH}:{source_path}"
+    try:
+        upstream = fetch(repo, source_path)
+    except FetchError as e:
+        return [f"cannot compare with {where}: {e}"]
+    if upstream is None:
+        return [f"not found on {where} — merge the owner PR first, then copy the file here"]
+    if upstream != local:
+        return [f"differs from {where}: {first_difference(local, upstream)}; copy the owner file byte for byte "
+                f"(cp, not an editor), the owner repo's file is canonical"]
+    return []
+
+
 def check_file(rel_path: str, repo_root: Path, fetch: Fetcher) -> list[str]:
     """Returns the problems found for one copy; empty means it is fine."""
+    if rel_path in CODE_COPIES:
+        return check_code_copy(rel_path, repo_root, fetch)
     m = PATH_RE.match(rel_path)
     if not m:
         return [
@@ -192,7 +219,8 @@ def github_fetch(repo: str, path: str, attempts: int = 3) -> Optional[bytes]:
 
 def all_copies(repo_root: Path) -> list[str]:
     base = repo_root / MIGRATIONS_DIR
-    return sorted(p.relative_to(repo_root).as_posix() for p in base.rglob("*") if p.is_file())
+    files = [p.relative_to(repo_root).as_posix() for p in base.rglob("*") if p.is_file()] if base.is_dir() else []
+    return sorted(files + [rel for rel in CODE_COPIES if (repo_root / rel).is_file()])
 
 
 def run(paths: list[str], repo_root: Path, fetch: Fetcher, out=sys.stdout) -> int:
@@ -221,7 +249,8 @@ def run(paths: list[str], repo_root: Path, fetch: Fetcher, out=sys.stdout) -> in
 def main(argv: Optional[list[str]] = None, fetch: Fetcher = github_fetch) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("paths", nargs="*", help="repo-relative paths under db/migrations/")
-    parser.add_argument("--all", action="store_true", help="check every file under db/migrations/")
+    parser.add_argument("--all", action="store_true",
+                        help="check every file under db/migrations/ and every CODE_COPIES file")
     parser.add_argument("--repo-root", default=str(Path(__file__).resolve().parent.parent))
     args = parser.parse_args(argv)
     root = Path(args.repo_root)

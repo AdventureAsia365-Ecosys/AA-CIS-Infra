@@ -22,6 +22,7 @@ sys.path.insert(0, str(ROOT / "db"))
 
 import check_migration_copies as guard  # noqa: E402
 import isolation_probe as probe  # noqa: E402
+import rls_catalogue_rules as rls  # noqa: E402
 import run_migration as rm  # noqa: E402
 
 REGISTRY = yaml.safe_load((ROOT / "db" / "owners.yaml").read_text(encoding="utf-8"))
@@ -245,6 +246,19 @@ class MirrorsAgreeTest(unittest.TestCase):
                                  (o["repo"], o["path"], o["key_prefix"], bool(o.get("native"))))
         dirs = re.search(r"\^db/migrations/\(([a-z|]+)\)/", guard.PATH_RE.pattern).group(1)
         self.assertEqual(set(dirs.split("|")), set(OWNERS))
+
+    def test_rls_catalogue_rules_owner_maps(self):
+        """X2 guard: SCHEMA_OWNERS (rule e, rule g) and ROLE_OWNERS (rule g) mirror the registry."""
+        expected = {s: name for name, o in SCHEMA_OWNERS.items() for s in o["schemas"]}
+        self.assertEqual({s: o for s, o in rls.SCHEMA_OWNERS.items() if o != "platform"}, expected)
+        self.assertEqual({s for s, o in rls.SCHEMA_OWNERS.items() if o == "platform"}, {"public"})
+        roles = {}
+        for name, o in SCHEMA_OWNERS.items():
+            for r in [o["owner_role"], *o["runtime_roles"], *o.get("view_owner_roles", [])]:
+                roles[r] = name
+        self.assertEqual(rls.ROLE_OWNERS, roles)
+        self.assertNotIn(REGISTRY["master_role"], rls.ROLE_OWNERS)
+        self.assertNotIn(REGISTRY["migrator_role"], rls.ROLE_OWNERS)
 
     def test_db_migrate_workflow(self):
         on, run = validate_step()
