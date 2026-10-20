@@ -148,6 +148,12 @@ tools/
                     state restored), PKCE spike helpers; tests
                     in tools/identity/tests (job in identity-triggers-test.yml). Tracked on purpose:
                     scripts/ is gitignored, so hand-run tools that must be kept go in tools/.
+  contracts/      ← check_contract_copies.py (AA-826, X7): consumer contract-copy hash guard. Pins the
+                    sha256 of each root-repo docs/contracts/*.json in contract_copies.json and checks every
+                    registered app-repo copy against its pin (red on a modified, missing or unregistered
+                    copy); --workspace also proves the pins against the canonical files (the root repo is
+                    private, CI cannot read it). Tests in tools/contracts/tests (contract-copy-guard.yml:
+                    PR + nightly).
   secrets/        ← register_check.py (AA-878): metadata-only drift check of the root repo's
                     docs/security/secrets-register.yaml against Secrets Manager list-secrets, GitHub
                     secret lists, Vercel env names and Lambda env keys collected beforehand; never
