@@ -7,8 +7,12 @@ Needs PyYAML: the Migration Copy Guard "Guard unit tests" step (the PR gate) and
 not failed. The DB Migrate ECS task never runs these tests (it gets only run_migration.py + the SQL).
 Run: python3 -m unittest discover -s db/tests -v
 """
+import os
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -51,7 +55,12 @@ class RegistryShapeTest(unittest.TestCase):
         self.assertEqual(REGISTRY["version"], 1)
         self.assertEqual(REGISTRY["environments"], ["dev"])
         self.assertRegex(REGISTRY["master_role"], ROLE_RE)
-        self.assertEqual(set(OWNERS), {"cis", "booking", "tripplanner", "roles"})
+        # The three apps and roles/ always exist; a new owner (ADR 0008 playbook) is added in owners.yaml and the
+        # mirrors this file compares, never here (AA-826 dry run). Owner names are migration dir names.
+        self.assertLessEqual({"cis", "booking", "tripplanner", "roles"}, set(OWNERS))
+        for name in OWNERS:
+            self.assertRegex(name, r"^[a-z]+$")
+        self.assertEqual([n for n, o in OWNERS.items() if o.get("native")], ["roles"])
 
     def test_owner_entries(self):
         prefixes = set()
@@ -271,6 +280,46 @@ class MirrorsAgreeTest(unittest.TestCase):
         self.assertEqual(prefixes, {n: o["key_prefix"] for n, o in OWNERS.items()})
         self.assertIn(f'"$ENVIRONMENT" != "{REGISTRY["environments"][0]}"', run)
         self.assertEqual(inputs["mode"]["options"], ["check", "apply", "set-password", "run-script"])
+
+
+@unittest.skipUnless(shutil.which("bash") and shutil.which("jq"), "bash and jq run the DB Migrate validate step")
+class DbMigrateValidateStepTest(unittest.TestCase):
+    """Runs the DB Migrate "Validate input" step itself (bash, no AWS) for one file per owner of owners.yaml: the
+    step accepts the path and computes the version key with the owner's prefix (AA-826: a new owner is picked up by
+    DB Migrate's validation, not only matched by a regex compare). The file is a throwaway copy in a temp tree."""
+
+    SQL = ("-- registry probe (AA-826)\nBEGIN;\nSELECT 1;\n"
+           "INSERT INTO shared.schema_versions (version, description) VALUES ('{key}', 'probe');\nCOMMIT;\n")
+
+    def run_step(self, tmp: Path, migration: str) -> tuple[int, dict, str]:
+        _, run = validate_step()
+        out, summary = tmp / "out.txt", tmp / "summary.md"
+        env = {"PATH": os.environ.get("PATH", ""), "MODE": "check", "ENVIRONMENT": REGISTRY["environments"][0],
+               "MIGRATION": migration, "OVERRIDE_BUSY_JOBS": "",
+               "GITHUB_OUTPUT": str(out), "GITHUB_STEP_SUMMARY": str(summary)}
+        p = subprocess.run(["bash", "-e", "-c", run], cwd=tmp, env=env, capture_output=True, text=True, timeout=60)
+        outputs = dict(line.split("=", 1) for line in out.read_text().splitlines()) if out.exists() else {}
+        return p.returncode, outputs, p.stdout + p.stderr
+
+    def test_every_owner_dir_is_accepted_with_its_key_prefix(self):
+        for name, o in OWNERS.items():
+            with self.subTest(owner=name), tempfile.TemporaryDirectory() as d:
+                tmp = Path(d)
+                shutil.copytree(ROOT / "db", tmp / "db", ignore=shutil.ignore_patterns("migrations", "__pycache__"))
+                key = f"{o['key_prefix']}999"
+                f = tmp / "db" / "migrations" / name / "999_registry_probe.sql"
+                f.parent.mkdir(parents=True)
+                f.write_text(self.SQL.format(key=key), encoding="utf-8")
+                code, outputs, log = self.run_step(tmp, f"{name}/999_registry_probe.sql")
+                self.assertEqual(code, 0, log)
+                self.assertEqual(outputs.get("version"), key, log)
+
+    def test_unknown_owner_dir_is_refused(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            code, _, log = self.run_step(tmp, "notanowner/999_registry_probe.sql")
+            self.assertNotEqual(code, 0)
+            self.assertIn("migration must look like", log)
 
 
 if __name__ == "__main__":
