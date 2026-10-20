@@ -35,34 +35,32 @@ locals {
 
 # AA-806: statement list of the apply role (see above). Sids that the apply role replaces with
 # name-scoped versions are listed in local.tf_apply_superseded_sids and dropped there.
+#
+# AA-846 (S245) narrowing, to give the apply role's single inline policy headroom under the
+# 10,240-character limit and drop grants nothing uses:
+#   - ECRPushPull -> read verbs only, inside RefreshRead. No workflow on the apply role pushes or
+#     pulls an image (the app repos push with their own deploy roles); Terraform refresh of the ECR
+#     repositories needs only the Describe/List/Get* reads.
+#   - DynamoDBStateLock removed: the backend locks with the S3 lockfile only (use_lockfile), and S3
+#     access comes from AmazonS3FullAccess.
+#   - The read-only Resource "*" statements (ELBDescribe, EFSDescribeList, IAMPolicyRead and the ECR
+#     reads) are one statement, RefreshRead: same actions (ECR reads as Describe*/List*/Get*Policy*),
+#     less per-statement overhead. WAFv2WebACLCreate (cicd_split.tf) is folded into WAFv2Manage.
 locals {
   cicd_inline_statements = [
     {
-      Sid    = "ECRPushPull"
+      # Plan/refresh reads with no resource-level scoping. No write verb belongs here.
+      Sid    = "RefreshRead"
       Effect = "Allow"
       Action = [
-        "ecr:GetAuthorizationToken",
-        "ecr:BatchCheckLayerAvailability",
-        "ecr:GetDownloadUrlForLayer",
-        "ecr:BatchGetImage",
-        "ecr:InitiateLayerUpload",
-        "ecr:UploadLayerPart",
-        "ecr:CompleteLayerUpload",
-        "ecr:PutImage",
-        "ecr:DescribeRepositories",
-        "ecr:ListImages",
-        "ecr:ListTagsForResource",
-        "ecr:DescribeImages",
-        "ecr:GetLifecyclePolicy",
-        "ecr:GetLifecyclePolicyPreview",
-        "ecr:GetRepositoryPolicy",
+        "ecr:Describe*", "ecr:List*", "ecr:GetLifecyclePolicy*", "ecr:GetRepositoryPolicy",
+        "elasticloadbalancing:Describe*", "elasticloadbalancing:Get*",
+        "elasticfilesystem:Describe*", "elasticfilesystem:List*",
+        # AA-806: the permissions-boundary policies in cicd_split.tf are customer managed policies;
+        # refreshing them needs these.
+        "iam:GetPolicy", "iam:GetPolicyVersion", "iam:ListPolicyVersions", "iam:ListPolicyTags",
+        "iam:ListRoleTags",
       ]
-      Resource = "*"
-    },
-    {
-      Sid      = "ELBDescribe"
-      Effect   = "Allow"
-      Action   = ["elasticloadbalancing:Describe*", "elasticloadbalancing:Get*"]
       Resource = "*"
     },
     {
@@ -84,12 +82,6 @@ locals {
         "elasticloadbalancing:AddTags",
         "elasticloadbalancing:RemoveTags",
       ]
-      Resource = "*"
-    },
-    {
-      Sid      = "EFSDescribeList"
-      Effect   = "Allow"
-      Action   = ["elasticfilesystem:Describe*", "elasticfilesystem:List*"]
       Resource = "*"
     },
     {
@@ -183,6 +175,10 @@ locals {
         "wafv2:TagResource",
         "wafv2:GetIPSet",
         "wafv2:ListIPSets",
+        # AA-703: the Cognito web ACL (was Sid WAFv2WebACLCreate in cicd_split.tf, merged AA-846).
+        "wafv2:CreateWebACL",
+        "wafv2:DeleteWebACL",
+        "wafv2:CheckCapacity",
       ]
       Resource = "*"
     },
@@ -194,17 +190,6 @@ locals {
         "iam:AddRoleToInstanceProfile", "iam:RemoveRoleFromInstanceProfile", "iam:TagInstanceProfile",
       ]
       Resource = "*"
-    },
-    {
-      Sid    = "DynamoDBStateLock"
-      Effect = "Allow"
-      Action = [
-        "dynamodb:GetItem",
-        "dynamodb:PutItem",
-        "dynamodb:DeleteItem",
-        "dynamodb:DescribeTable",
-      ]
-      Resource = "arn:aws:dynamodb:us-west-1:005097885195:table/aa-cis-tfstate-lock-005097885195"
     },
     {
       # AA-287 — aws_budgets_budget. ViewBudget/ModifyBudget are AWS's
@@ -317,8 +302,8 @@ locals {
       Resource = "arn:aws:iam::${var.account_id}:role/aa-booking-${var.environment}-*"
     },
     {
-      # AA-678 — booking.tf creates its own ECR repo (aa-booking-dev-api). ECRPushPull above only
-      # has push/pull + read verbs (the CIS repo in modules/ecs was created before this role
+      # AA-678 — booking.tf creates its own ECR repo (aa-booking-dev-api). RefreshRead above only
+      # has the ECR read verbs (the CIS repo in modules/ecs was created before this role
       # managed it), so CreateRepository, the lifecycle policy and tag-on-create would be
       # AccessDenied. Scoped to aa-booking-<env>-* repositories; CIS repos are untouched.
       Sid    = "BookingEcrRepoManage"
@@ -423,21 +408,6 @@ locals {
         "scheduler:DeleteSchedule",
       ]
       Resource = "arn:aws:scheduler:${var.aws_region}:${var.account_id}:schedule/${local.name_prefix}-acp/*"
-    },
-    {
-      # AA-806: the permissions-boundary policies in cicd_split.tf are customer managed policies.
-      # Refreshing them during plan needs these read verbs (no IAM policy existed in this stack
-      # before AA-806).
-      Sid    = "IAMPolicyRead"
-      Effect = "Allow"
-      Action = [
-        "iam:GetPolicy",
-        "iam:GetPolicyVersion",
-        "iam:ListPolicyVersions",
-        "iam:ListPolicyTags",
-        "iam:ListRoleTags",
-      ]
-      Resource = "*"
     },
   ]
 }

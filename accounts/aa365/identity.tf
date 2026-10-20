@@ -82,7 +82,7 @@
 #
 # APPLY PREREQUISITES (CI apply role aa-cis-infra-tf-apply, AA-806 split):
 #   - cognito-idp:* and wafv2:CreateWebACL/DeleteWebACL/CheckCapacity: statements
-#     CognitoUserPoolManage / WAFv2WebACLCreate in cicd_split.tf (AA-811 bootstrap grant, local MFA
+#     CognitoUserPoolManage in cicd_split.tf / WAFv2Manage in cicd.tf (AA-811 bootstrap grant, local MFA
 #     apply) must be live first, or the CI apply fails with AccessDenied.
 #   - identity_ses_enabled = true (the default) switches both pools to DEVELOPER email: Cognito then
 #     creates the service-linked role AWSServiceRoleForAmazonCognitoIdpEmailService with the CALLER's
