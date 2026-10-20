@@ -150,7 +150,7 @@ variable "dataforseo_password" {
 
 # ── Observability (AA-284/286/287) ──
 variable "alert_email" {
-  description = "Email address for SNS alert subscription + AWS Budgets notifications (work inbox since S245; was a personal Gmail)"
+  description = "Bootstrap recipient of the alerts topic (the one Terraform-managed e-mail subscription, shown locked in the CIS admin page, AA-913); AWS Budgets now notify the topic. Work inbox since S245; was a personal Gmail"
   type        = string
   default     = "nghieppham@adventure.asia"
 }

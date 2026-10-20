@@ -12,7 +12,7 @@
 #      one would fail), so Terraform owns it and tags it. Name and type are unchanged: the import is
 #      an in-place tag update, no replacement.
 #   2. One IMMEDIATE subscription to aws_sns_topic.alerts (the topic every alarm already uses, e-mailed
-#      to var.alert_email) for any anomaly whose total cost impact is >= var.cost_anomaly_alert_usd.
+#      to the topic's recipients: bootstrap + CIS admin page, AA-913) for any anomaly whose total cost impact is >= var.cost_anomaly_alert_usd.
 #      IMMEDIATE is the only frequency that accepts an SNS subscriber.
 #   3. The topic policy statement that lets costalerts.amazonaws.com publish (identity_alerts.tf,
 #      Sid AllowCostAnomalyDetection, limited to this account with aws:SourceAccount).

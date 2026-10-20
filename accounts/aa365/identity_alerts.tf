@@ -19,6 +19,10 @@
 #      verbatim so every CloudWatch alarm keeps publishing, plus one statement letting
 #      events.amazonaws.com publish from the identity rules only. (AA-896, S243: plus one statement
 #      letting costalerts.amazonaws.com publish Cost Anomaly Detection alerts, cost_anomaly.tf.)
+#      (AA-913, S245: plus one statement letting budgets.amazonaws.com publish the AWS Budgets
+#      notifications of this account, observability.tf. The default statement is left untouched:
+#      CloudWatch alarms rely on it. It also lets any same-account principal Subscribe /
+#      ListSubscriptionsByTopic; tightening that is a separate change.)
 #   4. (AA-816, S243) Root ADR 0006a A8: EventBridge rule on CloudTrail AdminCreateUser on the
 #      WORKFORCE pool with a temporary password, RESEND or no SUPPRESS -> the same SNS topic.
 #
@@ -229,6 +233,32 @@ data "aws_iam_policy_document" "alerts_topic" {
       test     = "StringEquals"
       variable = "aws:SourceAccount"
       values   = [var.account_id]
+    }
+  }
+
+  # AA-913: AWS Budgets publish their notifications here (observability.tf), limited to this account's budgets.
+  # Statement from the AWS guide "Creating an Amazon SNS topic for budget notifications".
+  statement {
+    sid       = "AllowBudgets"
+    effect    = "Allow"
+    actions   = ["SNS:Publish"]
+    resources = [aws_sns_topic.alerts.arn]
+
+    principals {
+      type        = "Service"
+      identifiers = ["budgets.amazonaws.com"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceAccount"
+      values   = [var.account_id]
+    }
+
+    condition {
+      test     = "ArnLike"
+      variable = "aws:SourceArn"
+      values   = ["arn:aws:budgets::${var.account_id}:*"]
     }
   }
 }

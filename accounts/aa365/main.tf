@@ -217,6 +217,12 @@ module "ecs" {
   ses_from_address      = var.ses_from_address
   ses_configuration_set = aws_sesv2_configuration_set.stream["transactional"].configuration_set_name
 
+  # AA-913: the admin page manages the e-mail subscriptions of this topic (grant: alert_recipients.tf)
+  # and shows var.alert_email (the Terraform bootstrap subscription) locked. ALERT_EMAIL_TO above stays
+  # the ops-mail fallback.
+  alerts_topic_arn      = aws_sns_topic.alerts.arn
+  alert_bootstrap_email = var.alert_email
+
   depends_on = [module.vpc, module.alb]
 }
 
