@@ -152,6 +152,10 @@ tools/
                     docs/security/secrets-register.yaml against Secrets Manager list-secrets, GitHub
                     secret lists, Vercel env names and Lambda env keys collected beforehand; never
                     reads a value. Tests in tools/secrets/tests (secrets-register-check-test.yml).
+  docs/           ← docs lint (AA-888), vendored byte for byte from AA-Ecosys tools/docs: front-matter
+                    (schema copy in docs/templates/), ADR index, single-line AWS CLI, resource IDs
+                    (VPC IDs fail, account IDs/ARNs warn), offline links; job in docs-lint.yml, which
+                    also writes the weekly freshness report. README there says how to keep copies equal.
 ```
 
 The **active dev stack** is `accounts/aa365` — it is the root Terraform actually applies against

@@ -26,7 +26,8 @@ db/               run_migration.py + migrations/<owner>/ copies applied by DB Mi
 .github/workflows terraform-plan.yml (PR), terraform-apply.yml (manual), db-migrate.yml (manual),
                   migration-copy-guard.yml (PR on db/migrations/**, nightly),
                   db-schema-dump.yml (nightly, manual, after each DB Migrate apply),
-                  secret-scan.yml (PR, manual; gitleaks with .gitleaks.toml + .gitleaksignore)
+                  secret-scan.yml (PR, manual; gitleaks with .gitleaks.toml + .gitleaksignore),
+                  docs-lint.yml (PR on Markdown, weekly freshness report; tools/docs/README.md)
 ```
 
 ## How a change is applied
