@@ -88,3 +88,12 @@ the CIS break-glass row of `shared.admin_users` (root ADR 0006a A4) and writes o
 username / e-mail and it has both. Merged as apply (`READ_ONLY = False`); `READ_ONLY = True` is a DRY RUN.
 Idempotent (`already_null`, writes nothing). Prints booleans and the audit row id only. Notes:
 `docs/implementation-notes/AA-816-breakglass-hash.md`.
+
+`aa805_ai_guards_read.py` (AA-805, read-only): the DB half of the TripPlanner AI Phase 0 closing evidence. Prints
+`tripplanner.llm_spend_daily` for the last 3 UTC days next to the `shared.llm_call_log` totals of the same online stages
+and today's sum against the 5.0 USD default cap; the `tripplanner.narration_cache` summary (rows, hits, rows hit,
+fresh rows); whether every destination the 30-query labelled search set returned live (725 ids, hard-coded) has an
+embedded component of an active, non-deleted AA-tenant tour, with a negative control (inactive-only destinations
+exist and none was returned); and up to 5 component ids per kind whose tour day has no AA master text (inputs for the
+live narration-cache test). Ends with `SCRIPT verdict search_no_inactive=PASS|FAIL`. Notes:
+`docs/implementation-notes/AA-805-s245.md`.
