@@ -150,9 +150,9 @@ variable "dataforseo_password" {
 
 # ── Observability (AA-284/286/287) ──
 variable "alert_email" {
-  description = "Email address for SNS alert subscription + AWS Budgets notifications"
+  description = "Email address for SNS alert subscription + AWS Budgets notifications (work inbox since S245; was a personal Gmail)"
   type        = string
-  default     = "pqnghiep1354@gmail.com"
+  default     = "nghieppham@adventure.asia"
 }
 
 # AA-828: monthly USD limit per `App` cost allocation tag value (one aws_budgets_budget each,
