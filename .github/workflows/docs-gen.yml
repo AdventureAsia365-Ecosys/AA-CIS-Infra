@@ -1,0 +1,193 @@
+name: Docs Gen (generated infra docs)
+# AA-893: regenerates the root repo's docs/generated/ pages from the Terraform state of accounts/aa365:
+#   alarms.md     OPS-07          every CloudWatch alarm + SNS-notifying EventBridge rule, with runbook links
+#   network.md    ARCH-02-tables  VPC, subnets, routes, NAT, security groups, load balancers, API Gateway, DNS
+#   inventory.md  ARCH-03         resources per App tag + the root Terraform outputs
+#   iam-roles.md  ARCH-04-tables  IAM roles: trust, boundary, managed + inline policies
+#
+# 1. terraform init + `terraform show -json` with the READ-ONLY plan role (aa-cis-infra-tf-plan, which
+#    trusts this repo's `ref:refs/heads/main` subject since AA-893). Nothing is planned, locked or applied.
+#    The state JSON holds secret values in clear text: it stays in RUNNER_TEMP (umask 077), is never
+#    printed or uploaded, and is deleted right after rendering. tools/docs/gen_docs.py reads an explicit
+#    list of attributes and skips sensitive outputs.
+# 2. Each runbook link must be a file under the root repo's docs/ (checked against the root checkout).
+# 3. A page is published when its content fingerprint differs from root master, or when the copy on
+#    master is older than 30 days (keeps last_reviewed fresh), or with publish=true. The pages are pushed
+#    to the root branch bot/generated-infra-docs and a PR is opened or updated (merged by hand, root rule).
+#    A broken or missing runbook link fails this run AFTER the PR is updated, so the bad row is visible.
+#
+# Triggers: nightly, manual, and Terraform Apply after every apply that changed something.
+# Secrets (repo level, all already used by other workflows): AWS_ROLE_ARN (the plan role, as in
+# terraform-plan.yml; this job has no environment, so the prod environment's apply-role value does not
+# apply), TF_STATE_BUCKET, ROOT_REPO_DOCS_TOKEN (fine-grained PAT on AA-Ecosys: contents + pull requests).
+# Cost: $0 AWS (state read from S3, a few GET requests); GitHub Actions about 1 minute a night.
+on:
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "Why this run (shown in the root PR); Terraform Apply sets it after an apply"
+        required: false
+        type: string
+        default: manual
+      publish:
+        description: "Open/update the root PR even if no page changed"
+        required: false
+        type: boolean
+        default: false
+  schedule:
+    - cron: "17 4 * * *"   # nightly, 04:17 UTC (after DB Schema Dump at 03:43)
+
+concurrency:
+  group: docs-gen
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  render:
+    name: Render generated infra docs
+    runs-on: ubuntu-latest
+    # No environment: the OIDC sub is `ref:refs/heads/main`, trusted only by the read-only plan role.
+    if: github.ref == 'refs/heads/main'
+    timeout-minutes: 15
+    env:
+      AWS_REGION: us-west-1
+      ROOT_REPO: AdventureAsia365-Ecosys/AA-Ecosys
+      ROOT_BRANCH: master
+      PR_BRANCH: bot/generated-infra-docs
+      GEN_PATH: docs/generated
+      REASON: ${{ github.event_name == 'schedule' && 'nightly' || inputs.reason || 'manual' }}
+      PUBLISH: ${{ github.event_name == 'workflow_dispatch' && inputs.publish && 'true' || 'false' }}
+      HAS_ROOT_TOKEN: ${{ secrets.ROOT_REPO_DOCS_TOKEN != '' }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Unit tests (generator)
+        run: python -m unittest discover -s tools/docs/tests
+
+      - name: Check out the root repo
+        if: env.HAS_ROOT_TOKEN == 'true'
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ env.ROOT_REPO }}
+          ref: ${{ env.ROOT_BRANCH }}
+          token: ${{ secrets.ROOT_REPO_DOCS_TOKEN }}
+          path: root
+          fetch-depth: 1
+
+      - name: Configure AWS credentials (OIDC, read-only plan role)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-west-1
+
+      # Fail closed if the repo-level secret ever names a role with write rights.
+      - name: Verify the role is the read-only plan role
+        run: |
+          ARN=$(aws sts get-caller-identity --query Arn --output text)
+          case "$ARN" in
+            *:assumed-role/aa-cis-infra-tf-plan/*) echo "role: aa-cis-infra-tf-plan" ;;
+            *) echo "::error::docs-gen must run with the read-only role aa-cis-infra-tf-plan (got another role)"; exit 1 ;;
+          esac
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.15.5"
+          terraform_wrapper: false   # clean JSON on stdout
+
+      - name: Terraform Init (read-only)
+        working-directory: accounts/aa365
+        run: |
+          terraform init -input=false -lockfile=readonly \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="key=dev/terraform.tfstate" \
+            -backend-config="region=us-west-1"
+
+      - name: Read the state, render the pages
+        run: |
+          umask 077
+          STATE="$RUNNER_TEMP/state.json"
+          trap 'rm -f "$STATE"' EXIT
+          terraform -chdir=accounts/aa365 show -json > "$STATE"
+          ROOT_ARGS=()
+          if [ -d root/docs ]; then ROOT_ARGS=(--root-dir root); fi
+          python3 tools/docs/gen_docs.py render --tf-json "$STATE" --out-dir generated "${ROOT_ARGS[@]}" \
+            --source "AA-CIS-Infra Docs Gen ($REASON), $RUN_URL" --sha "$GITHUB_SHA" \
+            --problems-file problems.txt
+          {
+            echo "### Docs Gen ($REASON)"
+            for f in generated/*.md; do echo "- \`$(basename "$f")\`: $(grep -c '^| ' "$f") table rows"; done
+            if [ -s problems.txt ]; then echo "- **runbook problems:**"; sed 's/^/  - /' problems.txt; fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep the rendered pages as an artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: docs-gen-${{ github.run_id }}
+          path: generated/
+          retention-days: 14
+
+      - name: Open or update the root PR when a page changed
+        env:
+          GH_TOKEN: ${{ secrets.ROOT_REPO_DOCS_TOKEN }}
+        run: |
+          if [ "$HAS_ROOT_TOKEN" != "true" ]; then
+            echo "::error::secret ROOT_REPO_DOCS_TOKEN is not set: the pages are in the artifact, but no root PR can be opened"
+            exit 1
+          fi
+          if [ "$PUBLISH" = "true" ]; then
+            PAGES=$(cd generated && ls *.md)
+          else
+            PAGES=$(python3 tools/docs/gen_docs.py changed --new generated --old "root/$GEN_PATH")
+          fi
+          if [ -z "$PAGES" ]; then
+            echo "- no page changed since root master: no PR" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          mkdir -p "root/$GEN_PATH"
+          for p in $PAGES; do cp "generated/$p" "root/$GEN_PATH/$p"; done
+          cd root
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -q -B "$PR_BRANCH"
+          git add "$GEN_PATH"
+          git commit -q -m "docs: regenerate infra docs ($(echo $PAGES | tr '\n' ' '))" \
+            -m "Generated by AA-CIS-Infra Docs Gen ($REASON): $RUN_URL" -m "Refs AA-893"
+          git push -q --force origin "$PR_BRANCH"
+          {
+            echo "Generated by the AA-CIS-Infra **Docs Gen** workflow ($REASON): $RUN_URL"
+            echo
+            echo "Pages updated: $(echo $PAGES | tr '\n' ' ')"
+            echo
+            echo "Source: the Terraform state of \`accounts/aa365\` (read-only plan role), rendered by \`tools/docs/gen_docs.py\`."
+            echo "Review the diff for changes no Terraform PR explains, then merge by hand."
+            echo "Do not push to \`$PR_BRANCH\`: every run force-pushes it from master. This PR is updated in place until merged."
+            echo
+            echo "Refs AA-893"
+          } > ../pr-body.md
+          PR=$(gh pr list --repo "$ROOT_REPO" --head "$PR_BRANCH" --state open --json number --jq '.[0].number // empty')
+          if [ -n "$PR" ]; then
+            gh pr edit "$PR" --repo "$ROOT_REPO" --body-file ../pr-body.md
+            echo "- updated root PR #$PR" >> "$GITHUB_STEP_SUMMARY"
+          else
+            URL=$(gh pr create --repo "$ROOT_REPO" --base "$ROOT_BRANCH" --head "$PR_BRANCH" \
+              --title "docs: regenerate infra docs (alarms, network, inventory, IAM)" --body-file ../pr-body.md)
+            echo "- opened root PR $URL" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Fail on missing or broken runbook links
+        if: always()
+        run: |
+          if [ -s problems.txt ]; then
+            while IFS= read -r line; do echo "::error title=alarm runbook::$line"; done < problems.txt
+            exit 1
+          fi
+          echo "every alarm links to an existing runbook in the root repo"

@@ -9,7 +9,8 @@
 #   aa-cis-dev-app-deploy   AA-CIS-App deploy-dev.yml + eval-regression.yml (environment:dev).
 #                           Push to the CIS ECR repo, add revisions to the CIS task families, point
 #                           the CIS services at them, PassRole on the CIS task/execution roles only.
-#   aa-cis-infra-tf-plan    AA-CIS-Infra terraform-plan.yml (pull_request). Read only.
+#   aa-cis-infra-tf-plan    AA-CIS-Infra terraform-plan.yml (pull_request) and docs-gen.yml
+#                           (ref main, AA-893). Read only.
 #   aa-cis-infra-tf-apply   AA-CIS-Infra terraform-apply.yml + db-migrate.yml (environment:prod).
 #                           Same grants as aa-cis-dev-role had (so the cut-over was a drop-in),
 #                           capped by the permissions boundary aa-cis-infra-tf-apply-boundary.
@@ -444,7 +445,7 @@ resource "aws_iam_role_policy" "cis_app_deploy" {
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "tf_plan" {
   name        = local.tf_plan_role_name
-  description = "AA-806: AA-CIS-Infra terraform plan on pull requests (read only)"
+  description = "AA-806: AA-CIS-Infra terraform plan on pull requests; AA-893: docs-gen on main (read only)"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -455,9 +456,15 @@ resource "aws_iam_role" "tf_plan" {
       Condition = {
         # terraform-plan.yml runs on pull_request with no environment -> context `pull_request`.
         # Fork PRs get no OIDC token with write permissions, so only branches of this repo reach it.
+        # AA-893: docs-gen.yml (nightly, manual, after an apply) runs on main with no environment ->
+        # context `ref:refs/heads/main`. It only reads the state (terraform show -json) to render the
+        # generated docs; only workflows merged to main get this sub, a narrower set than any PR branch.
         StringEquals = {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
-          "token.actions.githubusercontent.com:sub" = ["${local.oidc_sub_cis_infra}:pull_request"]
+          "token.actions.githubusercontent.com:sub" = [
+            "${local.oidc_sub_cis_infra}:pull_request",
+            "${local.oidc_sub_cis_infra}:ref:refs/heads/main",
+          ]
         }
       }
     }]

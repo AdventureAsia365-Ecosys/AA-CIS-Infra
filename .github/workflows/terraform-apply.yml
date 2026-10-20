@@ -26,6 +26,7 @@ concurrency:
 permissions:
   id-token: write
   contents: read
+  actions: write     # AA-893: dispatch docs-gen.yml after an apply
 
 jobs:
   terraform-apply:
@@ -168,3 +169,16 @@ jobs:
       - name: Print outputs
         if: env.GUARD_SELFTEST != 'true' && steps.plan.outputs.exitcode == '2'
         run: terraform output
+
+      # AA-893: regenerate the infra docs (root docs/generated/: alarms, network, inventory, IAM) from
+      # the new state. The apply already succeeded, so a failed dispatch only warns (the nightly run
+      # catches up). docs-gen.yml uses the read-only plan role, not this job's credentials.
+      - name: Regenerate the infra docs (Docs Gen)
+        if: success() && env.GUARD_SELFTEST != 'true' && steps.plan.outputs.exitcode == '2'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run docs-gen.yml --repo "${{ github.repository }}" --ref main \
+            -f reason="after Terraform Apply (run ${{ github.run_id }})"
+          echo "- dispatched Docs Gen (root docs/generated PR if a page changed)" >> "$GITHUB_STEP_SUMMARY"
