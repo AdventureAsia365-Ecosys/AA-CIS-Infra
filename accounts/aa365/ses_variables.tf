@@ -36,7 +36,7 @@ variable "ses_dmarc_rua_email" {
 }
 
 # AA-828: operator mailbox for CIS alert e-mails (spend budget crossings, CIS job ops_alert_email).
-# Not var.alert_email: that is a personal mailbox for SNS/AWS Budgets; this one is the work inbox.
+# Since S245 var.alert_email (SNS + AWS Budgets) uses the same work inbox; kept as two variables so they can diverge.
 variable "cis_ops_alert_email" {
   description = "Operator inbox that receives CIS alert e-mails (ALERT_EMAIL_TO on the CIS api + worker). Empty = CIS sends no alert e-mail (the app logs it)."
   type        = string
