@@ -44,7 +44,10 @@ terraform -chdir=accounts/aa365 init && terraform -chdir=accounts/aa365 plan
 ```
 
 Run Terraform from the WSL path, never a Windows UNC path. State: S3
-`aa-cis-tfstate-005097885195` / `dev/terraform.tfstate`, lock table `aa-cis-tfstate-lock-005097885195`.
+`aa-cis-tfstate-005097885195` / `dev/terraform.tfstate`, locked by the S3 lockfile
+(`use_lockfile`; the DynamoDB lock table is retired, AA-846). Terraform is pinned to exactly the CI
+version (`required_version` in `accounts/aa365/versions.tf`); after the backend change a local checkout
+needs `terraform init -reconfigure` once.
 
 ## DB Migrate (shared RDS)
 
