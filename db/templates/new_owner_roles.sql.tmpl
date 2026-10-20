@@ -5,8 +5,8 @@
 -- Why. Data standards DM-8.1 / MIG-6 / SEC-1: every app gets a NOLOGIN owner role and LOGIN runtime roles with a
 -- CONNECTION LIMIT, defined in git in the Infra role bootstrap (db/migrations/roles/, runs only as the RDS master
 -- aa_cis_admin). DB Migrate runs each {{OWNER}}/ file as the live owner of the anchor schema {{SCHEMA}} (XD8): the
--- schema has to exist, owned by {{OWNER_ROLE}}, before the owner's first file, or that file would run as the DB
--- Migrate login db_migrator (which may not create schemas and must not own app objects).
+-- schema has to exist, owned by {{OWNER_ROLE}}, before the owner's first file: with no anchor schema the runner
+-- does not switch, and the first file would run as the DB Migrate login db_migrator, which must not own app objects.
 --
 -- What.
 --   * CREATE ROLE {{OWNER_ROLE}} NOLOGIN and {{RUNTIME_ROLE}} LOGIN … CONNECTION LIMIT {{CONN_LIMIT}} (if missing).
