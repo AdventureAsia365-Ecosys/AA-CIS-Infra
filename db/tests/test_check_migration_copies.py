@@ -178,7 +178,8 @@ class GuardTest(unittest.TestCase):
 
     def test_roles_path_shape(self):
         rel = self.write("db/migrations/roles/01_x.sql", CIS_228)
-        self.assertIn("<cis|tripplanner|booking|roles>", self.check(rel, FakeOwnerRepos())[0])
+        self.assertIn("<cis|tripplanner|booking|roles", self.check(rel, FakeOwnerRepos())[0])
+        self.assertIn(f"<{'|'.join(guard.OWNERS)}>", self.check(rel, FakeOwnerRepos())[0])   # every owner (AA-826)
 
     # ── GitHub errors ───────────────────────────────────────────────────────────
 

@@ -34,6 +34,7 @@ on:
       - "db/owners.yaml"
       - "db/isolation_probe.py"
       - "db/scripts/**"
+      - "db/templates/**"
       - ".github/scripts/**"
       - ".github/workflows/db-isolation-probe.yml"
       - ".github/workflows/db-migrate.yml"

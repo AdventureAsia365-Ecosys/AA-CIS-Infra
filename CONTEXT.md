@@ -148,15 +148,25 @@ tools/
                     state restored), PKCE spike helpers; tests
                     in tools/identity/tests (job in identity-triggers-test.yml). Tracked on purpose:
                     scripts/ is gitignored, so hand-run tools that must be kept go in tools/.
+  contracts/      ← check_contract_copies.py (AA-826, X7): consumer contract-copy hash guard. Pins the
+                    sha256 of each root-repo docs/contracts/*.json in contract_copies.json and checks every
+                    registered app-repo copy against its pin (red on a modified, missing or unregistered
+                    copy); --workspace also proves the pins against the canonical files (the root repo is
+                    private, CI cannot read it). Tests in tools/contracts/tests (contract-copy-guard.yml:
+                    PR + nightly).
   secrets/        ← register_check.py (AA-878): metadata-only drift check of the root repo's
                     docs/security/secrets-register.yaml against Secrets Manager list-secrets, GitHub
                     secret lists, Vercel env names and Lambda env keys collected beforehand; never
                     reads a value. Tests in tools/secrets/tests (secrets-register-check-test.yml).
-  docs/           ← gen_docs.py (AA-893): renders the root repo's docs/generated/ pages (alarm catalog
-                    with runbook links, network, inventory, IAM roles) from the accounts/aa365 state
-                    JSON (or a plan JSON); `check-source` guards that every alarm and SNS-notifying
-                    EventBridge rule carries a runbook suffix. Tests in tools/docs/tests
-                    (docs-gen-test.yml); run by docs-gen.yml.
+  docs/           ← docs lint (AA-888), vendored byte for byte from AA-Ecosys tools/docs: front-matter
+                    (schema copy in docs/templates/), ADR index, single-line AWS CLI, resource IDs
+                    (VPC IDs fail, account IDs/ARNs warn), offline links; job in docs-lint.yml, which
+                    also writes the weekly freshness report. README there says how to keep copies equal.
+                    Plus gen_docs.py (AA-893, Infra-only, not part of the vendored set): renders the root
+                    repo's docs/generated/ pages (alarm catalog with runbook links, network, inventory, IAM
+                    roles) from the accounts/aa365 state JSON (or a plan JSON); `check-source` guards that
+                    every alarm and SNS-notifying EventBridge rule carries a runbook suffix. Tests in
+                    tools/docs/tests (docs-gen-test.yml); run by docs-gen.yml.
 ```
 
 The **active dev stack** is `accounts/aa365` — it is the root Terraform actually applies against
