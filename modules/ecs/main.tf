@@ -8,10 +8,15 @@ locals {
 
   # AA-828: operator alert e-mail (spend budget crossings, job ops_alert_email) for the api and the
   # worker. Empty values are fine: the app logs and sends nothing (shared/ops_alerts.py).
+  # AA-913: ALERTS_TOPIC_ARN + ALERT_BOOTSTRAP_EMAIL let the admin page (Platform > Alert recipients)
+  # manage the e-mail subscriptions of the alerts topic and show the Terraform bootstrap locked; the
+  # worker reads them too (ops_alert_email reconciles the recipient list). Empty ARN = page read-only.
   ops_alert_mail_env = [
     { name = "ALERT_EMAIL_TO", value = var.ops_alert_email },
     { name = "SES_FROM_ADDRESS", value = var.ses_from_address },
     { name = "SES_CONFIGURATION_SET", value = var.ses_configuration_set },
+    { name = "ALERTS_TOPIC_ARN", value = var.alerts_topic_arn },
+    { name = "ALERT_BOOTSTRAP_EMAIL", value = var.alert_bootstrap_email },
   ]
 
   # AA-902: the Bedrock / Cost Explorer satellite account IDs (shared/llm_client/bedrock_satellite.py
