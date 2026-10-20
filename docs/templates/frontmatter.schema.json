@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/AdventureAsia365-Ecosys/AA-Ecosys/docs/templates/frontmatter.schema.json",
+  "title": "AA-Ecosys doc front-matter",
+  "description": "YAML front-matter for every page listed in the doc catalog (docs/README.md). Journals (sessions, audits, implementation notes, backlog, research) and ADRs do not use it. Source: S243 docs-standard proposal section 2.1 as corrected by the S243 reconciliation (K-29a to K-29c). Lint: AA-888.",
+  "type": "object",
+  "required": ["id", "title", "type", "status", "owner", "last_reviewed"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "description": "Catalog ID from docs/README.md, e.g. OPS-02. A page that is one of several under one catalog entry adds a kebab-case suffix, e.g. OPS-02-cis.",
+      "type": "string",
+      "pattern": "^(CAT|ARCH|APP|OPS|PROD|SEC|FIN|GUIDE|TPL|PLAT)-[0-9]{2}(-[a-z0-9]+)*$"
+    },
+    "title": {
+      "description": "Page title, sentence case, same as the H1.",
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 120
+    },
+    "description": {
+      "description": "Recommended. One sentence an agent reads to decide whether to open the page.",
+      "type": "string",
+      "maxLength": 300
+    },
+    "type": {
+      "description": "Diataxis type, plus adr, report and template. A runbook is a how-to with last_tested.",
+      "enum": ["tutorial", "how-to", "reference", "explanation", "adr", "report", "template"]
+    },
+    "status": {
+      "description": "draft = not yet read by Nghiep or (runbook) not yet run on Dev; active = current truth; deprecated = still true but being replaced; superseded = replaced, see superseded_by; archived = kept for history only.",
+      "enum": ["draft", "active", "deprecated", "superseded", "archived"]
+    },
+    "superseded_by": {
+      "description": "Catalog ID or repo-relative path of the replacement. Required when status is superseded.",
+      "type": ["string", "null"]
+    },
+    "owner": {
+      "description": "Person accountable for the page. Default nghiep.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$"
+    },
+    "audience": {
+      "description": "Navigation filter, not an access control. owner = Ms. Thu (CEO).",
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "enum": ["owner", "staff", "engineer", "devops", "cto", "cio", "pm", "agent"]
+      }
+    },
+    "applies_to": {
+      "description": "Services, apps or versions the page is true for, e.g. aa-cis-api, aa-booking, tripplanner-lambda, ecosystem.",
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*$"}
+    },
+    "last_reviewed": {
+      "description": "ISO date the content was last checked against the real system. Agents bump it only after a real check (see docs/STYLE.md).",
+      "type": "string",
+      "format": "date",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+    },
+    "review_every_days": {
+      "description": "Freshness window. Default 90 when omitted.",
+      "type": "integer",
+      "minimum": 7,
+      "maximum": 730
+    },
+    "last_tested": {
+      "description": "Runbooks only: ISO date the steps were last executed (Dev, drill, incident or dry run).",
+      "type": ["string", "null"],
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+    },
+    "tested_where": {
+      "description": "Runbooks only: where the last test ran.",
+      "enum": ["dev-acc2", "drill", "incident", "dry-run", null]
+    },
+    "tested_evidence": {
+      "description": "Runbooks only: link to the evidence (Linear comment, docs/audits/<date>-S<nnn>-<slug>/...).",
+      "type": ["string", "null"]
+    },
+    "generated": {
+      "description": "true when a workflow writes the page; humans do not edit it.",
+      "type": "boolean"
+    },
+    "generator": {
+      "description": "Workflow or script that writes the page, e.g. infra/AA-CIS-Infra/.github/workflows/db-schema-dump.yml. Required when generated is true.",
+      "type": ["string", "null"]
+    },
+    "related": {
+      "description": "Catalog IDs, repo-relative paths or Linear issue keys (AA-123) that a reader should open next.",
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string"}
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"status": {"const": "superseded"}}, "required": ["status"]},
+      "then": {"required": ["superseded_by"], "properties": {"superseded_by": {"type": "string"}}}
+    },
+    {
+      "if": {"properties": {"generated": {"const": true}}, "required": ["generated"]},
+      "then": {"required": ["generator"], "properties": {"generator": {"type": "string"}}}
+    }
+  ]
+}

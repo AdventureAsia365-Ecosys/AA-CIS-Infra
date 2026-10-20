@@ -69,19 +69,13 @@ directly (do not import the user into state). Policy document: `docs/agent-sessi
 Nghiệp runs (MFA'd `aa365-admin`), one time:
 
 ```bash
-aws iam put-user-policy \
-  --user-name nghiep-admin \
-  --policy-name assume-agent-session \
-  --policy-document file://docs/agent-session-caller-assumerole.json \
-  --profile aa365-admin
+aws iam put-user-policy --user-name nghiep-admin --policy-name assume-agent-session --policy-document file://docs/agent-session-caller-assumerole.json --profile aa365-admin --region us-west-1
 ```
 
 Verify (should now succeed instead of AccessDenied):
 
 ```bash
-aws sts assume-role \
-  --role-arn arn:aws:iam::005097885195:role/aa-cis-dev-agent-session \
-  --role-session-name probe --profile aa365-admin
+aws sts assume-role --role-arn arn:aws:iam::005097885195:role/aa-cis-dev-agent-session --role-session-name probe --profile aa365-admin --region us-west-1
 ```
 
 After that, the agent `~/.aws/config` profile `aa365-agent` (above) works and AA-730 can be verified
