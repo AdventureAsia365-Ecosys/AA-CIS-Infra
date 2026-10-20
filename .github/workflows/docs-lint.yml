@@ -1,0 +1,110 @@
+name: Docs lint
+# AA-888: the docs standard (AA-Ecosys docs/STYLE.md, AA-887) checked in this repo, with the tools vendored from the
+# AA-Ecosys root repo (tools/docs/README.md says what is copied and how to keep the copies identical):
+#   - front-matter of CONTEXT.md and docs/** against docs/templates/frontmatter.schema.json, unique IDs
+#   - ADR status lines and the ADR index (docs/adr/README.md)
+#   - no backslash-continued AWS CLI command in any tracked Markdown file (multi-line AWS CLI hangs WSL2)
+#   - literal resource IDs in Markdown: VPC resource IDs (sg-, subnet-, vpc-, ...) and API Gateway hosts fail;
+#     account IDs, ARNs and user-pool IDs only warn, because this private repo holds the account map (STYLE.md)
+#   - internal links, offline (lychee): no network, no external sites
+# Weekly (and on demand): freshness report of pages past their review date, as a run artifact.
+# gitleaks already runs on every PR in secret-scan.yml, so it is not repeated here.
+#
+# Cost: private repo, so runs count against the free Actions minutes. The PR job runs only when Markdown or the
+# lint tools change (about 1 minute), plus one short job a week. No AWS, no secrets beyond the read-only token.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "**/*.md"
+      - "tools/docs/**"
+      - "docs/templates/**"
+      - ".github/workflows/docs-lint.yml"
+  schedule:
+    - cron: "29 1 * * 1" # Mondays 01:29 UTC (08:29 in Vietnam), after the root repo's run
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-lint-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Docs lint
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: tools/docs/requirements.txt
+
+      - name: Install lint dependencies
+        id: deps
+        run: python -m pip install --quiet -r tools/docs/requirements.txt
+
+      # Every check below runs even when an earlier one failed, so one run shows all problems.
+      - name: Unit tests of the lint tools
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: python -m unittest discover -s tools/docs -p 'test_*.py'
+
+      - name: Front-matter schema
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: python tools/docs/check_frontmatter.py
+
+      - name: ADR status and index
+        if: ${{ !cancelled() }}
+        run: python tools/docs/check_adr_index.py docs/adr
+
+      - name: Single-line AWS CLI
+        if: ${{ !cancelled() }}
+        run: python tools/docs/check_docs_text.py aws-multiline --all
+
+      - name: Literal resource IDs (VPC IDs and API Gateway hosts fail, the rest warns)
+        if: ${{ !cancelled() }}
+        run: python tools/docs/check_docs_text.py resource-ids --all --mode warn --block vpc,apigw
+
+      # The checkout has no .terraform or node_modules folders, so the glob only sees tracked pages.
+      - name: Internal links (offline)
+        if: ${{ !cancelled() }}
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
+        with:
+          args: --config tools/docs/lychee.toml './**/*.md'
+          fail: true
+          jobSummary: true
+
+  freshness:
+    name: Docs freshness report
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: tools/docs/requirements.txt
+
+      - name: Install lint dependencies
+        run: python -m pip install --quiet -r tools/docs/requirements.txt
+
+      - name: Build the freshness report (warn-only)
+        run: |
+          python tools/docs/check_frontmatter.py --freshness-report freshness/freshness.md
+          cat freshness/freshness.md >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ !cancelled() }}
+        with:
+          name: docs-freshness
+          path: freshness/freshness.md
+          retention-days: 30

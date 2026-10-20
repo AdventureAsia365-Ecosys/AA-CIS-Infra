@@ -1,0 +1,9 @@
+# Internal link check for docs (AA-888), offline: relative links and files only, no network.
+# CI: .github/workflows/docs-lint.yml. Local: lychee --config tools/docs/lychee.toml 'docs/**/*.md'
+offline = true
+no_progress = true
+# Heading anchors (#section) are not checked yet: GitHub's slugs for Vietnamese headings differ
+# from lychee's, so include_fragments stays at its default (off). Revisit when the catalog pages
+# stabilise.
+# Real-data dumps are gitignored and never in CI (DM-6.10); skip them locally too.
+exclude_path = ["(^|/)docs/backups/"]
