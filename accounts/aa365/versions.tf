@@ -4,7 +4,9 @@
 # =============================================================================
 
 terraform {
-  required_version = ">= 1.10.0, < 2.0.0" # use_lockfile needs >= 1.10
+  # AA-846: exact pin, the same version as both CI workflows (terraform-plan.yml and
+  # terraform-apply.yml, setup-terraform `terraform_version`). Bump all three in one PR.
+  required_version = "1.15.5"
 
   required_providers {
     aws = {
@@ -26,13 +28,12 @@ terraform {
   }
 
   backend "s3" {
-    bucket         = "aa-cis-tfstate-005097885195"
-    key            = "dev/terraform.tfstate"
-    region         = "us-west-1"
-    dynamodb_table = "aa-cis-tfstate-lock-005097885195"
-    # S244 chore: S3 native state locking (<key>.tflock). Both locks are taken while
-    # dynamodb_table stays; drop dynamodb_table (and the table + StateLock grants) in a
-    # later PR once CI plan/apply have run green with the lockfile.
+    bucket = "aa-cis-tfstate-005097885195"
+    key    = "dev/terraform.tfstate"
+    region = "us-west-1"
+    # S3 native state locking (<key>.tflock) only. S244 turned it on next to the DynamoDB lock;
+    # AA-846 (S245) dropped `dynamodb_table` after CI plan and apply had run green with the
+    # lockfile. The old lock table and its IAM grants are removed in separate steps.
     use_lockfile = true
     # Không hardcode profile — CI (GitHub Actions OIDC) dùng ambient credentials
     # qua env var, không có ~/.aws/config. Local: export AWS_PROFILE=aa365-admin
