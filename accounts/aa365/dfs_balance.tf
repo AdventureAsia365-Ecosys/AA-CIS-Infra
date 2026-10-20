@@ -15,7 +15,10 @@
 # event names one path, /admin/job-runner/retention/schedule (enqueue the CIS
 # retention kinds, idempotent per UTC day). Its own hour keeps the retention jobs off
 # the 06:00 ACP ingest / 06:15 probes and out of VN working hours (Deploy Dev guard).
-# AA-832 added a third schedule (rds_role_connections, every 5 minutes) that POSTed
+# AA-844 adds a THIRD schedule on the same Lambda (photo_sync_daily, 21:00 UTC = 04:00 ICT, after
+# retention) whose event names /admin/photos/sync/schedule: one incremental photo_sync job per
+# country, idempotent per UTC day. No new role, variable for the secret, or group.
+# AA-832 once added a schedule (rds_role_connections, every 5 minutes) that POSTed
 # /admin/job-runner/rds-role-connections/schedule so the CIS worker published AA/RDS. AA-751 (S240)
 # removed it: the CIS api publishes AA/RDS (and AA/Jobs/CIS) itself from an in-process sampler
 # (api/core/ops_metrics_sampler.py), so the Lambda, API Gateway, WAF and shared.job are no longer
@@ -61,6 +64,15 @@ variable "retention_schedule_expression" {
   description = "AA-825 — schedule for POST /admin/job-runner/retention/schedule"
   type        = string
   default     = "cron(30 20 * * ? *)"
+}
+
+# AA-844 — the daily photo_sync enqueue. 21:00 UTC = 04:00 ICT, after retention (20:30) so the two
+# sets of jobs do not start together, and the 30 min flexible window still ends before 00:00 UTC,
+# so the UTC day the API keys its idempotency on is the day the schedule meant.
+variable "photo_sync_schedule_expression" {
+  description = "AA-844 — schedule for POST /admin/photos/sync/schedule"
+  type        = string
+  default     = "cron(0 21 * * ? *)"
 }
 
 locals {
@@ -267,6 +279,42 @@ resource "aws_scheduler_schedule" "retention_daily" {
 
     input = jsonencode({
       paths     = ["/admin/job-runner/retention/schedule"]
+      secret_id = var.secret_admin_arn
+    })
+
+    retry_policy {
+      maximum_retry_attempts       = 2
+      maximum_event_age_in_seconds = 3600
+    }
+  }
+}
+
+# ── AA-844 — daily photo_sync enqueue (same Lambda, invoke role and group) ───
+# POST /admin/photos/sync/schedule enqueues one incremental photo_sync job per country folder with
+# idempotency_key photo_sync:schedule:<country>:<UTC day> (all or none, one transaction), so a
+# Scheduler retry or a second call the same day creates nothing new. It skips while another
+# photo_sync job (a manual run, or yesterday's still running) is queued or running. If this fires
+# before the CIS endpoint is deployed, the Lambda logs the 404 and returns; nothing retries.
+resource "aws_scheduler_schedule" "photo_sync_daily" {
+  name        = "${local.name_prefix}-photo-sync-daily"
+  description = "AA-844 — daily POST /admin/photos/sync/schedule via the ops-probe Lambda"
+  # Same group as dfs_balance_daily: the CI role's scheduler grants are scoped to it.
+  group_name = module.eventbridge.schedule_group_name
+
+  schedule_expression          = var.photo_sync_schedule_expression
+  schedule_expression_timezone = "UTC"
+
+  flexible_time_window {
+    mode                      = "FLEXIBLE"
+    maximum_window_in_minutes = 30
+  }
+
+  target {
+    arn      = aws_lambda_function.dfs_balance_check.arn
+    role_arn = aws_iam_role.dfs_balance_scheduler.arn
+
+    input = jsonencode({
+      paths     = ["/admin/photos/sync/schedule"]
       secret_id = var.secret_admin_arn
     })
 
