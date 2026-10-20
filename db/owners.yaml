@@ -203,6 +203,32 @@ owners:
       - {grantee: booking, privilege: "USAGE, SELECT", object: tripplanner.v_inquiry_outbox, status: contract, source: "tp-009"}
       - {grantee: cis_app, privilege: "USAGE, SELECT", object: tripplanner.v_ops_traffic_daily, status: contract, source: "tp-015 (AA-858)", expected_from: tp-015}
 
+  # AA-826 DRY RUN — a fake owner that proves "add an owner = owners.yaml + the guarded mirrors". NEVER MERGED:
+  # this branch exists only to show the registry test and the DB Migrate validate step pick it up.
+  dryrun:
+    repo: AA-Dryrun-Fake
+    path: migrations
+    key_prefix: dr-
+    anchor_schema: dryrun
+    schemas: [dryrun]
+    owner_role: dr_owner
+    owner_role_today: dr_owner
+    owner_transfer_key: dr-001
+    runtime_roles: [dryrun_app]
+    runtime_roles_today: [dryrun_app]
+    runtime_secrets: {dryrun_app: dryrun/dev/database-url}
+    runtime_privileges:
+      dryrun_app:
+        schemas: [dryrun]
+        objects: {relation: [SELECT], sequence: [USAGE], function: [EXECUTE]}
+        default_acl: {tables: [DELETE, INSERT, SELECT, UPDATE], sequences: [SELECT, USAGE], functions: [EXECUTE]}
+    job_table: dryrun.job
+    job_kind_prefix: dr_
+    idle_exempt_kinds: []
+    set_local_roles: []
+    role_lint_from: 1
+    consumer_grants: []
+
   roles:
     # Infra-native (no owner repo): role bootstrap (LOGIN/NOLOGIN roles, attributes, memberships,
     # connection limits, MIG-6), CREATE/ALTER/DROP EXTENSION, public.* leftovers, and the prepared
