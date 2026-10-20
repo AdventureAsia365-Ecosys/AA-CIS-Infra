@@ -58,6 +58,20 @@ data "aws_iam_policy_document" "cis_alert_recipients" {
     actions   = ["sns:Unsubscribe", "sns:GetSubscriptionAttributes"]
     resources = [aws_sns_topic.alerts.arn, "${aws_sns_topic.alerts.arn}:*"]
   }
+
+  # Defense in depth (AA-913 review): the ":*" allow above also names the bootstrap subscription. The app
+  # never unsubscribes it (fail closed without ALERT_BOOTSTRAP_EMAIL, endpoint checks on remove and
+  # reconcile); this Deny keeps a bug or a compromised api / worker task from silencing every alarm.
+  # The provider subscribes with ReturnSubscriptionArn, so .arn is a real ARN even while pending.
+  # It only bites if SNS authorizes Unsubscribe against the subscription ARN (see the implementation
+  # notes: verify with iam simulate-principal-policy after apply); if SNS evaluates the topic ARN only,
+  # this statement is inert and the app-side guards are the control.
+  statement {
+    sid       = "DenyUnsubscribeBootstrap"
+    effect    = "Deny"
+    actions   = ["sns:Unsubscribe"]
+    resources = [aws_sns_topic_subscription.alerts_email.arn]
+  }
 }
 
 resource "aws_iam_role_policy" "cis_ecs_task_alert_recipients" {
