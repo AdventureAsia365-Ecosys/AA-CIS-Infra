@@ -377,7 +377,8 @@ makes CI Terraform Plan fail with 403.
   migration freeze and the `catalog.*` view freeze (XD9) ended with CIS 246 (S22, 19/10/2026).
 - **Docs Gen** (`docs-gen.yml`, AA-893) reads the `accounts/aa365` state with the read-only plan role
   (`terraform show -json`, no plan, no lock) nightly and after every Terraform Apply that changed
-  something, renders `tools/docs/gen_docs.py`'s four pages and opens a PR on the root repo
+  something (dispatched by Terraform Apply's separate `docs-gen-dispatch` job, the only job there with
+  `actions: write`; the apply job itself keeps `id-token` + `contents: read`), renders `tools/docs/gen_docs.py`'s four pages and opens a PR on the root repo
   (`docs/generated/{alarms,network,inventory,iam-roles}.md`, branch `bot/generated-infra-docs`) when a page
   changed. A missing or broken alarm runbook link fails the run after the PR is updated. The root
   outputs in `accounts/aa365/outputs_inventory.tf` (VPC, subnets, security groups, NAT, RDS, ECS, load
