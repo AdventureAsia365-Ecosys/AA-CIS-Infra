@@ -11,8 +11,18 @@ with the copy in AA-Booking: `docslib.py`, `check_docs_text.py`, `check_adr_inde
 [`docs/templates/frontmatter.schema.json`](../../docs/templates/frontmatter.schema.json) is a copy of AA-Ecosys
 `docs/templates/frontmatter.schema.json`. Only this README is repo-specific.
 
+**Root catching up (AA-888).** `--all`, `--block` and `CONTEXT.md` in the front-matter scope were added here and in
+AA-Booking first. Until the AA-Ecosys branch `ci/aa888-docs-tools-sync` is merged, the root copy of `docslib.py`,
+`check_docs_text.py`, `check_frontmatter.py` and `test_docs_tools.py` is behind: do not copy the root files over
+these (argparse would reject `--all` and `--block` and the docs job would fail); copy these to the root instead.
+
 Change a rule in AA-Ecosys first, then copy the files here and to AA-Booking in the same session. There is no
-automatic drift check yet; compare by hand with `cmp` from the workspace when you touch these files.
+automatic drift check: the root repo is private, so this repo's CI cannot read it. Compare from the workspace root
+when you touch these files:
+
+```bash
+for f in docslib.py check_docs_text.py check_adr_index.py check_frontmatter.py test_docs_tools.py lychee.toml requirements.txt; do cmp tools/docs/$f apps/AA-Booking/tools/docs/$f; cmp tools/docs/$f infra/AA-CIS-Infra/tools/docs/$f; done
+```
 
 ## What runs here
 
