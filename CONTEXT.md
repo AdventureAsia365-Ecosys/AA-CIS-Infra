@@ -1,3 +1,17 @@
+---
+id: ARCH-06-infra
+title: "AA-CIS-Infra — Repo Context"
+description: What AA-CIS-Infra owns (Terraform for every AWS resource of the ecosystem, DB Migrate, schema dump), its boundaries with the app repos and its working rules; read it before changing infrastructure.
+type: explanation
+status: active
+owner: nghiep
+audience: [engineer, devops, agent]
+applies_to: [aa-cis-infra, ecosystem]
+last_reviewed: 2026-10-19
+review_every_days: 90
+related: [ARCH-01, ARCH-05, ARCH-08, docs/adr/README.md]
+---
+
 # AA-CIS-Infra — Repo Context
 
 Terraform infrastructure-as-code for the whole Adventure Asia (AA) ecosystem. This repo owns the
