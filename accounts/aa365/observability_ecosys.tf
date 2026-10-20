@@ -524,7 +524,7 @@ resource "aws_cloudwatch_log_metric_filter" "cis_app_too_many_connections" {
 
 resource "aws_cloudwatch_metric_alarm" "cis_app_too_many_connections" {
   alarm_name          = "${local.name_prefix}-rds-cis-app-too-many-connections"
-  alarm_description   = "CIS api/worker logged 'too many connections for role \"cis_app\"' (SQLSTATE 53300, CONNECTION LIMIT ${local.rds_role_connection_limits["cis_app"]}) in the last 5 minutes: requests or jobs failed to get a DB connection. Check pool sizes (AA-CIS-App docs/implementation-notes/AA-860-S15.md) before raising the limit (Infra roles/ file)."
+  alarm_description   = "CIS api/worker logged 'too many connections for role \"cis_app\"' (SQLSTATE 53300, CONNECTION LIMIT ${local.rds_role_connection_limits["cis_app"]}) in the last 5 minutes: requests or jobs failed to get a DB connection. Check pool sizes (AA-CIS-App docs/implementation-notes/AA-860-S15.md) before raising the limit (Infra roles/ file).${local.runbook_suffix.database}"
   namespace           = "AA/RDS"
   metric_name         = "CisAppTooManyConnections"
   statistic           = "Sum"

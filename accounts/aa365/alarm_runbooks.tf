@@ -13,8 +13,14 @@
 #   - alarm_description max is 1024 characters (CloudWatch). The longest description plus link is
 #     428 today (plan 19/10/2026); keep new ones short.
 #   - Changing a URL here is an in-place update of the alarms (no replacement).
-#   - AA-893 step 2 (generated alarm catalog INF docs/generated/alarms.md) reads the link back from
-#     the description; keep the " Runbook: " marker exactly.
+#   - The generated alarm catalog (AA-893: tools/docs/gen_docs.py, workflow docs-gen.yml, published
+#     as root docs/generated/alarms.md) reads the link back from the description; keep the
+#     " Runbook: " marker exactly, at the very end.
+#   - EventBridge rules that notify an SNS topic (identity_alerts.tf) carry the same suffix in the rule
+#     description (read by the generator) and in the target's input_template (the e-mail text).
+#   - CI workflow docs-gen-test.yml (`gen_docs.py check-source accounts modules`) fails a PR that adds
+#     an alarm or an SNS-notifying rule without a runbook suffix; the generator flags a link outside
+#     root docs/ or to a file that does not exist there.
 # =============================================================================
 
 locals {
