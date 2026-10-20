@@ -1,0 +1,68 @@
+{
+  "_comment": [
+    "AA-826 (X7): sha256 pins of the canonical contracts in the root repo AA-Ecosys docs/contracts/ and the app-repo copies the guard checks (tools/contracts/check_contract_copies.py).",
+    "A new or changed contract version: pin it here (local run with --workspace proves the pin), then the consumer copies it byte for byte and is listed here in the same change."
+  ],
+  "version": 1,
+  "org": "AdventureAsia365-Ecosys",
+  "branch": "main",
+  "consumer_repos": [
+    "AA-Booking",
+    "AA-CIS-App",
+    "AA-TripPlanner-Web"
+  ],
+  "contracts": {
+    "catalog.graph.v1.json": {
+      "sha256": "f8d085dbbc6e01f05ed512958878dad48603aa20bbcaf528683470d5d22a2792",
+      "copies": []
+    },
+    "catalog.tour.v1.1.json": {
+      "sha256": "4aea7c409b023ca4524304de37e87818dec8fb062df9ae07f9f0060ecb32fb99",
+      "copies": []
+    },
+    "catalog.tour.v1.json": {
+      "sha256": "899d439dea21fd95971ade62a183022189d5f9b60afb5031d3189316ff5f522d",
+      "copies": [
+        {
+          "repo": "AA-TripPlanner-Web",
+          "path": "backend/tests/contracts/catalog.tour.v1.json"
+        }
+      ]
+    },
+    "inquiry.submitted.v1.1.json": {
+      "sha256": "148ccaac54a13316f7f3ab7ce59458534a585968edf3cb5ed2e6b23bbb369f98",
+      "copies": [
+        {
+          "repo": "AA-Booking",
+          "path": "backend/app/contracts/inquiry.submitted.v1.1.json"
+        },
+        {
+          "repo": "AA-TripPlanner-Web",
+          "path": "backend/tests/contracts/inquiry.submitted.v1.1.json"
+        }
+      ]
+    },
+    "inquiry.submitted.v1.2.json": {
+      "sha256": "4ab794659d59ad1f764f82405013c37f9a968511d1873ea8fd09d8fa4eb76a8e",
+      "copies": [
+        {
+          "repo": "AA-Booking",
+          "path": "backend/app/contracts/inquiry.submitted.v1.2.json"
+        },
+        {
+          "repo": "AA-TripPlanner-Web",
+          "path": "backend/tests/contracts/inquiry.submitted.v1.2.json"
+        }
+      ]
+    },
+    "inquiry.submitted.v1.json": {
+      "sha256": "22cbb36608398322b38da93dcf814f841da91f3a307ac9a9736df90d7f93e995",
+      "copies": [
+        {
+          "repo": "AA-Booking",
+          "path": "backend/app/contracts/inquiry.submitted.v1.json"
+        }
+      ]
+    }
+  }
+}

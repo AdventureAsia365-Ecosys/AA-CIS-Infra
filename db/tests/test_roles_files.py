@@ -170,10 +170,12 @@ class MigratorMembershipTest(unittest.TestCase):
         self.assertFalse(self.members & {"aa_app_user", self.reg["master_role"], "rds_superuser",
                                          "pg_read_all_data", "pg_write_all_data"})
 
-    def test_planned_rl002_grants_exactly_the_registry(self):
+    def test_planned_rl002_grants_are_in_the_registry(self):
+        # rl-002 is applied history: a later roles/ file (a new owner's bootstrap, AA-826) extends migrator_member_of
+        # and leaves rl-002 as is. The union of every roles/ file must equal the registry (test below).
         granted = {r.lower() for roles, to in memberships(code_view(PLANNED_RL002)) if to == ["DB_MIGRATOR"]
                    for r in roles}
-        self.assertEqual(granted, self.members)
+        self.assertLessEqual(granted, self.members)
 
     def test_roles_files_grant_db_migrator_exactly_the_registry(self):
         views = [code_view(f.read_text(encoding="utf-8")) for f in sorted(ROLES.glob("*.sql"))]

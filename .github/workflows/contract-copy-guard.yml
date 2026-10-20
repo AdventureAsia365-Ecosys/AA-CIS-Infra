@@ -1,0 +1,66 @@
+name: Contract Copy Guard
+# AA-826 (data standards X7: CON-4, TST-6, DM-3.6): every app-repo copy of a cross-app contract JSON Schema
+# (canonical: root repo AA-Ecosys docs/contracts/) must hash to the pin in tools/contracts/contract_copies.json.
+# Red on a modified or missing registered copy, and on an unregistered copy of a pinned contract in a consumer
+# repo; a file that only looks like a contract is a warning. The root repo is private, so the pins are checked
+# against the canonical files by a local run (--workspace), not here.
+#
+# pull_request: the guard's own files changed. schedule: nightly, so a later edit of a copy on an app repo's
+# main shows up within a day. workflow_dispatch: input refs reads a repo at another ref (evidence runs).
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "tools/contracts/**"
+      - ".github/workflows/contract-copy-guard.yml"
+  schedule:
+    - cron: "29 2 * * *"   # nightly, 02:29 UTC
+  workflow_dispatch:
+    inputs:
+      refs:
+        description: "Optional Repo=ref[,Repo=ref] to read instead of main, e.g. AA-Booking=test/contract-hash-red"
+        required: false
+        type: string
+        default: ""
+
+concurrency:
+  group: contract-copy-guard-${{ github.ref }}
+  cancel-in-progress: true
+
+# No AWS, no secrets: the app repos are public, GITHUB_TOKEN only lifts the API rate limit.
+permissions:
+  contents: read
+
+env:
+  # Repo=ref pairs read instead of main (tools/contracts/check_contract_copies.py CONTRACT_COPY_REFS).
+  # Empty on main; an evidence branch may set it, a dispatch overrides it with input refs.
+  CONTRACT_COPY_REFS: ""
+
+jobs:
+  guard:
+    name: Contract copies match their pins
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Guard unit tests
+        run: python -m unittest discover -s tools/contracts/tests -v
+
+      - name: Compare copies with their pins
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          INPUT_REFS: ${{ inputs.refs }}
+        run: |
+          set +e
+          if [ -n "$INPUT_REFS" ]; then export CONTRACT_COPY_REFS="$INPUT_REFS"; fi
+          [ -n "$CONTRACT_COPY_REFS" ] && echo "::notice::reading $CONTRACT_COPY_REFS instead of main"
+          python3 tools/contracts/check_contract_copies.py > guard.log 2>&1
+          status=$?
+          cat guard.log
+          { echo '### Contract copy guard'; [ -n "$CONTRACT_COPY_REFS" ] && echo "refs: \`$CONTRACT_COPY_REFS\`";
+            echo '```'; grep -v '^::' guard.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"

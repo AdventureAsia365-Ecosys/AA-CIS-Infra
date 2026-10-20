@@ -138,7 +138,7 @@ def check_file(rel_path: str, repo_root: Path, fetch: Fetcher) -> list[str]:
     m = PATH_RE.match(rel_path)
     if not m:
         return [
-            "path must be db/migrations/<cis|tripplanner|booking|roles>/NNN_lowercase_name.sql "
+            f"path must be db/migrations/<{'|'.join(OWNERS)}>/NNN_lowercase_name.sql "
             "(the shape DB Migrate accepts)"
         ]
     owner_name, number = m.group(1), m.group(2)

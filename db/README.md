@@ -47,6 +47,29 @@ task gets just the runner and the SQL); `db/tests/test_owners_registry.py` fails
 `runtime_secrets`, view owners, `runtime_privileges[_from]`; `CONSUMER_GRANTS`;
 `RLS_ENABLE_ONLY_ALLOWLIST`) disagrees with `owners.yaml`. Change them in the same PR.
 
+### Adding an owner (ADR 0008 playbook, AA-826 dry run)
+Proven by the never-merged branch `test/add-owner-dry-run` (fake owner `dryrun`, prefix `dr-`): with only the
+`owners.yaml` entry, the registry test, the roles test and the DB Migrate validate-step test go red and name every
+mirror below; with the mirrors they are green. In order:
+1. **AA-CIS-App first:** `tests/integration/rls_catalogue_rules.py` `SCHEMA_OWNERS` (the owner's schemas) and
+   `ROLE_OWNERS` (owner + runtime roles). `db/rls_catalogue_rules.py` here is its byte copy (Copy Guard
+   `CODE_COPIES`), so the Infra PR copies it after the CIS PR merges.
+2. **Infra PR:** the `owners.yaml` entry; `migrator_member_of` + the owner role; `password_roles` + the runtime role
+   (DB Migrate `mode=set-password`); then the mirrors: `run_migration.py` (`OWNER_DIRS`, `IDLE_EXEMPT_KINDS` when the
+   owner has a job table, `PASSWORD_ROLES`), `check_migration_copies.py` (`OWNERS`, `PATH_RE`), `db-migrate.yml`
+   (dir regex, key-prefix `case`, set-password role regex), `isolation_probe.py` (`OWNERS`, `VERSION_KEYS` with the
+   transfer key, `KEY_TEXT` for the key and `<owner>_transferred`), and the copied `rls_catalogue_rules.py`.
+3. **Role bootstrap** in the same PR, rendered from `db/templates/new_owner_roles.sql.tmpl`:
+   ```
+   python3 db/templates/render_new_owner_roles.py --number NNN --owner <dir> --owner-role <app>_owner --runtime-role <app>_app --schema <anchor> --key-prefix <xx-> --conn-limit <n> --issue AA-NNN > db/migrations/roles/NNN_<app>_roles.sql
+   ```
+   It creates
+   the owner role (NOLOGIN), the runtime role (LOGIN, CONNECTION LIMIT, no password) and the **empty anchor schema
+   owned by the owner role**, so the owner's first file already runs as the owner role (live-owner switch, XD8).
+   Without it the runner finds no anchor schema and runs that file as the DB Migrate login, which would then own
+   the objects it creates. Apply it (DB Migrate `apply roles/NNN_…`) before the owner's first file.
+4. Nghiệp writes the runtime role's DSN secret by hand, then DB Migrate `mode=set-password`.
+
 ## Flow
 0. The owner repo merges a **migration-file-only** PR to its `main` first (S237 D8). Code that
    reads the new objects comes in a later PR, after the apply.
