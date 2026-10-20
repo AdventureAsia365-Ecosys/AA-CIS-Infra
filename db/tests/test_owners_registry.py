@@ -205,6 +205,8 @@ class MirrorsAgreeTest(unittest.TestCase):
             self.assertIn(t.split(".")[0], probe.CIS_RUNTIME_SCHEMAS, t)
         for v in (str(o["owner_transfer_key"]) for o in SCHEMA_OWNERS.values()):
             self.assertIn(v, probe.VERSION_KEYS)
+        # Every state key the probe reports has its text (a new owner's transfer key and <owner>_transferred).
+        self.assertLessEqual(set(probe.VERSION_KEYS) | set(probe.TRANSFER_KEYS.values()), set(probe.KEY_TEXT))
 
     def test_migrator_task_definition_secrets(self):
         """X1 S22: the migrator task definition injects db_migrator's DSN; the master stays readable in the task
