@@ -107,7 +107,7 @@ locals {
     "TripPlannerRoleTagging",
     "AgentSessionRoleTagging",
     "BookingRoleTagging",
-    "OIDCProviderManage", # -> OIDCProviderRead; the provider is a bootstrap object
+    "OIDCProviderManage", # -> IAMRoleAndOIDCRead; the provider is a bootstrap object
   ]
 }
 
@@ -477,16 +477,9 @@ resource "aws_iam_role_policy" "tf_plan" {
     Version = "2012-10-17"
     Statement = [
       {
-        # plan takes the state lock.
-        Sid      = "StateLock"
-        Effect   = "Allow"
-        Action   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:DescribeTable"]
-        Resource = "arn:aws:dynamodb:${var.aws_region}:${var.account_id}:table/aa-cis-tfstate-lock-${var.account_id}"
-      },
-      {
-        # S243 chore: use_lockfile (S3 native state locking, Terraform >= 1.10) writes and deletes
-        # <key>.tflock next to the state. ReadOnlyAccess already gives GetObject. Granted ahead of
-        # the use_lockfile backend change (a later PR), so no plan fails with 403 on the lockfile.
+        # plan takes the state lock: use_lockfile (S3 native state locking) writes and deletes
+        # <key>.tflock next to the state; ReadOnlyAccess already gives GetObject. The DynamoDB lock
+        # table grant (Sid StateLock) is gone since the backend dropped dynamodb_table (AA-846, S245).
         # Bootstrap role: applied locally with MFA (CI apply is denied writes on tf_plan).
         Sid      = "StateLockfile"
         Effect   = "Allow"
@@ -558,11 +551,14 @@ resource "aws_iam_role_policy" "tf_apply" {
       [for s in local.cicd_inline_statements : s if !contains(local.tf_apply_superseded_sids, s.Sid)],
       [
         {
-          Sid    = "IAMRoleRead"
+          # Role refresh, plus OIDCProviderManage of aa-cis-dev-role reduced to reads (the provider
+          # is a bootstrap object). iam:ListRoleTags is in RefreshRead (cicd.tf).
+          Sid    = "IAMRoleAndOIDCRead"
           Effect = "Allow"
           Action = [
             "iam:GetRole", "iam:GetRolePolicy", "iam:ListRolePolicies", "iam:ListAttachedRolePolicies",
-            "iam:ListInstanceProfilesForRole", "iam:ListRoleTags",
+            "iam:ListInstanceProfilesForRole", "iam:GetOpenIDConnectProvider",
+            "iam:ListOpenIDConnectProviders", "iam:ListOpenIDConnectProviderTags",
           ]
           Resource = "*"
         },
@@ -582,16 +578,6 @@ resource "aws_iam_role_policy" "tf_apply" {
             "iam:TagRole", "iam:UntagRole",
           ]
           Resource = local.tf_managed_role_arns
-        },
-        {
-          # OIDCProviderManage of aa-cis-dev-role, read only (refresh of the provider).
-          Sid    = "OIDCProviderRead"
-          Effect = "Allow"
-          Action = [
-            "iam:GetOpenIDConnectProvider", "iam:ListOpenIDConnectProviders",
-            "iam:ListOpenIDConnectProviderTags",
-          ]
-          Resource = "*"
         },
         {
           # Associating the REGIONAL web ACL with the CIS / Booking REST API stages
@@ -667,13 +653,6 @@ resource "aws_iam_role_policy" "tf_apply" {
           Condition = {
             StringEquals = { "aws:RequestedRegion" = var.aws_region }
           }
-        },
-        {
-          # AA-703: the Cognito web ACL (WAFv2Manage in cicd.tf has update/associate only).
-          Sid      = "WAFv2WebACLCreate"
-          Effect   = "Allow"
-          Action   = ["wafv2:CreateWebACL", "wafv2:DeleteWebACL", "wafv2:CheckCapacity"]
-          Resource = "*"
         },
         {
           # AA-703: a pool in DEVELOPER (SES) email mode makes Cognito create its email
