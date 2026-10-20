@@ -56,9 +56,14 @@ resource "aws_sns_topic" "alerts" {
   tags = merge(local.shared_tags, { Issue = "AA-284" }) # AA-828: CIS, Booking, TripPlanner and shared alarms all publish here
 }
 
-# Subscription is created PendingConfirmation — Nghiep must click the
-# confirmation link AWS emails to var.alert_email. Terraform cannot complete
-# this step.
+# The bootstrap recipient (AA-913): the one subscription Terraform manages. The
+# CIS admin page (Platform > Alert recipients) shows it locked and never edits
+# or removes it, so alarms still reach someone when the app or the DB is down.
+# Every other e-mail subscription on this topic is created and removed by the
+# CIS api (alert_recipients.tf grant) and is NOT in Terraform state, by design
+# (no drift: Terraform only tracks this resource).
+# Created PendingConfirmation: the owner of var.alert_email must click the
+# confirmation link AWS e-mails. Terraform cannot complete this step.
 resource "aws_sns_topic_subscription" "alerts_email" {
   topic_arn = aws_sns_topic.alerts.arn
   protocol  = "email"
@@ -241,10 +246,12 @@ resource "aws_cloudwatch_metric_alarm" "acp_repair_count_high" {
 # That gap is closed by the per-App budgets (AA-828) below this resource:
 # `App` is now an active cost allocation tag. This total budget stays as the
 # account-wide backstop (it also catches shared and untagged spend).
-# Email notification chosen over SNS: AWS Budgets → SNS requires a topic
-# resource policy granting budgets.amazonaws.com publish rights, which is
-# extra surface area for no real benefit here — direct email is simpler and
-# was explicitly allowed as the fallback.
+# Notifications go to the alerts topic (AA-913, S245), not to an e-mail address:
+# AA-287 first chose direct e-mail to avoid a topic policy statement for
+# budgets.amazonaws.com. AA-913 added that statement (identity_alerts.tf,
+# Sid AllowBudgets) so budgets reach the same recipient list as every alarm:
+# the Terraform bootstrap subscription plus the recipients managed on the CIS
+# admin page (Platform > Alert recipients).
 # -----------------------------------------------------------------------------
 
 resource "aws_budgets_budget" "total_monthly" {
@@ -255,22 +262,23 @@ resource "aws_budgets_budget" "total_monthly" {
   time_unit    = "MONTHLY"
 
   notification {
-    comparison_operator        = "GREATER_THAN"
-    threshold                  = 80
-    threshold_type             = "PERCENTAGE"
-    notification_type          = "ACTUAL"
-    subscriber_email_addresses = [var.alert_email]
+    comparison_operator       = "GREATER_THAN"
+    threshold                 = 80
+    threshold_type            = "PERCENTAGE"
+    notification_type         = "ACTUAL"
+    subscriber_sns_topic_arns = [aws_sns_topic.alerts.arn]
   }
 
   notification {
-    comparison_operator        = "GREATER_THAN"
-    threshold                  = 100
-    threshold_type             = "PERCENTAGE"
-    notification_type          = "ACTUAL"
-    subscriber_email_addresses = [var.alert_email]
+    comparison_operator       = "GREATER_THAN"
+    threshold                 = 100
+    threshold_type            = "PERCENTAGE"
+    notification_type         = "ACTUAL"
+    subscriber_sns_topic_arns = [aws_sns_topic.alerts.arn]
   }
 
-  depends_on = [time_sleep.wait_for_iam_propagation]
+  # AA-913: Budgets checks its publish right on the topic when the SNS subscriber is set.
+  depends_on = [time_sleep.wait_for_iam_propagation, aws_sns_topic_policy.alerts]
 }
 
 # -----------------------------------------------------------------------------
@@ -278,8 +286,9 @@ resource "aws_budgets_budget" "total_monthly" {
 # One COST budget per value of the `App` cost allocation tag (activated in
 # Billing by the payer account on 15/10/2026; Cost Explorer data lags ~24 h).
 # Filter: TagKeyValue "user:App$<value>" = cost of resources tagged
-# App = <value>. Alerts: 80% of ACTUAL and 100% of FORECASTED spend, sent to
-# the same e-mail as the total budget above. Amounts: var.per_app_monthly_budgets.
+# App = <value>. Alerts: 80% of ACTUAL and 100% of FORECASTED spend, published
+# to the alerts topic like the total budget above (AA-913: one recipient list,
+# managed on the CIS admin page). Amounts: var.per_app_monthly_budgets.
 #
 # Coverage today (read before trusting a number):
 #   - booking / tripplanner: their resources carry App via local.bk_tags /
@@ -316,24 +325,25 @@ resource "aws_budgets_budget" "per_app_monthly" {
   }
 
   notification {
-    comparison_operator        = "GREATER_THAN"
-    threshold                  = 80
-    threshold_type             = "PERCENTAGE"
-    notification_type          = "ACTUAL"
-    subscriber_email_addresses = [var.alert_email]
+    comparison_operator       = "GREATER_THAN"
+    threshold                 = 80
+    threshold_type            = "PERCENTAGE"
+    notification_type         = "ACTUAL"
+    subscriber_sns_topic_arns = [aws_sns_topic.alerts.arn]
   }
 
   notification {
-    comparison_operator        = "GREATER_THAN"
-    threshold                  = 100
-    threshold_type             = "PERCENTAGE"
-    notification_type          = "FORECASTED"
-    subscriber_email_addresses = [var.alert_email]
+    comparison_operator       = "GREATER_THAN"
+    threshold                 = 100
+    threshold_type            = "PERCENTAGE"
+    notification_type         = "FORECASTED"
+    subscriber_sns_topic_arns = [aws_sns_topic.alerts.arn]
   }
 
   tags = merge(local.ecosys_tags, { App = each.key, Issue = "AA-828" })
 
-  depends_on = [time_sleep.wait_for_iam_propagation]
+  # AA-913: Budgets checks its publish right on the topic when the SNS subscriber is set.
+  depends_on = [time_sleep.wait_for_iam_propagation, aws_sns_topic_policy.alerts]
 }
 
 # -----------------------------------------------------------------------------

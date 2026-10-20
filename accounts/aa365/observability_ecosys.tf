@@ -8,7 +8,8 @@
 #      brought under Terraform with `import` blocks (Terraform >= 1.5; CI pins 1.7.5): the plan
 #      showed "will be imported" + an in-place update (retention + tags), never a create/replace.
 #      Once applied the import blocks were no-ops; they were deleted in S243.
-#   2. Alarms -> the existing SNS topic aws_sns_topic.alerts (aa-cis-dev-acp-alerts, email).
+#   2. Alarms -> the existing SNS topic aws_sns_topic.alerts (aa-cis-dev-acp-alerts), e-mailed to the topic's
+#      recipients (bootstrap + CIS admin page, AA-913).
 #      AA-832 completes the RDS rows of data standard C4.1 (latency, disk queue, XID wraparound,
 #      per-role connections) and grants the CIS task role PutMetricData on namespace AA/RDS.
 #      AA-751 adds the job backlog alarms per owner (AA/Jobs/CIS, AA/Jobs/Booking, end of file).

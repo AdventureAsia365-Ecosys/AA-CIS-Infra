@@ -2,7 +2,7 @@
 # AA-893 step 1 (S243) — runbook link in every CloudWatch alarm description.
 #
 # Each aws_cloudwatch_metric_alarm in this root (and module.eventbridge) ends its alarm_description with
-# " Runbook: <url>". The alarm e-mail (SNS -> var.alert_email) carries the description, so the first
+# " Runbook: <url>". The alarm e-mail (SNS -> the topic's recipients: bootstrap + CIS admin page, AA-913) carries the description, so the first
 # thing the reader sees is where the procedure lives. The pages are in the PRIVATE root repo
 # (AA-Ecosys, docs/ops/, catalog OPS-01..OPS-11 in docs/README.md), written by AA-892; a link can point
 # at a page that is still being written: the alarm text does not change when the page lands.

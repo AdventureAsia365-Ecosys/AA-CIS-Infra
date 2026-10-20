@@ -37,6 +37,8 @@ variable "ses_dmarc_rua_email" {
 
 # AA-828: operator mailbox for CIS alert e-mails (spend budget crossings, CIS job ops_alert_email).
 # Since S245 var.alert_email (SNS + AWS Budgets) uses the same work inbox; kept as two variables so they can diverge.
+# AA-913: ops_alert_email now mails the confirmed recipients of the CIS admin page (shared.alert_recipient)
+# PLUS this address (always included, deduplicated); it stays the ops-mail fallback when the table is empty.
 variable "cis_ops_alert_email" {
   description = "Operator inbox that receives CIS alert e-mails (ALERT_EMAIL_TO on the CIS api + worker). Empty = CIS sends no alert e-mail (the app logs it)."
   type        = string

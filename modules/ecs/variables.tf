@@ -198,6 +198,19 @@ variable "ses_configuration_set" {
   default     = ""
 }
 
+# ── AA-913 — alert recipients managed from the CIS admin page (accounts/aa365/alert_recipients.tf) ──
+variable "alerts_topic_arn" {
+  description = "AA-913 — ALERTS_TOPIC_ARN: the alerts topic whose e-mail subscriptions the admin page manages; empty = page read-only/not configured."
+  type        = string
+  default     = ""
+}
+
+variable "alert_bootstrap_email" {
+  description = "AA-913 — ALERT_BOOTSTRAP_EMAIL: the Terraform-managed subscription of the alerts topic, shown locked in the admin page."
+  type        = string
+  default     = ""
+}
+
 variable "bedrock_acct_primary" {
   description = "AA-902: acc3 (Bedrock satellite primary) account ID, env BEDROCK_ACCT_PRIMARY on api and worker"
   type        = string
