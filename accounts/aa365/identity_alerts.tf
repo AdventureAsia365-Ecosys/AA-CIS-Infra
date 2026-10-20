@@ -74,7 +74,7 @@ resource "aws_secretsmanager_secret_policy" "identity_breakglass" {
 # ── 2. EventBridge rule -> SNS ───────────────────────────────────────────────
 resource "aws_cloudwatch_event_rule" "identity_breakglass_secret" {
   name        = "${local.id_prefix}-breakglass-secret-access"
-  description = "Break-glass secret ${aws_secretsmanager_secret.identity_breakglass.name}: value read/written or guard changed (CloudTrail). ADR 0006 decision 11, AA-854."
+  description = "Break-glass secret ${aws_secretsmanager_secret.identity_breakglass.name}: value read/written or guard changed (CloudTrail). ADR 0006 decision 11, AA-854.${local.runbook_suffix.break_glass}"
   state       = "ENABLED_WITH_ALL_CLOUDTRAIL_MANAGEMENT_EVENTS"
 
   event_pattern = jsonencode({
@@ -121,7 +121,7 @@ resource "aws_cloudwatch_event_target" "identity_breakglass_secret" {
       time      = "$.detail.eventTime"
       error     = "$.detail.errorCode"
     }
-    input_template = "\"[aa-identity] Break-glass secret ${aws_secretsmanager_secret.identity_breakglass.name}: <event> by <principal> from <ip> at <time> (errorCode: <error>). If this was not a planned break-glass use or bootstrap, treat it as an incident (ADR 0006 decision 11).\""
+    input_template = "\"[aa-identity] Break-glass secret ${aws_secretsmanager_secret.identity_breakglass.name}: <event> by <principal> from <ip> at <time> (errorCode: <error>). If this was not a planned break-glass use or bootstrap, treat it as an incident (ADR 0006 decision 11).${local.runbook_suffix.break_glass}\""
   }
 }
 
@@ -136,7 +136,7 @@ resource "aws_cloudwatch_event_target" "identity_breakglass_secret" {
 # Cost: EventBridge rules on AWS service (CloudTrail) events are free; SNS email stays in the free tier.
 resource "aws_cloudwatch_event_rule" "identity_denied_secret_read" {
   name        = "${local.id_prefix}-denied-secret-read"
-  description = "A Secrets Manager value read/write was DENIED and CloudTrail did not log which secret (may include the break-glass secret). S243, ADR 0006 decision 11."
+  description = "A Secrets Manager value read/write was DENIED and CloudTrail did not log which secret (may include the break-glass secret). S243, ADR 0006 decision 11.${local.runbook_suffix.incident}"
   state       = "ENABLED_WITH_ALL_CLOUDTRAIL_MANAGEMENT_EVENTS"
 
   event_pattern = jsonencode({
@@ -166,7 +166,7 @@ resource "aws_cloudwatch_event_target" "identity_denied_secret_read" {
       time      = "$.detail.eventTime"
       error     = "$.detail.errorCode"
     }
-    input_template = "\"[aa-identity] Denied secret access: <event> by <principal> from <ip> at <time> (errorCode: <error>). CloudTrail does not log which secret a denied call asked for, so it may be any protected secret, including the break-glass one. Planned test (e.g. an X1 S19 deny check)? Nothing to do. Otherwise check who made the call (CloudTrail, same time) and treat an unknown principal as an incident (ADR 0006 decision 11).\""
+    input_template = "\"[aa-identity] Denied secret access: <event> by <principal> from <ip> at <time> (errorCode: <error>). CloudTrail does not log which secret a denied call asked for, so it may be any protected secret, including the break-glass one. Planned test (e.g. an X1 S19 deny check)? Nothing to do. Otherwise check who made the call (CloudTrail, same time) and treat an unknown principal as an incident (ADR 0006 decision 11).${local.runbook_suffix.incident}\""
   }
 }
 
@@ -297,7 +297,7 @@ resource "aws_sns_topic_policy" "alerts" {
 # Cost: $0/month (no events expected).
 resource "aws_cloudwatch_event_rule" "identity_workforce_admincreateuser_password" {
   name        = "${local.id_prefix}-workforce-admincreateuser-password"
-  description = "WORKFORCE AdminCreateUser with a temporary password, RESEND or no SUPPRESS (CloudTrail). Root ADR 0006a A8, AA-816."
+  description = "WORKFORCE AdminCreateUser with a temporary password, RESEND or no SUPPRESS (CloudTrail). Root ADR 0006a A8, AA-816.${local.runbook_suffix.incident}"
   state       = "ENABLED"
 
   event_pattern = jsonencode({
@@ -336,6 +336,6 @@ resource "aws_cloudwatch_event_target" "identity_workforce_admincreateuser_passw
       temp      = "$.detail.requestParameters.temporaryPassword"
       error     = "$.detail.errorCode"
     }
-    input_template = "\"[aa-identity] WORKFORCE pool ${aws_cognito_user_pool.workforce.id}: AdminCreateUser by <principal> from <ip> at <time> with messageAction=<action> temporaryPassword=<temp> (errorCode: <error>). Staff users are always created with SUPPRESS and no password, so unless this was a planned admin action, treat it as an incident: find the user created at that time (ListUsers, UserCreateDate), disable it and sign it out everywhere (root ADR 0006a A8).\""
+    input_template = "\"[aa-identity] WORKFORCE pool ${aws_cognito_user_pool.workforce.id}: AdminCreateUser by <principal> from <ip> at <time> with messageAction=<action> temporaryPassword=<temp> (errorCode: <error>). Staff users are always created with SUPPRESS and no password, so unless this was a planned admin action, treat it as an incident: find the user created at that time (ListUsers, UserCreateDate), disable it and sign it out everywhere (root ADR 0006a A8).${local.runbook_suffix.incident}\""
   }
 }

@@ -50,3 +50,8 @@ output "log_group_name" {
 output "log_group_arn" {
   value = aws_cloudwatch_log_group.ecs.arn
 }
+
+# AA-893: the root inventory outputs (accounts/aa365/outputs_inventory.tf) list every ECS service.
+output "worker_service_name" {
+  value = aws_ecs_service.worker.name
+}

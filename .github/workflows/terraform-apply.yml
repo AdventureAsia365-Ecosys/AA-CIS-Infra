@@ -37,6 +37,11 @@ jobs:
     # apply role, once trialled) is what keeps the near-admin apply role to main.
     if: github.ref == 'refs/heads/main'
 
+    # AA-893: true only after a real apply that changed something (read by docs-gen-dispatch below).
+    # A failed apply fails this job, so docs-gen-dispatch (needs: success) does not run then.
+    outputs:
+      changed: ${{ steps.plan.outputs.exitcode == '2' && inputs.guard_selftest != true }}
+
     defaults:
       run:
         working-directory: accounts/aa365
@@ -168,3 +173,27 @@ jobs:
       - name: Print outputs
         if: env.GUARD_SELFTEST != 'true' && steps.plan.outputs.exitcode == '2'
         run: terraform output
+
+  # AA-893: regenerate the infra docs (root docs/generated/: alarms, network, inventory, IAM) from the
+  # new state. A separate job so `actions: write` (needed to dispatch a workflow) never reaches the apply
+  # job, which holds the DB password and the near-admin apply credentials and runs provider binaries.
+  # No checkout, no environment, no AWS step; docs-gen.yml itself uses the read-only plan role.
+  # The apply already succeeded, so a failed dispatch only warns (the nightly run catches up).
+  docs-gen-dispatch:
+    name: Dispatch Docs Gen
+    needs: terraform-apply
+    if: needs.terraform-apply.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      actions: write
+    steps:
+      - name: Regenerate the infra docs (Docs Gen)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          APPLY_RUN: ${{ github.run_id }}
+        run: |
+          gh workflow run docs-gen.yml --repo "$REPO" --ref main \
+            -f reason="after Terraform Apply (run $APPLY_RUN)"
+          echo "- dispatched Docs Gen (root docs/generated PR if a page changed)" >> "$GITHUB_STEP_SUMMARY"

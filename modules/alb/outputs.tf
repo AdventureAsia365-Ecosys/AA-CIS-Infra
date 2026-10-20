@@ -38,3 +38,8 @@ output "vpc_link_id" {
   description = "ID of the API Gateway VPC Link (V1) wrapping the NLB (AA-272)"
   value       = aws_api_gateway_vpc_link.this.id
 }
+
+output "nlb_security_group_id" {
+  description = "Security group of the VPC-link NLB (AA-893 inventory outputs)"
+  value       = aws_security_group.nlb.id
+}

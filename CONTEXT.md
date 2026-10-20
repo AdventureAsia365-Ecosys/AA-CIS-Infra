@@ -162,6 +162,11 @@ tools/
                     (schema copy in docs/templates/), ADR index, single-line AWS CLI, resource IDs
                     (VPC IDs fail, account IDs/ARNs warn), offline links; job in docs-lint.yml, which
                     also writes the weekly freshness report. README there says how to keep copies equal.
+                    Plus gen_docs.py (AA-893, Infra-only, not part of the vendored set): renders the root
+                    repo's docs/generated/ pages (alarm catalog with runbook links, network, inventory, IAM
+                    roles) from the accounts/aa365 state JSON (or a plan JSON); `check-source` guards that
+                    every alarm and SNS-notifying EventBridge rule carries a runbook suffix. Tests in
+                    tools/docs/tests (docs-gen-test.yml); run by docs-gen.yml.
 ```
 
 The **active dev stack** is `accounts/aa365` — it is the root Terraform actually applies against
@@ -302,7 +307,8 @@ makes CI Terraform Plan fail with 403.
     task-definition revision or update a CIS service).
 - **AA-806 role split** (`cicd_split.tf`, cut-over plan `docs/ci-role-split.md`):
   `aa-cis-dev-app-deploy` (AA-CIS-App, `environment:dev`, CIS ECR/task families/services only),
-  `aa-cis-infra-tf-plan` (`pull_request`, read only) and `aa-cis-infra-tf-apply`
+  `aa-cis-infra-tf-plan` (`pull_request`, plus `ref:refs/heads/main` for docs-gen.yml since AA-893;
+  read only) and `aa-cis-infra-tf-apply`
   (`environment:prod`, boundary `aa-cis-infra-tf-apply-boundary`). `aa-cis-dev-role` was removed in
   step 3 (S239), together with phase 3 (`tf_apply_require_boundary_on_role_policy_writes = true`:
   role policy writes only on roles that carry the workload boundary). **Every new `aws_iam_role` must set
@@ -379,6 +385,14 @@ makes CI Terraform Plan fail with 403.
   Every owner file runs as the live owner of its dir's anchor schema (`cis_owner`, `bk_owner`, `tp_owner`); the
   nightly DB Isolation Probe cell `sessions.master_break_glass_only` flags any other master session. The CIS
   migration freeze and the `catalog.*` view freeze (XD9) ended with CIS 246 (S22, 19/10/2026).
+- **Docs Gen** (`docs-gen.yml`, AA-893) reads the `accounts/aa365` state with the read-only plan role
+  (`terraform show -json`, no plan, no lock) nightly and after every Terraform Apply that changed
+  something (dispatched by Terraform Apply's separate `docs-gen-dispatch` job, the only job there with
+  `actions: write`; the apply job itself keeps `id-token` + `contents: read`), renders `tools/docs/gen_docs.py`'s four pages and opens a PR on the root repo
+  (`docs/generated/{alarms,network,inventory,iam-roles}.md`, branch `bot/generated-infra-docs`) when a page
+  changed. A missing or broken alarm runbook link fails the run after the PR is updated. The root
+  outputs in `accounts/aa365/outputs_inventory.tf` (VPC, subnets, security groups, NAT, RDS, ECS, load
+  balancers, API Gateway) are listed on the inventory page; look IDs up there or with `terraform output`.
 - No auto-apply on merge — apply is manual/`workflow_dispatch`, and destructive changes need
   explicit human confirmation.
 - Run Terraform from the WSL path (`/home/nghiep/...`), never a Windows UNC path.

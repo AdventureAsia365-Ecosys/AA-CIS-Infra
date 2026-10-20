@@ -1,0 +1,47 @@
+name: Docs Gen Tests
+
+# AA-893: offline checks of tools/docs/gen_docs.py, the generator of the root repo's docs/generated/
+# pages (alarm catalog, network, inventory, IAM roles). Synthetic Terraform JSON only: no AWS access,
+# no state read. The source guard fails a PR that adds a CloudWatch alarm, or an EventBridge rule that
+# notifies SNS, without a runbook suffix (accounts/aa365/alarm_runbooks.tf).
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "tools/docs/**"
+      - "accounts/**/*.tf"
+      - "modules/**/*.tf"
+      - ".github/workflows/docs-gen.yml"
+      - ".github/workflows/docs-gen-test.yml"
+  push:
+    branches: [main]
+    paths:
+      - "tools/docs/**"
+      - "accounts/**/*.tf"
+      - "modules/**/*.tf"
+      - ".github/workflows/docs-gen.yml"
+      - ".github/workflows/docs-gen-test.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  docs-gen-tests:
+    name: Docs generator tests (unittest)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Unit tests
+        run: python -m unittest discover -s tools/docs/tests -v
+
+      - name: Every alarm and SNS-notifying rule has a runbook suffix
+        run: python3 tools/docs/gen_docs.py check-source accounts modules
