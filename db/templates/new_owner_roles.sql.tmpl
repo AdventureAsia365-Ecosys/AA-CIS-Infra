@@ -1,0 +1,100 @@
+-- Migration rl-{{NNN}}: {{ISSUE}} — role bootstrap for the new owner {{OWNER}} (ADR 0008 playbook step 3), rendered from
+-- db/templates/new_owner_roles.sql.tmpl by db/templates/render_new_owner_roles.py: owner role {{OWNER_ROLE}} (NOLOGIN),
+-- runtime role {{RUNTIME_ROLE}} (LOGIN, CONNECTION LIMIT {{CONN_LIMIT}}, no password yet) and the empty anchor schema {{SCHEMA}}.
+--
+-- Why. Data standards DM-8.1 / MIG-6 / SEC-1: every app gets a NOLOGIN owner role and LOGIN runtime roles with a
+-- CONNECTION LIMIT, defined in git in the Infra role bootstrap (db/migrations/roles/, runs only as the RDS master
+-- aa_cis_admin). DB Migrate runs each {{OWNER}}/ file as the live owner of the anchor schema {{SCHEMA}} (XD8): the
+-- schema has to exist, owned by {{OWNER_ROLE}}, before the owner's first file, or that file would run as the DB
+-- Migrate login db_migrator (which may not create schemas and must not own app objects).
+--
+-- What.
+--   * CREATE ROLE {{OWNER_ROLE}} NOLOGIN and {{RUNTIME_ROLE}} LOGIN … CONNECTION LIMIT {{CONN_LIMIT}} (if missing).
+--   * CREATE SCHEMA {{SCHEMA}} AUTHORIZATION {{OWNER_ROLE}} (if missing): empty; the owner's first migration
+--     ({{KEY_PREFIX}}001) creates the objects, the grants to {{RUNTIME_ROLE}} and its default privileges.
+--   * GRANT {{OWNER_ROLE}} TO aa_cis_admin (break-glass, ALTER … OWNER TO) and TO db_migrator (SET ROLE for the
+--     live-owner switch is checked against the session user; db/owners.yaml migrator_member_of lists it).
+--   Never granted (X1 plan §1.4, lesson S236: a policy TO r also applies to the members of r): {{RUNTIME_ROLE}} to
+--   anyone, any role to {{OWNER_ROLE}} or {{RUNTIME_ROLE}}; aa_app_user and catalog_owner are not touched.
+--
+-- Not here: passwords (never in git, SEC-2: Nghiệp writes the DSN secret by hand, then DB Migrate mode=set-password
+-- role={{RUNTIME_ROLE}}, which needs {{RUNTIME_ROLE}} in db/owners.yaml password_roles), object grants, default
+-- privileges, a job table (the owner's own migrations). Role attributes are set only through CREATE ROLE / NOLOGIN /
+-- CONNECTION LIMIT: on PostgreSQL 15 a non-superuser CREATEROLE role (the RDS master) cannot name SUPERUSER,
+-- REPLICATION or BYPASSRLS in ALTER ROLE, so the guard checks those instead. Idempotent: re-running changes nothing.
+--
+-- Rollback: a forward roles/ file (MIG-14, no down migration) that refuses while {{OWNER_ROLE}} owns anything but
+-- the empty schema or {{RUNTIME_ROLE}} has a session, then DROP SCHEMA {{SCHEMA}}, DROP OWNED BY and DROP ROLE.
+
+BEGIN;
+
+SET LOCAL lock_timeout = '5s';
+SET LOCAL statement_timeout = '2min';
+
+DO $$
+BEGIN
+    IF session_user <> 'aa_cis_admin' THEN
+        RAISE EXCEPTION 'rl-{{NNN}}: roles/ files run only as the RDS master aa_cis_admin (session user is %)',
+            session_user;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{{OWNER_ROLE}}') THEN
+        CREATE ROLE {{OWNER_ROLE}} NOLOGIN;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{{RUNTIME_ROLE}}') THEN
+        CREATE ROLE {{RUNTIME_ROLE}} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS CONNECTION LIMIT {{CONN_LIMIT}};
+    END IF;
+END $$;
+
+ALTER ROLE {{OWNER_ROLE}} NOLOGIN;
+ALTER ROLE {{RUNTIME_ROLE}} LOGIN CONNECTION LIMIT {{CONN_LIMIT}};
+
+GRANT {{OWNER_ROLE}} TO aa_cis_admin;
+GRANT {{OWNER_ROLE}} TO db_migrator;
+
+CREATE SCHEMA IF NOT EXISTS {{SCHEMA}} AUTHORIZATION {{OWNER_ROLE}};
+
+-- Guards: the roles and the schema have exactly the shape the playbook needs.
+DO $$
+DECLARE
+    bad text;
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles
+                    WHERE rolname = '{{OWNER_ROLE}}' AND NOT rolcanlogin
+                      AND NOT (rolsuper OR rolbypassrls OR rolcreaterole OR rolcreatedb OR rolreplication)) THEN
+        RAISE EXCEPTION 'rl-{{NNN}}: {{OWNER_ROLE}} must exist, NOLOGIN, no SUPERUSER/BYPASSRLS/CREATEROLE/CREATEDB/REPLICATION';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_roles
+                    WHERE rolname = '{{RUNTIME_ROLE}}' AND rolcanlogin AND rolconnlimit = {{CONN_LIMIT}}
+                      AND NOT (rolsuper OR rolbypassrls OR rolcreaterole OR rolcreatedb OR rolreplication)) THEN
+        RAISE EXCEPTION 'rl-{{NNN}}: {{RUNTIME_ROLE}} must be LOGIN, CONNECTION LIMIT {{CONN_LIMIT}}, no SUPERUSER/BYPASSRLS/CREATEROLE/CREATEDB/REPLICATION';
+    END IF;
+    -- Both roles are members of nothing (no inherited rights, no policy TO r reaching them) …
+    SELECT string_agg(m.member::regrole::text || ' in ' || m.roleid::regrole::text, ', ') INTO bad
+      FROM pg_auth_members m
+     WHERE m.member IN ('{{OWNER_ROLE}}'::regrole, '{{RUNTIME_ROLE}}'::regrole);
+    IF bad IS NOT NULL THEN
+        RAISE EXCEPTION 'rl-{{NNN}}: new roles must not be members of any role: %', bad;
+    END IF;
+    -- … and the runtime role is granted to nobody. PostgreSQL 16+ records the creating CREATEROLE role (the master)
+    -- as an ADMIN member of every role it creates; PostgreSQL 15 (RDS today) does not. Only that row is tolerated.
+    SELECT string_agg(m.member::regrole::text, ', ') INTO bad
+      FROM pg_auth_members m
+     WHERE m.roleid = '{{RUNTIME_ROLE}}'::regrole AND m.member <> 'aa_cis_admin'::regrole;
+    IF bad IS NOT NULL THEN
+        RAISE EXCEPTION 'rl-{{NNN}}: {{RUNTIME_ROLE}} must not be granted to any role (granted to %)', bad;
+    END IF;
+    IF NOT (pg_has_role('aa_cis_admin', '{{OWNER_ROLE}}', 'MEMBER') AND pg_has_role('db_migrator', '{{OWNER_ROLE}}', 'MEMBER')) THEN
+        RAISE EXCEPTION 'rl-{{NNN}}: aa_cis_admin and db_migrator must be members of {{OWNER_ROLE}}';
+    END IF;
+    IF (SELECT pg_get_userbyid(nspowner) FROM pg_namespace WHERE nspname = '{{SCHEMA}}') IS DISTINCT FROM '{{OWNER_ROLE}}' THEN
+        RAISE EXCEPTION 'rl-{{NNN}}: schema {{SCHEMA}} must exist, owned by {{OWNER_ROLE}}';
+    END IF;
+END $$;
+
+INSERT INTO shared.schema_versions (version, applied_at, description)
+VALUES ('rl-{{NNN}}', now(),
+    '{{ISSUE}}: role bootstrap for owner {{OWNER}} — {{OWNER_ROLE}} NOLOGIN (granted to aa_cis_admin, db_migrator), '
+    '{{RUNTIME_ROLE}} LOGIN CONNECTION LIMIT {{CONN_LIMIT}} (no password), schema {{SCHEMA}} owned by {{OWNER_ROLE}}')
+ON CONFLICT (version) DO NOTHING;
+
+COMMIT;
