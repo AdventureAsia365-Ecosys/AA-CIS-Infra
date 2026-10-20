@@ -34,7 +34,9 @@ permissions:
 env:
   # Repo=ref pairs read instead of main (tools/contracts/check_contract_copies.py CONTRACT_COPY_REFS).
   # Empty on main; an evidence branch may set it, a dispatch overrides it with input refs.
-  CONTRACT_COPY_REFS: ""
+  # AA-826 EVIDENCE BRANCH, never merged: read AA-Booking at the throwaway branch that edits one byte of its
+  # inquiry.submitted.v1.2.json copy. The compare step must go red on that copy and stay green on the others.
+  CONTRACT_COPY_REFS: "AA-Booking=test/contract-hash-red"
 
 jobs:
   guard:
