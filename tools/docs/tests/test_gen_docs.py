@@ -26,7 +26,7 @@ REPO_ROOT = HERE.parents[2]
 ACCT = "111122223333"  # fake
 TOPIC = f"arn:aws:sns:us-west-1:{ACCT}:aa-test-alerts"
 BLOB = gd.ROOT_REPO_BLOB_PREFIX
-SECRET = "SUPERSECRET-VALUE-must-never-render"
+PLANTED = "planted-value-never-rendered"
 
 
 def _res(address: str, rtype: str, values: dict) -> dict:
@@ -90,8 +90,8 @@ def state_doc() -> dict:
         _res("aws_cloudwatch_event_rule.ingest", "aws_cloudwatch_event_rule", {"name": "aa-cis-dev-ingest", "description": "daily", "schedule_expression": "rate(1 day)", "tags": {"App": "cis"}}),
         _res("aws_cloudwatch_event_target.ingest", "aws_cloudwatch_event_target", {"rule": "aa-cis-dev-ingest", "arn": f"arn:aws:lambda:us-west-1:{ACCT}:function:x"}),
         # Values that must never reach a page.
-        _res("aws_secretsmanager_secret_version.db", "aws_secretsmanager_secret_version", {"id": "arn|v1", "secret_string": SECRET}),
-        _res("random_password.db", "random_password", {"id": "none", "result": SECRET}),
+        _res("aws_secretsmanager_secret_version.db", "aws_secretsmanager_secret_version", {"id": "arn|v1", "secret_string": PLANTED}),
+        _res("random_password.db", "random_password", {"id": "none", "result": PLANTED}),
         # Network
         _res("module.vpc.aws_vpc.main", "aws_vpc", {"id": "vpc-0fake", "cidr_block": "10.9.0.0/16", "tags": {"Name": "aa-test-vpc", "App": "shared"}}),
         _res("module.vpc.aws_subnet.private[0]", "aws_subnet", {"id": "subnet-0a", "availability_zone": "us-west-1a", "cidr_block": "10.9.10.0/24", "map_public_ip_on_launch": False, "tags": {"Name": "aa-test-private-1", "App": "shared"}}),
@@ -122,7 +122,7 @@ def state_doc() -> dict:
         "values": {
             "outputs": {
                 "network_vpc_id": {"sensitive": False, "value": "vpc-0fake", "type": "string"},
-                "db_password_echo": {"sensitive": True, "value": SECRET, "type": "string"},
+                "db_password_echo": {"sensitive": True, "value": PLANTED, "type": "string"},
             },
             "root_module": {"resources": resources[:9], "child_modules": [{"address": "module.vpc", "resources": resources[9:]}]},
         },
@@ -241,7 +241,7 @@ class PageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as t:
             out = self.render_dir(state_doc(), Path(t), "o")
             text = "".join((out / p).read_text(encoding="utf-8") for p in gd.PAGES)
-        self.assertNotIn(SECRET, text)
+        self.assertNotIn(PLANTED, text)
         self.assertIn("(sensitive, not shown)", text)
 
     def test_front_matter_and_generated_marker(self):
