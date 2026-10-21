@@ -96,6 +96,16 @@ Cognito E2E gets refused by Booking (`no_booking_role`), matching by CIS id, Cog
 e-mail; and lists every Booking staff row (key kind, role, active, linked, CIS username, last seen; subs cut to 8
 characters, no e-mail). Ends with `SCRIPT verdict e2e_has_no_booking_row=true|false`; returns 1 only when a Booking
 row matches the E2E identity. Dispatch after the E2E run. Notes: `docs/implementation-notes/AA-680-s245.md`.
+AA-911 adds `SCRIPT verdict active_unlinked=<n>` (active rows with no Cognito identity; reported, never a failure).
+
+`aa911_bridge_staff_rows.py` (AA-911, one-time, after the CIS to Booking bridge is retired): per bridge-era
+`booking.staff_users` row (key not `cog:`) either links it to the CIS row's Cognito identity (active CIS row with
+`cognito_sub`, identity not held by another row) or sets `active = false` (everything else, and always the `e2e-*`
+accounts); never deletes or merges rows. Fails before any write when an active unlinked row belongs to a CIS
+username outside {`admin`, `e2e-claude-code`, `e2e-claude-code-2`} or to none. Merged with `READ_ONLY = True` =
+DRY RUN; a one-line follow-up PR sets `READ_ONLY = False` to apply (one transaction, one `booking.audit_logs` row
+per write, actor_ref `script:aa911_bridge_staff_rows`). Idempotent. Ends with `SCRIPT verdict active_unlinked=<n>`.
+Notes: `docs/implementation-notes/AA-911-staff-rows.md`.
 
 `aa816_clear_breakglass_password.py` (AA-816 checklist B6, decision N-B, one-time): sets `password_hash` NULL on
 the CIS break-glass row of `shared.admin_users` (root ADR 0006a A4) and writes one `acp_shared.audit_log` row
