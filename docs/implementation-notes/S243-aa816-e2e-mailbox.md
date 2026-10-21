@@ -126,3 +126,7 @@ MailChannels) to `e2e@e2e-mail.lumiguides.it.com`, which this PR makes real.
 - **Cost**: SES receiving $0.10 per 1,000 mails + $0.09 per 1,000 chunks; S3 < 1 MB for 1 day; R53
   record in the existing zone; IAM and rule set $0. Total < $0.01/month (plan budget "< $0.05").
 - Destroying `aws_ses_active_receipt_rule_set.e2e` turns off SES receiving for the whole region.
+- **Forwarder path is current again (root ADR 0006a A10).** S243 option B briefly made the mailbox address itself
+  the staff user (TLS policy raised to Require then); A10 removed that exception. The E2E user is
+  `e2e-cognito@adventure.asia`, forwarded by the adventure.asia mail host. `tls_policy` stays `Require` unless the
+  H1 check shows the relay delivering without TLS (then `Optional` is Nghiệp's call). See `AA-816-a10-removal.md`.
