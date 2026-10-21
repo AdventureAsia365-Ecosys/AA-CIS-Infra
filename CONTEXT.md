@@ -131,7 +131,9 @@ accounts/
                                    (us-east-1, provider alias aws.us_east_1) + validation records; API GW custom
                                    domains, alias records and Vercel CNAMEs gated by var.custom_domains_enabled;
                                    Vercel hosts in var.custom_domain_vercel_hosts: tripplanner. (aa-tripplanner),
-                                   booking. (aa-booking-admin), portal. (aa-cis-portal, CIS tenant portal, AA-885);
+                                   booking. (aa-booking-admin), portal. (aa-cis-portal, CIS tenant portal, AA-885),
+                                   booking-preview. (aa-booking-admin) and aa-cis-preview. (aa-cis-frontend): the
+                                   fixed staff Preview sign-in hosts, also Cognito callbacks (AA-911);
                                    aa-cis. is a static record in dns.tf)
     variables.tf / tripplanner_variables.tf / booking_variables.tf
   acc1-bedrock/   ← acc1 Bedrock invoker role (fallback) + Cost Explorer reader
