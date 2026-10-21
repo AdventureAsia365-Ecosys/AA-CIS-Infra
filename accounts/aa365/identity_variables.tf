@@ -140,15 +140,16 @@ variable "identity_facebook_api_version" {
 
 # ── App client URLs ──────────────────────────────────────────────────────────
 variable "identity_client_urls" {
-  description = "Callback and sign-out URLs per app client key (cis-admin, booking-staff, breakglass, cis-portal, booking-customer, tripplanner). Hosts follow the S237 hostname decision (AA-818); they need not resolve yet. Paths are placeholders until each app implements its callback route. booking-staff points at the aa-booking-admin Vercel hosts (S242); cis-portal points at portal.lumiguides.it.com (S243, AA-885); booking-customer stays on localhost until its frontend host is chosen."
+  description = "Callback and sign-out URLs per app client key (cis-admin, booking-staff, breakglass, cis-portal, booking-customer, tripplanner). Hosts follow the S237 hostname decision (AA-818); they need not resolve yet. Paths are placeholders until each app implements its callback route. booking-staff points at the aa-booking-admin Vercel hosts (S242); AA-911 (S246, root ADR 0006a A11) adds ONE fixed Preview host per staff client (booking-preview on aa-booking-admin, aa-cis-preview on aa-cis-frontend; breakglass stays production-only), aliased by CI to the preview under test; cis-portal points at portal.lumiguides.it.com (S243, AA-885); booking-customer stays on localhost until its frontend host is chosen."
   type = map(object({
     callback_urls = list(string)
     logout_urls   = list(string)
   }))
   default = {
     "cis-admin" = {
-      callback_urls = ["https://aa-cis.lumiguides.it.com/api/auth/callback/cognito", "http://localhost:3000/api/auth/callback/cognito"]
-      logout_urls   = ["https://aa-cis.lumiguides.it.com/login", "http://localhost:3000/login"]
+      # AA-911 (S246): aa-cis-preview.lumiguides.it.com is the fixed Preview host of aa-cis-frontend.
+      callback_urls = ["https://aa-cis.lumiguides.it.com/api/auth/callback/cognito", "https://aa-cis-preview.lumiguides.it.com/api/auth/callback/cognito", "http://localhost:3000/api/auth/callback/cognito"]
+      logout_urls   = ["https://aa-cis.lumiguides.it.com/login", "https://aa-cis-preview.lumiguides.it.com/login", "http://localhost:3000/login"]
     }
     "breakglass" = {
       callback_urls = ["https://aa-cis.lumiguides.it.com/api/auth/callback/cognito-breakglass"]
@@ -157,8 +158,9 @@ variable "identity_client_urls" {
     "booking-staff" = {
       # AA-854 I1 (S242): Vercel project aa-booking-admin serves booking.lumiguides.it.com (custom, AA-818)
       # and aa-booking-admin.vercel.app (both production domains, verified); localhost:3001 for local dev.
-      callback_urls = ["https://booking.lumiguides.it.com/api/auth/callback/cognito", "https://aa-booking-admin.vercel.app/api/auth/callback/cognito", "http://localhost:3001/api/auth/callback/cognito"]
-      logout_urls   = ["https://booking.lumiguides.it.com/login", "https://aa-booking-admin.vercel.app/login", "http://localhost:3001/login"]
+      # AA-911 (S246): booking-preview.lumiguides.it.com is the fixed Preview host of aa-booking-admin.
+      callback_urls = ["https://booking.lumiguides.it.com/api/auth/callback/cognito", "https://aa-booking-admin.vercel.app/api/auth/callback/cognito", "https://booking-preview.lumiguides.it.com/api/auth/callback/cognito", "http://localhost:3001/api/auth/callback/cognito"]
+      logout_urls   = ["https://booking.lumiguides.it.com/login", "https://aa-booking-admin.vercel.app/login", "https://booking-preview.lumiguides.it.com/login", "http://localhost:3001/login"]
     }
     "cis-portal" = {
       # S243 AA-885: the tenant portal is its own Vercel project (aa-cis-portal, root portal/) on
