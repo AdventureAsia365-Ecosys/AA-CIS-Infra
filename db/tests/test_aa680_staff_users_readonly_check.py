@@ -100,6 +100,14 @@ class RunTest(unittest.TestCase):
         self.assertEqual(c, {"total": 3, "cog_rows": 1, "cis_rows": 2, "linked": 2, "unlinked": 1,
                              "unlinked_active": 1})
         self.assertIn("SCRIPT verdict e2e_has_no_booking_row=true", lines)
+        self.assertIn("SCRIPT verdict active_unlinked=1", lines)
+
+    def test_active_unlinked_verdict_counts_only_active_rows_without_identity(self):
+        rows = [staff_row(), staff_row("00000000-0000-4000-8000-000000000002", linked=False, active=False),
+                staff_row("cog:" + SUB)]
+        rc, lines = run(FakeConn(E2E_OK, rows))
+        self.assertEqual(rc, 0)
+        self.assertIn("SCRIPT verdict active_unlinked=0", lines)
 
     def test_a_booking_row_for_the_e2e_user_fails_the_run(self):
         rc, lines = run(FakeConn({**E2E_OK, "booking_rows": 1}, []))
