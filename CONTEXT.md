@@ -89,6 +89,8 @@ accounts/
     dfs_balance.tf                (ops-probe Lambda: 06:15 UTC schedule POSTs the admin probes, AA-627/720/727,
                                    plus the daily staff directory reconcile enqueue, AA-816;
                                    20:30 UTC schedule POSTs /admin/job-runner/retention/schedule, AA-825;
+                                   21:00 UTC schedule POSTs /admin/photos/sync/schedule (one photo_sync
+                                   job per country per UTC day), AA-844;
                                    the AA-832 every-5-min schedule was removed in AA-751. AA-878: the
                                    admin secret is read only by ARN at run time (event secret_id), no
                                    env copy, no Terraform data source; no secret_id or a failed read =
@@ -135,6 +137,15 @@ accounts/
                                    booking-preview. (aa-booking-admin) and aa-cis-preview. (aa-cis-frontend): the
                                    fixed staff Preview sign-in hosts, also Cognito callbacks (AA-911);
                                    aa-cis. is a static record in dns.tf)
+    photos_cdn.tf                 (AA-844, edge: CloudFront img.lumiguides.it.com in front of the bronze
+                                   bucket's photos/ prefix — ACM cert us-east-1 + validation record always;
+                                   validation wait, distribution (origin_path /photos, OAC SigV4, cache key
+                                   path + ?v=, TTL 1 d..1 y, nosniff+HSTS headers policy, no Cache-Control
+                                   override, PriceClass_100, no logs/WAF) and A/AAAA aliases gated by
+                                   var.photos_cdn_enabled && var.custom_domains_enabled. modules/s3 adds one
+                                   bronze bucket-policy statement AllowPhotosCdnRead (GetObject photos/* for
+                                   that distribution only, no ListBucket). The CIS /content/photos/{id}
+                                   302 points here; output photos_cdn)
     variables.tf / tripplanner_variables.tf / booking_variables.tf
   acc1-bedrock/   ← acc1 Bedrock invoker role (fallback) + Cost Explorer reader
   acc3-bedrock/   ← acc3 Bedrock invoker role (primary) + Bedrock Batch (batch.tf)
@@ -323,6 +334,19 @@ makes CI Terraform Plan fail with 403.
   instance role via `modules/vpc`, Booking/TripPlanner roles, DFS balance Lambda + scheduler,
   diagnostics roles); `aa-cis-dev-agent-session` gets it in a local bootstrap apply. With phase 3
   on, a role without the workload boundary cannot have its policies changed by CI apply at all.
+- **CIS REST API throttling** (AA-876, `modules/api_gateway`, values in `accounts/aa365/main.tf`): stage default
+  `*/*` 50 rps / burst 100, applied **per method** (each method its own bucket, shared by all callers of it).
+  `POST /auth/admin-login` and `POST /auth/tenant-login` are explicit resources (they win over `{auth_proxy+}`)
+  with their own override 20 / 40 (3x the busiest second in 14 days of execution logs, 21/10/2026); every other
+  `/auth/*` route (verify-admin, verify-tenant, booking-token, refresh) stays on the stage default on purpose: a
+  bucket is global to all callers, so a tight cap on `{auth_proxy+}` would let one client cut every BFF off
+  session verification (no per-IP rule while the WAF is off). `/content/{content_proxy+}` has a higher override
+  300 / 600 (TripPlanner cover `<img>` bursts; busiest second 100). Per-IP login limits and per-user backoff are in
+  the CIS app (`api/core/login_throttle.py`). The login and content overrides keep detailed metrics off where they
+  would be new (~0.30 USD per metric-month). The WAF on the REST stages stays deferred (S241: on when customer
+  sign-up opens); reusing the existing ALB web ACL would cost ~0.60 USD per million requests inspected, no new ACL
+  or rule fee. Any new resource/method/integration must also go into `aws_api_gateway_deployment.this`
+  `depends_on` and `triggers` (AA-432/AA-465/AA-583/AA-876).
 - **TripPlanner HTTP API throttling** (AA-806, Dev placeholders): generous stage default 500 rps /
   burst 1000 **per route** (`default_route_settings`; each route gets its own bucket, it is not one
   stage-wide cap; must stay generous because the map fetches one tile per 1-degree cell in a single
@@ -394,7 +418,7 @@ makes CI Terraform Plan fail with 403.
   (`docs/generated/{alarms,network,inventory,iam-roles}.md`, branch `bot/generated-infra-docs`) when a page
   changed. A missing or broken alarm runbook link fails the run after the PR is updated. The root
   outputs in `accounts/aa365/outputs_inventory.tf` (VPC, subnets, security groups, NAT, RDS, ECS, load
-  balancers, API Gateway) are listed on the inventory page; look IDs up there or with `terraform output`.
+  balancers, API Gateway, photos CDN) are listed on the inventory page; look IDs up there or with `terraform output`.
 - No auto-apply on merge — apply is manual/`workflow_dispatch`, and destructive changes need
   explicit human confirmation.
 - Run Terraform from the WSL path (`/home/nghiep/...`), never a Windows UNC path.

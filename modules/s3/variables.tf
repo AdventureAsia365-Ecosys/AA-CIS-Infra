@@ -19,3 +19,13 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "bronze_cloudfront_read" {
+  description = "AA-844: when set, the bronze bucket policy lets this CloudFront distribution (origin access control) GetObject under <prefix>/ only. null = no CloudFront access."
+  type = object({
+    distribution_arn = string
+    prefix           = string
+  })
+  default  = null
+  nullable = true
+}

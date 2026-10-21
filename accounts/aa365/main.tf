@@ -104,6 +104,13 @@ module "s3" {
   environment       = var.environment
   allowed_role_arns = var.s3_allowed_role_arns
   tags              = local.common_tags
+
+  # AA-844 (photos_cdn.tf): one bucket-policy statement for the photos CDN's OAC, photos/* only.
+  # null while the CDN is gated off. No cycle: bucket -> distribution -> this policy statement.
+  bronze_cloudfront_read = local.photos_cdn_on == 1 ? {
+    distribution_arn = aws_cloudfront_distribution.photos_cdn[0].arn
+    prefix           = local.photos_cdn_prefix
+  } : null
 }
 
 module "secrets" {
@@ -304,6 +311,16 @@ module "api_gateway" {
   acm_cert_arn_us_east1    = var.acm_certificate_arn
   domain_name              = var.domain_name
   enable_execution_logging = true # AA-272 diagnostic only
+
+  # AA-876 — throttling without the WAF (deferred per S241). Sized from 14 days of execution logs (21/10/2026):
+  # busiest second per method — /content 100, other /auth 20, the two login routes 6. Stage default 50/100 per
+  # method; logins 3x their peak; /content 3x its peak (TripPlanner cover images).
+  stage_throttle_rate_limit    = 50
+  stage_throttle_burst_limit   = 100
+  login_throttle_rate_limit    = 20
+  login_throttle_burst_limit   = 40
+  content_throttle_rate_limit  = 300
+  content_throttle_burst_limit = 600
 
   depends_on = [module.alb, aws_api_gateway_account.this]
 }

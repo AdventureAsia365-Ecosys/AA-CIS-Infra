@@ -199,6 +199,10 @@ variable "cost_anomaly_alert_usd" {
 # API stages. Keep false until (1) the CI role has apigateway:SetWebACL (otherwise the CI apply
 # fails with AccessDenied on the association) and (2) the geo allow-list is confirmed for Booking
 # (customers outside the 10 allowed countries would be blocked).
+# AA-876 (S246): still deferred per S241 (turn on when customer sign-up opens). Until then the edge caps are the
+# API Gateway method throttles (modules/api_gateway) plus the CIS app's per-IP login throttle. Reusing this web
+# ACL on the stages adds no ACL or rule fee, only ~0.60 USD per million requests inspected (blocker (2) above
+# still applies).
 variable "waf_protect_rest_api_stages" {
   type    = bool
   default = false
