@@ -7,11 +7,15 @@ variable "custom_domains_enabled" {
 }
 
 variable "custom_domain_vercel_hosts" {
-  description = "Frontend hosts on Vercel, as { label under dns_zone_name = CNAME target }. Created only when custom_domains_enabled = true. Add the domain to the Vercel project FIRST and use the target Vercel shows (project-specific *.vercel-dns-0xx.com, or cname.vercel-dns.com); a CNAME to Vercel with no project claiming the host is a takeover risk. booking (staff admin) added S239 (AA-818); portal (CIS tenant portal, Vercel project aa-cis-portal) added S243 (AA-885)."
+  description = "Frontend hosts on Vercel, as { label under dns_zone_name = CNAME target }. Created only when custom_domains_enabled = true. Add the domain to the Vercel project FIRST and use the target Vercel shows (project-specific *.vercel-dns-0xx.com, or cname.vercel-dns.com); a CNAME to Vercel with no project claiming the host is a takeover risk. booking (staff admin) added S239 (AA-818); portal (CIS tenant portal, Vercel project aa-cis-portal) added S243 (AA-885); booking-preview (aa-booking-admin) and aa-cis-preview (aa-cis-frontend), the fixed staff Preview sign-in hosts, added S246 (AA-911)."
   type        = map(string)
   default = {
     tripplanner = "a1520bcb29624260.vercel-dns-017.com" # project-specific target, domain added to aa-tripplanner first
     booking     = "faa59191f1f73e21.vercel-dns-017.com" # S239 AA-818: staff admin, domain added to aa-booking-admin first (verified)
     portal      = "22ba595c1afe124b.vercel-dns-017.com" # S243 AA-885: tenant portal, domain added to aa-cis-portal first (verified)
+    # S246 AA-911: fixed Preview sign-in hosts. Targets = Vercel recommendedCNAME for each project (read 21/10/2026
+    # with get_domain_config). The domain must be added to the project BEFORE this is applied (takeover rule).
+    booking-preview = "faa59191f1f73e21.vercel-dns-017.com" # aa-booking-admin
+    aa-cis-preview  = "91b6470228dd7980.vercel-dns-017.com" # aa-cis-frontend
   }
 }

@@ -103,7 +103,9 @@ accounts/
                                    deletions per run; lambda_src/rds_snapshot_expiry + _tests,
                                    .github/workflows/rds-snapshot-expiry-test.yml)
     identity.tf, identity_variables.tf (AA-703, root ADR 0006: Cognito pools aa-workforce-dev /
-                                   aa-external-dev, app clients, groups, trigger Lambdas in
+                                   aa-external-dev, app clients (WORKFORCE also has the Preview-only
+                                   cis-admin-preview / booking-staff-preview, capped at viewer by the
+                                   APIs, AA-911 D-1), groups, trigger Lambdas in
                                    lambda_src/identity_triggers + tests; SES (ses.tf identity) on,
                                    EXTERNAL native sign-up, WAF and custom domains gated by
                                    variables, default off — AA-854)
@@ -133,7 +135,10 @@ accounts/
                                    (us-east-1, provider alias aws.us_east_1) + validation records; API GW custom
                                    domains, alias records and Vercel CNAMEs gated by var.custom_domains_enabled;
                                    Vercel hosts in var.custom_domain_vercel_hosts: tripplanner. (aa-tripplanner),
-                                   booking. (aa-booking-admin), portal. (aa-cis-portal, CIS tenant portal, AA-885);
+                                   booking. (aa-booking-admin), portal. (aa-cis-portal, CIS tenant portal, AA-885),
+                                   booking-preview. (aa-booking-admin) and aa-cis-preview. (aa-cis-frontend): the
+                                   fixed staff Preview sign-in hosts, the only callbacks of the two
+                                   *-preview app clients (AA-911);
                                    aa-cis. is a static record in dns.tf)
     photos_cdn.tf                 (AA-844, edge: CloudFront img.lumiguides.it.com in front of the bronze
                                    bucket's photos/ prefix — ACM cert us-east-1 + validation record always;

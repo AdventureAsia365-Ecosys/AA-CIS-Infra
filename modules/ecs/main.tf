@@ -266,9 +266,10 @@ resource "aws_iam_role_policy" "ecs_task_policy" {
       # S18) would be cosmetic. An explicit Deny wins over any Allow. Secrets Manager ARNs end in "-" plus 6
       # random characters, so `rds-??????` matches only the master secret aa-cis/<env>/rds, never rds-app-user
       # or rds-cis-app (more characters after "rds-"); likewise db-migrator-??????. The CIS code reads only
-      # aa-cis/<env>/{rds-app-user, booking-jwt-signing-key, e2e-tenant/*, gdrive-photo-reader, geoapify,
-      # jwt-secret, sentry-dsn-api, typesafe, dataforseo} and acp/{cms,social}/* (grep 19/10/2026): none is
-      # denied. DATABASE_URL itself is injected by the EXECUTION role, which this does not touch. The only
+      # aa-cis/<env>/{rds-app-user, e2e-tenant/*, gdrive-photo-reader, geoapify, jwt-secret, sentry-dsn-api,
+      # typesafe, dataforseo} and acp/{cms,social}/* (grep 19/10/2026; booking-jwt-signing-key goes away with
+      # the CIS to Booking bridge, AA-911): none is denied. DATABASE_URL itself is injected by the EXECUTION
+      # role, which this does not touch. The only
       # code naming the master secret is services/acp_produce/sweeper_lambda.py, a Lambda handler that is
       # neither deployed nor imported by the api / worker. Master-level scripts go through DB Migrate
       # mode=run-script (db/scripts/README.md), no longer through ECS exec.

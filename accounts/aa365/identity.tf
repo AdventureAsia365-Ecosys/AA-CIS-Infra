@@ -14,8 +14,9 @@
 #   - 2 user pools on the Essentials plan, deletion protection ACTIVE (decision 1):
 #       aa-workforce-<env>  staff + break-glass; admin-create only; MFA OPTIONAL (TOTP, break-glass only)
 #       aa-external-<env>   tenant users + travellers; self sign-up gated per client by the trigger; MFA OFF
-#   - 6 app clients (decision 2): workforce cis-admin / booking-staff / breakglass (confidential),
-#     external cis-portal (confidential), booking-customer / tripplanner (public, PKCE)
+#   - 8 app clients (decision 2): workforce cis-admin / booking-staff / breakglass (confidential) plus the
+#     Preview-only cis-admin-preview / booking-staff-preview (confidential, capped at viewer by the APIs; AA-911
+#     D-1, root ADR 0006a A11), external cis-portal (confidential), booking-customer / tripplanner (public, PKCE)
 #   - 7 WORKFORCE groups <app>-<role> (decision 3): 3 CIS roles + every Booking staff role
 #     (AA-Booking backend/app/auth/staff.py STAFF_ROLES, incl. content_creator: S241 Q4/Q5, AA-854);
 #     EXTERNAL has none (tenant roles live in CIS DB)
@@ -30,7 +31,7 @@
 #   - prefix domains (managed login v2) always (fallback); custom domains auth. / staff-auth. +
 #     their Route 53 alias records when identity_custom_domains_enabled = true (default since
 #     AA-816 S242; AA-818 us-east-1 certificate + apex A record in dns.tf)
-#   - managed login branding (Adventure Asia style + logos) for the 3 WORKFORCE clients (AA-816 S242)
+#   - managed login branding (Adventure Asia style + logos) for every WORKFORCE client (AA-816 S242; 5 with AA-911)
 #   - Cognito mail through the AA-811 SES identity (ses.tf, same root) when identity_ses_enabled = true
 #     (default since AA-854: identity verified, DKIM SUCCESS, account out of the SES sandbox, checked
 #     live 17/10/2026); off = COGNITO_DEFAULT and no EMAIL_OTP. EXTERNAL native self sign-up stays
@@ -157,6 +158,20 @@ locals {
       idps   = ["COGNITO"], writes = ["name"]
     }
     "booking-staff" = {
+      secret = true, access_minutes = 15, refresh_hours = 12
+      idps   = ["COGNITO"], writes = ["name"]
+    }
+    # AA-911 decision D-1 (S246, root ADR 0006a A11): one Preview-only client per staff app, registered with ONLY
+    # the app's fixed Preview host (identity_variables.tf). Same settings as the production client. A session on a
+    # Preview host is therefore a token for THIS client_id, which the APIs cap at viewer (CIS
+    # api/core/staff_identity.py, Booking app/auth/staff.py): unmerged preview code never holds a real role.
+    # Adding keys to this map creates new clients only; the existing ones (and their client_id / secret) are
+    # untouched. Each new client also gets its managed login style (aws_cognito_managed_login_branding.workforce).
+    "cis-admin-preview" = {
+      secret = true, access_minutes = 15, refresh_hours = 12
+      idps   = ["COGNITO"], writes = ["name"]
+    }
+    "booking-staff-preview" = {
       secret = true, access_minutes = 15, refresh_hours = 12
       idps   = ["COGNITO"], writes = ["name"]
     }
@@ -720,13 +735,14 @@ resource "aws_route53_record" "identity_custom_domain" {
 # checkbox borders 9099A6, focus ring and links 9E6E16 (>= 3:1 / ~4.5:1 on white); the white text
 # on the gold primary button (2.5:1) matches adventure.asia and /login on purpose.
 #
-# One style per client (Cognito allows exactly one). The three styles were first created with the
+# One style per client (Cognito allows exactly one). AA-911 (S246) adds two keys (the Preview-only clients):
+# their styles are CREATED with the clients, the existing three are untouched. The three styles were first created with the
 # CLI (--use-cognito-provided-values) in S242, adopted into state by an import block, and replaced
 # by the first apply of #194 (new managed_login_branding_id per client); the import block and its
 # id map were removed in S243 (the addresses are in state, so it was dead code). Any future change
 # to the asset set still forces a replacement: the apply deletes and recreates each style (a few
 # seconds without a style per client). Because the delete runs before the create, a payload Cognito
-# rejects would leave all three clients (breakglass included) without a style: pre-validate the
+# rejects would leave every WORKFORCE client (breakglass included) without a style: pre-validate the
 # exact payload on an EXTERNAL client first (runbook + rollback commands in
 # docs/implementation-notes/AA-816-staff-auth-domain.md). If Cognito rejects buttons.borderRadius
 # 24, use 16.
