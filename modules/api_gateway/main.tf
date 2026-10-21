@@ -129,6 +129,47 @@ resource "aws_api_gateway_integration" "auth" {
   }
 }
 
+# AA-876 — /auth/admin-login and /auth/tenant-login as their own resources (POST only), so the tight login
+# throttle (aws_api_gateway_method_settings.login_throttle below) applies to exactly these two methods. A more
+# specific resource wins over {auth_proxy+}, so every other /auth/* route (verify-admin, verify-tenant,
+# booking-token, refresh, ...) stays on auth_any with the stage default: a throttle bucket is shared by all
+# callers of a method, so a tight one on auth_any would let one client cut every BFF off session verification.
+# Any other method on these two paths now gets API Gateway's 403 instead of FastAPI's 405 (no browser sends a
+# preflight: the API has no CORS on Dev since AA-876).
+locals {
+  login_paths = toset(["admin-login", "tenant-login"])
+}
+
+resource "aws_api_gateway_resource" "login" {
+  for_each = local.login_paths
+
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  parent_id   = aws_api_gateway_resource.auth.id
+  path_part   = each.key
+}
+
+resource "aws_api_gateway_method" "login" {
+  for_each = local.login_paths
+
+  rest_api_id   = aws_api_gateway_rest_api.this.id
+  resource_id   = aws_api_gateway_resource.login[each.key].id
+  http_method   = "POST"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "login" {
+  for_each = local.login_paths
+
+  rest_api_id             = aws_api_gateway_rest_api.this.id
+  resource_id             = aws_api_gateway_resource.login[each.key].id
+  http_method             = aws_api_gateway_method.login[each.key].http_method
+  type                    = "HTTP_PROXY"
+  integration_http_method = "POST"
+  connection_type         = "VPC_LINK"
+  connection_id           = var.vpc_link_id
+  uri                     = "http://${var.nlb_dns_name}/auth/${each.key}"
+}
+
 # /admin/{admin_proxy+} — internal admin routes, protected by FastAPI JWT
 resource "aws_api_gateway_resource" "admin" {
   rest_api_id = aws_api_gateway_rest_api.this.id
@@ -403,6 +444,8 @@ resource "aws_api_gateway_deployment" "this" {
     aws_api_gateway_integration.health,
     aws_api_gateway_integration.health_ready,
     aws_api_gateway_integration.auth,
+    aws_api_gateway_integration.login, # AA-876
+    aws_api_gateway_method.login,      # AA-876
     aws_api_gateway_integration.admin,
     aws_api_gateway_integration.content,
     aws_api_gateway_integration.docs,
@@ -437,6 +480,10 @@ resource "aws_api_gateway_deployment" "this" {
       aws_api_gateway_method.admin_any.authorization,
       aws_api_gateway_method.auth_any.authorization,
       aws_api_gateway_method.content_any.authorization,
+      # AA-876: the two explicit login resources — without these the stage keeps the old snapshot and the
+      # login throttle overrides point at methods the live deployment does not have (AA-432/AA-465/AA-583 trap).
+      join(",", [for k in sort(tolist(local.login_paths)) : aws_api_gateway_integration.login[k].uri]),
+      join(",", [for k in sort(tolist(local.login_paths)) : aws_api_gateway_method.login[k].authorization]),
     ]))
   }
   lifecycle {
@@ -454,21 +501,74 @@ resource "aws_api_gateway_stage" "dev" {
   tags = var.tags
 }
 
-# AA-272 diagnostic only — INFO-level execution logging, gated so account-1's
-# root (which doesn't set this var) never enables it. Requires the account's
-# aws_api_gateway_account.cloudwatch_role_arn to already be set.
-resource "aws_api_gateway_method_settings" "diagnostic_logging" {
-  count = var.enable_execution_logging ? 1 : 0
-
+# AA-876 — stage-wide method defaults (`*/*`): throttling for every method, plus the AA-272 execution logging
+# when var.enable_execution_logging is on (requires the account's aws_api_gateway_account.cloudwatch_role_arn).
+# The default applies to each method separately (its own token bucket), shared by all callers of that method.
+# Was `diagnostic_logging` (count = 0/1, logging only); the moved block keeps the existing object.
+resource "aws_api_gateway_method_settings" "stage_defaults" {
   rest_api_id = aws_api_gateway_rest_api.this.id
   stage_name  = aws_api_gateway_stage.dev.stage_name
   method_path = "*/*"
 
   settings {
-    logging_level      = "INFO"
-    data_trace_enabled = false
-    metrics_enabled    = true
+    throttling_rate_limit  = var.stage_throttle_rate_limit
+    throttling_burst_limit = var.stage_throttle_burst_limit
+    logging_level          = var.enable_execution_logging ? "INFO" : "OFF"
+    data_trace_enabled     = false
+    metrics_enabled        = var.enable_execution_logging
   }
+}
+
+moved {
+  from = aws_api_gateway_method_settings.diagnostic_logging[0]
+  to   = aws_api_gateway_method_settings.stage_defaults
+}
+
+# AA-876 — tight throttle on the two password/API-key login methods only. A method override replaces the whole
+# settings block for that method, so logging is repeated here. Detailed metrics stay OFF on purpose: each
+# resource-method with metrics_enabled is ~5 CloudWatch custom metrics (~0.30 USD each per month); the API-level
+# metrics still count these calls. The per-IP limit and per-user backoff live in the CIS app
+# (api/core/login_throttle.py); this is the global ceiling while the WAF is deferred.
+resource "aws_api_gateway_method_settings" "login_throttle" {
+  for_each = local.login_paths
+
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  stage_name  = aws_api_gateway_stage.dev.stage_name
+  method_path = "${trimprefix(aws_api_gateway_resource.login[each.key].path, "/")}/${aws_api_gateway_method.login[each.key].http_method}"
+
+  settings {
+    throttling_rate_limit  = var.login_throttle_rate_limit
+    throttling_burst_limit = var.login_throttle_burst_limit
+    logging_level          = var.enable_execution_logging ? "INFO" : "OFF"
+    data_trace_enabled     = false
+    metrics_enabled        = false
+  }
+
+  # Stage settings are one document: write the `*/*` default first, then the overrides, never in parallel.
+  depends_on = [aws_api_gateway_method_settings.stage_defaults]
+}
+
+# AA-876 — optional higher throttle on /content/{content_proxy+} (photos and public content). TripPlanner list
+# pages load cover images from here with plain <img>, one request per card, so a few concurrent visitors burst
+# well above the stage default. Created only when var.content_throttle_rate_limit is set.
+resource "aws_api_gateway_method_settings" "content_throttle" {
+  count = var.content_throttle_rate_limit == null ? 0 : 1
+
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  stage_name  = aws_api_gateway_stage.dev.stage_name
+  # A method-setting path must name one HTTP method: ANY and * are both rejected for a single
+  # resource. /content traffic is GET (photos, tour reads); other methods keep the stage default.
+  method_path = "${trimprefix(aws_api_gateway_resource.content_proxy.path, "/")}/GET"
+
+  settings {
+    throttling_rate_limit  = var.content_throttle_rate_limit
+    throttling_burst_limit = coalesce(var.content_throttle_burst_limit, var.content_throttle_rate_limit * 2)
+    logging_level          = var.enable_execution_logging ? "INFO" : "OFF"
+    data_trace_enabled     = false
+    metrics_enabled        = var.enable_execution_logging
+  }
+
+  depends_on = [aws_api_gateway_method_settings.login_throttle]
 }
 
 # =============================================================================

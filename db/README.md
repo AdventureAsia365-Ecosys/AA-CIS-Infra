@@ -250,7 +250,20 @@ bk-011). Orphans raise a workflow warning, never a failure. JSON goes to
 run artifact. `gen_schema_reference.py` renders the Markdown; its `schema-fingerprint` (hash of the
 dump without row counts, sizes and counters) decides whether the root PR is opened or updated, so
 statistics alone never open a PR. Local render: `python3 db/gen_schema_reference.py schema.json
---out /tmp/ref.md`. The workflow needs the secret `ROOT_REPO_DOCS_TOKEN` (see its header).
+--out /tmp/ref.md`.
+
+Column tags (data standards DM-6.1, AA-877): the dump keeps each column's raw comment (`comment`, no parsing in the
+ECS task); `gen_schema_reference.parse_tag` reads its leading `pii:<class>` / `conf:<class>` tag plus any further tags
+named in the text (`also`; forms `'<tag>; text'`, `'<tag> — text'`, bare `'<tag>'`). An older dump without `comment`
+still renders (no tags). The reference renders the tag after the column
+(`email text · pii:contact`) and a section *Personal and confidential data tags (DM-6.1)*: counts per schema and
+tag, every tagged column, findings (unknown class, a tag not at the start) and the **untagged candidates** of
+`booking` and `tripplanner` (column name contains a token of `PII_CANDIDATE_TOKENS`, not on `PII_ALLOWLIST`, both in
+`gen_schema_reference.py`). The free comment text stays in `schema.json` only; the fingerprint hashes the tags and
+the candidate outcome, so rewording an untagged comment opens no PR, while a new tag or an allowlist change does. The tagged-columns table is the input of the
+AA-Ecosys RoPA generator (`tools/data/gen_pii_inventory.py` → `docs/legal/register.md` section (a)).
+
+The workflow needs the secret `ROOT_REPO_DOCS_TOKEN` (see its header).
 
 ## Isolation probe (X1 plan S2, U-16)
 **DB Isolation Probe** (`.github/workflows/db-isolation-probe.yml`, nightly 04:13 UTC, manual, and

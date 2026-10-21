@@ -29,6 +29,7 @@ import handler as h  # noqa: E402
 SECRET_ARN = "arn:aws:secretsmanager:us-west-1:005097885195:secret:aa-cis/dev/admin-secret-abc123"
 RECONCILE = "/admin/job-runner/staff-reconcile/schedule"
 RETENTION = "/admin/job-runner/retention/schedule"
+PHOTO_SYNC = "/admin/photos/sync/schedule"  # AA-844
 
 
 class _Resp:
@@ -76,6 +77,14 @@ class SelectPathsTest(unittest.TestCase):
 
     def test_retention_path_allowed(self):
         self.assertEqual(h._select_paths({"paths": RETENTION}), (RETENTION,))
+
+    def test_photo_sync_path_allowed(self):
+        self.assertEqual(h.PHOTO_SYNC_SCHEDULE_PATH, PHOTO_SYNC)
+        self.assertEqual(h._select_paths({"paths": [PHOTO_SYNC]}), (PHOTO_SYNC,))
+
+    def test_photo_sync_not_in_default_run(self):
+        # AA-844: photo_sync runs on its own 21:00 UTC schedule, never from the 06:15 probe run.
+        self.assertNotIn(PHOTO_SYNC, h._select_paths({}))
 
     def test_unknown_path_refused_and_duplicates_dropped(self):
         got = h._select_paths({"paths": ["/admin/anything", RECONCILE, RECONCILE, "/auth/admin-login"]})

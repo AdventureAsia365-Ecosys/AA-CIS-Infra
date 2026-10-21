@@ -7,6 +7,11 @@ output "bronze_bucket_arn" {
   value = aws_s3_bucket.bronze.arn
 }
 
+# AA-844: the CloudFront S3 origin domain (regional, so OAC SigV4 signs for the bucket's region).
+output "bronze_bucket_regional_domain_name" {
+  value = aws_s3_bucket.bronze.bucket_regional_domain_name
+}
+
 output "silver_bucket_name" {
   description = "Silver S3 bucket name (validated JSONL + SEO cache backup)"
   value       = aws_s3_bucket.silver.id

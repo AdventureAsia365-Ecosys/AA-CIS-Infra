@@ -81,3 +81,13 @@ output "api_gateway" {
     tripplanner_http_api_id = aws_apigatewayv2_api.tripplanner.id
   }
 }
+
+output "photos_cdn" {
+  description = "AA-844 edge: the photos CloudFront distribution (bronze photos/ via OAC) and its host. null while gated off."
+  value = local.photos_cdn_on == 1 ? {
+    host            = local.photos_cdn_host
+    distribution_id = aws_cloudfront_distribution.photos_cdn[0].id
+    domain_name     = aws_cloudfront_distribution.photos_cdn[0].domain_name
+    price_class     = aws_cloudfront_distribution.photos_cdn[0].price_class
+  } : null
+}

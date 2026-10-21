@@ -57,3 +57,41 @@ variable "enable_execution_logging" {
   type        = bool
   default     = false
 }
+
+# AA-876 — API Gateway throttling (WAF deferred per S241). Values are passed explicitly by the account root,
+# sized from the per-second peaks in the execution logs (see docs/implementation-notes/AA-876.md).
+variable "stage_throttle_rate_limit" {
+  description = "Stage default (*/*) steady-state requests per second, applied to each method"
+  type        = number
+  default     = 50
+}
+
+variable "stage_throttle_burst_limit" {
+  description = "Stage default (*/*) burst (token bucket size), applied to each method"
+  type        = number
+  default     = 100
+}
+
+variable "login_throttle_rate_limit" {
+  description = "Requests per second on POST /auth/admin-login and POST /auth/tenant-login (each), all callers together"
+  type        = number
+  default     = 10
+}
+
+variable "login_throttle_burst_limit" {
+  description = "Burst on POST /auth/admin-login and POST /auth/tenant-login (each)"
+  type        = number
+  default     = 20
+}
+
+variable "content_throttle_rate_limit" {
+  description = "Optional override (requests per second) on /content/{content_proxy+} ANY; null = stage default"
+  type        = number
+  default     = null
+}
+
+variable "content_throttle_burst_limit" {
+  description = "Burst for the /content override; null = 2 x content_throttle_rate_limit"
+  type        = number
+  default     = null
+}
