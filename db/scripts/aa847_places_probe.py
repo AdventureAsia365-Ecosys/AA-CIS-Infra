@@ -109,7 +109,7 @@ DEFECT_TOURS_CAP = 8
 DAY_TEXT_EXAMPLES = 5
 
 # BEGIN GENERATED READERS (root docs/audits/2026-10-21-S246-aa847/gen_probe_sql.py; do not edit by hand)
-READERS_FROM = "AA-TripPlanner-Web@ee5b0bac5652"
+READERS_FROM = "AA-TripPlanner-Web@b1775cc66ea7"
 READERS_ABSENT = ['browse.search.CIS_SEARCH_SQL']
 READERS = {
     'assembly.activities.ACTIVITIES_SQL': """
@@ -198,7 +198,7 @@ READERS = {
     LIMIT $6
 """,
     'assembly.suggestions.ROUTE_CANDIDATES_SQL_CIS': """
-    WITH near AS (
+    WITH near AS MATERIALIZED (
         SELECT n.destination_id, 2 * 6371 * asin(sqrt(power(sin(radians(n.lat - $2) / 2), 2) + cos(radians($2)) * cos(radians(n.lat)) * power(sin(radians(n.lng - $3) / 2), 2))) AS transfer_km
         FROM catalog.v_graph_node n
         WHERE 2 * 6371 * asin(sqrt(power(sin(radians(n.lat - $2) / 2), 2) + cos(radians($2)) * cos(radians(n.lat)) * power(sin(radians(n.lng - $3) / 2), 2))) <= $4
@@ -214,20 +214,30 @@ READERS = {
         JOIN stops s2 ON s2.source_id = h.source_id AND s2.day_index > h.day_index
                      AND s2.destination_id <> h.destination_id
         GROUP BY h.source_id, h.day_index, h.destination_id, h.transfer_km
+    ), comp AS MATERIALIZED (
+        SELECT c.source_id, c.day_index, c.component_id, c.destination_id,
+               c.embedding <=> $1::vector AS distance
+        FROM catalog.v_tour_component c
+        WHERE c.source_id = ANY(ARRAY(SELECT DISTINCT x.source_id FROM nxt x))
+          AND c.embedding IS NOT NULL
+          AND ($7::text IS NULL OR c.activity = $7::text)
+          AND ($8::text IS NULL OR c.intensity_level = $8::text)
+    ), dest AS MATERIALIZED (
+        SELECT d.destination_id, d.name, d.lat, d.lng, d.country
+        FROM catalog.v_destination d
+        WHERE d.destination_id = ANY(ARRAY(SELECT DISTINCT y.destination_id FROM comp y))
+          AND d.destination_id <> ALL($5::uuid[])
     )
     SELECT d.destination_id AS id, d.name, d.lat, d.lng, d.country,
            COUNT(DISTINCT c.component_id) AS component_count,
-           MIN(c.embedding <=> $1::vector) AS best_distance,
+           MIN(c.distance) AS best_distance,
            MIN(nx.transfer_km) AS transfer_km,
            COUNT(DISTINCT nx.source_id) AS tour_count
     FROM nxt nx
-    JOIN catalog.v_tour_component c
+    JOIN comp c
       ON c.source_id = nx.source_id
      AND c.day_index > nx.from_day AND c.day_index <= nx.to_day
-    JOIN catalog.v_destination d ON d.destination_id = c.destination_id
-    WHERE c.embedding IS NOT NULL AND d.destination_id <> ALL($5::uuid[])
-      AND ($7::text IS NULL OR c.activity = $7::text)
-      AND ($8::text IS NULL OR c.intensity_level = $8::text)
+    JOIN dest d ON d.destination_id = c.destination_id
     GROUP BY d.destination_id, d.name, d.lat, d.lng, d.country
     ORDER BY best_distance ASC, d.destination_id
     LIMIT $6
