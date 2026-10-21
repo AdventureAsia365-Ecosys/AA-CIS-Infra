@@ -16,6 +16,10 @@
       "sha256": "9787500370953012a2fa195f841b23f2f2c66304ca0217483af78b47f79d2ef9",
       "copies": []
     },
+    "catalog.graph.v1.2.json": {
+      "sha256": "90d5c17d8841cacdfc9274ef8ec0c532ef955b7c9fdda312788e37c1e2e7c491",
+      "copies": []
+    },
     "catalog.graph.v1.json": {
       "sha256": "f8d085dbbc6e01f05ed512958878dad48603aa20bbcaf528683470d5d22a2792",
       "copies": []
@@ -26,6 +30,15 @@
         {
           "repo": "AA-TripPlanner-Web",
           "path": "backend/tests/contracts/catalog.tour.v1.1.json"
+        }
+      ]
+    },
+    "catalog.tour.v1.2.json": {
+      "sha256": "49c922bb31de10f0c40fa572d5b19ea0b4b914a1e002fe25e48fa62db63a0020",
+      "copies": [
+        {
+          "repo": "AA-TripPlanner-Web",
+          "path": "backend/tests/contracts/catalog.tour.v1.2.json"
         }
       ]
     },
