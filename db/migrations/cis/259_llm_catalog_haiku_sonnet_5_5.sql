@@ -24,11 +24,9 @@
 -- smoke script (one tiny call per model and account through LLMClient.generate(), stage
 -- adhoc_s246_models) before routing a stage; if an account refuses, PATCH enabled=false and say why.
 --
--- Gateway behaviour these rows need (same PR, shared/llm_client/client.py): structured output on
--- Sonnet 5.5 (and Opus 5.5) asks with tool choice `auto` + an instruction instead of a forced tool (both
--- answer a forced tool choice with a 400); Haiku 5.5 accepts a forced tool and keeps it (the response then
--- starts with the tool call, no thinking block). No thinking field or budget_tokens is sent; no assistant
--- prefill.
+-- Gateway behaviour these rows need (same PR, shared/llm_client/client.py): structured output asks with
+-- tool choice `auto` + an instruction instead of a forced tool (Haiku 5.5 / Sonnet 5.5 / Opus 5.5 answer
+-- a forced tool choice with a 400); no thinking field or budget_tokens is sent; no assistant prefill.
 -- Deploy the app before routing a structured-output stage to either row (the rows themselves are safe
 -- to add first: no route names them).
 --
@@ -99,10 +97,9 @@ VALUES
      'Anthropic first-party list price (prompts <= 100K tokens), S246 21/10/2026; Bedrock is '
      'partner-priced: confirm on the AWS Bedrock pricing page',
      true, NULL,
-     'AA-803 (S246): acc3 + acc1 global profiles. Rejects temperature / top_p, budget_tokens and an '
-     'assistant prefill; accepts a forced tool choice (the reply then skips thinking). Adaptive thinking '
-     'on by default. Over 100K prompt tokens Anthropic charges $0.50 / $2.50, which this row does not '
-     'model. Smoke test per account before routing a stage.',
+     'AA-803 (S246): acc3 + acc1 global profiles. Rejects temperature / top_p, budget_tokens and a '
+     'forced tool choice (adaptive thinking on by default). Over 100K prompt tokens Anthropic charges '
+     '$0.50 / $2.50, which this row does not model. Smoke test per account before routing a stage.',
      now(), 'migration-259-aa803'),
     ('sonnet-5-5', 'Claude Sonnet 5.5', 'anthropic', 'bedrock', 'converse',
      '{"acc3": "global.anthropic.claude-sonnet-5-5", "acc1": "global.anthropic.claude-sonnet-5-5"}',
