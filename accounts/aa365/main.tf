@@ -104,6 +104,13 @@ module "s3" {
   environment       = var.environment
   allowed_role_arns = var.s3_allowed_role_arns
   tags              = local.common_tags
+
+  # AA-844 (photos_cdn.tf): one bucket-policy statement for the photos CDN's OAC, photos/* only.
+  # null while the CDN is gated off. No cycle: bucket -> distribution -> this policy statement.
+  bronze_cloudfront_read = local.photos_cdn_on == 1 ? {
+    distribution_arn = aws_cloudfront_distribution.photos_cdn[0].arn
+    prefix           = local.photos_cdn_prefix
+  } : null
 }
 
 module "secrets" {

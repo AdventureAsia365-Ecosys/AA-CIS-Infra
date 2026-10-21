@@ -89,6 +89,8 @@ accounts/
     dfs_balance.tf                (ops-probe Lambda: 06:15 UTC schedule POSTs the admin probes, AA-627/720/727,
                                    plus the daily staff directory reconcile enqueue, AA-816;
                                    20:30 UTC schedule POSTs /admin/job-runner/retention/schedule, AA-825;
+                                   21:00 UTC schedule POSTs /admin/photos/sync/schedule (one photo_sync
+                                   job per country per UTC day), AA-844;
                                    the AA-832 every-5-min schedule was removed in AA-751. AA-878: the
                                    admin secret is read only by ARN at run time (event secret_id), no
                                    env copy, no Terraform data source; no secret_id or a failed read =
@@ -133,6 +135,15 @@ accounts/
                                    Vercel hosts in var.custom_domain_vercel_hosts: tripplanner. (aa-tripplanner),
                                    booking. (aa-booking-admin), portal. (aa-cis-portal, CIS tenant portal, AA-885);
                                    aa-cis. is a static record in dns.tf)
+    photos_cdn.tf                 (AA-844, edge: CloudFront img.lumiguides.it.com in front of the bronze
+                                   bucket's photos/ prefix — ACM cert us-east-1 + validation record always;
+                                   validation wait, distribution (origin_path /photos, OAC SigV4, cache key
+                                   path + ?v=, TTL 1 d..1 y, nosniff+HSTS headers policy, no Cache-Control
+                                   override, PriceClass_100, no logs/WAF) and A/AAAA aliases gated by
+                                   var.photos_cdn_enabled && var.custom_domains_enabled. modules/s3 adds one
+                                   bronze bucket-policy statement AllowPhotosCdnRead (GetObject photos/* for
+                                   that distribution only, no ListBucket). The CIS /content/photos/{id}
+                                   302 points here; output photos_cdn)
     variables.tf / tripplanner_variables.tf / booking_variables.tf
   acc1-bedrock/   ← acc1 Bedrock invoker role (fallback) + Cost Explorer reader
   acc3-bedrock/   ← acc3 Bedrock invoker role (primary) + Bedrock Batch (batch.tf)
@@ -405,7 +416,7 @@ makes CI Terraform Plan fail with 403.
   (`docs/generated/{alarms,network,inventory,iam-roles}.md`, branch `bot/generated-infra-docs`) when a page
   changed. A missing or broken alarm runbook link fails the run after the PR is updated. The root
   outputs in `accounts/aa365/outputs_inventory.tf` (VPC, subnets, security groups, NAT, RDS, ECS, load
-  balancers, API Gateway) are listed on the inventory page; look IDs up there or with `terraform output`.
+  balancers, API Gateway, photos CDN) are listed on the inventory page; look IDs up there or with `terraform output`.
 - No auto-apply on merge — apply is manual/`workflow_dispatch`, and destructive changes need
   explicit human confirmation.
 - Run Terraform from the WSL path (`/home/nghiep/...`), never a Windows UNC path.
