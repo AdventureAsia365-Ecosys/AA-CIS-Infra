@@ -109,7 +109,7 @@ DEFECT_TOURS_CAP = 8
 DAY_TEXT_EXAMPLES = 5
 
 # BEGIN GENERATED READERS (root docs/audits/2026-10-21-S246-aa847/gen_probe_sql.py; do not edit by hand)
-READERS_FROM = "AA-TripPlanner-Web@017ca365533a"
+READERS_FROM = "AA-TripPlanner-Web@ee5b0bac5652"
 READERS_ABSENT = ['browse.search.CIS_SEARCH_SQL']
 READERS = {
     'assembly.activities.ACTIVITIES_SQL': """
@@ -207,12 +207,13 @@ READERS = {
     ), here AS (
         SELECT s.source_id, s.day_index, s.destination_id, nr.transfer_km
         FROM stops s JOIN near nr ON nr.destination_id = s.destination_id
-    ), nxt AS (
-        SELECT h.source_id, h.day_index AS from_day, h.transfer_km,
-               (SELECT min(s2.day_index) FROM stops s2
-                WHERE s2.source_id = h.source_id AND s2.day_index > h.day_index
-                  AND s2.destination_id <> h.destination_id) AS to_day
+    ), nxt AS MATERIALIZED (
+        -- the tour's next stop somewhere else (a stay of several nights is skipped over)
+        SELECT h.source_id, h.day_index AS from_day, h.transfer_km, min(s2.day_index) AS to_day
         FROM here h
+        JOIN stops s2 ON s2.source_id = h.source_id AND s2.day_index > h.day_index
+                     AND s2.destination_id <> h.destination_id
+        GROUP BY h.source_id, h.day_index, h.destination_id, h.transfer_km
     )
     SELECT d.destination_id AS id, d.name, d.lat, d.lng, d.country,
            COUNT(DISTINCT c.component_id) AS component_count,
@@ -224,11 +225,11 @@ READERS = {
       ON c.source_id = nx.source_id
      AND c.day_index > nx.from_day AND c.day_index <= nx.to_day
     JOIN catalog.v_destination d ON d.destination_id = c.destination_id
-    WHERE nx.to_day IS NOT NULL AND c.embedding IS NOT NULL AND d.destination_id <> ALL($5::uuid[])
+    WHERE c.embedding IS NOT NULL AND d.destination_id <> ALL($5::uuid[])
       AND ($7::text IS NULL OR c.activity = $7::text)
       AND ($8::text IS NULL OR c.intensity_level = $8::text)
     GROUP BY d.destination_id, d.name, d.lat, d.lng, d.country
-    ORDER BY best_distance ASC
+    ORDER BY best_distance ASC, d.destination_id
     LIMIT $6
 """,
     'assembly.suggestions.TASTE_SQL': """
