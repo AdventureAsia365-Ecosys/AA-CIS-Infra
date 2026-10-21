@@ -13,7 +13,8 @@ which role ran the dump.
 
 What it captures, for every non-system schema (extension-owned objects left out):
   schemas (owner, USAGE/CREATE grants) · tables/views/matviews (kind, owner, RLS enabled/forced,
-  estimated rows, total/table/index size) · columns (format_type, NOT NULL) · indexes (definition,
+  estimated rows, total/table/index size) · columns (format_type, NOT NULL, comment — raw; gen_schema_reference.py
+  parses the data standards DM-6.1 `pii:<class>` / `conf:<class>` tag from it) · indexes (definition,
   valid, size, scans) · CHECK and FK constraints · RLS policies · table grants and column grants ·
   triggers · functions (owner, SECURITY DEFINER) · default privileges · roles (attributes, connection
   limit, timeout settings) and memberships · extensions · enums · pg_stat_user_tables activity ·
@@ -86,7 +87,8 @@ WHERE n.nspname = ANY($1::text[]) AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
 ORDER BY 1, 2""",
     "columns": """
 SELECT n.nspname AS schema, c.relname AS name, a.attname AS column,
-       format_type(a.atttypid, a.atttypmod) AS type, a.attnotnull AS not_null
+       format_type(a.atttypid, a.atttypmod) AS type, a.attnotnull AS not_null,
+       col_description(a.attrelid, a.attnum) AS comment
 FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid JOIN pg_namespace n ON n.oid = c.relnamespace
 WHERE n.nspname = ANY($1::text[]) AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
   AND a.attnum > 0 AND NOT a.attisdropped
@@ -271,6 +273,12 @@ def role_config(config) -> dict:
     return out
 
 
+def column_entry(c: dict) -> dict:
+    """One column of a relation: name, type, NOT NULL and the raw comment (None when the column has none). No parsing
+    here: the DM-6.1 tag is read from the comment by gen_schema_reference.py (AA-877), so the dump stays raw."""
+    return {"name": c["column"], "type": c["type"], "not_null": bool(c["not_null"]), "comment": c.get("comment")}
+
+
 def build_dump(schemas: list, rows: dict, generated_at: str, soft_key_rows: list | None = None) -> dict:
     """Assembles the JSON document from the query results (plain dicts). Pure, unit-tested."""
     names = [s["schema"] for s in schemas]
@@ -293,8 +301,7 @@ def build_dump(schemas: list, rows: dict, generated_at: str, soft_key_rows: list
             "rls": bool(r["rls"]), "rls_forced": bool(r["rls_forced"]),
             "is_partition": bool(r["is_partition"]),
             "size": {k: r[f"{k}_bytes"] for k in ("total", "table", "index")} if r["kind"] in ("r", "p", "m") else None,
-            "columns": [{"name": c["column"], "type": c["type"], "not_null": bool(c["not_null"])}
-                        for c in cols.get(key, [])],
+            "columns": [column_entry(c) for c in cols.get(key, [])],
             "indexes": [_strip(i, "schema", "name") for i in idx.get(key, [])],
             "constraints": [_strip(c, "schema", "name") for c in cons.get(key, [])],
             "policies": [_strip(p, "schema", "name") for p in pols.get(key, [])],

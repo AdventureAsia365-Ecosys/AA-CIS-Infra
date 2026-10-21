@@ -13,6 +13,11 @@ PR only when the fingerprint differs from the one on the root repo's master, so 
 statistics moved does not produce a PR. The fingerprint also covers the outcome of the X2 RLS catalogue guard
 (db/rls_catalogue_rules.py, a byte copy of AA-CIS-App tests/integration/rls_catalogue_rules.py): a change to the
 rules or the allowlist reaches the file on the next run, even when the catalog did not change.
+
+Data standards DM-6.1 (AA-877): each column's `pii:<class>` / `conf:<class>` tag (parse_tag, read from the raw
+comment the dump carries) is rendered after the column and collected in *Personal and confidential data tags (DM-6.1)*, with the untagged
+candidates of the Booking and TripPlanner schemas (PII_CANDIDATE_*). The fingerprint covers the tags and the candidate
+outcome, never the free text of a comment, so editing an untagged comment opens no PR.
 """
 from __future__ import annotations
 
@@ -37,6 +42,61 @@ KIND_LABEL = {"table": "table", "partitioned table": "partitioned table", "view"
 DEFAULT_ACL_OBJECT = {"r": "tables", "S": "sequences", "f": "functions", "T": "types", "n": "schemas"}
 LATEST_MIGRATIONS = 20
 
+# Data standards DM-6.1 (AA-877): a column holding personal data carries COMMENT 'pii:<class>; <free text>',
+# commercial secrets 'conf:commercial; …', credentials 'conf:credential; …'. The classes below are the standard's list;
+# any other class is reported as a finding. The dump carries the raw comment; parsing happens here only.
+TAG_CLASSES = {
+    "pii": ("contact", "name", "address", "profile", "online_id", "free_text", "travel", "payment"),
+    "conf": ("commercial", "credential"),
+}
+# The leading tag, ended by ';', ' —' / ' –' / ' -' (the tp-011 form 'conf:credential — …') or the end of the text.
+LEADING_TAG_RE = re.compile(r"^\s*((?:pii|conf):[a-z_]+)(?=\s*;|\s+[\u2014\u2013-](?:\s|$)|\s*$)")
+ANY_TAG_RE = re.compile(r"(?<![a-z_])((?:pii|conf):[a-z_]+)")
+
+# DM-6.1 untagged-candidate check (AA-877; seed of the X2+ lint). A column of these schemas whose snake_case name
+# contains one of the tokens (whole tokens: 'mission' is not 'iss', 'subject' is not 'sub') must carry a tag or an
+# entry below with a one-line reason. Keep the reasons short; an entry that matches nothing is reported as stale.
+PII_CANDIDATE_SCHEMAS = ("booking", "tripplanner")
+PII_CANDIDATE_TOKENS = frozenset({
+    "email", "phone", "name", "address", "note", "notes", "message", "payload", "snapshot", "title", "summary",
+    "label", "sub", "iss", "data", "itinerary",
+})
+PII_ALLOWLIST = {
+    "booking.countries.name": "reference data: country name",
+    "booking.hotels.name": "a hotel (business) name",
+    "booking.hotels.address": "a hotel (business) address",
+    "booking.hotel_room_types.name": "a room type name",
+    "booking.services.title": "internal working title of a supplier service (bk-010), no customer data",
+    "booking.supplier_contracts.title": "a contract title, no customer data",
+    "booking.suppliers.company_name": "a supplier company name; the contact person is suppliers.contact_name",
+    "booking.suppliers.address": "a supplier business address (AA-877 decision: a sole-trader guide's business "
+                                 "address is covered by the supplier-contacts RoPA activity, not tagged)",
+    "booking.trip_case_version_itinerary.title": "itinerary item title (tour, hotel or service name)",
+    "booking.job.payload": "job payloads carry ids only (DM-6.3; the intake enqueues {inbox_event_id}, staff_email "
+                           "the notification id)",
+    "tripplanner.itinerary_components.name": "frozen read model of the CIS catalog: component name",
+    "tripplanner.narration_cache.itinerary_hash": "hash of a catalog itinerary (cache key), no identity",
+    "tripplanner.tour_day.title": "frozen read model of the CIS catalog: tour day title",
+    "tripplanner.tour_graph_node.name": "frozen read model of the CIS catalog: place name",
+}
+
+
+def parse_tag(comment) -> tuple:
+    """(tag, also) of a column comment under DM-6.1: the leading 'pii:<class>' / 'conf:<class>' (None when the
+    comment does not start with one) and every other tag named later in the text, in order, without repeats.
+    'pii:contact; also pii:name and pii:free_text (…)' (bk-012) -> ('pii:contact', ['pii:name', 'pii:free_text']).
+    A comment that names a tag but does not start with one gives (None, [the tags]): a misplaced tag (finding)."""
+    if not comment:
+        return None, []
+    m = LEADING_TAG_RE.match(comment)
+    tag = m.group(1) if m else None
+    rest = comment[m.end():] if m else comment
+    also = []
+    for t in ANY_TAG_RE.findall(rest):
+        if t != tag and t not in also:
+            also.append(t)
+    return tag, also
+
 
 def structural_view(dump: dict) -> dict:
     """The dump without the parts that change while the schema does not."""
@@ -53,6 +113,12 @@ def structural_view(dump: dict) -> dict:
             for idx in rel.get("indexes", []):
                 idx.pop("bytes", None)
                 idx.pop("scans", None)
+            for col in rel.get("columns", []):
+                tag, also = parse_tag(col.pop("comment", None))   # free text: only the DM-6.1 tag is structure
+                if tag:
+                    col["tag"] = tag
+                if also:
+                    col["also"] = also
     for key in d.get("soft_keys", []):
         for count in ("total", "without_key", "orphans", "orphan_rate"):
             key.pop(count, None)
@@ -67,8 +133,48 @@ def rls_guard_state(dump: dict) -> dict:
             "stale": [list(x) for x in result.stale]}
 
 
+def _tokens(column: str) -> set:
+    return set(column.lower().split("_"))
+
+
+def pii_tags(dump: dict) -> dict:
+    """DM-6.1 view of the dump: tagged columns, findings (unknown class, misplaced tag), untagged candidates of
+    PII_CANDIDATE_SCHEMAS (not on PII_ALLOWLIST), the allowlist entries used and the stale ones."""
+    tagged, findings, candidates, allowlisted = [], [], [], []
+    for sch in sorted(dump.get("relations", {})):
+        rels = dump["relations"][sch]
+        for name in sorted(rels):
+            for c in rels[name].get("columns", []):
+                key = f"{sch}.{name}.{c['name']}"
+                tag, also = parse_tag(c.get("comment"))
+                if tag:
+                    tagged.append({"schema": sch, "relation": name, "column": c["name"], "tag": tag, "also": also})
+                for t in [tag] + also if tag else []:
+                    kind, _, klass = t.partition(":")
+                    if klass not in TAG_CLASSES.get(kind, ()):
+                        findings.append({"key": key, "finding": f"unknown class {t}"})
+                if not tag and also:
+                    findings.append({"key": key, "finding": "names " + ", ".join(also)
+                                     + " but does not start with a tag ('<kind>:<class>; ...')"})
+                if sch in PII_CANDIDATE_SCHEMAS and not tag and _tokens(c["name"]) & PII_CANDIDATE_TOKENS:
+                    if key in PII_ALLOWLIST:
+                        allowlisted.append(key)
+                    else:
+                        candidates.append(key)
+    stale = sorted(set(PII_ALLOWLIST) - set(allowlisted))
+    return {"tagged": tagged, "findings": findings, "candidates": candidates, "allowlisted": allowlisted,
+            "stale": stale}
+
+
+def pii_state(dump: dict) -> dict:
+    """The parts of pii_tags that depend on the allowlist (the tags themselves are in the structural view)."""
+    p = pii_tags(dump)
+    return {"candidates": p["candidates"], "allowlisted": [[k, PII_ALLOWLIST[k]] for k in p["allowlisted"]],
+            "stale": p["stale"], "findings": p["findings"]}
+
+
 def fingerprint(dump: dict) -> str:
-    view = {"dump": structural_view(dump), "rls_guard": rls_guard_state(dump)}
+    view = {"dump": structural_view(dump), "rls_guard": rls_guard_state(dump), "pii_tags": pii_state(dump)}
     blob = json.dumps(view, sort_keys=True, default=str).encode("utf-8")
     return hashlib.sha256(blob).hexdigest()
 
@@ -133,6 +239,86 @@ def rls_guard_report(d: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+def render_pii_tags(d: dict) -> list[str]:
+    """The '## Personal and confidential data tags (DM-6.1)' section (AA-877)."""
+    p = pii_tags(d)
+    L = ["## Personal and confidential data tags (DM-6.1)", ""]
+    L.append("Column comments that start with `pii:<class>` (personal data) or `conf:<class>` (`commercial`, "
+             "`credential`), data standards DM-6.1; `also` = further tags named later in the same comment. Owners tag "
+             "a column in the migration that creates it. Input of the RoPA (AA-Ecosys `docs/legal/register.md` section "
+             "(a), `tools/data/gen_pii_inventory.py`) and the erasure runbook (DM-6.7).")
+    L.append("")
+    L.append(f"**{len(p['tagged'])} tagged column(s)**, {len(p['candidates'])} untagged candidate(s) in "
+             f"{', '.join(PII_CANDIDATE_SCHEMAS)}, {len(p['findings'])} finding(s).")
+    L.append("")
+    counts: dict = defaultdict(lambda: defaultdict(int))
+    also_counts: dict = defaultdict(lambda: defaultdict(int))
+    for t in p["tagged"]:
+        counts[t["schema"]][t["tag"]] += 1
+        for a in t["also"]:
+            also_counts[t["schema"]][a] += 1
+    L.append("| schema | tag | columns | named as also |")
+    L.append("|---|---|---|---|")
+    for sch in sorted(set(counts) | set(also_counts)):
+        for tag in sorted(set(counts[sch]) | set(also_counts[sch])):
+            L.append(f"| `{sch}` | `{tag}` | {counts[sch][tag]} | {also_counts[sch][tag]} |")
+    if not counts:
+        L.append("| none | | | |")
+    L.append("")
+    L.append("### Tagged columns")
+    L.append("")
+    L.append("| schema | relation | column | tag | also |")
+    L.append("|---|---|---|---|---|")
+    for t in p["tagged"]:
+        also = ", ".join(f"`{a}`" for a in t["also"])
+        L.append(f"| `{t['schema']}` | `{t['relation']}` | `{t['column']}` | `{t['tag']}` | {also} |")
+    if not p["tagged"]:
+        L.append("| none | | | | |")
+    L.append("")
+    L.append("### Tag findings")
+    L.append("")
+    for f in p["findings"]:
+        L.append(f"- `{f['key']}`: {cell(f['finding'])}")
+    if not p["findings"]:
+        L.append("- none")
+    L.append("")
+    L.append("### Untagged candidates")
+    L.append("")
+    L.append(f"Columns of {', '.join(f'`{s}`' for s in PII_CANDIDATE_SCHEMAS)} without a tag whose name contains one of "
+             f"the tokens {', '.join(f'`{t}`' for t in sorted(PII_CANDIDATE_TOKENS))} (whole snake_case tokens) and "
+             "that are not on the allowlist (AA-CIS-Infra `db/gen_schema_reference.py` `PII_ALLOWLIST`). Tag them in "
+             "an owner migration or allowlist them with a reason.")
+    L.append("")
+    for k in p["candidates"]:
+        L.append(f"- `{k}`")
+    if not p["candidates"]:
+        L.append("- none")
+    L.append("")
+    L.append("| allowlisted column | reason |")
+    L.append("|---|---|")
+    for k in p["allowlisted"]:
+        L.append(f"| `{k}` | {cell(PII_ALLOWLIST[k])} |")
+    if not p["allowlisted"]:
+        L.append("| none | |")
+    L.append("")
+    if p["stale"]:
+        L.append("Stale allowlist entries (matched no untagged column; remove them): "
+                 + ", ".join(f"`{k}`" for k in p["stale"]) + ".")
+        L.append("")
+    return L
+
+
+def column_line(c: dict) -> str:
+    """`name type [NN] [· tag [(also …)]]` inside a relation's code block."""
+    line = f"{c['name']} {c['type']}{' NN' if c['not_null'] else ''}"
+    tag, also = parse_tag(c.get("comment"))
+    if tag:
+        line += f" · {tag}"
+        if also:
+            line += f" (also {', '.join(also)})"
+    return line
+
+
 def human_bytes(n) -> str:
     if n is None:
         return ""
@@ -171,6 +357,7 @@ def render(d: dict, source: Optional[str] = None) -> str:
     db = d.get("database") or {}
     n_rel = sum(len(v) for v in rels.values())
     empty = [s["schema"] for s in d["schemas"] if not rels.get(s["schema"])]
+    pii = pii_tags(d)
     fks = [(sch, name, c) for sch, rs in sorted(rels.items()) for name, r in sorted(rs.items())
            for c in r["constraints"] if c["type"] == "f"]
 
@@ -197,11 +384,14 @@ def render(d: dict, source: Optional[str] = None) -> str:
       f"{d['counts'].get('policies', 0)} RLS policy(ies), {len(d.get('functions', []))} functions, "
       f"{len(d.get('enums', []))} enums. Database size {human_bytes(db.get('size_bytes'))}, "
       f"max_connections {db.get('max_connections', '?')}. RLS catalogue guard: "
-      f"{len(rls.check(d).violations)} unallowlisted violation(s) (see *RLS catalogue guard (X2)*).")
+      f"{len(rls.check(d).violations)} unallowlisted violation(s) (see *RLS catalogue guard (X2)*). DM-6.1 tags: "
+      f"{len(pii.get('tagged', []))} tagged column(s), {len(pii.get('candidates', []))} untagged candidate(s).")
     w("")
     w("## Conventions")
     w("- Column format: `name type` — `NN` suffix = NOT NULL. Types are `format_type()` output "
-      "(`character varying(64)`, `text[]`, `vector(1024)`, enums schema-qualified).")
+      "(`character varying(64)`, `text[]`, `vector(1024)`, enums schema-qualified). A ` · pii:<class>` / "
+      "` · conf:<class>` suffix is the column's data standards DM-6.1 tag (its comment starts with it), "
+      "`(also …)` = further tags named in the same comment; see *Personal and confidential data tags (DM-6.1)*.")
     w("- `~N rows` = `pg_class.reltuples` estimate, sizes = `pg_total_relation_size`, both as of the Verified line "
       "(a PR is opened only when the structure changes, so these lag between structural changes). "
       "Run exact counts before any drop decision.")
@@ -238,7 +428,7 @@ def render(d: dict, source: Optional[str] = None) -> str:
             w(f"### `{sch}.{name}` ({', '.join(bits)})")
             w("```")
             for c in r["columns"]:
-                w(f"{c['name']} {c['type']}{' NN' if c['not_null'] else ''}")
+                w(column_line(c))
             w("```")
             meta = [f"owner `{r['owner']}`"]
             if r.get("rls"):
@@ -380,6 +570,7 @@ def render(d: dict, source: Optional[str] = None) -> str:
     if not d.get("soft_keys"):
         w("| none | | | | | |")
     w("")
+    L.extend(render_pii_tags(d))
     L.extend(render_rls_guard(d))
     w("## Connections at dump time")
     w("")

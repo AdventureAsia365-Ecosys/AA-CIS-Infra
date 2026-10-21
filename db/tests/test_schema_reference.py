@@ -369,5 +369,164 @@ class FingerprintTest(unittest.TestCase):
                 self.assertEqual(gen.main([str(p), "--fingerprint"]), 2)
 
 
+BK012 = ("pii:contact; also pii:name and pii:free_text (inquiry.submitted customer.name / email / phone, "
+         "itinerary.custom_days[].note). Redacted 90 days after received_at")
+TP011 = "conf:credential — sha256 of the BFF guest cookie token (AA-827); the token itself is never stored"
+
+
+def tagged_rows():
+    """rows() plus commented booking.legs columns: every DM-6.1 form seen on Dev and the edge cases."""
+    r = rows()
+    extra = [
+        ("payload", "jsonb", BK012),                                  # bk-012 'also' form
+        ("guest_token_hash", "bytea", TP011),                         # tp-011 em-dash form
+        ("email", "text", "pii:contact"),                             # bare tag
+        ("notes", "text", "pii:free_text; bk-018: staff notes"),     # '; ' form
+        ("phone", "text", "bk-001: the customer phone"),              # untagged comment: candidate
+        ("mission", "text", None),                                    # 'iss' inside a word: not a candidate
+        ("subject_id", "uuid", None),                                 # 'sub' inside a word: not a candidate
+        ("gender", "text", "pii:gendr; typo"),                        # unknown class
+        ("address", "text", "Home address, pii:address"),             # misplaced tag
+        ("title", "text", None),                                      # allowlisted below
+    ]
+    for name, typ, comment in extra:
+        r["columns"].append({"schema": "booking", "name": "legs", "column": name, "type": typ, "not_null": False,
+                             "comment": comment})
+    return r
+
+
+def tagged_dump():
+    return sd.build_dump(SCHEMAS, tagged_rows(), "2026-10-15T05:00:00+00:00", soft())
+
+
+class PiiTagTest(unittest.TestCase):
+    """DM-6.1 column tags (AA-877): the dump carries the raw comment; parsing, rendering and candidates are in
+    gen_schema_reference."""
+
+    def setUp(self):
+        self.allow = dict(gen.PII_ALLOWLIST)
+        gen.PII_ALLOWLIST.clear()
+        gen.PII_ALLOWLIST.update({"booking.legs.title": "test: a leg title", "booking.gone.name": "test: stale"})
+
+    def tearDown(self):
+        gen.PII_ALLOWLIST.clear()
+        gen.PII_ALLOWLIST.update(self.allow)
+
+    def test_parse_tag_forms(self):
+        for comment, expected in (
+            (BK012, ("pii:contact", ["pii:name", "pii:free_text"])),
+            (TP011, ("conf:credential", [])),
+            ("conf:credential - legacy", ("conf:credential", [])),
+            ("pii:contact", ("pii:contact", [])),
+            ("pii:name; bk-008: supplier contact person.", ("pii:name", [])),
+            ("pii:travel;no space", ("pii:travel", [])),
+            ("pii:free_text; also pii:name, pii:contact and pii:name again", ("pii:free_text", ["pii:name", "pii:contact"])),
+            ("bk-003: actor as text", (None, [])),
+            ("Home address, pii:address", (None, ["pii:address"])),
+            ("pii:contact (no separator)", (None, ["pii:contact"])),
+            ("xpii:name; not a tag", (None, [])),
+            ("", (None, [])),
+            (None, (None, [])),
+        ):
+            with self.subTest(comment=comment):
+                self.assertEqual(gen.parse_tag(comment), expected)
+
+    def test_dump_keeps_the_raw_comment_only(self):
+        cols = {c["name"]: c for c in tagged_dump()["relations"]["booking"]["legs"]["columns"]}
+        self.assertEqual(cols["payload"], {"name": "payload", "type": "jsonb", "not_null": False, "comment": BK012})
+        self.assertEqual(cols["a"]["comment"], None)
+        self.assertFalse(hasattr(sd, "parse_tag"))                    # no parsing in the ECS task
+        self.assertIn("col_description(a.attrelid, a.attnum) AS comment", sd.QUERIES["columns"])
+
+    def test_structural_view_keeps_parsed_tags_not_text(self):
+        cols = {c["name"]: c for c in gen.structural_view(tagged_dump())["relations"]["booking"]["legs"]["columns"]}
+        self.assertEqual(cols["payload"], {"name": "payload", "type": "jsonb", "not_null": False, "tag": "pii:contact",
+                                           "also": ["pii:name", "pii:free_text"]})
+        self.assertEqual(cols["phone"], {"name": "phone", "type": "text", "not_null": False})
+        self.assertEqual(cols["address"]["also"], ["pii:address"])    # misplaced tag stays visible to the hash
+        self.assertNotIn("tag", cols["address"])
+
+    def test_old_dump_without_comment_still_renders(self):
+        d = tagged_dump()
+        for rels in d["relations"].values():
+            for rel in rels.values():
+                for c in rel["columns"]:
+                    c.pop("comment", None)
+        md = gen.render(d)
+        self.assertIn("**0 tagged column(s)**", md)
+        self.assertIn("payload jsonb\n", md)
+
+    def test_inline_suffix_only_on_tagged_columns(self):
+        md = gen.render(tagged_dump())
+        self.assertIn("payload jsonb · pii:contact (also pii:name, pii:free_text)\n", md)
+        self.assertIn("guest_token_hash bytea · conf:credential\n", md)
+        self.assertIn("email text · pii:contact\n", md)
+        self.assertIn("phone text\n", md)
+        self.assertIn("id bigint NN\nstatus shared.job_status NN\n", md)
+        self.assertNotIn("Redacted 90 days", md)                    # the free text never reaches the file
+        self.assertIn("A ` · pii:<class>` / ` · conf:<class>` suffix", md)
+
+    def test_section_counts_findings_and_candidates(self):
+        p = gen.pii_tags(tagged_dump())
+        self.assertEqual([t["column"] for t in p["tagged"]], ["payload", "guest_token_hash", "email", "notes", "gender"])
+        self.assertEqual(p["candidates"], ["booking.legs.phone", "booking.legs.address"])
+        self.assertEqual(p["allowlisted"], ["booking.legs.title"])
+        self.assertEqual(p["stale"], ["booking.gone.name"])
+        self.assertEqual([f["key"] for f in p["findings"]], ["booking.legs.gender", "booking.legs.address"])
+        self.assertIn("unknown class pii:gendr", p["findings"][0]["finding"])
+        md = gen.render(tagged_dump())
+        self.assertIn("## Personal and confidential data tags (DM-6.1)", md)
+        self.assertIn("**5 tagged column(s)**, 2 untagged candidate(s) in booking, tripplanner, 2 finding(s).", md)
+        self.assertIn("| `booking` | `pii:contact` | 2 | 0 |", md)
+        self.assertIn("| `booking` | `pii:name` | 0 | 1 |", md)
+        self.assertIn("| `booking` | `conf:credential` | 1 | 0 |", md)
+        self.assertIn("| `booking` | `legs` | `payload` | `pii:contact` | `pii:name`, `pii:free_text` |", md)
+        self.assertIn("- `booking.legs.phone`\n", md)
+        self.assertIn("| `booking.legs.title` | test: a leg title |", md)
+        self.assertIn("Stale allowlist entries (matched no untagged column; remove them): `booking.gone.name`.", md)
+        self.assertIn("DM-6.1 tags: 5 tagged column(s), 2 untagged candidate(s).", md)
+
+    def test_candidates_only_in_booking_and_tripplanner(self):
+        r = tagged_rows()
+        r["columns"].append({"schema": "shared", "name": "job", "column": "email", "type": "text",
+                             "not_null": False, "comment": None})
+        self.assertNotIn("shared.job.email", gen.pii_tags(sd.build_dump(SCHEMAS, r, "x"))["candidates"])
+
+    def test_empty_section(self):
+        md = gen.render(dump())
+        self.assertIn("**0 tagged column(s)**, 0 untagged candidate(s)", md)
+        self.assertIn("### Tag findings\n\n- none", md)
+        self.assertIn("### Untagged candidates", md)
+
+    def test_fingerprint_follows_tags_not_comment_text(self):
+        base = gen.fingerprint(tagged_dump())
+        for mutate, moves in (
+            (lambda c: c.update(comment="bk-001: reworded free text"), False),        # untagged text edit
+            (lambda c: c.update(comment="pii:contact; bk-018: reworded"), True),      # tag added
+        ):
+            d = tagged_dump()
+            phone = next(c for c in d["relations"]["booking"]["legs"]["columns"] if c["name"] == "phone")
+            mutate(phone)
+            self.assertEqual(gen.fingerprint(d) != base, moves, phone["comment"])
+        d = tagged_dump()
+        notes = next(c for c in d["relations"]["booking"]["legs"]["columns"] if c["name"] == "notes")
+        notes["comment"] = "pii:free_text; other words"                             # same tag, new text
+        self.assertEqual(gen.fingerprint(d), base)
+        gen.PII_ALLOWLIST["booking.legs.phone"] = "test: allowlist change"
+        self.assertNotEqual(gen.fingerprint(tagged_dump()), base)
+
+    def test_untagged_columns_keep_the_pre_aa877_fingerprint_shape(self):
+        view = gen.structural_view(dump())
+        self.assertEqual(view["relations"]["shared"]["job"]["columns"][0], {"name": "id", "type": "bigint", "not_null": True})
+
+    def test_real_allowlist_reasons(self):
+        for key, reason in self.allow.items():
+            with self.subTest(key=key):
+                self.assertEqual(key.count("."), 2)
+                self.assertIn(key.split(".")[0], gen.PII_CANDIDATE_SCHEMAS)
+                self.assertTrue(gen._tokens(key.split(".")[2]) & gen.PII_CANDIDATE_TOKENS, "entry can never match")
+                self.assertTrue(reason.strip())
+
+
 if __name__ == "__main__":
     unittest.main()
