@@ -122,8 +122,8 @@ owners:
       - {grantee: tripplanner, privilege: EXECUTE,         object: "geo.name_norm(text)",                status: contract,      source: "228"}
       - {grantee: tripplanner, privilege: INSERT,          object: shared.llm_call_log,                  status: contract,      source: "173 (standing write exception)"}
       - {grantee: tripplanner, privilege: SELECT,          object: "shared.llm_role_config, shared.llm_model_catalog", status: grandfathered, source: "173"}
-      - {grantee: tripplanner, privilege: SELECT,          object: "silver_aa_internal.raw_tours (tour_id, country)",  status: grandfathered, source: "179"}
-      - {grantee: tripplanner, privilege: SELECT,          object: "acp_contract.tour_atoms, acp_contract.v_active_tour_atoms (columns)", status: grandfathered, source: "180, 216"}
+      - {grantee: tripplanner, privilege: SELECT,          object: "silver_aa_internal.raw_tours (tour_id, country)",  status: grandfathered, source: "179; revoked by CIS 254 (AA-847)"}
+      - {grantee: tripplanner, privilege: SELECT,          object: "acp_contract.tour_atoms, acp_contract.v_active_tour_atoms (columns)", status: grandfathered, source: "180 (revoked by CIS 254, AA-847), 216"}
       - {grantee: tripplanner, privilege: SELECT,          object: "shared.destinations, shared.v_destination_photos, shared.v_tour_photos", status: grandfathered, source: "201"}
       - {grantee: tripplanner, privilege: SELECT,          object: gold_aa_internal.published_tours,     status: grandfathered, source: "tenant RLS read"}
     # Grants to other owners' NOLOGIN owner roles (input for the X2 grant guard and the S2 probe's owner-role
