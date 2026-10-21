@@ -112,3 +112,30 @@ embedded component of an active, non-deleted AA-tenant tour, with a negative con
 exist and none was returned); and up to 5 component ids per kind whose tour day has no AA master text (inputs for the
 live narration-cache test). Ends with `SCRIPT verdict search_no_inactive=PASS|FAIL`. Notes:
 `docs/implementation-notes/AA-805-s245.md`.
+
+`aa847_places_probe.py` (AA-847, read-only): the places L4 / `PLACES_SOURCE=cis` flip evidence. Pass 1 as
+`tripplanner` (`SET LOCAL ROLE`; `SCRIPT refuse what=set_role` and exit 13 when refused): every TripPlanner browse
+reader, legacy vs cis, with the readers' exact SQL (the `READERS` block, generated from the TripPlanner source by root
+`docs/audits/2026-10-21-S246-aa847/gen_probe_sql.py`; `--check` re-generates and diffs it) for Laos and Vietnam,
+`SCRIPT timing` / `SCRIPT parity` (target max(1.5 × legacy, 200 ms)) and, for the slowest call of each reader,
+`EXPLAIN (ANALYZE, BUFFERS)` top nodes and where each consumer filter landed (`SCRIPT qual … pushed=t|f`); a
+fingerprint (row count + md5 of the ordered rows) of every `catalog.*` view (equal before / after a catalog view
+migration); the AA-847 defect tours (HCM Trail, Kuang Si). Pass 2 as the master: the flip gate (`SCRIPT coverage …
+missing_in_cis_live`, frozen keys mapped to source_id through `raw_tours`, AA-731 orphans counted as not live),
+`geo.tour_build` per country (cost quote input), environment (pgvector, an index-ordered top-k EXPLAIN, tripplanner's
+privileges in `silver_aa_internal` / `acp_contract`, cross-app `destination_id` references, last ANALYZE,
+`pg_stat_statements`). Pass 3 as `tripplanner`: does each component's tour-day text name it (AA-819; frozen and cis).
+Time budget ~20 minutes (`SCRIPT truncated <section>`), samples capped; ends with `SCRIPT done`. Read the output with
+`gh api repos/AdventureAsia365-Ecosys/AA-CIS-Infra/actions/jobs/<id>/logs | grep -o 'SCRIPT .*'` (log lines carry a timestamp prefix).
+After TripPlanner slice 6c the regenerated block also carries the assembly twins (`SCRIPT timing reader=assembly_*`,
+parity per call) and the cis search becomes the top-k over `catalog.v_component_embedding` (`search` = top-k,
+`search_exact` = the exact fallback); before 6c those readers are listed in `READERS_ABSENT`.
+
+`aa847_component_id_map_fill.py` (AA-847, merged READ_ONLY = dry run): fills `tripplanner.component_id_map` (tp-017),
+frozen `itinerary_components.id` → `catalog.v_tour_component.component_id`. Pass 1 as `tripplanner`: live sources and
+catalog components; pass 2 as the master: the frozen components, old version tour ids → source ids through
+`raw_tours` (AA tenant named), `geo.name_norm` of every name. Rules: (source, day, name_norm, activity), then (source,
+day, destination); `SCRIPT match` / `match_total` per country with `not_live` (orphans) and `no_source` apart,
+`SCRIPT unmatched` (capped). The apply is a one-line follow-up PR (`READ_ONLY = False`, dispatched in the flip window,
+after the last place build): pass 3 inserts as `tripplanner`, `ON CONFLICT (old_id) DO NOTHING`
+(`SCRIPT apply inserted=<n>`). Exit 1 when the switch is refused or tp-017 is not applied.
