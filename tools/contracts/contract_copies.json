@@ -12,13 +12,22 @@
     "AA-TripPlanner-Web"
   ],
   "contracts": {
+    "catalog.graph.v1.1.json": {
+      "sha256": "804201bb294955f89df6f8b993d708ebf560e18316c552fb88722a47f23d4927",
+      "copies": []
+    },
     "catalog.graph.v1.json": {
       "sha256": "f8d085dbbc6e01f05ed512958878dad48603aa20bbcaf528683470d5d22a2792",
       "copies": []
     },
     "catalog.tour.v1.1.json": {
       "sha256": "4aea7c409b023ca4524304de37e87818dec8fb062df9ae07f9f0060ecb32fb99",
-      "copies": []
+      "copies": [
+        {
+          "repo": "AA-TripPlanner-Web",
+          "path": "backend/tests/contracts/catalog.tour.v1.1.json"
+        }
+      ]
     },
     "catalog.tour.v1.json": {
       "sha256": "899d439dea21fd95971ade62a183022189d5f9b60afb5031d3189316ff5f522d",
