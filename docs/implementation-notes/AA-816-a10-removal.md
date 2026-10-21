@@ -82,9 +82,12 @@ Scope: the A10 part of AA-816 only (S2, the API legacy flag, stays open with AA-
   7. Run `aa680_staff_users_readonly_check.py` after the next E2E run: `e2e_has_no_booking_row=true`.
 - **Local runs:**
   - `python3 -m pytest -p no:cacheprovider lambda_src/identity_triggers_tests` (from `accounts/aa365`): 73 passed.
-  - `python3 -m unittest discover -s db/tests -p "test_aa816_delete*.py"`: 19 passed; aa680 check tests: 5 passed.
+  - `python3 -m unittest discover -s db/tests -p "test_aa816_delete*.py"`: 14 passed; aa680 check tests: 5 passed.
   - `python3 db/run_migration.py --inspect-script db/scripts/aa816_delete_e2e_test_staff.py`: no errors.
   - The script against a local Postgres 16 with every CIS migration, inside a rolled-back transaction (CHECK
     dropped to insert the old row): DRY RUN `would_delete` with the four live FKs at 0, apply `deleted=1` +
     `staff.deleted` audit row, and a refusal when the row has a grant.
   - `terraform fmt -check accounts/aa365/e2e_mailbox.tf`: clean.
+- **Re-run 21/10 (before handing over):** `test_workforce.py` 39 passed; `unittest discover -s db/tests` 321
+  passed; `check_migration_files.py` on the I1b copy of 252: 0 problems; the I1b copy is byte-identical (`cmp`) to
+  the CIS A2 file. Both Infra branches are on current origin/main.
