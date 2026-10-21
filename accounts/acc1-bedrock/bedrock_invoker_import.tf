@@ -70,6 +70,27 @@ resource "aws_iam_role_policy" "bedrock_invoker_policy" {
           "arn:aws:bedrock:::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0"
         ]
       },
+      # AA-803 (S246) — Claude Haiku 5.5 / Sonnet 5.5 (CIS migration 259: catalog rows haiku-5-5,
+      # sonnet-5-5 on the acc3 + acc1 global profiles). Same 3-ARN shape as the Claude models above
+      # (inference-profile, region-scoped and region-empty foundation-model). Separate statement so the
+      # existing ones stay untouched. The Marketplace agreement for each model must be accepted on this
+      # account too (get-foundation-model-availability), or calls fail with AccessDenied anyway.
+      {
+        Sid    = "InvokeClaude55Models"
+        Effect = "Allow"
+        Action = [
+          "bedrock:InvokeModel",
+          "bedrock:InvokeModelWithResponseStream"
+        ]
+        Resource = [
+          "arn:aws:bedrock:us-west-1:867490540162:inference-profile/global.anthropic.claude-haiku-5-5",
+          "arn:aws:bedrock:us-west-1::foundation-model/anthropic.claude-haiku-5-5",
+          "arn:aws:bedrock:::foundation-model/anthropic.claude-haiku-5-5",
+          "arn:aws:bedrock:us-west-1:867490540162:inference-profile/global.anthropic.claude-sonnet-5-5",
+          "arn:aws:bedrock:us-west-1::foundation-model/anthropic.claude-sonnet-5-5",
+          "arn:aws:bedrock:::foundation-model/anthropic.claude-sonnet-5-5"
+        ]
+      },
       # New — AA-302 carryover: Bedrock Batch job creation (model-scoped,
       # same resource shape as InvokeModel above).
       # AA-303 live verify (2026-07-17): AccessDeniedException on real

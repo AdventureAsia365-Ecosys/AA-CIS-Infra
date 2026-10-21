@@ -105,6 +105,27 @@ resource "aws_iam_role_policy" "bedrock_invoker_policy" {
           "arn:aws:bedrock:::foundation-model/openai.gpt-6-luna"
         ]
       },
+      # AA-803 (S246) — Claude Haiku 5.5 / Sonnet 5.5 (CIS migration 259: catalog rows haiku-5-5,
+      # sonnet-5-5 on the acc3 + acc1 global profiles). Same 3-ARN shape as the Claude models above
+      # (inference-profile, region-scoped and region-empty foundation-model). Separate statement so the
+      # existing ones stay untouched. The Marketplace agreement for each model must be accepted on this
+      # account too (get-foundation-model-availability), or calls fail with AccessDenied anyway.
+      {
+        Sid    = "InvokeClaude55Models"
+        Effect = "Allow"
+        Action = [
+          "bedrock:InvokeModel",
+          "bedrock:InvokeModelWithResponseStream"
+        ]
+        Resource = [
+          "arn:aws:bedrock:us-west-1:786888028788:inference-profile/global.anthropic.claude-haiku-5-5",
+          "arn:aws:bedrock:us-west-1::foundation-model/anthropic.claude-haiku-5-5",
+          "arn:aws:bedrock:::foundation-model/anthropic.claude-haiku-5-5",
+          "arn:aws:bedrock:us-west-1:786888028788:inference-profile/global.anthropic.claude-sonnet-5-5",
+          "arn:aws:bedrock:us-west-1::foundation-model/anthropic.claude-sonnet-5-5",
+          "arn:aws:bedrock:::foundation-model/anthropic.claude-sonnet-5-5"
+        ]
+      },
       # AA-862 — Cohere Embed v4 as the second hop of the embed chain
       # (acc2 -> acc3 -> acc1). acc2's global profile quota is 20 rpm; acc3 has
       # 2,000 rpm on both us. and global. Same model id as acc2
