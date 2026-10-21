@@ -41,8 +41,9 @@ Sections (every line starts with `SCRIPT `; aggregates, ids, statuses, catalog t
   5. AA-819 check: does the component's own tour-day text name it? frozen tripplanner.itinerary_components (live
      tours) and catalog.v_tour_component, per country:
        SCRIPT day_text source=<frozen|cis> country=<c> components=<n> no_day_text=<n> not_named=<n>
-  6. environment: pgvector version, hnsw.iterative_scan, EXPLAIN of an index-ordered top-k over geo.tour_place joined
-     to live tours, tripplanner's privileges in silver_aa_internal / acp_contract, cross-app references to
+  6. environment: pgvector version, hnsw.iterative_scan, live tours sharing a source_id (CIS 253's closing count),
+     EXPLAIN of an index-ordered top-k over geo.tour_place filtered to live tours and usable destinations (the CIS 253
+     v_component_embedding body), tripplanner's privileges in silver_aa_internal / acp_contract, cross-app references to
      shared.destinations, pg_stat_statements readability, last ANALYZE of the geo tables:
        SCRIPT env ... / SCRIPT grant ... / SCRIPT xref ... / SCRIPT stats ...
 
@@ -985,8 +986,18 @@ TOPK_EXPLAIN_SQL = """
                     WHERE COALESCE(rt.source_group_id, rt.tour_id)::text = gp.source_id
                       AND pt.tenant_id = $1::uuid AND pt.master_status = 'active' AND pt.deleted_at IS NULL
                       AND rt.source_status = 'active' AND rt.deleted_at IS NULL)
+       AND EXISTS (SELECT 1 FROM shared.destinations d
+                    WHERE d.id = gp.destination_id AND d.geo_status <> 'suspect' AND d.duplicate_of IS NULL)
      ORDER BY gp.embedding <=> q.v
      LIMIT 200
+"""
+# CIS 253's closing check counts components per live tour (a JOIN): live tours sharing a source_id count twice.
+SHARED_SOURCE_SQL = """
+    SELECT count(*) - count(DISTINCT COALESCE(rt.source_group_id, rt.tour_id)) AS extra_live_tours_per_source
+      FROM gold_aa_internal.published_tours pt
+      JOIN silver_aa_internal.raw_tours rt ON rt.tour_id = pt.tour_id
+     WHERE pt.tenant_id = $1::uuid AND pt.master_status = 'active' AND pt.deleted_at IS NULL
+       AND rt.source_status = 'active' AND rt.deleted_at IS NULL
 """
 TP_GRANTS_SQL = """
     SELECT 'schema' AS kind, n.nspname AS object, has_schema_privilege('tripplanner', n.oid, 'USAGE') AS ok
@@ -1070,7 +1081,8 @@ async def master_pass(conn, budget, st):
     ext = await conn.fetchval("SELECT extversion FROM pg_extension WHERE extname = 'vector'")
     iterative = await conn.fetchval("SELECT current_setting('hnsw.iterative_scan', true)")
     out("env", pgvector=ext, hnsw_iterative_scan=iterative,
-        server=await conn.fetchval("SELECT current_setting('server_version')"))
+        server=await conn.fetchval("SELECT current_setting('server_version')"),
+        extra_live_tours_per_source=await conn.fetchval(SHARED_SOURCE_SQL, AA_TENANT_ID))
     try:
         async with conn.transaction():
             raw = await conn.fetchval(TOPK_EXPLAIN_SQL, AA_TENANT_ID)
