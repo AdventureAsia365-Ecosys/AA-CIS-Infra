@@ -138,7 +138,7 @@ accounts/
     photos_cdn.tf                 (AA-844, edge: CloudFront img.lumiguides.it.com in front of the bronze
                                    bucket's photos/ prefix — ACM cert us-east-1 + validation record always;
                                    validation wait, distribution (origin_path /photos, OAC SigV4, cache key
-                                   path + ?v=, TTL 1 d..1 y, nosniff headers policy, no Cache-Control
+                                   path + ?v=, TTL 1 d..1 y, nosniff+HSTS headers policy, no Cache-Control
                                    override, PriceClass_100, no logs/WAF) and A/AAAA aliases gated by
                                    var.photos_cdn_enabled && var.custom_domains_enabled. modules/s3 adds one
                                    bronze bucket-policy statement AllowPhotosCdnRead (GetObject photos/* for

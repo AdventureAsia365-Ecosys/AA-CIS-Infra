@@ -18,7 +18,7 @@
 # - Cache key = path + query string "v" only (the CIS redirect appends ?v=<sha12> of the source
 #   bytes, so a Drive edit that overwrites the same key gets a fresh cache entry). No cookies, no
 #   headers. TTLs: min 1 day, default and max 1 year; the objects carry max-age=31536000 already.
-# - Response headers policy: nosniff only. Deliberately NO Cache-Control override: a response
+# - Response headers policy: nosniff + HSTS only. Deliberately NO Cache-Control override: a response
 #   headers policy also applies to error responses, so an override would make browsers keep a 403
 #   for a key that is not synced yet for a year, and "immutable" is false (keys get overwritten).
 # - PriceClass_100 (North America + Europe edges). Viewers are mostly in Asia, so PriceClass_200
@@ -148,11 +148,19 @@ resource "aws_cloudfront_cache_policy" "photos_cdn" {
 
 resource "aws_cloudfront_response_headers_policy" "photos_cdn" {
   name    = "${local.name_prefix}-photos-headers"
-  comment = "AA-844: nosniff only; no Cache-Control override (errors must not be cached for a year)"
+  comment = "AA-844: nosniff + HSTS only; no Cache-Control override (errors must not be cached for a year)"
 
   security_headers_config {
     content_type_options {
       override = true
+    }
+    # The host only ever answers over HTTPS (viewer_protocol_policy redirect-to-https). No
+    # includeSubdomains / preload: other lumiguides.it.com hosts are not this policy's business.
+    strict_transport_security {
+      access_control_max_age_sec = 31536000
+      include_subdomains         = false
+      preload                    = false
+      override                   = true
     }
   }
 }
@@ -185,6 +193,18 @@ resource "aws_cloudfront_distribution" "photos_cdn" {
     compress                   = true
     cache_policy_id            = aws_cloudfront_cache_policy.photos_cdn.id
     response_headers_policy_id = aws_cloudfront_response_headers_policy.photos_cdn.id
+  }
+
+  # A 403 (key not synced yet, or a path outside photos/) and a 404 are cached at the edge for one
+  # minute only, so a photo that photo_sync uploads after a miss shows up quickly. No custom page.
+  custom_error_response {
+    error_code            = 403
+    error_caching_min_ttl = 60
+  }
+
+  custom_error_response {
+    error_code            = 404
+    error_caching_min_ttl = 60
   }
 
   restrictions {
