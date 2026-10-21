@@ -556,7 +556,8 @@ resource "aws_api_gateway_method_settings" "content_throttle" {
 
   rest_api_id = aws_api_gateway_rest_api.this.id
   stage_name  = aws_api_gateway_stage.dev.stage_name
-  method_path = "${trimprefix(aws_api_gateway_resource.content_proxy.path, "/")}/${aws_api_gateway_method.content_any.http_method}"
+  # API Gateway rejects ANY in a method-setting path; "*" covers every method on the resource.
+  method_path = "${trimprefix(aws_api_gateway_resource.content_proxy.path, "/")}/*"
 
   settings {
     throttling_rate_limit  = var.content_throttle_rate_limit
