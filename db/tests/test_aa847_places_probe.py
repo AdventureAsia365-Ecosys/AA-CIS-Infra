@@ -71,11 +71,62 @@ PLAN = json.dumps([{"Plan": {"Node Type": "Limit", "Actual Total Time": 5.0, "Ac
                     "Execution Time": 5.5, "Planning Time": 0.4}])
 
 
+def _node(node_type, rel=None, loops=1, kids=(), **extra):
+    n = {"Node Type": node_type, "Actual Total Time": 1.0, "Actual Loops": loops, "Actual Rows": 1, **extra}
+    if rel:
+        n["Relation Name"] = rel
+    if kids:
+        n["Plans"] = list(kids)
+    return n
+
+
+def _topk_doc(scan_plan, count_loops=60):
+    """A TOPK_SQL_CIS-shaped plan: the `scan` CTE (InitPlan) + the per-destination component_count SubPlan."""
+    cte = dict(_node("Limit", kids=[scan_plan]), **{"Parent Relationship": "InitPlan", "Subplan Name": "CTE scan"})
+    count = dict(_node("Aggregate", kids=[_node("Hash Join", kids=[
+        _node("Seq Scan", "raw_tours", loops=count_loops), _node("Seq Scan", "tour_place", loops=count_loops)])]),
+        **{"Parent Relationship": "SubPlan", "Subplan Name": "SubPlan 2"})
+    root = _node("Limit", kids=[cte, _node("Sort", kids=[_node("Hash Join", kids=[_node("CTE Scan", Alias="c"),
+                                                                                    _node("Seq Scan", "tour_place")]),
+                                                         count])])
+    return json.dumps([{"Plan": root, "Execution Time": 13.0, "Planning Time": 2.0}])
+
+
+def _live(rt_scan):
+    return _node("Hash Join", kids=[_node("Seq Scan", "published_tours"), _node("Hash", kids=[rt_scan])])
+
+
+# Dev today (S246): natural = exact top-N sort over a seq scan; liveness = a hash semi join
+TOPK_NATURAL = _topk_doc(_node("Sort", kids=[_node("Hash Semi Join", kids=[
+    _node("Seq Scan", "tour_place"), _node("Hash", kids=[_live(_node("Seq Scan", "raw_tours"))])])]))
+# enable_sort=off before 258: HNSW ordered by distance, liveness through a Join Filter on the expression key
+TOPK_FORCED_PRE258 = _topk_doc(_node("Nested Loop", **{"Join Type": "Semi", "Join Filter":
+                                                      "((COALESCE(rt.source_group_id, rt.tour_id))::text = gp.source_id)"},
+                                     kids=[_node("Index Scan", "tour_place", **{"Index Name": "tour_place_embedding_hnsw",
+                                                                                "Order By": "(embedding <=> $1)"}),
+                                           _node("Materialize", kids=[_live(_node("Seq Scan", "raw_tours"))])]))
+# after 258: the liveness probe is an index scan on the stored key, no Join Filter
+TOPK_FORCED_POST258 = _topk_doc(_node("Nested Loop", **{"Join Type": "Semi"}, kids=[
+    _node("Index Scan", "tour_place", **{"Index Name": "tour_place_embedding_hnsw", "Order By": "(embedding <=> $1)"}),
+    _node("Nested Loop", kids=[_node("Index Scan", "raw_tours", **{"Index Name": "raw_tours_source_key_idx",
+                                                                   "Index Cond": "(source_key = gp.source_id)"}),
+                               _node("Index Scan", "published_tours", **{"Index Name": "published_tours_pkey"})])]),
+    count_loops=1)
+
+
 class FakeConn:
-    def __init__(self, refuse_role=False):
+    def __init__(self, refuse_role=False, forced_plan=TOPK_FORCED_PRE258, fail_execute_explain=False):
         self.refuse_role = refuse_role
+        self.forced_plan = forced_plan
+        self.fail_execute_explain = fail_execute_explain
         self.role = "aa_cis_admin"
         self.statements = []
+        self.settings = {}          # transaction-local settings (set_config(..., true)), rolled back with a savepoint
+        self.fetch_log = []         # (sql, plan_cache_mode at the call)
+        self.explain_log = []       # (sql, settings at the EXPLAIN, role)
+
+    def setting(self, name):
+        return self.settings.get(name, {"plan_cache_mode": "auto", "enable_sort": "on"}.get(name, "off"))
 
     async def execute(self, sql, *args):
         self.statements.append(sql)
@@ -83,6 +134,11 @@ class FakeConn:
             if self.refuse_role:
                 raise PermissionError("permission denied to set role")
             self.role = "tripplanner"
+        m = re.search(r"set_config\(('([^']+)'|\$1), *('([^']*)'|\$\d), *true\)", sql)
+        if m:
+            name = m.group(2) or args[0]
+            value = m.group(4) if m.group(4) is not None else args[-1]
+            self.settings[name] = value
         return "OK"
 
     async def fetchval(self, sql, *args):
@@ -92,13 +148,20 @@ class FakeConn:
         if "extversion" in sql:
             return "0.8.0"
         if sql.lstrip().startswith("EXPLAIN") or "EXPLAIN (ANALYZE" in sql:
+            self.explain_log.append((sql, dict(self.settings), self.role))
+            if "EXECUTE " + probe.GENERIC_STMT in sql and self.fail_execute_explain:
+                raise RuntimeError("explain failed")
+            if "catalog.v_component_embedding" in sql:
+                return self.forced_plan if self.setting("enable_sort") == "off" else TOPK_NATURAL
             return PLAN
-        if "current_setting" in sql:
-            return "off"
+        m = re.search(r"current_setting\('([^']+)'", sql) or re.match(r"\s*SHOW (\w+)", sql)
+        if m:
+            return self.setting(m.group(1))
         return 3
 
     async def fetch(self, sql, *args):
         self.statements.append(sql)
+        self.fetch_log.append((sql, self.setting("plan_cache_mode")))
         p = probe
         if sql is p.LIVE_TOURS_SQL:
             return [{"source_id": LAOS_SRC, "tour_id": LAOS_SRC, "title": "Laos Kuang Si", "country": "Laos"},
@@ -166,7 +229,12 @@ class FakeConn:
 
     @contextlib.asynccontextmanager
     async def transaction(self):
-        yield
+        saved = dict(self.settings)
+        try:
+            yield
+        except BaseException:
+            self.settings = saved       # ROLLBACK TO SAVEPOINT undoes set_config(..., true); RELEASE keeps it
+            raise
 
 
 def _run(conn):
@@ -241,8 +309,9 @@ class RunTests(unittest.TestCase):
         text = "\n".join(lines)
         self.assertNotIn("section_error", text)
         self.assertIn("SCRIPT pass role=tripplanner", text)
-        for kind in ("inputs", "timing", "parity", "parity_total", "fingerprint", "defect_tour", "defect_component",
-                     "defect_pair", "day_text", "coverage", "coverage_gate", "env", "grant", "xref", "stats", "done"):
+        for kind in ("inputs", "timing", "calls", "repeat", "parity", "parity_total", "env_topk", "env_topk_summary",
+                     "generic_plan", "fingerprint", "defect_tour", "defect_component", "defect_pair", "day_text",
+                     "coverage", "coverage_gate", "env", "grant", "xref", "stats", "done"):
             self.assertRegex(text, rf"(?m)^SCRIPT {kind}\b", kind)
         self.assertTrue(all(line.startswith("SCRIPT ") for line in lines))
 
@@ -331,6 +400,147 @@ class RunTests(unittest.TestCase):
         for sql in conn.statements:
             self.assertIsNone(re.search(r"\b(INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|GRANT|REVOKE|TRUNCATE)\b",
                                         sql.split("FROM")[0] if "EXPLAIN" in sql else sql, re.I), sql[:80])
+
+
+class ProbeFixTests(unittest.TestCase):
+    """S246 gate diagnosis, section 2.1: the probe fixes."""
+
+    def test_env_topk_runs_as_tripplanner_natural_and_forced_with_tripplanner_settings(self):
+        conn = FakeConn()
+        _, lines = _run(conn)
+        topk = [(sql, st, role) for sql, st, role in conn.explain_log if "catalog.v_component_embedding" in sql
+                and "LIMIT $2" in sql and "<=> $1::vector" in sql]
+        modes = [st.get("enable_sort", "on") for _, st, _ in topk]
+        self.assertIn("off", modes)
+        self.assertIn("on", modes)
+        for sql, st, role in topk[-2:]:                        # the two env_topk EXPLAINs come last (pass 1)
+            self.assertEqual(role, "tripplanner")
+            self.assertEqual(st["hnsw.ef_search"], "400")      # TripPlanner ef_search_for(200)
+            self.assertEqual(st["hnsw.iterative_scan"], "relaxed_order")
+            self.assertEqual(sql, "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "
+                             + probe.reader("shared.vector_topk.TOPK_SQL_CIS"))   # the generated SQL, no q join
+        self.assertNotEqual(conn.setting("enable_sort"), "off", "enable_sort leaked past the env_topk EXPLAIN")
+        summary = next(line for line in lines if line.startswith("SCRIPT env_topk_summary"))
+        for part in ("role=tripplanner", "uses_hnsw_natural=f", "uses_hnsw_forced=t",
+                     "live_index=-", "join_filter_source_id=t", "raw_tours_seq_loops_gt1=t",
+                     "verdict_full=FAIL", "verdict_pre258=PASS"):
+            self.assertIn(part, summary)
+        self.assertIn("Seq Scan:raw_tours", summary)
+        self.assertFalse(hasattr(probe, "TOPK_EXPLAIN_SQL"), "the master-pass top-k EXPLAIN is gone")
+
+    def test_env_topk_after_258_passes_the_full_check(self):
+        _, lines = _run(FakeConn(forced_plan=TOPK_FORCED_POST258))
+        summary = next(line for line in lines if line.startswith("SCRIPT env_topk_summary"))
+        self.assertIn("live_index=raw_tours_source_key_idx", summary)
+        self.assertIn("join_filter_source_id=f", summary)
+        # the natural fake plan still re-scans raw_tours per destination (count subquery): full fails on that alone
+        self.assertIn("verdict_full=FAIL", summary)
+        self.assertIn("raw_tours_seq_loops_gt1=t", summary)
+
+    def test_topk_plan_facts(self):
+        nat = probe.topk_plan_facts(json.loads(TOPK_NATURAL))
+        self.assertFalse(nat["uses_hnsw"])
+        self.assertEqual(nat["live_probe"], "Hash:-/Hash Join:-/Hash:-/Seq Scan:raw_tours")
+        self.assertEqual(nat["raw_tours_seq_loops"], 60)        # the count subquery, outside the scan CTE
+        pre = probe.topk_plan_facts(json.loads(TOPK_FORCED_PRE258))
+        self.assertTrue(pre["uses_hnsw"] and pre["hnsw_order_by"] and pre["join_filter_source_id"])
+        self.assertEqual(pre["live_probe"], "Materialize:-/Hash Join:-/Hash:-/Seq Scan:raw_tours")
+        self.assertIsNone(pre["live_index"])
+        post = probe.topk_plan_facts(json.loads(TOPK_FORCED_POST258))
+        self.assertEqual(post["live_index"], "raw_tours_source_key_idx")
+        self.assertEqual(post["live_probe"], "Nested Loop:-/Index Scan:raw_tours[raw_tours_source_key_idx]")
+        self.assertFalse(post["join_filter_source_id"])
+        self.assertEqual(post["raw_tours_seq_loops"], 1)
+
+    def test_cis_routes_single_and_chain_plan_per_call_and_nothing_else_does(self):
+        conn = FakeConn()
+        _run(conn)
+        r = probe.READERS
+        forced = {r["browse.routes.SINGLE_SQL_CIS"], r["browse.routes.CHAIN_SQL_CIS"]}
+        seen = {"forced": 0, "other_routes": 0}
+        for sql, mode in conn.fetch_log:
+            if sql in forced:
+                self.assertEqual(mode, "force_custom_plan", sql[:60])
+                seen["forced"] += 1
+            elif "catalog.v_" in sql or "tripplanner." in sql:
+                self.assertEqual(mode, "auto", sql[:60])
+                seen["other_routes"] += sql in (r["browse.routes.SINGLE_SQL"], r["browse.routes.CHAIN_SQL"],
+                                                r["browse.routes.DAYS_SQL_CIS"])
+        self.assertEqual(seen["forced"], 2 * 19 * len(probe.COUNTRIES) * probe.REPEATS)
+        self.assertGreater(seen["other_routes"], 0)
+        self.assertFalse(any("SET LOCAL plan_cache_mode" in sql for sql in conn.statements))
+        self.assertEqual(conn.setting("plan_cache_mode"), "auto")
+
+    def test_routes_single_per_call_lists_and_the_unforced_diagnostic(self):
+        conn = FakeConn()
+        _, lines = _run(conn)
+        calls = [line for line in lines if line.startswith("SCRIPT calls reader=routes_single ")]
+        self.assertEqual(len(calls), 2 * len(probe.COUNTRIES) * probe.REPEATS)
+        self.assertEqual(len(calls[0].split("ms=")[1].split(",")), len(probe.ROUTE_DAYS))
+        auto = [line for line in lines if line.startswith("SCRIPT calls reader=routes_single_auto ")]
+        self.assertEqual(len(auto), len(probe.COUNTRIES))          # run 1, cis only
+        auto_sql = probe.reader("browse.routes.SINGLE_SQL_CIS") + probe.AUTO_TAG
+        self.assertNotEqual(auto_sql, probe.READERS["browse.routes.SINGLE_SQL_CIS"])   # its own prepared statement
+        self.assertTrue(all(mode == "auto" for sql, mode in conn.fetch_log if sql == auto_sql))
+        self.assertFalse(any(line.startswith("SCRIPT parity reader=routes_single_auto") for line in lines))
+
+    def test_generic_plan_proof_prepares_explains_and_deallocates(self):
+        conn = FakeConn()
+        _, lines = _run(conn)
+        prep = [sql for sql in conn.statements if sql.startswith("PREPARE " + probe.GENERIC_STMT)]
+        self.assertEqual(len(prep), 1)
+        self.assertIn("(text, int, int) AS " + probe.reader("browse.routes.SINGLE_SQL_CIS"), prep[0])
+        ex = [(sql, st) for sql, st, _ in conn.explain_log if "EXECUTE " + probe.GENERIC_STMT in sql]
+        self.assertEqual([st["plan_cache_mode"] for _, st in ex],
+                         ["force_generic_plan", "force_custom_plan"] * len(probe.COUNTRIES))
+        self.assertIn("EXECUTE aa847_single_generic('Laos', 21, 3)", ex[0][0])
+        self.assertIn("DEALLOCATE " + probe.GENERIC_STMT, conn.statements)
+        self.assertTrue(any(line.startswith("SCRIPT generic_plan reader=routes_single country=Laos days=21 ")
+                            and "generic_exec_ms=" in line and "jit=" in line for line in lines))
+
+    def test_generic_plan_deallocates_when_the_explain_fails(self):
+        conn = FakeConn(fail_execute_explain=True)
+        _, lines = _run(conn)
+        self.assertIn("DEALLOCATE " + probe.GENERIC_STMT, conn.statements)
+        self.assertTrue(any(line.startswith("SCRIPT plan_error reader=routes_single_generic") for line in lines))
+        self.assertNotIn("section_error", "\n".join(lines))
+
+    def test_analyze_sql_joins_on_relid(self):
+        self.assertIn("c.oid = s.relid", probe.ANALYZE_SQL)
+        self.assertNotIn("::regclass", probe.ANALYZE_SQL)
+
+    def test_env_line_prints_jit(self):
+        _, lines = _run(FakeConn())
+        env = next(line for line in lines if line.startswith("SCRIPT env pgvector="))
+        self.assertIn("jit=", env)
+        self.assertIn("plan_cache_mode=auto", env)
+
+    def test_tiles_markers_match_the_cis_bbox_filter(self):
+        self.assertEqual(probe.MARKERS["tiles"], ["lat >=", "lng >=", "max_lat", "max_lng"])
+
+    def test_three_runs_and_median_parity(self):
+        _, lines = _run(FakeConn())
+        self.assertEqual(sum(line.startswith("SCRIPT repeat run=") for line in lines), probe.REPEATS)
+        parity = [line for line in lines if line.startswith("SCRIPT parity reader=")]
+        self.assertTrue(parity and all(f"runs={probe.REPEATS}" in line for line in parity))
+        self.assertTrue(any(line.startswith("SCRIPT parity_total ") and f"runs={probe.REPEATS}" in line
+                            for line in lines))
+        # one slow run neither fails a reader nor does one fast run rescue it
+        self.assertTrue(probe.parity_verdict([10, 12, 11], [100, 900, 120])[3])
+        self.assertFalse(probe.parity_verdict([10, 12, 11], [250, 90, 260])[3])
+        self.assertFalse(probe.parity_verdict([10, 10, 10], [10, 10, 10], cis_errors=1)[3])
+        self.assertEqual(probe.median([3, 1, 2]), 2)
+        self.assertEqual(probe.median([4, 1, 2, 3]), 2.5)
+        self.assertEqual(probe.parity_verdict([200, 210, 190], [0])[2], 300.0)
+
+    def test_explain_settings_end_with_their_savepoint(self):
+        conn = FakeConn()
+
+        async def go():
+            await probe.explain_doc(conn, "SELECT 1", (), [("enable_sort", "off")])
+        asyncio.run(go())
+        self.assertEqual(conn.explain_log[-1][1]["enable_sort"], "off")
+        self.assertNotIn("enable_sort", conn.settings)
 
 
 if __name__ == "__main__":

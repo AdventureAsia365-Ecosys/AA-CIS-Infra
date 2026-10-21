@@ -130,6 +130,17 @@ Time budget ~20 minutes (`SCRIPT truncated <section>`), samples capped; ends wit
 After TripPlanner slice 6c the regenerated block also carries the assembly twins (`SCRIPT timing reader=assembly_*`,
 parity per call) and the cis search becomes the top-k over `catalog.v_component_embedding` (`search` = top-k,
 `search_exact` = the exact fallback); before 6c those readers are listed in `READERS_ABSENT`.
+Since the S246 gate diagnosis (probe fixes): the timings run `REPEATS` = 3 times and parity is judged on the
+**median** (`SCRIPT parity … runs=3 cis_runs=a/b/c legacy_runs=a/b/c`); the cis `routes_single` / `routes_chain` calls
+run under `plan_cache_mode=force_custom_plan` as TripPlanner's `proposals()` does (`set_config(…, true)` and the
+session value restored right after, never `SET LOCAL` across savepoints); `SCRIPT calls reader=routes_single` prints
+every call's ms, and `routes_single_auto` (run 1, not scored) is the same cis read left at the session plan cache
+mode, where a jump from call 6 on is a generic cached plan; `SCRIPT generic_plan` compares the `PREPARE`d read's
+generic and custom plans (`EXPLAIN EXECUTE`, days 21, slack 3). The step-18 structural check is `SCRIPT env_topk` /
+`env_topk_summary` in pass 1, as `tripplanner` with TripPlanner's `ef_search` / `iterative_scan`: the generated
+`TOPK_SQL_CIS` EXPLAINed natural and with `enable_sort=off`, with `uses_hnsw_*`, the liveness probe path,
+`join_filter_source_id`, a `Seq Scan raw_tours` loops>1 flag and `verdict_full` / `verdict_pre258`. `SCRIPT plan_flag
+… flag=seq_scan_raw_tours` marks any EXPLAIN whose liveness probe re-scans `raw_tours`. The env line prints `jit`.
 
 `aa847_component_id_map_fill.py` (AA-847, merged READ_ONLY = dry run): fills `tripplanner.component_id_map` (tp-017),
 frozen `itinerary_components.id` → `catalog.v_tour_component.component_id`. Pass 1 as `tripplanner`: live sources and
