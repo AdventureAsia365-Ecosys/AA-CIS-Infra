@@ -305,5 +305,15 @@ module "api_gateway" {
   domain_name              = var.domain_name
   enable_execution_logging = true # AA-272 diagnostic only
 
+  # AA-876 — throttling without the WAF (deferred per S241). Sized from 14 days of execution logs (21/10/2026):
+  # busiest second per method — /content 100, other /auth 20, the two login routes 6. Stage default 50/100 per
+  # method; logins 3x their peak; /content 3x its peak (TripPlanner cover images).
+  stage_throttle_rate_limit    = 50
+  stage_throttle_burst_limit   = 100
+  login_throttle_rate_limit    = 20
+  login_throttle_burst_limit   = 40
+  content_throttle_rate_limit  = 300
+  content_throttle_burst_limit = 600
+
   depends_on = [module.alb, aws_api_gateway_account.this]
 }

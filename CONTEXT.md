@@ -321,6 +321,19 @@ makes CI Terraform Plan fail with 403.
   instance role via `modules/vpc`, Booking/TripPlanner roles, DFS balance Lambda + scheduler,
   diagnostics roles); `aa-cis-dev-agent-session` gets it in a local bootstrap apply. With phase 3
   on, a role without the workload boundary cannot have its policies changed by CI apply at all.
+- **CIS REST API throttling** (AA-876, `modules/api_gateway`, values in `accounts/aa365/main.tf`): stage default
+  `*/*` 50 rps / burst 100, applied **per method** (each method its own bucket, shared by all callers of it).
+  `POST /auth/admin-login` and `POST /auth/tenant-login` are explicit resources (they win over `{auth_proxy+}`)
+  with their own override 20 / 40 (3x the busiest second in 14 days of execution logs, 21/10/2026); every other
+  `/auth/*` route (verify-admin, verify-tenant, booking-token, refresh) stays on the stage default on purpose: a
+  bucket is global to all callers, so a tight cap on `{auth_proxy+}` would let one client cut every BFF off
+  session verification (no per-IP rule while the WAF is off). `/content/{content_proxy+}` has a higher override
+  300 / 600 (TripPlanner cover `<img>` bursts; busiest second 100). Per-IP login limits and per-user backoff are in
+  the CIS app (`api/core/login_throttle.py`). The login and content overrides keep detailed metrics off where they
+  would be new (~0.30 USD per metric-month). The WAF on the REST stages stays deferred (S241: on when customer
+  sign-up opens); reusing the existing ALB web ACL would cost ~0.60 USD per million requests inspected, no new ACL
+  or rule fee. Any new resource/method/integration must also go into `aws_api_gateway_deployment.this`
+  `depends_on` and `triggers` (AA-432/AA-465/AA-583/AA-876).
 - **TripPlanner HTTP API throttling** (AA-806, Dev placeholders): generous stage default 500 rps /
   burst 1000 **per route** (`default_route_settings`; each route gets its own bucket, it is not one
   stage-wide cap; must stay generous because the map fetches one tile per 1-degree cell in a single
