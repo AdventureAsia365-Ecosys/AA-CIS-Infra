@@ -76,7 +76,7 @@ DEFECT_TOURS_CAP = 8
 DAY_TEXT_EXAMPLES = 5
 
 # BEGIN GENERATED READERS (root docs/audits/2026-10-21-S246-aa847/gen_probe_sql.py; do not edit by hand)
-READERS_FROM = "AA-TripPlanner-Web@c701d608ad81"
+READERS_FROM = "AA-TripPlanner-Web@3b6e62d665be"
 READERS_ABSENT = ['browse.search.CIS_SEARCH_SQL']
 READERS = {
     'assembly.activities.ACTIVITIES_SQL': """
@@ -293,20 +293,25 @@ READERS = {
         SELECT l.source_id, l.day_from, l.day_to, l.days, l.start_destination_id, l.end_destination_id,
                l.destination_ids
         FROM catalog.v_tour_leg l WHERE $1 = ANY(l.countries) AND l.days < $2::int
-    ), a AS (
+    ), a AS MATERIALIZED (
         SELECT l.* FROM legs l JOIN span sp ON sp.source_id = l.source_id AND l.day_from = sp.first_day
     ), j AS MATERIALIZED (
         SELECT destination_a, destination_b, km FROM catalog.v_tour_junction
+    ), hop AS (
+        SELECT a.*, a.end_destination_id AS next_start, NULL::double precision AS km FROM a
+        UNION ALL
+        SELECT a.*, j.destination_b AS next_start, j.km
+        FROM a JOIN j ON j.destination_a = a.end_destination_id AND j.destination_b <> a.end_destination_id
     )
-    SELECT a.source_id AS a_tour, a.day_from AS a_from, a.day_to AS a_to, a.days AS a_days,
+    SELECT h.source_id AS a_tour, h.day_from AS a_from, h.day_to AS a_to, h.days AS a_days,
            b.source_id AS b_tour, b.day_from AS b_from, b.day_to AS b_to, b.days AS b_days,
-           coalesce(j.km, 0) AS transfer_km,
-           cardinality(a.destination_ids) + cardinality(b.destination_ids) AS places
-    FROM a
-    JOIN legs b ON b.source_id <> a.source_id AND a.days + b.days BETWEEN $2::int - $3::int AND $2::int
-    LEFT JOIN j ON j.destination_a = a.end_destination_id AND j.destination_b = b.start_destination_id
-    WHERE b.start_destination_id = a.end_destination_id OR j.destination_a IS NOT NULL
-    ORDER BY abs(a.days + b.days - $2::int), coalesce(j.km, 0), places DESC
+           coalesce(h.km, 0) AS transfer_km,
+           cardinality(h.destination_ids) + cardinality(b.destination_ids) AS places
+    FROM hop h
+    JOIN legs b ON b.start_destination_id = h.next_start AND b.source_id <> h.source_id
+               AND h.days + b.days BETWEEN $2::int - $3::int AND $2::int
+    ORDER BY abs(h.days + b.days - $2::int), coalesce(h.km, 0), places DESC,
+             h.source_id, h.day_from, h.day_to, b.source_id, b.day_from, b.day_to
     LIMIT 40
 """,
     'browse.routes.COMPONENTS_SQL': """
