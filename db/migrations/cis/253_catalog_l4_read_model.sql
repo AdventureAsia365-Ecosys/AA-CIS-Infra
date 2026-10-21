@@ -26,12 +26,14 @@
 --      the old LATERAL plus one aggregate (lesson S238: a `= ANY($1)` filter is not pushed through a join, so the
 --      per-id shape stays). Same values: shared.v_destination_photos numbers each destination's photos 1..n.
 --   6. catalog.v_component_embedding (component_id, source_id, destination_id, activity, intensity_level,
---      season_months, embedding): NOT security_barrier, only resolved components of live tours, created only where
---      geo.tour_place.embedding exists (pgvector; the 228 pattern). A reader's ORDER BY embedding <=> q LIMIT k can be
---      served by the HNSW index tour_place_embedding_hnsw (hnsw.iterative_scan on pgvector >= 0.8); the filter
---      columns are there so TripPlanner's vector_topk scan_where stays inside the index scan. Granted to tripplanner
---      ONLY (Booking and aa_app_user do not need vectors). Usable-destination and other checks stay on the reader,
---      after the scan (keep_where over catalog.v_tour_component).
+--      season_months, embedding): NOT security_barrier, only resolved components of live tours on a usable
+--      destination (not suspect, not a merged duplicate: the same rows as v_tour_component), created only where
+--      geo.tour_place.embedding exists (pgvector; the 228 pattern). Both rules are filters (EXISTS on a primary or
+--      live-tour key), so a reader's ORDER BY embedding <=> q LIMIT k can still be served by the HNSW index
+--      tour_place_embedding_hnsw (hnsw.iterative_scan on pgvector >= 0.8); the filter columns are there so
+--      TripPlanner's vector_topk scan_where stays inside the index scan. Granted to tripplanner ONLY (Booking and
+--      aa_app_user do not need vectors). The reader needs no check after the scan: a hidden (suspect) or merged
+--      place never comes out of this view.
 --   7. ANALYZE of the geo tables and shared.destinations / place_photo (Dev reltuples were stale, schema reference
 --      20/10: geo.tour_place ~967 rows for ~1 country).
 -- Not here, measured first (AA-847 plan, slice A probe): security_barrier off on the graph views, the
@@ -78,17 +80,19 @@ BEGIN
      WHERE pt.tenant_id = '00000000-0000-0000-0000-000000000001'::uuid
        AND pt.master_status = 'active' AND pt.deleted_at IS NULL
        AND rt.source_status = 'active' AND rt.deleted_at IS NULL;
+    -- a JOIN like v_tour_component's (one row per live tour of the source), not an EXISTS: two live tours of one
+    -- source_id (same source_group_id) count each component twice there too, so the closing check stays exact
     SELECT count(*) INTO n_comp
       FROM geo.tour_place gp
       JOIN shared.destinations d ON d.id = gp.destination_id
                                 AND d.geo_status <> 'suspect' AND d.duplicate_of IS NULL
-     WHERE EXISTS (SELECT 1
-                     FROM gold_aa_internal.published_tours pt
-                     JOIN silver_aa_internal.raw_tours rt ON rt.tour_id = pt.tour_id
-                    WHERE COALESCE(rt.source_group_id, rt.tour_id)::text = gp.source_id
-                      AND pt.tenant_id = '00000000-0000-0000-0000-000000000001'::uuid
-                      AND pt.master_status = 'active' AND pt.deleted_at IS NULL
-                      AND rt.source_status = 'active' AND rt.deleted_at IS NULL);
+      JOIN gold_aa_internal.published_tours pt
+        ON pt.tenant_id = '00000000-0000-0000-0000-000000000001'::uuid
+       AND pt.master_status = 'active' AND pt.deleted_at IS NULL
+      JOIN silver_aa_internal.raw_tours rt
+        ON rt.tour_id = pt.tour_id
+       AND rt.source_status = 'active' AND rt.deleted_at IS NULL
+       AND COALESCE(rt.source_group_id, rt.tour_id)::text = gp.source_id;
     PERFORM set_config('aa847.expected_live_tours', n_live::text, true);
     PERFORM set_config('aa847.expected_components', n_comp::text, true);
 END $$;
@@ -513,13 +517,17 @@ BEGIN
              WHERE gp.destination_id IS NOT NULL
                AND gp.embedding IS NOT NULL
                AND EXISTS (SELECT 1 FROM catalog._live_tour t WHERE t.source_id = gp.source_id)
+               AND EXISTS (SELECT 1 FROM shared.destinations d
+                            WHERE d.id = gp.destination_id
+                              AND d.geo_status <> 'suspect' AND d.duplicate_of IS NULL)
         $v$;
         EXECUTE $v$
             COMMENT ON VIEW catalog.v_component_embedding IS
                 'AA-847 — embeddings of resolved components of live tours, for an index-ordered top-k '
                 '(ORDER BY embedding <=> q LIMIT k on the HNSW index of geo.tour_place; hnsw.iterative_scan on '
-                'pgvector >= 0.8). Not security_barrier so the order can come from the index. Reader applies the '
-                'usable-destination rule after the scan (catalog.v_tour_component). TripPlanner only.'
+                'pgvector >= 0.8). Not security_barrier so the order can come from the index. Only usable '
+                'destinations (not suspect, not a merged duplicate), as in catalog.v_tour_component: no check is '
+                'needed after the scan. TripPlanner only.'
         $v$;
         EXECUTE 'GRANT SELECT ON catalog.v_component_embedding TO tripplanner';
     ELSE
@@ -551,6 +559,13 @@ BEGIN
     END LOOP;
     IF to_regclass('catalog.v_component_embedding') IS NOT NULL THEN
         PERFORM 1 FROM catalog.v_component_embedding LIMIT 1;
+        -- the top-k view shows no component that v_tour_component hides (suspect / merged place, dead tour)
+        IF EXISTS (SELECT 1 FROM catalog.v_component_embedding e
+                    WHERE NOT EXISTS (SELECT 1 FROM catalog.v_tour_component c
+                                       WHERE c.component_id = e.component_id)) THEN
+            RAISE EXCEPTION 'migration 253: catalog.v_component_embedding shows a component that '
+                            'catalog.v_tour_component hides';
+        END IF;
     END IF;
     SELECT count(*) INTO n_tours FROM catalog._live_tour;
     SELECT count(*) INTO n_comp FROM catalog.v_tour_component;
