@@ -9,6 +9,11 @@
     ROLE statements only in roles/; one BEGIN … COMMIT block or a no-transaction file, the shape
     the role switch needs). Same code DB Migrate runs before apply.
   * roles/ (Infra-native, key rl-NNN) is numbered and linted like every owner dir.
+  * data standards DM-6.1 tag lint (AA-929): a `COMMENT ON COLUMN … IS '<text>'` whose `pii:<class>` /
+    `conf:<class>` tag names a class outside gen_schema_reference.TAG_CLASSES fails; a comment that names a
+    tag without starting with it ('Home address, pii:address') is a warning, as in the schema reference.
+    Comments written through dynamic SQL (EXECUTE format(…)) are out of reach; the schema reference's tag
+    findings are the backstop.
 
 Usage:
   python3 db/check_migration_files.py            # every copy (CI, PR and nightly)
@@ -28,10 +33,14 @@ from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import gen_schema_reference as gen  # noqa: E402  (TAG_CLASSES, parse_tag: one home for the DM-6.1 classes)
 import run_migration  # noqa: E402
 
 MIGRATIONS_DIR = "db/migrations"
 NUMBER_RE = re.compile(r"^([0-9]{3})_")
+# COMMENT ON COLUMN <target> IS '<literal>' (E'' strings too). Matched on one statement of split_statements, so a
+# ';' inside the literal does not cut it; the target is reported as written.
+COMMENT_COLUMN_RE = re.compile(r"\bCOMMENT\s+ON\s+COLUMN\s+(.+?)\s+IS\s+([eE]?)'((?:[^']|'')*)'", re.IGNORECASE | re.DOTALL)
 
 
 def duplicate_numbers(repo_root: Path) -> list[str]:
@@ -51,12 +60,37 @@ def duplicate_numbers(repo_root: Path) -> list[str]:
     return errors
 
 
+def tag_lint(sql: str) -> tuple[list[str], list[str]]:
+    """DM-6.1 (AA-929): (errors, warnings) for the pii:/conf: tags of the file's COMMENT ON COLUMN statements."""
+    errors, warnings = [], []
+    known = ", ".join(f"{kind}:{c}" for kind, classes in gen.TAG_CLASSES.items() for c in classes)
+    for st in run_migration.split_statements(sql):
+        if not st.code.startswith("COMMENT ON COLUMN"):
+            continue
+        m = COMMENT_COLUMN_RE.search(st.text)
+        if not m:
+            continue                                   # IS NULL, or a literal built some other way
+        target, text = " ".join(m.group(1).split()), m.group(3).replace("''", "'")
+        tag, also = gen.parse_tag(text)
+        for t in ([tag] if tag else []) + also:
+            kind, _, klass = t.partition(":")
+            if klass not in gen.TAG_CLASSES.get(kind, ()):
+                errors.append(f"line {st.line}: COMMENT ON COLUMN {target}: unknown class {t} "
+                              f"(data standards DM-6.1 classes: {known})")
+        if not tag and also:
+            warnings.append(f"line {st.line}: COMMENT ON COLUMN {target} names {', '.join(also)} but does not "
+                            "start with a tag ('<kind>:<class>; ...', DM-6.1)")
+    return errors, warnings
+
+
 def lint_file(path: Path, rel: str = "") -> tuple[list[str], list[str]]:
     try:
         sql = path.read_text(encoding="utf-8")
     except UnicodeDecodeError:
         return ["is not valid UTF-8"], []
-    return run_migration.lint(sql, run_migration.parse_directives(sql), rel or path.as_posix())
+    errors, warnings = run_migration.lint(sql, run_migration.parse_directives(sql), rel or path.as_posix())
+    tag_errors, tag_warnings = tag_lint(sql)
+    return list(errors) + tag_errors, list(warnings) + tag_warnings
 
 
 def all_copies(repo_root: Path) -> list[str]:

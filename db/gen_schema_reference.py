@@ -44,9 +44,13 @@ LATEST_MIGRATIONS = 20
 
 # Data standards DM-6.1 (AA-877): a column holding personal data carries COMMENT 'pii:<class>; <free text>',
 # commercial secrets 'conf:commercial; …', credentials 'conf:credential; …'. The classes below are the standard's list;
-# any other class is reported as a finding. The dump carries the raw comment; parsing happens here only.
+# any other class is reported as a finding here and fails the migration lint (db/check_migration_files.py, which
+# imports this table). The dump carries the raw comment; parsing happens here only. Standards v1.3 (AA-929, partner
+# CRM): government_id (passport / ID document data), health (special category, stored only with consent) and
+# emergency_contact (a third person's contact details).
 TAG_CLASSES = {
-    "pii": ("contact", "name", "address", "profile", "online_id", "free_text", "travel", "payment"),
+    "pii": ("contact", "name", "address", "profile", "online_id", "free_text", "travel", "payment",
+            "government_id", "health", "emergency_contact"),
     "conf": ("commercial", "credential"),
 }
 # The leading tag, ended by ';', ' —' / ' –' / ' -' (the tp-011 form 'conf:credential — …') or the end of the text.
@@ -56,7 +60,7 @@ ANY_TAG_RE = re.compile(r"(?<![a-z_])((?:pii|conf):[a-z_]+)")
 # DM-6.1 untagged-candidate check (AA-877; seed of the X2+ lint). A column of these schemas whose snake_case name
 # contains one of the tokens (whole tokens: 'mission' is not 'iss', 'subject' is not 'sub') must carry a tag or an
 # entry below with a one-line reason. Keep the reasons short; an entry that matches nothing is reported as stale.
-PII_CANDIDATE_SCHEMAS = ("booking", "tripplanner")
+PII_CANDIDATE_SCHEMAS = ("booking", "crm", "tripplanner")   # crm: the partner CRM from its first table (AA-929)
 PII_CANDIDATE_TOKENS = frozenset({
     "email", "phone", "name", "address", "note", "notes", "message", "payload", "snapshot", "title", "summary",
     "label", "sub", "iss", "data", "itinerary",
