@@ -20,18 +20,45 @@ Sections (every line starts with `SCRIPT `; aggregates, ids, statuses, catalog t
        SCRIPT coverage_missing country=<c> source_id=<id> title=<t>          (capped)
        SCRIPT coverage_gate missing_in_cis_live=<n> verdict=PASS|FAIL
   2. reader timings as tripplanner, legacy vs cis, with the readers' exact SQL (READERS block below, generated from
-     the TripPlanner source) and filter shapes, for COUNTRIES; the slowest call of each (reader, source) is EXPLAINed
-     (ANALYZE, BUFFERS): top nodes by own time, and where each consumer filter landed (pushed into a base scan or
-     left above a security_barrier subquery):
-       SCRIPT timing reader=<r> country=<c> source=<legacy|cis> calls=<n> rows=<n> total_ms=<x> per_call_ms=<x>
-              max_ms=<x> errors=<n>
+     the TripPlanner source) and filter shapes, for COUNTRIES, REPEATS times (default 3); the slowest call of each
+     (reader, source) over all runs is EXPLAINed (ANALYZE, BUFFERS): top nodes by own time, and where each consumer
+     filter landed (pushed into a base scan or left above a security_barrier subquery):
+       SCRIPT timing reader=<r> country=<c> source=<legacy|cis> calls=<n per run> rows=<n run 1> total_ms=<median>
+              per_call_ms=<median> max_ms=<max of all runs> errors=<n> repeats=<n full runs> partial=<n cut short>
+              runs=<aggregate per run, a/b/c>
+       SCRIPT calls reader=routes_single|routes_single_auto country=<c> source=<s> repeat=<n> ms=<per call, in order>
        SCRIPT plan reader=<r> country=<c> source=<s> node=<type>:<relation> own_ms=<x> rows=<n> loops=<n>
+       SCRIPT plan_flag reader=<r> ... flag=seq_scan_raw_tours loops=<n>        (a liveness probe re-scanning raw_tours)
        SCRIPT qual reader=<r> country=<c> source=<s> marker=<m> at=<type>:<relation> pushed=<t|f>
-       SCRIPT parity reader=<r> country=<c> legacy=<x> cis=<y> target=<t> verdict=PASS|FAIL
-              target = max(1.5 x legacy, 200 ms); aggregation (S237): countries, by_country and routes per call,
+       SCRIPT parity reader=<r> country=<c> legacy=<median> cis=<median> target=<t> verdict=PASS|FAIL runs=<n>
+              partial=<n> cis_runs=<a/b/c> legacy_runs=<a/b/c>
+              a run the budget cut short (fewer calls of the reader than a full run) stays out of the median and is
+              counted in partial=; runs= and the a/b/c lists are the full runs only.
+              target = max(1.5 x legacy, 200 ms) on the MEDIAN of the runs (one noisy run neither fails nor rescues a
+              reader); aggregation (S237): countries, by_country and routes per call,
               tiles = sum of the country's 1-degree tiles (cap 80) + the 10-degree tile, detail = sum over the union
               of the country's destinations (cap), search = mean per query, tour_route = mean per sampled tour.
-       SCRIPT parity_total pass=<n> fail=<n>
+       SCRIPT parity_total passes=<n> fails=<n> runs=<n>
+     The cis routes_single + routes_chain calls run under plan_cache_mode=force_custom_plan, as TripPlanner's
+     proposals() runs them (set_config(..., true) before, the session value restored right after: a SET LOCAL would
+     survive the released savepoints and reach every later reader). routes_single_auto (run 1, cis, not scored) is
+     the same read left at the session plan_cache_mode under its own statement text: a jump from call 6 on is the
+     generic cached plan. The search readers run under TripPlanner's hnsw.ef_search / hnsw.iterative_scan in a
+     savepoint that is rolled back after them (TripPlanner scopes them to the search's own transaction), so routes
+     and assembly (incl. assembly_route_candidates) run at the session values; the EXPLAIN of the slowest search call
+     gets the same settings back.
+  2b. env_topk, as tripplanner with TripPlanner's hnsw.ef_search / hnsw.iterative_scan: EXPLAIN of the generated
+     TOPK_SQL_CIS (the query vector bound as $1), natural and with enable_sort=off (forced):
+       SCRIPT env_topk mode=natural|forced exec_ms=<x> uses_hnsw=<t|f> hnsw_order_by=<t|f> live_probe=<path to the
+              raw_tours scan of the liveness semi-join> live_index=<index|-> join_filter_source_id=<t|f>
+              raw_tours_seq_loops=<n>
+       SCRIPT env_topk_summary uses_hnsw_natural=<t|f> uses_hnsw_forced=<t|f> live_probe=<forced> ...
+              verdict_full=PASS|FAIL (step 18 revised: no raw_tours seq scan loops>1 in the natural plan; forced = HNSW
+              ordered by distance, liveness on raw_tours_source_key_idx, no Join Filter on source_id)
+              verdict_pre258=PASS|FAIL (forced plan reaches the HNSW index ordered by distance)
+  2c. generic-plan proof: PREPARE of the cis single route read, EXPLAIN EXECUTE under force_generic_plan and
+     force_custom_plan (days 21, slack 3):
+       SCRIPT generic_plan reader=routes_single country=<c> generic_exec_ms=<x> custom_exec_ms=<x> jit=<setting>
   3. fingerprints as tripplanner of every catalog.* view it may read (before / after CIS 253 must be equal):
        SCRIPT fingerprint view=<v> rows=<n> md5=<x> ms=<x>
   4. defects named in AA-847 (HCM Trail by Bicycle, Laos Kuang Si tours): duration, canonical and ranged day
@@ -41,17 +68,19 @@ Sections (every line starts with `SCRIPT `; aggregates, ids, statuses, catalog t
   5. AA-819 check: does the component's own tour-day text name it? frozen tripplanner.itinerary_components (live
      tours) and catalog.v_tour_component, per country:
        SCRIPT day_text source=<frozen|cis> country=<c> components=<n> no_day_text=<n> not_named=<n>
-  6. environment: pgvector version, hnsw.iterative_scan, live tours sharing a source_id (CIS 253's closing count),
-     EXPLAIN of an index-ordered top-k over geo.tour_place filtered to live tours and usable destinations (the CIS 253
-     v_component_embedding body), tripplanner's privileges in silver_aa_internal / acp_contract, cross-app references to
+  6. environment: pgvector version, hnsw.iterative_scan, jit, live tours sharing a source_id (CIS 253's closing
+     count), tripplanner's privileges in silver_aa_internal / acp_contract, cross-app references to
      shared.destinations, pg_stat_statements readability, last ANALYZE of the geo tables:
        SCRIPT env ... / SCRIPT grant ... / SCRIPT xref ... / SCRIPT stats ...
 
 Time budget: the workflow waits 30 minutes; the probe stops a section at BUDGET_S (about 20 minutes) with
-`SCRIPT truncated <section>`, caps every sample, and keeps every statement short. Ends with
+`SCRIPT truncated <section>`, caps every sample, and keeps every statement short. A further timing run starts only
+when 1.5 x the first run's time + 300 s still fits (`SCRIPT truncated section="repeat <n>"` otherwise; parity then
+uses the runs that finished, `runs=<n>` says how many, and drops a run a section cut short, `partial=<n>`). Ends with
 `SCRIPT done elapsed_s=<x>`. Returns 1 only when the tripplanner switch is refused.
 """
 
+import contextlib
 import json
 import math
 import re
@@ -71,13 +100,17 @@ ROUTE_SLACK = 3  # TripPlanner browse.routes.SLACK
 ROUTE_TOURS_CAP = 10
 TOUR_SAMPLE = 60
 TOPK_K = 200  # TripPlanner vector_topk.TOPK_PASSES[0]
+REPEATS = 3  # timing runs; parity is judged on the median (S246 gate diagnosis: legacy alone moved 2-3x between runs)
+HNSW_INDEX = "tour_place_embedding_hnsw"
+LIVE_KEY_INDEX = "raw_tours_source_key_idx"  # CIS 258 (stored COALESCE(source_group_id, tour_id)::text)
+GENERIC_STMT = "aa847_single_generic"
 COVERAGE_MISSING_CAP = 40
 DEFECT_TOURS_CAP = 8
 DAY_TEXT_EXAMPLES = 5
 
 # BEGIN GENERATED READERS (root docs/audits/2026-10-21-S246-aa847/gen_probe_sql.py; do not edit by hand)
-READERS_FROM = "AA-TripPlanner-Web@a38531df61d3"
-READERS_ABSENT = ['assembly.activities.ACTIVITIES_SQL_CIS', 'assembly.coverage.OPTIONS_SQL_CIS', 'assembly.events.COMPONENTS_SQL', 'assembly.events.COMPONENTS_SQL_CIS', 'assembly.suggestions.ROUTE_CANDIDATES_SQL_CIS', 'assembly.suggestions.TASTE_SQL', 'assembly.suggestions.TASTE_SQL_CIS', 'shared.component_ids.MAP_SQL', 'shared.vector_topk.EXACT_SQL_CIS', 'shared.vector_topk.TOPK_SQL_CIS']
+READERS_FROM = "AA-TripPlanner-Web@b1775cc66ea7"
+READERS_ABSENT = ['browse.search.CIS_SEARCH_SQL']
 READERS = {
     'assembly.activities.ACTIVITIES_SQL': """
     SELECT (array_agg(c.id::text ORDER BY c.source_tour_id, c.source_day_index))[1] AS component_id,
@@ -91,10 +124,45 @@ READERS = {
     GROUP BY c.name, c.activity
     ORDER BY count(DISTINCT c.source_tour_id) DESC, c.name
 """,
+    'assembly.activities.ACTIVITIES_SQL_CIS': """
+    SELECT (array_agg(c.component_id::text ORDER BY c.source_id, c.day_index))[1] AS component_id,
+           array_agg(c.component_id::text) AS component_ids,
+           c.name, c.activity, (array_agg(c.intensity_level))[1] AS intensity_level,
+           (array_agg(c.duration_hint))[1] AS duration_hint,
+           (array_agg(c.text_extract ORDER BY length(c.text_extract) DESC))[1] AS text_extract,
+           count(DISTINCT c.source_id) AS tour_count
+    FROM catalog.v_tour_component c
+    WHERE c.destination_id = $1::uuid
+    GROUP BY c.name, c.activity
+    ORDER BY count(DISTINCT c.source_id) DESC, c.name
+""",
     'assembly.coverage.OPTIONS_SQL': """
     SELECT DISTINCT destination_id::text AS destination_id, source_tour_id, source_day_index
     FROM tripplanner.itinerary_components
     WHERE destination_id = ANY($1::uuid[])
+""",
+    'assembly.coverage.OPTIONS_SQL_CIS': """
+    SELECT DISTINCT destination_id::text AS destination_id, source_id AS source_tour_id,
+           day_index AS source_day_index
+    FROM catalog.v_tour_component
+    WHERE destination_id = ANY($1::uuid[])
+""",
+    'assembly.events.COMPONENTS_SQL': """
+    SELECT c.id, c.name, c.activity, c.duration_hint, c.text_extract,
+           c.source_tour_id, c.source_day_index, c.destination_id,
+           d.name AS destination_name, d.lat AS lat, d.lng AS lng
+    FROM tripplanner.itinerary_components c
+    JOIN shared.destinations d ON d.id = c.destination_id
+    WHERE c.id = ANY($1::uuid[])
+""",
+    'assembly.events.COMPONENTS_SQL_CIS': """
+    SELECT c.component_id AS id, c.name, c.activity, c.duration_hint, c.text_extract,
+           c.source_id AS source_tour_id, c.day_index AS source_day_index, c.destination_id,
+           d.name AS destination_name, d.lat AS lat, d.lng AS lng, d.located_by, d.precision,
+           c.segment, c.segment_basis, c.segment_from_destination_id, c.segment_to_destination_id, c.segment_km
+    FROM catalog.v_tour_component c
+    JOIN catalog.v_destination d ON d.destination_id = c.destination_id
+    WHERE c.component_id = ANY($1::uuid[])
 """,
     'assembly.suggestions.ROUTE_CANDIDATES_SQL': """
     WITH near AS (
@@ -129,6 +197,63 @@ READERS = {
     ORDER BY best_distance ASC
     LIMIT $6
 """,
+    'assembly.suggestions.ROUTE_CANDIDATES_SQL_CIS': """
+    WITH near AS MATERIALIZED (
+        SELECT n.destination_id, 2 * 6371 * asin(sqrt(power(sin(radians(n.lat - $2) / 2), 2) + cos(radians($2)) * cos(radians(n.lat)) * power(sin(radians(n.lng - $3) / 2), 2))) AS transfer_km
+        FROM catalog.v_graph_node n
+        WHERE 2 * 6371 * asin(sqrt(power(sin(radians(n.lat - $2) / 2), 2) + cos(radians($2)) * cos(radians(n.lat)) * power(sin(radians(n.lng - $3) / 2), 2))) <= $4
+    ), stops AS MATERIALIZED (
+        SELECT source_id, day_index, destination_id FROM catalog.v_tour_stop
+    ), here AS (
+        SELECT s.source_id, s.day_index, s.destination_id, nr.transfer_km
+        FROM stops s JOIN near nr ON nr.destination_id = s.destination_id
+    ), nxt AS MATERIALIZED (
+        -- the tour's next stop somewhere else (a stay of several nights is skipped over)
+        SELECT h.source_id, h.day_index AS from_day, h.transfer_km, min(s2.day_index) AS to_day
+        FROM here h
+        JOIN stops s2 ON s2.source_id = h.source_id AND s2.day_index > h.day_index
+                     AND s2.destination_id <> h.destination_id
+        GROUP BY h.source_id, h.day_index, h.destination_id, h.transfer_km
+    ), comp AS MATERIALIZED (
+        SELECT c.source_id, c.day_index, c.component_id, c.destination_id,
+               c.embedding <=> $1::vector AS distance
+        FROM catalog.v_tour_component c
+        WHERE c.source_id = ANY(ARRAY(SELECT DISTINCT x.source_id FROM nxt x))
+          AND c.embedding IS NOT NULL
+          AND ($7::text IS NULL OR c.activity = $7::text)
+          AND ($8::text IS NULL OR c.intensity_level = $8::text)
+    ), dest AS MATERIALIZED (
+        SELECT d.destination_id, d.name, d.lat, d.lng, d.country
+        FROM catalog.v_destination d
+        WHERE d.destination_id = ANY(ARRAY(SELECT DISTINCT y.destination_id FROM comp y))
+          AND d.destination_id <> ALL($5::uuid[])
+    )
+    SELECT d.destination_id AS id, d.name, d.lat, d.lng, d.country,
+           COUNT(DISTINCT c.component_id) AS component_count,
+           MIN(c.distance) AS best_distance,
+           MIN(nx.transfer_km) AS transfer_km,
+           COUNT(DISTINCT nx.source_id) AS tour_count
+    FROM nxt nx
+    JOIN comp c
+      ON c.source_id = nx.source_id
+     AND c.day_index > nx.from_day AND c.day_index <= nx.to_day
+    JOIN dest d ON d.destination_id = c.destination_id
+    GROUP BY d.destination_id, d.name, d.lat, d.lng, d.country
+    ORDER BY best_distance ASC, d.destination_id
+    LIMIT $6
+""",
+    'assembly.suggestions.TASTE_SQL': """
+    SELECT c.embedding, d.country
+    FROM tripplanner.itinerary_components c
+    JOIN shared.destinations d ON d.id = c.destination_id
+    WHERE c.id = ANY($1::uuid[])
+""",
+    'assembly.suggestions.TASTE_SQL_CIS': """
+    SELECT c.embedding, d.country
+    FROM catalog.v_tour_component c
+    JOIN catalog.v_destination d ON d.destination_id = c.destination_id
+    WHERE c.component_id = ANY($1::uuid[])
+""",
     'browse.countries.COUNTRIES_SQL': """
     SELECT d.country AS country, COUNT(c.id) AS component_count
     FROM shared.destinations d
@@ -157,12 +282,12 @@ READERS = {
     ORDER BY component_count DESC
 """,
     'browse.countries.COUNTRY_DESTINATIONS_SQL_CIS': """
-    SELECT d.destination_id AS id, d.name, d.lat, d.lng, d.located_by, d.precision,
+    SELECT d.destination_id AS id, d.name, d.lat, d.lng, d.located_by, d.precision, d.shape_kind, d.shape_status, d.length_km, d.min_lat, d.min_lng, d.max_lat, d.max_lng,
            COUNT(c.component_id) AS component_count
     FROM catalog.v_destination d
     JOIN catalog.v_tour_component c ON c.destination_id = d.destination_id
     WHERE d.country = $1
-    GROUP BY d.destination_id, d.name, d.lat, d.lng, d.located_by, d.precision
+    GROUP BY d.destination_id, d.name, d.lat, d.lng, d.located_by, d.precision, d.shape_kind, d.shape_status, d.length_km, d.min_lat, d.min_lng, d.max_lat, d.max_lng
     HAVING COUNT(c.component_id) > 0
     ORDER BY component_count DESC
 """,
@@ -181,7 +306,7 @@ READERS = {
 """,
     'browse.destinations.DEST_SQL': """SELECT id, name, country, cover_image_url FROM shared.destinations WHERE id = $1""",
     'browse.destinations.DEST_SQL_CIS': """
-    SELECT destination_id AS id, name, country, cover_image_url, located_by, precision
+    SELECT destination_id AS id, name, country, cover_image_url, located_by, precision, shape_kind, shape_status, length_km, min_lat, min_lng, max_lat, max_lng
     FROM catalog.v_destination WHERE destination_id = $1::uuid
 """,
     'browse.routes.CHAIN_SQL': """
@@ -212,20 +337,25 @@ READERS = {
         SELECT l.source_id, l.day_from, l.day_to, l.days, l.start_destination_id, l.end_destination_id,
                l.destination_ids
         FROM catalog.v_tour_leg l WHERE $1 = ANY(l.countries) AND l.days < $2::int
-    ), a AS (
+    ), a AS MATERIALIZED (
         SELECT l.* FROM legs l JOIN span sp ON sp.source_id = l.source_id AND l.day_from = sp.first_day
     ), j AS MATERIALIZED (
         SELECT destination_a, destination_b, km FROM catalog.v_tour_junction
+    ), hop AS (
+        SELECT a.*, a.end_destination_id AS next_start, NULL::double precision AS km FROM a
+        UNION ALL
+        SELECT a.*, j.destination_b AS next_start, j.km
+        FROM a JOIN j ON j.destination_a = a.end_destination_id AND j.destination_b <> a.end_destination_id
     )
-    SELECT a.source_id AS a_tour, a.day_from AS a_from, a.day_to AS a_to, a.days AS a_days,
+    SELECT h.source_id AS a_tour, h.day_from AS a_from, h.day_to AS a_to, h.days AS a_days,
            b.source_id AS b_tour, b.day_from AS b_from, b.day_to AS b_to, b.days AS b_days,
-           coalesce(j.km, 0) AS transfer_km,
-           cardinality(a.destination_ids) + cardinality(b.destination_ids) AS places
-    FROM a
-    JOIN legs b ON b.source_id <> a.source_id AND a.days + b.days BETWEEN $2::int - $3::int AND $2::int
-    LEFT JOIN j ON j.destination_a = a.end_destination_id AND j.destination_b = b.start_destination_id
-    WHERE b.start_destination_id = a.end_destination_id OR j.destination_a IS NOT NULL
-    ORDER BY abs(a.days + b.days - $2::int), coalesce(j.km, 0), places DESC
+           coalesce(h.km, 0) AS transfer_km,
+           cardinality(h.destination_ids) + cardinality(b.destination_ids) AS places
+    FROM hop h
+    JOIN legs b ON b.start_destination_id = h.next_start AND b.source_id <> h.source_id
+               AND h.days + b.days BETWEEN $2::int - $3::int AND $2::int
+    ORDER BY abs(h.days + b.days - $2::int), coalesce(h.km, 0), places DESC,
+             h.source_id, h.day_from, h.day_to, b.source_id, b.day_from, b.day_to
     LIMIT 40
 """,
     'browse.routes.COMPONENTS_SQL': """
@@ -323,17 +453,6 @@ READERS = {
                   AND pt.master_status = 'active'
                   AND pt.deleted_at IS NULL)
 """,
-    'browse.search.CIS_SEARCH_SQL': """
-    SELECT d.destination_id AS id, d.name, d.lat, d.lng, d.located_by, d.precision,
-           COUNT(c.component_id) AS component_count,
-           MIN(c.embedding <=> $1::vector) AS best_distance
-    FROM catalog.v_tour_component c
-    JOIN catalog.v_destination d ON d.destination_id = c.destination_id
-    WHERE c.embedding IS NOT NULL 
-    GROUP BY d.destination_id, d.name, d.lat, d.lng, d.located_by, d.precision
-    ORDER BY best_distance ASC, d.destination_id
-    LIMIT 60
-""",
     'browse.tiles.TILE_SQL': """
         SELECT d.id, d.name, d.lat, d.lng, COUNT(c.id) AS component_count
         FROM shared.destinations d
@@ -347,16 +466,24 @@ READERS = {
     """,
     'browse.tiles.TILE_SQL_CIS': """
         SELECT d.destination_id AS id, d.name, d.lat, d.lng, d.located_by, d.precision,
+               d.shape_kind, d.shape_status, d.length_km,
+               d.min_lat, d.min_lng, d.max_lat, d.max_lng,
                COUNT(c.component_id) AS component_count
         FROM catalog.v_destination d
         JOIN catalog.v_tour_component c ON c.destination_id = d.destination_id
-        WHERE d.lat >= $1 AND d.lat < $2
-          AND d.lng >= $3 AND d.lng < $4
+        WHERE d.max_lat >= $1 AND d.min_lat < $2
+          AND d.max_lng >= $3 AND d.min_lng < $4
           
-        GROUP BY d.destination_id, d.name, d.lat, d.lng, d.located_by, d.precision
+        GROUP BY d.destination_id, d.name, d.lat, d.lng, d.located_by, d.precision,
+                 d.shape_kind, d.shape_status, d.length_km, d.min_lat, d.min_lng, d.max_lat, d.max_lng
         HAVING COUNT(c.component_id) > 0
         ORDER BY component_count DESC
     """,
+    'shared.component_ids.MAP_SQL': """
+    SELECT old_id::text AS old_id, new_id::text AS new_id
+    FROM tripplanner.component_id_map
+    WHERE old_id = ANY($1::uuid[])
+""",
     'shared.vector_topk.EXACT_SQL': """
         SELECT d.id, d.name, d.lat, d.lng, COUNT(c.id) AS component_count,
                MIN(c.embedding <=> $1::vector) AS best_distance
@@ -365,6 +492,16 @@ READERS = {
         WHERE c.embedding IS NOT NULL <ACTIVE_TOUR_SQL>
         GROUP BY d.id, d.name, d.lat, d.lng
         ORDER BY best_distance ASC, d.id
+        LIMIT 60
+    """,
+    'shared.vector_topk.EXACT_SQL_CIS': """
+        SELECT d.destination_id AS id, d.name, d.lat, d.lng, d.located_by, d.precision, d.shape_kind, d.shape_status, d.length_km, d.min_lat, d.min_lng, d.max_lat, d.max_lng, COUNT(c.id) AS component_count,
+               MIN(c.embedding <=> $1::vector) AS best_distance
+        FROM (SELECT component_id AS id, source_id AS source_tour_id, day_index AS source_day_index, destination_id, activity, intensity_level, season_months, embedding FROM catalog.v_tour_component) c
+        JOIN catalog.v_destination d ON d.destination_id = c.destination_id
+        WHERE c.embedding IS NOT NULL 
+        GROUP BY d.destination_id, d.name, d.lat, d.lng, d.located_by, d.precision, d.shape_kind, d.shape_status, d.length_km, d.min_lat, d.min_lng, d.max_lat, d.max_lng
+        ORDER BY best_distance ASC, d.destination_id
         LIMIT 60
     """,
     'shared.vector_topk.TOPK_SQL': """
@@ -387,6 +524,28 @@ READERS = {
         FROM best b
         JOIN shared.destinations od ON od.id = b.destination_id
         ORDER BY b.best_distance ASC, od.id
+        LIMIT 60
+    """,
+    'shared.vector_topk.TOPK_SQL_CIS': """
+        WITH scan AS MATERIALIZED (
+            SELECT c.id, c.destination_id, c.source_tour_id,
+                   c.embedding <=> $1::vector AS distance
+            FROM (SELECT component_id AS id, source_id AS source_tour_id, destination_id, activity, intensity_level, season_months, embedding FROM catalog.v_component_embedding) c
+            WHERE c.embedding IS NOT NULL
+            ORDER BY c.embedding <=> $1::vector
+            LIMIT $2
+        ), best AS (
+            SELECT c.destination_id, MIN(c.distance) AS best_distance
+            FROM scan c
+            WHERE TRUE 
+            GROUP BY c.destination_id
+        )
+        SELECT od.destination_id AS id, od.name, od.lat, od.lng, od.located_by, od.precision, od.shape_kind, od.shape_status, od.length_km, od.min_lat, od.min_lng, od.max_lat, od.max_lng, b.best_distance,
+               (SELECT COUNT(*) FROM (SELECT component_id AS id, source_id AS source_tour_id, day_index AS source_day_index, destination_id, activity, intensity_level, season_months, embedding FROM catalog.v_tour_component) c
+                WHERE c.destination_id = od.destination_id AND c.embedding IS NOT NULL ) AS component_count
+        FROM best b
+        JOIN catalog.v_destination od ON od.destination_id = b.destination_id
+        ORDER BY b.best_distance ASC, od.destination_id
         LIMIT 60
     """,
 }
@@ -499,14 +658,56 @@ def _where(node):
 QUAL_KEYS = ("Filter", "Index Cond", "Join Filter", "Hash Cond", "Recheck Cond", "Merge Cond", "Order By")
 
 
-async def explain(conn, label, sql, args, markers):
+class _Undo(Exception):
+    """Carries an EXPLAIN result out of a savepoint that must be rolled back (so its settings end with it)."""
+
+    def __init__(self, value):
+        super().__init__("undo")
+        self.value = value
+
+
+async def set_local(conn, name, value):
+    """A transaction-local setting, set_config(name, value, true). Like SET LOCAL it survives a RELEASE SAVEPOINT, so
+    a caller that must not leak it to later readers restores the value itself or rolls its savepoint back."""
+    await conn.execute("SELECT set_config($1, $2, true)", name, value)
+
+
+@contextlib.asynccontextmanager
+async def scoped_settings(conn, settings):
+    """`settings` [(name, value)] for the block only: set in a savepoint that is ROLLED BACK when the block ends, so
+    they stop there (a RELEASE would keep them, as SET LOCAL does). For read-only work: the block's reads are kept in
+    Python, nothing in the savepoint needs to survive."""
     try:
         async with conn.transaction():
+            for name, value in settings:
+                await set_local(conn, name, value)
+            yield
+            raise _Undo(None)
+    except _Undo:
+        pass
+
+
+async def explain_doc(conn, sql, args, settings=()):
+    """EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) of `sql` with `settings` [(name, value)] in a savepoint that is ROLLED
+    BACK, never released: the settings (enable_sort, plan_cache_mode, ...) stop with it."""
+    try:
+        async with conn.transaction():
+            for name, value in settings:
+                await set_local(conn, name, value)
             raw = await conn.fetchval("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + sql, *args)
-    except Exception as e:  # noqa: BLE001
-        out("plan_error", **label, error=type(e).__name__)
-        return
-    doc = json.loads(raw) if isinstance(raw, str) else raw
+            raise _Undo(raw)
+    except _Undo as u:
+        raw = u.value
+    return json.loads(raw) if isinstance(raw, str) else raw
+
+
+def raw_tours_seq_loops(nodes):
+    """Loops of the busiest Seq Scan on raw_tours: > 1 is a liveness probe re-scanning the table per outer row."""
+    return max((n.get("Actual Loops") or 0 for n in nodes
+                if n.get("Node Type") == "Seq Scan" and n.get("Relation Name") == "raw_tours"), default=0)
+
+
+def report_plan(label, doc, markers):
     root = doc[0]["Plan"]
     nodes = list(_walk(root))
     for n in sorted(nodes, key=_own_ms, reverse=True)[:6]:
@@ -519,8 +720,108 @@ async def explain(conn, label, sql, args, markers):
         for n in hits[:3]:
             pushed = n.get("Node Type") not in ("Subquery Scan", "CTE Scan", "Result")
             out("qual", **label, marker=m, at=_where(n), pushed=pushed)
+    loops = raw_tours_seq_loops(nodes)
+    if loops > 1:
+        out("plan_flag", **label, flag="seq_scan_raw_tours", loops=loops)
     out("plan_total", **label, exec_ms=round(doc[0].get("Execution Time", 0.0), 1),
-        planning_ms=round(doc[0].get("Planning Time", 0.0), 1))
+        planning_ms=round(doc[0].get("Planning Time", 0.0), 1), jit="JIT" in doc[0])
+
+
+async def explain(conn, label, sql, args, markers, settings=()):
+    """Reports the plan of one call; returns the EXPLAIN document, or None when it failed (`SCRIPT plan_error`)."""
+    try:
+        doc = await explain_doc(conn, sql, args, settings)
+    except Exception as e:  # noqa: BLE001
+        out("plan_error", **label, error=type(e).__name__)
+        return None
+    report_plan(label, doc, markers)
+    return doc
+
+
+def _has_rel(node, rel):
+    return any(n.get("Relation Name") == rel for n in _walk(node))
+
+
+def _where_ix(node):
+    ix = node.get("Index Name")
+    return _where(node) + (f"[{ix}]" if ix else "")
+
+
+def topk_plan_facts(doc):
+    """What the step-18 structural check reads in a TOPK_SQL_CIS plan. The liveness probe is looked for inside the
+    `scan` CTE (the per-destination component_count subquery joins _live_tour too): the first child of a node that
+    reaches raw_tours but not tour_place while the node's other side (or the node itself) reads tour_place."""
+    root = doc[0]["Plan"]
+    nodes = list(_walk(root))
+    hnsw = [n for n in nodes if n.get("Index Name") == HNSW_INDEX]
+    scope = next((n for n in nodes if n.get("Subplan Name") == "CTE scan"), root)
+    live = None
+    for n in _walk(scope):
+        kids = n.get("Plans") or []
+        for c in kids:
+            if not _has_rel(c, "raw_tours") or _has_rel(c, "tour_place"):
+                continue
+            if n.get("Relation Name") == "tour_place" or any(_has_rel(o, "tour_place") for o in kids if o is not c):
+                live = c
+                break
+        if live is not None:
+            break
+    path = []
+    n = live
+    while n is not None:
+        path.append(n)
+        if n.get("Relation Name") == "raw_tours":
+            break
+        n = next((c for c in n.get("Plans") or [] if _has_rel(c, "raw_tours")), None)
+    rt = path[-1] if path and path[-1].get("Relation Name") == "raw_tours" else None
+    return {
+        "uses_hnsw": bool(hnsw),
+        "hnsw_order_by": any("<=>" in str(n.get("Order By", "")) for n in hnsw),
+        "live_probe": "/".join(_where_ix(x) for x in path) or "-",
+        "live_index": rt.get("Index Name") if rt is not None else None,
+        "join_filter_source_id": any("source_id" in str(x.get("Join Filter", "")) for x in _walk(scope)),
+        "raw_tours_seq_loops": raw_tours_seq_loops(nodes),
+        "nodes": ">".join(x.get("Node Type", "?") for x in nodes[:6]),
+    }
+
+
+def complete_runs(runs):
+    """(the runs with every call, how many were cut short). A run the time budget stopped mid-section has fewer calls
+    of a reader than a full run; its sum is low, so it stays out of the median (it would pull a FAIL to a PASS)."""
+    if not runs:
+        return [], 0
+    n = max(len(s.ms) for s in runs)
+    full = [s for s in runs if len(s.ms) == n]
+    return full, len(runs) - len(full)
+
+
+def median(values):
+    v = sorted(values)
+    if not v:
+        return 0.0
+    m = len(v) // 2
+    return v[m] if len(v) % 2 else (v[m - 1] + v[m]) / 2.0
+
+
+def parity_verdict(legacy_runs, cis_runs, cis_errors=0):
+    """(legacy, cis, target, ok) on the median of the runs; target = max(1.5 x legacy, 200 ms)."""
+    lv, cv = median(legacy_runs), median(cis_runs)
+    target = max(1.5 * lv, 200.0)
+    return lv, cv, target, cv <= target and cis_errors == 0
+
+
+def ef_search_for(k):
+    """TripPlanner vector_topk.ef_search_for: 2 x k, at least 40, at most pgvector's 1000."""
+    return min(1000, max(k * 2, 40))
+
+
+async def pgvector_iterative(conn):
+    """pgvector >= 0.8 (hnsw.iterative_scan), as TripPlanner vector_topk.iterative_scan_supported."""
+    try:
+        v = await conn.fetchval("SELECT extversion FROM pg_extension WHERE extname = 'vector'")
+        return tuple(int(x) for x in re.findall(r"\d+", v or "0")[:2]) >= (0, 8)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _norm(text):
@@ -692,6 +993,12 @@ async def tripplanner_pass(conn, budget, st):
     else:
         await guarded(conn, "timings", timings(conn, budget, st))
 
+    # ── 2b. env_topk (step 18 structural check) and 2c. the generic-plan proof ──
+    if not budget.over("env_topk", reserve=120):
+        await guarded(conn, "env_topk", env_topk(conn, st))
+    if not budget.over("generic_plan", reserve=120):
+        await guarded(conn, "generic_plan", generic_plan_check(conn, st))
+
     # ── 3. fingerprints ──
     for r in await conn.fetch(VIEWS_SQL):
         if budget.over("fingerprints", reserve=120):
@@ -712,7 +1019,7 @@ async def tripplanner_pass(conn, budget, st):
     # (5. the AA-819 day text check runs in pass 3: it needs pass 2's old tour_id -> source_id map)
 
 
-async def assembly(conn, country, dests, vectors, run):
+async def assembly(conn, country, dests, vectors, run, quiet=False):
     """TripPlanner 6c assembly readers on both sources, with the consumer's argument shapes (uuid[] of pinned
     component ids, one destination id, the destination ids of a trip, the route-candidate parameters)."""
     picked = [d for d in dests[:ASM_DESTS]]
@@ -737,165 +1044,310 @@ async def assembly(conn, country, dests, vectors, run):
                           ASM_CANDIDATES, None, None)
     if "shared.component_ids.MAP_SQL" in READERS and ids["legacy"]:
         await run("assembly_id_map", country, "cis", "shared.component_ids.MAP_SQL", ids["legacy"])
-    out("assembly_input", country=country, destinations=len(dest_ids), legacy_ids=len(ids["legacy"]),
-        cis_ids=len(ids["cis"]))
+    if not quiet:
+        out("assembly_input", country=country, destinations=len(dest_ids), legacy_ids=len(ids["legacy"]),
+            cis_ids=len(ids["cis"]))
+
+
+# Parity readers (S237 aggregation); tiles / detail are summed per country, the rest per call.
+PARITY_READERS = ("countries", "by_country", "tiles", "detail", "search", "routes", "tour_route")
+TOTAL_AGG = ("tiles", "detail")
+# composite series (their parts are EXPLAINed under their own names) and the unscored diagnostic
+NO_EXPLAIN = ("routes", "tour_route", "routes_single_auto")
+CALL_LISTS = ("routes_single", "routes_single_auto")
+# The cis reads TripPlanner proposals() runs under SET LOCAL plan_cache_mode = force_custom_plan (routes fix).
+FORCED_CUSTOM = ("routes_single", "routes_chain")
+# A distinct statement text, so asyncpg prepares the diagnostic apart from the forced routes_single statement.
+AUTO_TAG = "\n-- aa847 probe: routes_single_auto, plan_cache_mode left at the session value\n"
+MARKERS = {"countries": ["country"], "by_country": ["country ="],
+           "tiles": ["lat >=", "lng >=", "max_lat", "max_lng"],
+           "detail": ["destination_id ="], "search": ["<=>"],
+           "routes": ["countries", "source_id = ANY", "source_tour_id = ANY"],
+           "tour_route": ["source_id =", "tour_id ="], "assembly_components": ["= ANY"],
+           "assembly_taste": ["= ANY"], "assembly_options": ["= ANY"], "assembly_activities": ["destination_id ="],
+           "assembly_route_candidates": ["<=>"], "assembly_id_map": ["= ANY"]}
+
+
+def _agg(name):
+    return (lambda s: s.total()) if name in TOTAL_AGG else (lambda s: s.per_call())
+
+
+def _markers(name):
+    return next((v for k, v in MARKERS.items() if name.startswith(k)), [])
 
 
 async def timings(conn, budget, st):
-    results = {}  # (reader, country) -> {source: Series}
+    results = {}  # (reader, country) -> {source: {run: Series}}
+    rep = 1
 
     def series(name, country, source):
-        return results.setdefault((name, country), {}).setdefault(source, Series())
+        return results.setdefault((name, country), {}).setdefault(source, {}).setdefault(rep, Series())
 
-    async def run(name, country, source, key, *args):
-        sql = reader(key)
+    async def run(name, country, source, key, *args, sql=None):
+        sql = sql if sql is not None else reader(key)
         ms, rows, err = await timed(conn, sql, *args)
         series(name, country, source).add(ms, rows, err, sql, args)
         return rows
 
-    markers = {"countries": ["country"], "by_country": ["country ="], "tiles": ["lat >=", "lng >="],
-               "detail": ["destination_id ="], "search": ["<=>"], "routes": ["countries", "source_id = ANY",
-                                                                             "source_tour_id = ANY"],
-               "tour_route": ["source_id =", "tour_id ="], "assembly_components": ["= ANY"],
-               "assembly_taste": ["= ANY"], "assembly_options": ["= ANY"], "assembly_activities": ["destination_id ="],
-               "assembly_route_candidates": ["<=>"], "assembly_id_map": ["= ANY"]}
+    st["iterative"] = iterative = await pgvector_iterative(conn)
+    st["search_settings"] = [("hnsw.ef_search", str(ef_search_for(TOPK_K)))] + (
+        [("hnsw.iterative_scan", "relaxed_order")] if iterative else [])
+    st["plan_cache_mode"] = await conn.fetchval("SELECT current_setting('plan_cache_mode')") or "auto"
 
-    await run("countries", "*", "legacy", "browse.countries.COUNTRIES_SQL")
-    await run("countries", "*", "cis", "browse.countries.COUNTRIES_SQL_CIS")
-    iterative = False
-    try:
-        v = await conn.fetchval("SELECT extversion FROM pg_extension WHERE extname = 'vector'")
-        iterative = tuple(int(x) for x in re.findall(r"\d+", v or "0")[:2]) >= (0, 8)
-    except Exception:  # noqa: BLE001
-        pass
+    async def one_run():
+        first = rep == 1
+        await run("countries", "*", "legacy", "browse.countries.COUNTRIES_SQL")
+        await run("countries", "*", "cis", "browse.countries.COUNTRIES_SQL_CIS")
+        for country in COUNTRIES:
+            if budget.over(f"timings {country}", reserve=300):
+                break
+            await run("by_country", country, "legacy", "browse.countries.COUNTRY_DESTINATIONS_SQL", country)
+            await run("by_country", country, "cis", "browse.countries.COUNTRY_DESTINATIONS_SQL_CIS", country)
 
-    for country in COUNTRIES:
-        if budget.over(f"timings {country}", reserve=300):
+            dests = [dict(r) for r in await conn.fetch(COUNTRY_DESTS_SQL, country)]
+            cells = sorted({(math.floor(d["lat"]), math.floor(d["lng"])) for d in dests})[:TILE_CAP]
+            for lat, lng in cells:
+                await run("tiles", country, "legacy", "browse.tiles.TILE_SQL", lat, lat + 1, lng, lng + 1)
+                await run("tiles", country, "cis", "browse.tiles.TILE_SQL_CIS", lat, lat + 1, lng, lng + 1)
+            if dests:
+                lat10 = math.floor(sum(d["lat"] for d in dests) / len(dests) / 10) * 10
+                lng10 = math.floor(sum(d["lng"] for d in dests) / len(dests) / 10) * 10
+                await run("tiles", country, "legacy", "browse.tiles.TILE_SQL", lat10, lat10 + 10, lng10, lng10 + 10)
+                await run("tiles", country, "cis", "browse.tiles.TILE_SQL_CIS", lat10, lat10 + 10, lng10, lng10 + 10)
+            if first:
+                out("tiles_input", country=country, one_degree=len(cells), ten_degree=1 if dests else 0)
+
+            for d in dests[:DETAIL_CAP]:
+                if budget.over(f"detail {country}", reserve=240):
+                    break
+                await run("detail", country, "legacy", "browse.destinations.DEST_SQL", d["id"])
+                await run("detail", country, "legacy", "browse.destinations.COMPONENTS_SQL", d["id"])
+                await run("detail", country, "cis", "browse.destinations.DEST_SQL_CIS", d["id"])
+                await run("detail", country, "cis", "browse.destinations.COMPONENTS_SQL_CIS", d["id"])
+            if first:
+                out("detail_input", country=country, destinations=min(len(dests), DETAIL_CAP), of=len(dests))
+
+            vectors = [r["v"] for r in await conn.fetch(QUERY_VECTORS_SQL, country, SEARCH_QUERIES)]
+            # TripPlanner vector_topk sets these in the search's own transaction; here they end with this block, so
+            # the readers after it (routes, assembly incl. assembly_route_candidates) run at the session values, as
+            # they do in TripPlanner.
+            async with scoped_settings(conn, st["search_settings"]):
+                for vec in vectors:
+                    if budget.over(f"search {country}", reserve=200):
+                        break
+                    await run("search", country, "legacy", "shared.vector_topk.TOPK_SQL", vec, TOPK_K)
+                    await run("search_exact", country, "legacy", "shared.vector_topk.EXACT_SQL", vec)
+                    if "shared.vector_topk.TOPK_SQL_CIS" in READERS:
+                        # TripPlanner 6c: the cis search is the same top-k, over catalog.v_component_embedding (253)
+                        await run("search", country, "cis", "shared.vector_topk.TOPK_SQL_CIS", vec, TOPK_K)
+                        await run("search_exact", country, "cis", "shared.vector_topk.EXACT_SQL_CIS", vec)
+                    else:
+                        await run("search", country, "cis", "browse.search.CIS_SEARCH_SQL", vec)
+            if first:
+                out("search_input", country=country, queries=len(vectors))
+
+            for days in ROUTE_DAYS:
+                if budget.over(f"routes {country}", reserve=180):
+                    break
+                for source, suffix in (("legacy", ""), ("cis", "_CIS")):
+                    t0 = time.monotonic()
+                    forced = source == "cis"
+                    if forced:
+                        # TripPlanner proposals(): the cis single + chain reads plan per call. set_config, then the
+                        # session value back right after: a SET LOCAL here would outlive the released savepoints.
+                        await set_local(conn, "plan_cache_mode", "force_custom_plan")
+                    try:
+                        singles = await run("routes_single", country, source, f"browse.routes.SINGLE_SQL{suffix}",
+                                            country, days, ROUTE_SLACK)
+                        chains = await run("routes_chain", country, source, f"browse.routes.CHAIN_SQL{suffix}",
+                                           country, days, ROUTE_SLACK)
+                    finally:
+                        if forced:
+                            await set_local(conn, "plan_cache_mode", st["plan_cache_mode"])
+                    tours = sorted({r["tour_id"] for r in singles} | {r["a_tour"] for r in chains}
+                                   | {r["b_tour"] for r in chains})[:ROUTE_TOURS_CAP]
+                    if tours:
+                        await run("routes_days", country, source, f"browse.routes.DAYS_SQL{suffix}", tours)
+                        await run("routes_components", country, source, f"browse.routes.COMPONENTS_SQL{suffix}",
+                                  tours)
+                    series("routes", country, source).add((time.monotonic() - t0) * 1000.0, singles, None,
+                                                          reader(f"browse.routes.CHAIN_SQL{suffix}"),
+                                                          (country, days, ROUTE_SLACK))
+            if first and "browse.routes.SINGLE_SQL_CIS" in READERS:
+                # Diagnostic, not scored: the cis single read at the session plan_cache_mode, its own prepared
+                # statement. From the 6th execution PG may keep a generic plan: a jump there is the S246 diagnosis.
+                auto_sql = reader("browse.routes.SINGLE_SQL_CIS") + AUTO_TAG
+                for days in ROUTE_DAYS:
+                    if budget.over(f"routes_single_auto {country}", reserve=180):
+                        break
+                    await run("routes_single_auto", country, "cis", None, country, days, ROUTE_SLACK, sql=auto_sql)
+
+            sample = [dict(r) for r in await conn.fetch(SAMPLE_TOURS_SQL, country, TOUR_SAMPLE // len(COUNTRIES))]
+            for t in sample:
+                if budget.over(f"tour_route {country}", reserve=150):
+                    break
+                for source in ("legacy", "cis"):
+                    t0 = time.monotonic()
+                    if source == "cis":
+                        keys = [t["source_id"]]
+                        stops = await run("tour_route_days", country, source, "browse.routes.DAYS_SQL_CIS", keys)
+                        if stops:
+                            await run("tour_route_components", country, source, "browse.routes.COMPONENTS_SQL_CIS",
+                                      keys)
+                        place_key = "browse.routes.PLACE_COMPONENTS_SQL_CIS"
+                    else:
+                        keys = [t["tour_id"]]
+                        stops = await run("tour_route_days", country, source, "browse.routes.DAYS_SQL", keys)
+                        if stops:
+                            await run("tour_route_components", country, source, "browse.routes.COMPONENTS_SQL", keys)
+                        place_key = "browse.routes.PLACE_COMPONENTS_SQL"
+                    if not stops:
+                        places = await run("tour_route_places", country, source,
+                                           "browse.routes.TOUR_ROUTE_PLACES_SQL", t["tour_id"])
+                        ids = sorted({p["destination_id"] for p in places})
+                        if ids:
+                            await run("tour_route_place_components", country, source, place_key, ids, keys)
+                            await run("tour_route_days_count", country, source, "browse.routes.TOUR_DAYS_COUNT_SQL",
+                                      t["tour_id"])
+                    series("tour_route", country, source).add((time.monotonic() - t0) * 1000.0, [], None,
+                                                              reader("browse.routes.TOUR_ROUTE_PLACES_SQL"),
+                                                              (t["tour_id"],))
+            if first:
+                out("tour_route_input", country=country, tours=len(sample))
+
+            if all(k in READERS for _, lk, ck in ASSEMBLY_READERS for k in (lk, ck)) \
+                    and not budget.over(f"assembly {country}", reserve=120):
+                await assembly(conn, country, dests, vectors, run, quiet=not first)
+
+    first_run_s = 0.0
+    for rep in range(1, REPEATS + 1):
+        if rep > 1 and budget.over(f"repeat {rep}", reserve=first_run_s * 1.5 + 300):
             break
-        await run("by_country", country, "legacy", "browse.countries.COUNTRY_DESTINATIONS_SQL", country)
-        await run("by_country", country, "cis", "browse.countries.COUNTRY_DESTINATIONS_SQL_CIS", country)
+        t_run = time.monotonic()
+        await one_run()
+        if rep == 1:
+            first_run_s = time.monotonic() - t_run
+        out("repeat", run=rep, of=REPEATS, elapsed_s=round(time.monotonic() - t_run, 1))
 
-        dests = [dict(r) for r in await conn.fetch(COUNTRY_DESTS_SQL, country)]
-        cells = sorted({(math.floor(d["lat"]), math.floor(d["lng"])) for d in dests})[:TILE_CAP]
-        for lat, lng in cells:
-            await run("tiles", country, "legacy", "browse.tiles.TILE_SQL", lat, lat + 1, lng, lng + 1)
-            await run("tiles", country, "cis", "browse.tiles.TILE_SQL_CIS", lat, lat + 1, lng, lng + 1)
-        if dests:
-            lat10 = math.floor(sum(d["lat"] for d in dests) / len(dests) / 10) * 10
-            lng10 = math.floor(sum(d["lng"] for d in dests) / len(dests) / 10) * 10
-            await run("tiles", country, "legacy", "browse.tiles.TILE_SQL", lat10, lat10 + 10, lng10, lng10 + 10)
-            await run("tiles", country, "cis", "browse.tiles.TILE_SQL_CIS", lat10, lat10 + 10, lng10, lng10 + 10)
-        out("tiles_input", country=country, one_degree=len(cells), ten_degree=1 if dests else 0)
-
-        for d in dests[:DETAIL_CAP]:
-            if budget.over(f"detail {country}", reserve=240):
-                break
-            await run("detail", country, "legacy", "browse.destinations.DEST_SQL", d["id"])
-            await run("detail", country, "legacy", "browse.destinations.COMPONENTS_SQL", d["id"])
-            await run("detail", country, "cis", "browse.destinations.DEST_SQL_CIS", d["id"])
-            await run("detail", country, "cis", "browse.destinations.COMPONENTS_SQL_CIS", d["id"])
-        out("detail_input", country=country, destinations=min(len(dests), DETAIL_CAP), of=len(dests))
-
-        vectors = [r["v"] for r in await conn.fetch(QUERY_VECTORS_SQL, country, SEARCH_QUERIES)]
-        for vec in vectors:
-            if budget.over(f"search {country}", reserve=200):
-                break
-            await conn.execute("SELECT set_config('hnsw.ef_search', $1, true)", str(min(1000, TOPK_K * 2)))
-            if iterative:
-                await conn.execute("SELECT set_config('hnsw.iterative_scan', 'relaxed_order', true)")
-            await run("search", country, "legacy", "shared.vector_topk.TOPK_SQL", vec, TOPK_K)
-            await run("search_exact", country, "legacy", "shared.vector_topk.EXACT_SQL", vec)
-            if "shared.vector_topk.TOPK_SQL_CIS" in READERS:
-                # TripPlanner 6c: the cis search is the same top-k, over catalog.v_component_embedding (CIS 253)
-                await run("search", country, "cis", "shared.vector_topk.TOPK_SQL_CIS", vec, TOPK_K)
-                await run("search_exact", country, "cis", "shared.vector_topk.EXACT_SQL_CIS", vec)
-            else:
-                await run("search", country, "cis", "browse.search.CIS_SEARCH_SQL", vec)
-        out("search_input", country=country, queries=len(vectors))
-
-        for days in ROUTE_DAYS:
-            if budget.over(f"routes {country}", reserve=180):
-                break
-            for source, suffix in (("legacy", ""), ("cis", "_CIS")):
-                t0 = time.monotonic()
-                singles = await run("routes_single", country, source, f"browse.routes.SINGLE_SQL{suffix}",
-                                    country, days, ROUTE_SLACK)
-                chains = await run("routes_chain", country, source, f"browse.routes.CHAIN_SQL{suffix}",
-                                   country, days, ROUTE_SLACK)
-                tours = sorted({r["tour_id"] for r in singles} | {r["a_tour"] for r in chains}
-                               | {r["b_tour"] for r in chains})[:ROUTE_TOURS_CAP]
-                if tours:
-                    await run("routes_days", country, source, f"browse.routes.DAYS_SQL{suffix}", tours)
-                    await run("routes_components", country, source, f"browse.routes.COMPONENTS_SQL{suffix}", tours)
-                series("routes", country, source).add((time.monotonic() - t0) * 1000.0, singles, None,
-                                                      reader(f"browse.routes.CHAIN_SQL{suffix}"),
-                                                      (country, days, ROUTE_SLACK))
-
-        sample = [dict(r) for r in await conn.fetch(SAMPLE_TOURS_SQL, country, TOUR_SAMPLE // len(COUNTRIES))]
-        for t in sample:
-            if budget.over(f"tour_route {country}", reserve=150):
-                break
-            for source in ("legacy", "cis"):
-                t0 = time.monotonic()
-                if source == "cis":
-                    keys = [t["source_id"]]
-                    stops = await run("tour_route_days", country, source, "browse.routes.DAYS_SQL_CIS", keys)
-                    if stops:
-                        await run("tour_route_components", country, source, "browse.routes.COMPONENTS_SQL_CIS", keys)
-                    place_key = "browse.routes.PLACE_COMPONENTS_SQL_CIS"
-                else:
-                    keys = [t["tour_id"]]
-                    stops = await run("tour_route_days", country, source, "browse.routes.DAYS_SQL", keys)
-                    if stops:
-                        await run("tour_route_components", country, source, "browse.routes.COMPONENTS_SQL", keys)
-                    place_key = "browse.routes.PLACE_COMPONENTS_SQL"
-                if not stops:
-                    places = await run("tour_route_places", country, source, "browse.routes.TOUR_ROUTE_PLACES_SQL",
-                                       t["tour_id"])
-                    ids = sorted({p["destination_id"] for p in places})
-                    if ids:
-                        await run("tour_route_place_components", country, source, place_key, ids, keys)
-                        await run("tour_route_days_count", country, source, "browse.routes.TOUR_DAYS_COUNT_SQL",
-                                  t["tour_id"])
-                series("tour_route", country, source).add((time.monotonic() - t0) * 1000.0, [], None,
-                                                          reader("browse.routes.TOUR_ROUTE_PLACES_SQL"),
-                                                          (t["tour_id"],))
-        out("tour_route_input", country=country, tours=len(sample))
-
-        if all(k in READERS for _, lk, ck in ASSEMBLY_READERS for k in (lk, ck)) \
-                and not budget.over(f"assembly {country}", reserve=120):
-            await assembly(conn, country, dests, vectors, run)
-
-    # report + EXPLAIN the slowest call of each (reader, country, source)
+    # report (medians over the runs) + EXPLAIN the slowest call of each (reader, country, source) over all runs
+    for (name, country), by_source in sorted(results.items()):
+        agg = _agg(name)
+        for source, reps in sorted(by_source.items()):
+            runs = [reps[r] for r in sorted(reps)]
+            full, cut = complete_runs(runs)
+            all_ms = [m for s in runs for m in s.ms]
+            out("timing", reader=name, country=country, source=source, calls=len(runs[0].ms), rows=runs[0].rows,
+                total_ms=round(median([s.total() for s in full]), 1),
+                per_call_ms=round(median([s.per_call() for s in full]), 1),
+                max_ms=round(max(all_ms) if all_ms else 0.0, 1), errors=sum(s.errors for s in runs),
+                repeats=len(full), partial=cut, runs="/".join(f"{agg(s):.1f}" for s in runs))
+            if name in CALL_LISTS:
+                for r in sorted(reps):
+                    out("calls", reader=name, country=country, source=source, repeat=r,
+                        ms=",".join(f"{m:.1f}" for m in reps[r].ms))
+        if name in NO_EXPLAIN:
+            continue
+        for source, reps in sorted(by_source.items()):
+            slowest = max((s.slowest for s in reps.values() if s.slowest), key=lambda x: x[0], default=None)
+            if name == "search" and source == "cis" and slowest and "topk_vector" not in st:
+                st["topk_vector"] = slowest[2][0]          # env_topk EXPLAINs the slowest cis search's vector
+            if slowest and not budget.over("explain", reserve=90):
+                await explain(conn, {"reader": name, "country": country, "source": source}, slowest[1],
+                              slowest[2], _markers(name),
+                              settings=st["search_settings"] if name in ("search", "search_exact") else ())
     passes = fails = 0
+    n_runs = 0
     for (name, country), by_source in sorted(results.items()):
-        for source, s in sorted(by_source.items()):
-            out("timing", reader=name, country=country, source=source, calls=len(s.ms), rows=s.rows,
-                total_ms=round(s.total(), 1), per_call_ms=round(s.per_call(), 1),
-                max_ms=round(max(s.ms) if s.ms else 0.0, 1), errors=s.errors)
-        if name in ("routes", "tour_route"):
-            continue        # composite series: their parts are EXPLAINed under their own names
-        for source, s in sorted(by_source.items()):
-            if s.slowest and not budget.over("explain", reserve=90):
-                mk = next((v for k, v in markers.items() if name.startswith(k)), [])
-                await explain(conn, {"reader": name, "country": country, "source": source}, s.slowest[1],
-                              s.slowest[2], mk)
-    for (name, country), by_source in sorted(results.items()):
-        if name not in ("countries", "by_country", "tiles", "detail", "search", "routes", "tour_route") \
-                and not name.startswith("assembly_"):
+        if name not in PARITY_READERS and not name.startswith("assembly_"):
             continue
-        leg, cis = by_source.get("legacy"), by_source.get("cis")
-        if not leg or not cis or not leg.ms or not cis.ms:
+        leg, leg_cut = complete_runs([s for _, s in sorted(by_source.get("legacy", {}).items()) if s.ms])
+        cis, cis_cut = complete_runs([s for _, s in sorted(by_source.get("cis", {}).items()) if s.ms])
+        if not leg or not cis:
             continue
-        agg = (lambda s: s.total()) if name in ("tiles", "detail") else (lambda s: s.per_call())
-        lv, cv = agg(leg), agg(cis)
-        target = max(1.5 * lv, 200.0)
-        ok = cv <= target and cis.errors == 0
+        agg = _agg(name)
+        lv, cv, target, ok = parity_verdict([agg(s) for s in leg], [agg(s) for s in cis],
+                                            sum(s.errors for s in cis))
         passes += ok
         fails += not ok
+        n_runs = max(n_runs, len(cis))
         out("parity", reader=name, country=country, legacy=round(lv, 1), cis=round(cv, 1), target=round(target, 1),
-            verdict="PASS" if ok else "FAIL")
-    out("parity_total", passes=passes, fails=fails)
+            verdict="PASS" if ok else "FAIL", runs=len(cis), partial=leg_cut + cis_cut,
+            cis_runs="/".join(f"{agg(s):.1f}" for s in cis), legacy_runs="/".join(f"{agg(s):.1f}" for s in leg))
+    out("parity_total", passes=passes, fails=fails, runs=n_runs)
+
+
+async def env_topk(conn, st):
+    """Step 18 (revised): the generated cis top-k as TripPlanner sends it (as tripplanner, its ef_search and
+    iterative_scan, the vector bound as $1), natural and with enable_sort=off. At Dev size the natural plan is an exact
+    top-N sort (correct and cheaper); the forced plan shows whether the HNSW index CAN serve the order through the
+    view and what the liveness EXISTS costs per index row."""
+    key = "shared.vector_topk.TOPK_SQL_CIS"
+    if key not in READERS:
+        out("env_topk", skipped="no_generated_TOPK_SQL_CIS")
+        return
+    vec = st.get("topk_vector")
+    if vec is None:
+        rows = await conn.fetch(QUERY_VECTORS_SQL, COUNTRIES[0], 1)
+        vec = rows[0]["v"] if rows else None
+    if vec is None:
+        out("env_topk", skipped="no_query_vector")
+        return
+    base = [("hnsw.ef_search", str(ef_search_for(TOPK_K)))]
+    if st.get("iterative"):
+        base.append(("hnsw.iterative_scan", "relaxed_order"))
+    facts = {}
+    for mode, extra in (("natural", []), ("forced", [("enable_sort", "off")])):
+        doc = await explain(conn, {"reader": "env_topk", "mode": mode}, reader(key), (vec, TOPK_K), ["<=>"],
+                            settings=base + extra)
+        if doc is None:
+            continue
+        f = facts[mode] = topk_plan_facts(doc)
+        out("env_topk", mode=mode, exec_ms=round(doc[0].get("Execution Time", 0.0), 1), uses_hnsw=f["uses_hnsw"],
+            hnsw_order_by=f["hnsw_order_by"], live_probe=f["live_probe"], live_index=f["live_index"],
+            join_filter_source_id=f["join_filter_source_id"], raw_tours_seq_loops=f["raw_tours_seq_loops"],
+            nodes=f["nodes"])
+    nat, frc = facts.get("natural"), facts.get("forced")
+    pre258 = bool(frc and frc["uses_hnsw"] and frc["hnsw_order_by"])
+    full = bool(pre258 and nat and nat["raw_tours_seq_loops"] <= 1 and frc["live_index"] == LIVE_KEY_INDEX
+                and not frc["join_filter_source_id"])
+    out("env_topk_summary", role=await conn.fetchval("SELECT current_user"), k=TOPK_K,
+        ef_search=ef_search_for(TOPK_K), iterative_scan="relaxed_order" if st.get("iterative") else None,
+        uses_hnsw_natural=nat["uses_hnsw"] if nat else None, uses_hnsw_forced=frc["uses_hnsw"] if frc else None,
+        live_probe=frc["live_probe"] if frc else None, live_index=frc["live_index"] if frc else None,
+        join_filter_source_id=frc["join_filter_source_id"] if frc else None,
+        raw_tours_seq_loops_gt1=(nat["raw_tours_seq_loops"] > 1) if nat else None,
+        verdict_full="PASS" if full else "FAIL", verdict_pre258="PASS" if pre258 else "FAIL")
+
+
+async def generic_plan_check(conn, st):
+    """The S246 routes_single diagnosis: the cis single read's generic plan vs its custom plan, through a named
+    PREPARE (SQL level, so the plan_cache_mode setting decides), days 21, slack 3, per country."""
+    key = "browse.routes.SINGLE_SQL_CIS"
+    if key not in READERS:
+        return
+    days = max(ROUTE_DAYS)
+    jit = await conn.fetchval("SHOW jit")
+    try:
+        async with conn.transaction():
+            await conn.execute(f"PREPARE {GENERIC_STMT}(text, int, int) AS {reader(key)}")
+    except Exception as e:  # noqa: BLE001
+        out("generic_plan", reader="routes_single", error=type(e).__name__, detail=str(e)[:160])
+        return
+    try:
+        for country in COUNTRIES:
+            lit = "'" + country.replace("'", "''") + "'"
+            ex = {}
+            for mode in ("force_generic_plan", "force_custom_plan"):
+                label = {"reader": "routes_single_" + mode.split("_")[1], "country": country, "source": "cis"}
+                doc = await explain(conn, label, f"EXECUTE {GENERIC_STMT}({lit}, {days}, {ROUTE_SLACK})", (),
+                                    _markers("routes"), settings=[("plan_cache_mode", mode)])
+                if doc is not None:
+                    ex[mode] = doc[0].get("Execution Time", 0.0)
+            out("generic_plan", reader="routes_single", country=country, days=days, slack=ROUTE_SLACK,
+                generic_exec_ms=round(ex["force_generic_plan"], 1) if "force_generic_plan" in ex else None,
+                custom_exec_ms=round(ex["force_custom_plan"], 1) if "force_custom_plan" in ex else None, jit=jit)
+    finally:
+        await conn.execute(f"DEALLOCATE {GENERIC_STMT}")
 
 
 async def defects(conn, st):
@@ -975,22 +1427,6 @@ BUILD_BY_COUNTRY_SQL = """
            round(avg(cost_usd), 6) AS avg_cost_usd
       FROM geo.tour_build GROUP BY 1, 2 ORDER BY 1, 2
 """
-TOPK_EXPLAIN_SQL = """
-    EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
-    SELECT gp.component_id, gp.embedding <=> q.v AS distance
-      FROM geo.tour_place gp,
-           (SELECT embedding AS v FROM geo.tour_place WHERE embedding IS NOT NULL ORDER BY component_id LIMIT 1) q
-     WHERE gp.destination_id IS NOT NULL
-       AND EXISTS (SELECT 1 FROM gold_aa_internal.published_tours pt
-                     JOIN silver_aa_internal.raw_tours rt ON rt.tour_id = pt.tour_id
-                    WHERE COALESCE(rt.source_group_id, rt.tour_id)::text = gp.source_id
-                      AND pt.tenant_id = $1::uuid AND pt.master_status = 'active' AND pt.deleted_at IS NULL
-                      AND rt.source_status = 'active' AND rt.deleted_at IS NULL)
-       AND EXISTS (SELECT 1 FROM shared.destinations d
-                    WHERE d.id = gp.destination_id AND d.geo_status <> 'suspect' AND d.duplicate_of IS NULL)
-     ORDER BY gp.embedding <=> q.v
-     LIMIT 200
-"""
 # CIS 253's closing check counts components per live tour (a JOIN): live tours sharing a source_id count twice.
 SHARED_SOURCE_SQL = """
     SELECT count(*) - count(DISTINCT COALESCE(rt.source_group_id, rt.tour_id)) AS extra_live_tours_per_source
@@ -1022,11 +1458,14 @@ XREF_SQL = """
        AND n.nspname IN ('booking', 'tripplanner', 'shared', 'acp_shared', 'geo')
      ORDER BY 1, 2
 """
+# relid, not a ::regclass cast of schemaname || '.' || relname: the cast failed on Dev (`relation
+# "shared.pg_stats_ext" does not exist`, S246 after-migrations probe) and ended the master pass before stats /
+# pg_stat_statements; a join on relid cannot fail on a name.
 ANALYZE_SQL = """
-    SELECT schemaname || '.' || relname AS rel, n_live_tup, last_analyze, last_autoanalyze,
-           (SELECT reltuples FROM pg_class c WHERE c.oid = (schemaname || '.' || relname)::regclass) AS reltuples
-      FROM pg_stat_user_tables
-     WHERE schemaname = 'geo' OR (schemaname = 'shared' AND relname IN ('destinations', 'place_photo'))
+    SELECT s.schemaname || '.' || s.relname AS rel, s.n_live_tup, s.last_analyze, s.last_autoanalyze,
+           c.reltuples
+      FROM pg_stat_user_tables s JOIN pg_class c ON c.oid = s.relid
+     WHERE s.schemaname = 'geo' OR (s.schemaname = 'shared' AND s.relname IN ('destinations', 'place_photo'))
      ORDER BY 1
 """
 STATEMENTS_SQL = """
@@ -1082,17 +1521,10 @@ async def master_pass(conn, budget, st):
     iterative = await conn.fetchval("SELECT current_setting('hnsw.iterative_scan', true)")
     out("env", pgvector=ext, hnsw_iterative_scan=iterative,
         server=await conn.fetchval("SELECT current_setting('server_version')"),
+        jit=await conn.fetchval("SHOW jit"), jit_above_cost=await conn.fetchval("SHOW jit_above_cost"),
+        plan_cache_mode=await conn.fetchval("SHOW plan_cache_mode"),
         extra_live_tours_per_source=await conn.fetchval(SHARED_SOURCE_SQL, AA_TENANT_ID))
-    try:
-        async with conn.transaction():
-            raw = await conn.fetchval(TOPK_EXPLAIN_SQL, AA_TENANT_ID)
-        doc = json.loads(raw) if isinstance(raw, str) else raw
-        nodes = list(_walk(doc[0]["Plan"]))
-        out("env_topk", exec_ms=round(doc[0].get("Execution Time", 0.0), 1),
-            uses_hnsw=any("hnsw" in str(n.get("Index Name", "")) for n in nodes),
-            nodes=">".join(n.get("Node Type", "?") for n in nodes[:6]))
-    except Exception as e:  # noqa: BLE001
-        out("env_topk", error=type(e).__name__)
+    # (the index-ordered top-k EXPLAIN moved to pass 1, as tripplanner: SCRIPT env_topk / env_topk_summary)
     for r in await conn.fetch(TP_GRANTS_SQL):
         out("grant", role="tripplanner", kind=r["kind"], object=r["object"], held=r["ok"])
     for r in await conn.fetch(XREF_SQL):
@@ -1103,9 +1535,14 @@ async def master_pass(conn, budget, st):
             out("xref", table=f"{r['table_schema']}.{r['table_name']}", rows_with_destination=n)
         except Exception as e:  # noqa: BLE001
             out("xref", table=f"{r['table_schema']}.{r['table_name']}", error=type(e).__name__)
-    for r in await conn.fetch(ANALYZE_SQL):
-        out("stats", rel=r["rel"], n_live_tup=r["n_live_tup"], reltuples=r["reltuples"],
-            last_analyze=r["last_analyze"], last_autoanalyze=r["last_autoanalyze"])
+    try:
+        async with conn.transaction():
+            stats = await conn.fetch(ANALYZE_SQL)
+        for r in stats:
+            out("stats", rel=r["rel"], n_live_tup=r["n_live_tup"], reltuples=r["reltuples"],
+                last_analyze=r["last_analyze"], last_autoanalyze=r["last_autoanalyze"])
+    except Exception as e:  # noqa: BLE001 — reported, pg_stat_statements still runs
+        out("stats", error=type(e).__name__, detail=str(e)[:160])
     try:
         async with conn.transaction():
             rows = await conn.fetch(STATEMENTS_SQL)
