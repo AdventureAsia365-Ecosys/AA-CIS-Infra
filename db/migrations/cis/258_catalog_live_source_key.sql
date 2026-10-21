@@ -27,7 +27,8 @@
 --      LEFT JOIN geo.tour_segment seg ON the current build_id and the three keys (alias seg kept). 256's grants
 --      restated.
 --   4. ANALYZE raw_tours; closing checks: the row counts of _live_tour, _live_stop, v_tour_component, v_tour_place,
---      v_destination and v_component_embedding are unchanged (and _live_tour's (tour_id, source_id) set is the same),
+--      v_destination and v_component_embedding are unchanged (and _live_tour's (tour_id, source_id) set and
+--      v_tour_component's day stretch columns are the same: an md5 that reads segment_*, so the new join really runs),
 --      source_key equals the expression on every row, and the column is a stored generated one.
 -- Not here: 256's v_tour_place LATERAL (no failing reader reads it).
 -- Not changed: tripplanner's column grant on raw_tours (country, tour_id), every RLS policy, REQUIRED_CIS_SCHEMA (no
@@ -109,6 +110,12 @@ BEGIN
                        (SELECT md5(COALESCE(string_agg(tour_id::text || '/' || source_id, '|'
                                                        ORDER BY tour_id, source_id), ''))
                           FROM catalog._live_tour), true);
+    -- the day stretch columns themselves: a count(*) alone lets the planner remove the segment join (no column read)
+    PERFORM set_config('aa847.expected_258_segments',
+                       (SELECT md5(COALESCE(string_agg(s::text, '|' ORDER BY s::text), ''))
+                          FROM (SELECT component_id, source_id, day_index, destination_id, segment, segment_basis,
+                                       segment_from_destination_id, segment_to_destination_id, segment_km
+                                  FROM catalog.v_tour_component) s), true);
     PERFORM set_config('app.tenant_id', '', true);
 END $$;
 
@@ -206,6 +213,12 @@ BEGIN
     IF (SELECT md5(COALESCE(string_agg(tour_id::text || '/' || source_id, '|' ORDER BY tour_id, source_id), ''))
           FROM catalog._live_tour) <> current_setting('aa847.expected_258_live_keys') THEN
         RAISE EXCEPTION 'migration 258: catalog._live_tour (tour_id, source_id) changed';
+    END IF;
+    IF (SELECT md5(COALESCE(string_agg(s::text, '|' ORDER BY s::text), ''))
+          FROM (SELECT component_id, source_id, day_index, destination_id, segment, segment_basis,
+                       segment_from_destination_id, segment_to_destination_id, segment_km
+                  FROM catalog.v_tour_component) s) <> current_setting('aa847.expected_258_segments') THEN
+        RAISE EXCEPTION 'migration 258: catalog.v_tour_component day stretch columns changed';
     END IF;
     RAISE NOTICE 'migration 258: as catalog_owner, row counts unchanged: %', before;
     PERFORM set_config('app.tenant_id', '', true);
