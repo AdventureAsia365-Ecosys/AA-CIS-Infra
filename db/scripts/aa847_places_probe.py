@@ -109,7 +109,7 @@ DEFECT_TOURS_CAP = 8
 DAY_TEXT_EXAMPLES = 5
 
 # BEGIN GENERATED READERS (root docs/audits/2026-10-21-S246-aa847/gen_probe_sql.py; do not edit by hand)
-READERS_FROM = "AA-TripPlanner-Web@3b6e62d665be"
+READERS_FROM = "AA-TripPlanner-Web@017ca365533a"
 READERS_ABSENT = ['browse.search.CIS_SEARCH_SQL']
 READERS = {
     'assembly.activities.ACTIVITIES_SQL': """
