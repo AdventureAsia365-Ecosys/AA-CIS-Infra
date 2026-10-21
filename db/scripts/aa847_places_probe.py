@@ -24,13 +24,16 @@ Sections (every line starts with `SCRIPT `; aggregates, ids, statuses, catalog t
      (reader, source) over all runs is EXPLAINed (ANALYZE, BUFFERS): top nodes by own time, and where each consumer
      filter landed (pushed into a base scan or left above a security_barrier subquery):
        SCRIPT timing reader=<r> country=<c> source=<legacy|cis> calls=<n per run> rows=<n run 1> total_ms=<median>
-              per_call_ms=<median> max_ms=<max of all runs> errors=<n> repeats=<n> runs=<aggregate per run, a/b/c>
+              per_call_ms=<median> max_ms=<max of all runs> errors=<n> repeats=<n full runs> partial=<n cut short>
+              runs=<aggregate per run, a/b/c>
        SCRIPT calls reader=routes_single|routes_single_auto country=<c> source=<s> repeat=<n> ms=<per call, in order>
        SCRIPT plan reader=<r> country=<c> source=<s> node=<type>:<relation> own_ms=<x> rows=<n> loops=<n>
        SCRIPT plan_flag reader=<r> ... flag=seq_scan_raw_tours loops=<n>        (a liveness probe re-scanning raw_tours)
        SCRIPT qual reader=<r> country=<c> source=<s> marker=<m> at=<type>:<relation> pushed=<t|f>
        SCRIPT parity reader=<r> country=<c> legacy=<median> cis=<median> target=<t> verdict=PASS|FAIL runs=<n>
-              cis_runs=<a/b/c> legacy_runs=<a/b/c>
+              partial=<n> cis_runs=<a/b/c> legacy_runs=<a/b/c>
+              a run the budget cut short (fewer calls of the reader than a full run) stays out of the median and is
+              counted in partial=; runs= and the a/b/c lists are the full runs only.
               target = max(1.5 x legacy, 200 ms) on the MEDIAN of the runs (one noisy run neither fails nor rescues a
               reader); aggregation (S237): countries, by_country and routes per call,
               tiles = sum of the country's 1-degree tiles (cap 80) + the 10-degree tile, detail = sum over the union
@@ -40,7 +43,10 @@ Sections (every line starts with `SCRIPT `; aggregates, ids, statuses, catalog t
      proposals() runs them (set_config(..., true) before, the session value restored right after: a SET LOCAL would
      survive the released savepoints and reach every later reader). routes_single_auto (run 1, cis, not scored) is
      the same read left at the session plan_cache_mode under its own statement text: a jump from call 6 on is the
-     generic cached plan.
+     generic cached plan. The search readers run under TripPlanner's hnsw.ef_search / hnsw.iterative_scan in a
+     savepoint that is rolled back after them (TripPlanner scopes them to the search's own transaction), so routes
+     and assembly (incl. assembly_route_candidates) run at the session values; the EXPLAIN of the slowest search call
+     gets the same settings back.
   2b. env_topk, as tripplanner with TripPlanner's hnsw.ef_search / hnsw.iterative_scan: EXPLAIN of the generated
      TOPK_SQL_CIS (the query vector bound as $1), natural and with enable_sort=off (forced):
        SCRIPT env_topk mode=natural|forced exec_ms=<x> uses_hnsw=<t|f> hnsw_order_by=<t|f> live_probe=<path to the
@@ -70,10 +76,11 @@ Sections (every line starts with `SCRIPT `; aggregates, ids, statuses, catalog t
 Time budget: the workflow waits 30 minutes; the probe stops a section at BUDGET_S (about 20 minutes) with
 `SCRIPT truncated <section>`, caps every sample, and keeps every statement short. A further timing run starts only
 when 1.5 x the first run's time + 300 s still fits (`SCRIPT truncated section="repeat <n>"` otherwise; parity then
-uses the runs that finished, `runs=<n>` says how many). Ends with
+uses the runs that finished, `runs=<n>` says how many, and drops a run a section cut short, `partial=<n>`). Ends with
 `SCRIPT done elapsed_s=<x>`. Returns 1 only when the tripplanner switch is refused.
 """
 
+import contextlib
 import json
 import math
 import re
@@ -654,6 +661,21 @@ async def set_local(conn, name, value):
     await conn.execute("SELECT set_config($1, $2, true)", name, value)
 
 
+@contextlib.asynccontextmanager
+async def scoped_settings(conn, settings):
+    """`settings` [(name, value)] for the block only: set in a savepoint that is ROLLED BACK when the block ends, so
+    they stop there (a RELEASE would keep them, as SET LOCAL does). For read-only work: the block's reads are kept in
+    Python, nothing in the savepoint needs to survive."""
+    try:
+        async with conn.transaction():
+            for name, value in settings:
+                await set_local(conn, name, value)
+            yield
+            raise _Undo(None)
+    except _Undo:
+        pass
+
+
 async def explain_doc(conn, sql, args, settings=()):
     """EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) of `sql` with `settings` [(name, value)] in a savepoint that is ROLLED
     BACK, never released: the settings (enable_sort, plan_cache_mode, ...) stop with it."""
@@ -720,7 +742,7 @@ def topk_plan_facts(doc):
     reaches raw_tours but not tour_place while the node's other side (or the node itself) reads tour_place."""
     root = doc[0]["Plan"]
     nodes = list(_walk(root))
-    hnsw = [n for n in nodes if HNSW_INDEX in str(n.get("Index Name", "")) or "hnsw" in str(n.get("Index Name", ""))]
+    hnsw = [n for n in nodes if n.get("Index Name") == HNSW_INDEX]
     scope = next((n for n in nodes if n.get("Subplan Name") == "CTE scan"), root)
     live = None
     for n in _walk(scope):
@@ -750,6 +772,16 @@ def topk_plan_facts(doc):
         "raw_tours_seq_loops": raw_tours_seq_loops(nodes),
         "nodes": ">".join(x.get("Node Type", "?") for x in nodes[:6]),
     }
+
+
+def complete_runs(runs):
+    """(the runs with every call, how many were cut short). A run the time budget stopped mid-section has fewer calls
+    of a reader than a full run; its sum is low, so it stays out of the median (it would pull a FAIL to a PASS)."""
+    if not runs:
+        return [], 0
+    n = max(len(s.ms) for s in runs)
+    full = [s for s in runs if len(s.ms) == n]
+    return full, len(runs) - len(full)
 
 
 def median(values):
@@ -1047,6 +1079,8 @@ async def timings(conn, budget, st):
         return rows
 
     st["iterative"] = iterative = await pgvector_iterative(conn)
+    st["search_settings"] = [("hnsw.ef_search", str(ef_search_for(TOPK_K)))] + (
+        [("hnsw.iterative_scan", "relaxed_order")] if iterative else [])
     st["plan_cache_mode"] = await conn.fetchval("SELECT current_setting('plan_cache_mode')") or "auto"
 
     async def one_run():
@@ -1083,20 +1117,21 @@ async def timings(conn, budget, st):
                 out("detail_input", country=country, destinations=min(len(dests), DETAIL_CAP), of=len(dests))
 
             vectors = [r["v"] for r in await conn.fetch(QUERY_VECTORS_SQL, country, SEARCH_QUERIES)]
-            for vec in vectors:
-                if budget.over(f"search {country}", reserve=200):
-                    break
-                await conn.execute("SELECT set_config('hnsw.ef_search', $1, true)", str(ef_search_for(TOPK_K)))
-                if iterative:
-                    await conn.execute("SELECT set_config('hnsw.iterative_scan', 'relaxed_order', true)")
-                await run("search", country, "legacy", "shared.vector_topk.TOPK_SQL", vec, TOPK_K)
-                await run("search_exact", country, "legacy", "shared.vector_topk.EXACT_SQL", vec)
-                if "shared.vector_topk.TOPK_SQL_CIS" in READERS:
-                    # TripPlanner 6c: the cis search is the same top-k, over catalog.v_component_embedding (CIS 253)
-                    await run("search", country, "cis", "shared.vector_topk.TOPK_SQL_CIS", vec, TOPK_K)
-                    await run("search_exact", country, "cis", "shared.vector_topk.EXACT_SQL_CIS", vec)
-                else:
-                    await run("search", country, "cis", "browse.search.CIS_SEARCH_SQL", vec)
+            # TripPlanner vector_topk sets these in the search's own transaction; here they end with this block, so
+            # the readers after it (routes, assembly incl. assembly_route_candidates) run at the session values, as
+            # they do in TripPlanner.
+            async with scoped_settings(conn, st["search_settings"]):
+                for vec in vectors:
+                    if budget.over(f"search {country}", reserve=200):
+                        break
+                    await run("search", country, "legacy", "shared.vector_topk.TOPK_SQL", vec, TOPK_K)
+                    await run("search_exact", country, "legacy", "shared.vector_topk.EXACT_SQL", vec)
+                    if "shared.vector_topk.TOPK_SQL_CIS" in READERS:
+                        # TripPlanner 6c: the cis search is the same top-k, over catalog.v_component_embedding (253)
+                        await run("search", country, "cis", "shared.vector_topk.TOPK_SQL_CIS", vec, TOPK_K)
+                        await run("search_exact", country, "cis", "shared.vector_topk.EXACT_SQL_CIS", vec)
+                    else:
+                        await run("search", country, "cis", "browse.search.CIS_SEARCH_SQL", vec)
             if first:
                 out("search_input", country=country, queries=len(vectors))
 
@@ -1188,12 +1223,13 @@ async def timings(conn, budget, st):
         agg = _agg(name)
         for source, reps in sorted(by_source.items()):
             runs = [reps[r] for r in sorted(reps)]
+            full, cut = complete_runs(runs)
             all_ms = [m for s in runs for m in s.ms]
             out("timing", reader=name, country=country, source=source, calls=len(runs[0].ms), rows=runs[0].rows,
-                total_ms=round(median([s.total() for s in runs]), 1),
-                per_call_ms=round(median([s.per_call() for s in runs]), 1),
+                total_ms=round(median([s.total() for s in full]), 1),
+                per_call_ms=round(median([s.per_call() for s in full]), 1),
                 max_ms=round(max(all_ms) if all_ms else 0.0, 1), errors=sum(s.errors for s in runs),
-                repeats=len(runs), runs="/".join(f"{agg(s):.1f}" for s in runs))
+                repeats=len(full), partial=cut, runs="/".join(f"{agg(s):.1f}" for s in runs))
             if name in CALL_LISTS:
                 for r in sorted(reps):
                     out("calls", reader=name, country=country, source=source, repeat=r,
@@ -1206,14 +1242,15 @@ async def timings(conn, budget, st):
                 st["topk_vector"] = slowest[2][0]          # env_topk EXPLAINs the slowest cis search's vector
             if slowest and not budget.over("explain", reserve=90):
                 await explain(conn, {"reader": name, "country": country, "source": source}, slowest[1],
-                              slowest[2], _markers(name))
+                              slowest[2], _markers(name),
+                              settings=st["search_settings"] if name in ("search", "search_exact") else ())
     passes = fails = 0
     n_runs = 0
     for (name, country), by_source in sorted(results.items()):
         if name not in PARITY_READERS and not name.startswith("assembly_"):
             continue
-        leg = [s for _, s in sorted(by_source.get("legacy", {}).items()) if s.ms]
-        cis = [s for _, s in sorted(by_source.get("cis", {}).items()) if s.ms]
+        leg, leg_cut = complete_runs([s for _, s in sorted(by_source.get("legacy", {}).items()) if s.ms])
+        cis, cis_cut = complete_runs([s for _, s in sorted(by_source.get("cis", {}).items()) if s.ms])
         if not leg or not cis:
             continue
         agg = _agg(name)
@@ -1223,8 +1260,8 @@ async def timings(conn, budget, st):
         fails += not ok
         n_runs = max(n_runs, len(cis))
         out("parity", reader=name, country=country, legacy=round(lv, 1), cis=round(cv, 1), target=round(target, 1),
-            verdict="PASS" if ok else "FAIL", runs=len(cis), cis_runs="/".join(f"{agg(s):.1f}" for s in cis),
-            legacy_runs="/".join(f"{agg(s):.1f}" for s in leg))
+            verdict="PASS" if ok else "FAIL", runs=len(cis), partial=leg_cut + cis_cut,
+            cis_runs="/".join(f"{agg(s):.1f}" for s in cis), legacy_runs="/".join(f"{agg(s):.1f}" for s in leg))
     out("parity_total", passes=passes, fails=fails, runs=n_runs)
 
 

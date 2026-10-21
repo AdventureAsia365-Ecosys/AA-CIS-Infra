@@ -123,6 +123,7 @@ class FakeConn:
         self.statements = []
         self.settings = {}          # transaction-local settings (set_config(..., true)), rolled back with a savepoint
         self.fetch_log = []         # (sql, plan_cache_mode at the call)
+        self.fetch_settings = []    # (sql, every transaction-local setting at the call)
         self.explain_log = []       # (sql, settings at the EXPLAIN, role)
 
     def setting(self, name):
@@ -162,6 +163,7 @@ class FakeConn:
     async def fetch(self, sql, *args):
         self.statements.append(sql)
         self.fetch_log.append((sql, self.setting("plan_cache_mode")))
+        self.fetch_settings.append((sql, dict(self.settings)))
         p = probe
         if sql is p.LIVE_TOURS_SQL:
             return [{"source_id": LAOS_SRC, "tour_id": LAOS_SRC, "title": "Laos Kuang Si", "country": "Laos"},
@@ -532,6 +534,47 @@ class ProbeFixTests(unittest.TestCase):
         self.assertEqual(probe.median([3, 1, 2]), 2)
         self.assertEqual(probe.median([4, 1, 2, 3]), 2.5)
         self.assertEqual(probe.parity_verdict([200, 210, 190], [0])[2], 300.0)
+
+    def test_search_settings_stay_with_the_search_readers(self):
+        conn = FakeConn()
+        _run(conn)
+        r = probe.reader
+        search = {r(k) for k in ("shared.vector_topk.TOPK_SQL", "shared.vector_topk.EXACT_SQL",
+                                 "shared.vector_topk.TOPK_SQL_CIS", "shared.vector_topk.EXACT_SQL_CIS")}
+        later = {r(k) for _, lk, ck in probe.ASSEMBLY_READERS for k in (lk, ck)} | {
+            r("browse.routes.SINGLE_SQL_CIS"), r("browse.routes.CHAIN_SQL_CIS")}
+        seen = {"search": 0, "later": 0}
+        for sql, st in conn.fetch_settings:
+            if sql in search:
+                self.assertEqual(st.get("hnsw.ef_search"), "400", sql[:60])
+                self.assertEqual(st.get("hnsw.iterative_scan"), "relaxed_order", sql[:60])
+                seen["search"] += 1
+            elif sql in later:          # TripPlanner runs these outside the search's transaction
+                self.assertNotIn("hnsw.ef_search", st, sql[:60])
+                self.assertNotIn("hnsw.iterative_scan", st, sql[:60])
+                seen["later"] += 1
+        self.assertTrue(seen["search"] and seen["later"], seen)
+        self.assertNotIn("hnsw.ef_search", conn.settings)
+        # the EXPLAIN of the slowest search call sees the search's settings again
+        ex = [st for sql, st, _ in conn.explain_log if sql.endswith(r("shared.vector_topk.TOPK_SQL"))]
+        self.assertTrue(ex and all(st.get("hnsw.ef_search") == "400" for st in ex))
+
+    def test_a_run_cut_short_stays_out_of_the_median(self):
+        def series(*ms):
+            s = probe.Series()
+            for m in ms:
+                s.add(m, [], None, "SELECT 1", ())
+            return s
+        full, cut = probe.complete_runs([series(100, 120, 90), series(110, 100, 95), series(5)])
+        self.assertEqual((len(full), cut), (2, 1))
+        self.assertEqual(probe.complete_runs([]), ([], 0))
+        self.assertEqual(probe.complete_runs([series(1, 2)])[1], 0)
+
+    def test_hnsw_is_the_named_index_only(self):
+        doc = json.loads(TOPK_FORCED_POST258)
+        self.assertTrue(probe.topk_plan_facts(doc)["uses_hnsw"])
+        other = json.loads(TOPK_FORCED_POST258.replace(probe.HNSW_INDEX, "itinerary_components_embedding_idx"))
+        self.assertFalse(probe.topk_plan_facts(other)["uses_hnsw"])
 
     def test_explain_settings_end_with_their_savepoint(self):
         conn = FakeConn()

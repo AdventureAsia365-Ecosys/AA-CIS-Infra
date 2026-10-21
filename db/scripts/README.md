@@ -141,6 +141,9 @@ generic and custom plans (`EXPLAIN EXECUTE`, days 21, slack 3). The step-18 stru
 `TOPK_SQL_CIS` EXPLAINed natural and with `enable_sort=off`, with `uses_hnsw_*`, the liveness probe path,
 `join_filter_source_id`, a `Seq Scan raw_tours` loops>1 flag and `verdict_full` / `verdict_pre258`. `SCRIPT plan_flag
 … flag=seq_scan_raw_tours` marks any EXPLAIN whose liveness probe re-scans `raw_tours`. The env line prints `jit`.
+A run the budget cut short stays out of the medians (`partial=<n>` on the timing and parity lines). The search
+readers' `ef_search` / `iterative_scan` end with the search block (a rolled-back savepoint), so routes and assembly run
+at the session values as in TripPlanner; HNSW counts only as `tour_place_embedding_hnsw` by name.
 
 `aa847_component_id_map_fill.py` (AA-847, merged READ_ONLY = dry run): fills `tripplanner.component_id_map` (tp-017),
 frozen `itinerary_components.id` → `catalog.v_tour_component.component_id`. Pass 1 as `tripplanner`: live sources and
