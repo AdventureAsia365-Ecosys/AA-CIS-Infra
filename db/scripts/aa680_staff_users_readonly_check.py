@@ -18,8 +18,7 @@ Output (DB Migrate mode=run-script; db/scripts/README.md):
 - `SCRIPT counts {...}` and `SCRIPT verdict e2e_has_no_booking_row=<true|false>`.
 
 Returns 1 (run fails, exit 13) only when a Booking row matches the E2E identity: then the refusal evidence is
-contradicted and must be looked at. A missing E2E user (e.g. disabled and removed later, AA-816 A10) is reported,
-not failed. Prints no e-mail, password, DSN or token; subs are cut to 8 characters.
+contradicted and must be looked at. A missing E2E user (e.g. not created yet) is reported, not failed. Prints no e-mail, password, DSN or token; subs are cut to 8 characters.
 
 Local test: `python3 db/scripts/aa680_staff_users_readonly_check.py <DSN>`.
 """
@@ -28,8 +27,9 @@ import json
 
 READ_ONLY = True
 
-# The SES test mailbox that is the E2E staff user's address (CIS migration 250, a temporary exception).
-E2E_EMAIL = "e2e@e2e-mail.lumiguides.it.com"
+# The E2E staff user: an ordinary @adventure.asia reviewer whose mail the adventure.asia mail host forwards to the
+# SES test mailbox (root ADR 0006a A10; the old mailbox-address user of CIS migration 250 was deleted).
+E2E_EMAIL = "e2e-cognito@adventure.asia"
 COGNITO_KEY_PREFIX = "cog:"
 SUB_CHARS = 8
 

@@ -91,7 +91,8 @@ WORKFORCE identity from `shared.admin_users.cognito_iss / cognito_sub` (needs AA
 Idempotent; never rebinds or merges rows. Notes: `docs/implementation-notes/AA-680-backfill.md`.
 
 `aa680_staff_users_readonly_check.py` (AA-680 staff half, read-only evidence): shows that Booking holds no
-`booking.staff_users` row for the "E2E Cognito" WORKFORCE user (CIS reviewer, no `booking-*` group) that the CIS
+`booking.staff_users` row for the "E2E Cognito" WORKFORCE user (`e2e-cognito@adventure.asia` since A10; CIS reviewer,
+no `booking-*` group) that the CIS
 Cognito E2E gets refused by Booking (`no_booking_role`), matching by CIS id, Cognito identity, `cog:<sub>` key or
 e-mail; and lists every Booking staff row (key kind, role, active, linked, CIS username, last seen; subs cut to 8
 characters, no e-mail). Ends with `SCRIPT verdict e2e_has_no_booking_row=true|false`; returns 1 only when a Booking
@@ -103,6 +104,16 @@ the CIS break-glass row of `shared.admin_users` (root ADR 0006a A4) and writes o
 username / e-mail and it has both. Merged as apply (`READ_ONLY = False`); `READ_ONLY = True` is a DRY RUN.
 Idempotent (`already_null`, writes nothing). Prints booleans and the audit row id only. Notes:
 `docs/implementation-notes/AA-816-breakglass-hash.md`.
+
+`aa816_delete_e2e_test_staff.py` (AA-816, root ADR 0006a A10, one-time): deletes the old E2E test staff row
+(the CIS migration 250 test-mailbox address) from `shared.admin_users` so CIS migration 252 can restore the 247
+e-mail rule. Refuses (exit 13) unless exactly one row has that address and it is inactive, reviewer, not an owner,
+password-less and grant-less, and unless every foreign key onto `shared.admin_users` (read from `pg_constraint` at
+run time) has 0 rows for it. Apply is one transaction (lock, re-check, `DELETE 1` asserted, re-count, the
+`staff.deleted` audit row last with the restore record). `acp_shared.audit_log` rows about the row are counted and
+kept. No RDS snapshot, by a written decision (one test row; the audit details are the restore record). Merged with
+`READ_ONLY = True` = DRY RUN; a one-line follow-up PR sets `READ_ONLY = False`. Prints counts, booleans and ids only.
+Notes: `docs/implementation-notes/AA-816-a10-removal.md`.
 
 `aa805_ai_guards_read.py` (AA-805, read-only): the DB half of the TripPlanner AI Phase 0 closing evidence. Prints
 `tripplanner.llm_spend_daily` for the last 3 UTC days next to the `shared.llm_call_log` totals of the same online stages

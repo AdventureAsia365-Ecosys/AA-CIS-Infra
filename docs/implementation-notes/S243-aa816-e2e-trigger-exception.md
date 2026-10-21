@@ -26,3 +26,6 @@ removed when the E2E work is finished. Root ADR 0006a records it; CIS holds the 
   alias (code change in the WORKFORCE module only). Apply via the Terraform Apply workflow after merge.
 - Removal: delete the constant, the two branches and the tests, then Terraform Apply; do it after the E2E user is
   deleted from the pool.
+- **Removed (root ADR 0006a A10, `docs/implementation-notes/AA-816-a10-removal.md`).** The constant, both branches and
+  the E2E tests are gone (#215 reverted in `workforce.py`); the tests now deny the address at
+  `PreSignUp_AdminCreateUser` and at pre token. The E2E user is the ordinary reviewer `e2e-cognito@adventure.asia`.

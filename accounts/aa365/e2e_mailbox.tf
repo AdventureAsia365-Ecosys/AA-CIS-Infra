@@ -3,7 +3,9 @@
 #
 # The WORKFORCE pool signs staff in with an email code. To run that sign-in in CI, the E2E staff
 # user `e2e-cognito@adventure.asia` (a forwarder in the adventure.asia mail host panel, set by hand,
-# D2 option a) forwards to e2e@e2e-mail.lumiguides.it.com. This file makes that address real:
+# D2 option a) forwards to e2e@e2e-mail.lumiguides.it.com. This file makes that address real.
+# (S243 option B briefly made the mailbox address itself the staff user, with a trigger and CIS
+# migration 250 exception; root ADR 0006a A10 removed it, so the forwarder path above is current.)
 #
 #   MX e2e-mail.lumiguides.it.com -> inbound-smtp.us-west-1.amazonaws.com
 #     -> active receipt rule set aa-cis-dev-e2e, rule e2e-cognito (only that recipient)
@@ -213,8 +215,10 @@ resource "aws_ses_receipt_rule" "e2e_cognito" {
   recipients    = [local.e2e_mail_recipient]
   enabled       = true
   scan_enabled  = true
-  # Require (S243 option B): the code mail now comes straight from Cognito/SES, which delivers over
-  # TLS; there is no forwarder any more, so a plaintext relay has no legitimate reason to deliver here.
+  # Require: the code mail reaches this rule through the adventure.asia mail host's forwarder
+  # (MailChannels relay, root ADR 0006a A10); it was set while the mailbox address itself was the
+  # staff user (S243 option B, removed). Keep Require while forwarded mails arrive (H1 check: the
+  # Received headers show TLS); if the relay ever delivers in plaintext, "Optional" is Nghiep's call.
   tls_policy = "Require"
 
   s3_action {
