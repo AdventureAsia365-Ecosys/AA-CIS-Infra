@@ -58,6 +58,10 @@ ASSEMBLY_6C = {
     "shared.vector_topk.TOPK_SQL_CIS": "SELECT od.destination_id AS id FROM catalog.v_component_embedding c",
     "shared.vector_topk.EXACT_SQL_CIS": "SELECT d.destination_id AS id FROM catalog.v_tour_component c",
 }
+# The pre-6c cis search (the exact aggregate), for the test that simulates a block generated before 6c.
+PRE_6C_CIS_SEARCH = ("SELECT d.destination_id AS id, MIN(c.embedding <=> $1::vector) AS best_distance "
+                     "FROM catalog.v_tour_component c JOIN catalog.v_destination d "
+                     "ON d.destination_id = c.destination_id GROUP BY d.destination_id LIMIT 60")
 PLAN = json.dumps([{"Plan": {"Node Type": "Limit", "Actual Total Time": 5.0, "Actual Loops": 1, "Actual Rows": 3,
                              "Plans": [{"Node Type": "Subquery Scan", "Alias": "d", "Actual Total Time": 4.0,
                                         "Actual Loops": 1, "Actual Rows": 3, "Filter": "(d.lat >= $1)",
@@ -281,8 +285,40 @@ class RunTests(unittest.TestCase):
         self.assertIn("SCRIPT assembly_input country=Laos destinations=2 legacy_ids=2 cis_ids=2", lines)
 
     def test_before_6c_no_assembly_section(self):
-        _, lines = _run(FakeConn())
+        # A block generated from a pre-6c TripPlanner commit: no assembly twins, the cis search is CIS_SEARCH_SQL.
+        saved = dict(probe.READERS)
+        for key in ASSEMBLY_6C:
+            probe.READERS.pop(key, None)
+        probe.READERS["browse.search.CIS_SEARCH_SQL"] = PRE_6C_CIS_SEARCH
+        try:
+            _, lines = _run(FakeConn())
+        finally:
+            probe.READERS.clear()
+            probe.READERS.update(saved)
         self.assertFalse(any(line.startswith("SCRIPT assembly_input") for line in lines))
+        self.assertTrue(any(line.startswith("SCRIPT timing reader=search country=Laos source=cis ") for line in lines))
+        self.assertFalse(any(line.startswith("SCRIPT timing reader=search_exact country=Laos source=cis ")
+                             for line in lines))
+
+    def test_committed_block_is_tripplanner_6c_6d(self):
+        # AA-847 step 18: the block is generated from the TripPlanner build that reads CIS 253/256 and tp-017.
+        self.assertEqual(probe.READERS_ABSENT, ["browse.search.CIS_SEARCH_SQL"])
+        for key in ASSEMBLY_6C:
+            self.assertIn(key, probe.READERS)
+        self.assertIn("FROM catalog.v_component_embedding", probe.READERS["shared.vector_topk.TOPK_SQL_CIS"])
+        self.assertIn("FROM tripplanner.component_id_map", probe.READERS["shared.component_ids.MAP_SQL"])
+        for key in ("shared.vector_topk.TOPK_SQL_CIS", "shared.vector_topk.EXACT_SQL_CIS",
+                    "browse.countries.COUNTRY_DESTINATIONS_SQL_CIS", "browse.destinations.DEST_SQL_CIS",
+                    "browse.tiles.TILE_SQL_CIS"):
+            for col in ("shape_kind", "shape_status", "length_km", "min_lat", "max_lng"):   # 6d line columns (256)
+                self.assertIn(col, probe.READERS[key], f"{key}: {col}")
+        _, lines = _run(FakeConn())
+        text = "\n".join(lines)
+        self.assertNotIn("section_error", text)
+        self.assertRegex(text, r"(?m)^SCRIPT timing reader=search country=Laos source=cis ")
+        self.assertRegex(text, r"(?m)^SCRIPT timing reader=search_exact country=Laos source=cis ")
+        self.assertRegex(text, r"(?m)^SCRIPT parity reader=assembly_components country=Laos ")
+        self.assertRegex(text, r"(?m)^SCRIPT timing reader=assembly_id_map country=Laos source=cis ")
 
     def test_refused_role_switch_returns_1(self):
         rc, lines = _run(FakeConn(refuse_role=True))

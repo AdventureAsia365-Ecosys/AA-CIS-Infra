@@ -76,8 +76,8 @@ DEFECT_TOURS_CAP = 8
 DAY_TEXT_EXAMPLES = 5
 
 # BEGIN GENERATED READERS (root docs/audits/2026-10-21-S246-aa847/gen_probe_sql.py; do not edit by hand)
-READERS_FROM = "AA-TripPlanner-Web@a38531df61d3"
-READERS_ABSENT = ['assembly.activities.ACTIVITIES_SQL_CIS', 'assembly.coverage.OPTIONS_SQL_CIS', 'assembly.events.COMPONENTS_SQL', 'assembly.events.COMPONENTS_SQL_CIS', 'assembly.suggestions.ROUTE_CANDIDATES_SQL_CIS', 'assembly.suggestions.TASTE_SQL', 'assembly.suggestions.TASTE_SQL_CIS', 'shared.component_ids.MAP_SQL', 'shared.vector_topk.EXACT_SQL_CIS', 'shared.vector_topk.TOPK_SQL_CIS']
+READERS_FROM = "AA-TripPlanner-Web@c701d608ad81"
+READERS_ABSENT = ['browse.search.CIS_SEARCH_SQL']
 READERS = {
     'assembly.activities.ACTIVITIES_SQL': """
     SELECT (array_agg(c.id::text ORDER BY c.source_tour_id, c.source_day_index))[1] AS component_id,
@@ -91,10 +91,45 @@ READERS = {
     GROUP BY c.name, c.activity
     ORDER BY count(DISTINCT c.source_tour_id) DESC, c.name
 """,
+    'assembly.activities.ACTIVITIES_SQL_CIS': """
+    SELECT (array_agg(c.component_id::text ORDER BY c.source_id, c.day_index))[1] AS component_id,
+           array_agg(c.component_id::text) AS component_ids,
+           c.name, c.activity, (array_agg(c.intensity_level))[1] AS intensity_level,
+           (array_agg(c.duration_hint))[1] AS duration_hint,
+           (array_agg(c.text_extract ORDER BY length(c.text_extract) DESC))[1] AS text_extract,
+           count(DISTINCT c.source_id) AS tour_count
+    FROM catalog.v_tour_component c
+    WHERE c.destination_id = $1::uuid
+    GROUP BY c.name, c.activity
+    ORDER BY count(DISTINCT c.source_id) DESC, c.name
+""",
     'assembly.coverage.OPTIONS_SQL': """
     SELECT DISTINCT destination_id::text AS destination_id, source_tour_id, source_day_index
     FROM tripplanner.itinerary_components
     WHERE destination_id = ANY($1::uuid[])
+""",
+    'assembly.coverage.OPTIONS_SQL_CIS': """
+    SELECT DISTINCT destination_id::text AS destination_id, source_id AS source_tour_id,
+           day_index AS source_day_index
+    FROM catalog.v_tour_component
+    WHERE destination_id = ANY($1::uuid[])
+""",
+    'assembly.events.COMPONENTS_SQL': """
+    SELECT c.id, c.name, c.activity, c.duration_hint, c.text_extract,
+           c.source_tour_id, c.source_day_index, c.destination_id,
+           d.name AS destination_name, d.lat AS lat, d.lng AS lng
+    FROM tripplanner.itinerary_components c
+    JOIN shared.destinations d ON d.id = c.destination_id
+    WHERE c.id = ANY($1::uuid[])
+""",
+    'assembly.events.COMPONENTS_SQL_CIS': """
+    SELECT c.component_id AS id, c.name, c.activity, c.duration_hint, c.text_extract,
+           c.source_id AS source_tour_id, c.day_index AS source_day_index, c.destination_id,
+           d.name AS destination_name, d.lat AS lat, d.lng AS lng, d.located_by, d.precision,
+           c.segment, c.segment_basis, c.segment_from_destination_id, c.segment_to_destination_id, c.segment_km
+    FROM catalog.v_tour_component c
+    JOIN catalog.v_destination d ON d.destination_id = c.destination_id
+    WHERE c.component_id = ANY($1::uuid[])
 """,
     'assembly.suggestions.ROUTE_CANDIDATES_SQL': """
     WITH near AS (
@@ -129,6 +164,52 @@ READERS = {
     ORDER BY best_distance ASC
     LIMIT $6
 """,
+    'assembly.suggestions.ROUTE_CANDIDATES_SQL_CIS': """
+    WITH near AS (
+        SELECT n.destination_id, 2 * 6371 * asin(sqrt(power(sin(radians(n.lat - $2) / 2), 2) + cos(radians($2)) * cos(radians(n.lat)) * power(sin(radians(n.lng - $3) / 2), 2))) AS transfer_km
+        FROM catalog.v_graph_node n
+        WHERE 2 * 6371 * asin(sqrt(power(sin(radians(n.lat - $2) / 2), 2) + cos(radians($2)) * cos(radians(n.lat)) * power(sin(radians(n.lng - $3) / 2), 2))) <= $4
+    ), stops AS MATERIALIZED (
+        SELECT source_id, day_index, destination_id FROM catalog.v_tour_stop
+    ), here AS (
+        SELECT s.source_id, s.day_index, s.destination_id, nr.transfer_km
+        FROM stops s JOIN near nr ON nr.destination_id = s.destination_id
+    ), nxt AS (
+        SELECT h.source_id, h.day_index AS from_day, h.transfer_km,
+               (SELECT min(s2.day_index) FROM stops s2
+                WHERE s2.source_id = h.source_id AND s2.day_index > h.day_index
+                  AND s2.destination_id <> h.destination_id) AS to_day
+        FROM here h
+    )
+    SELECT d.destination_id AS id, d.name, d.lat, d.lng, d.country,
+           COUNT(DISTINCT c.component_id) AS component_count,
+           MIN(c.embedding <=> $1::vector) AS best_distance,
+           MIN(nx.transfer_km) AS transfer_km,
+           COUNT(DISTINCT nx.source_id) AS tour_count
+    FROM nxt nx
+    JOIN catalog.v_tour_component c
+      ON c.source_id = nx.source_id
+     AND c.day_index > nx.from_day AND c.day_index <= nx.to_day
+    JOIN catalog.v_destination d ON d.destination_id = c.destination_id
+    WHERE nx.to_day IS NOT NULL AND c.embedding IS NOT NULL AND d.destination_id <> ALL($5::uuid[])
+      AND ($7::text IS NULL OR c.activity = $7::text)
+      AND ($8::text IS NULL OR c.intensity_level = $8::text)
+    GROUP BY d.destination_id, d.name, d.lat, d.lng, d.country
+    ORDER BY best_distance ASC
+    LIMIT $6
+""",
+    'assembly.suggestions.TASTE_SQL': """
+    SELECT c.embedding, d.country
+    FROM tripplanner.itinerary_components c
+    JOIN shared.destinations d ON d.id = c.destination_id
+    WHERE c.id = ANY($1::uuid[])
+""",
+    'assembly.suggestions.TASTE_SQL_CIS': """
+    SELECT c.embedding, d.country
+    FROM catalog.v_tour_component c
+    JOIN catalog.v_destination d ON d.destination_id = c.destination_id
+    WHERE c.component_id = ANY($1::uuid[])
+""",
     'browse.countries.COUNTRIES_SQL': """
     SELECT d.country AS country, COUNT(c.id) AS component_count
     FROM shared.destinations d
@@ -157,12 +238,12 @@ READERS = {
     ORDER BY component_count DESC
 """,
     'browse.countries.COUNTRY_DESTINATIONS_SQL_CIS': """
-    SELECT d.destination_id AS id, d.name, d.lat, d.lng, d.located_by, d.precision,
+    SELECT d.destination_id AS id, d.name, d.lat, d.lng, d.located_by, d.precision, d.shape_kind, d.shape_status, d.length_km, d.min_lat, d.min_lng, d.max_lat, d.max_lng,
            COUNT(c.component_id) AS component_count
     FROM catalog.v_destination d
     JOIN catalog.v_tour_component c ON c.destination_id = d.destination_id
     WHERE d.country = $1
-    GROUP BY d.destination_id, d.name, d.lat, d.lng, d.located_by, d.precision
+    GROUP BY d.destination_id, d.name, d.lat, d.lng, d.located_by, d.precision, d.shape_kind, d.shape_status, d.length_km, d.min_lat, d.min_lng, d.max_lat, d.max_lng
     HAVING COUNT(c.component_id) > 0
     ORDER BY component_count DESC
 """,
@@ -181,7 +262,7 @@ READERS = {
 """,
     'browse.destinations.DEST_SQL': """SELECT id, name, country, cover_image_url FROM shared.destinations WHERE id = $1""",
     'browse.destinations.DEST_SQL_CIS': """
-    SELECT destination_id AS id, name, country, cover_image_url, located_by, precision
+    SELECT destination_id AS id, name, country, cover_image_url, located_by, precision, shape_kind, shape_status, length_km, min_lat, min_lng, max_lat, max_lng
     FROM catalog.v_destination WHERE destination_id = $1::uuid
 """,
     'browse.routes.CHAIN_SQL': """
@@ -323,17 +404,6 @@ READERS = {
                   AND pt.master_status = 'active'
                   AND pt.deleted_at IS NULL)
 """,
-    'browse.search.CIS_SEARCH_SQL': """
-    SELECT d.destination_id AS id, d.name, d.lat, d.lng, d.located_by, d.precision,
-           COUNT(c.component_id) AS component_count,
-           MIN(c.embedding <=> $1::vector) AS best_distance
-    FROM catalog.v_tour_component c
-    JOIN catalog.v_destination d ON d.destination_id = c.destination_id
-    WHERE c.embedding IS NOT NULL 
-    GROUP BY d.destination_id, d.name, d.lat, d.lng, d.located_by, d.precision
-    ORDER BY best_distance ASC, d.destination_id
-    LIMIT 60
-""",
     'browse.tiles.TILE_SQL': """
         SELECT d.id, d.name, d.lat, d.lng, COUNT(c.id) AS component_count
         FROM shared.destinations d
@@ -347,16 +417,24 @@ READERS = {
     """,
     'browse.tiles.TILE_SQL_CIS': """
         SELECT d.destination_id AS id, d.name, d.lat, d.lng, d.located_by, d.precision,
+               d.shape_kind, d.shape_status, d.length_km,
+               d.min_lat, d.min_lng, d.max_lat, d.max_lng,
                COUNT(c.component_id) AS component_count
         FROM catalog.v_destination d
         JOIN catalog.v_tour_component c ON c.destination_id = d.destination_id
-        WHERE d.lat >= $1 AND d.lat < $2
-          AND d.lng >= $3 AND d.lng < $4
+        WHERE d.max_lat >= $1 AND d.min_lat < $2
+          AND d.max_lng >= $3 AND d.min_lng < $4
           
-        GROUP BY d.destination_id, d.name, d.lat, d.lng, d.located_by, d.precision
+        GROUP BY d.destination_id, d.name, d.lat, d.lng, d.located_by, d.precision,
+                 d.shape_kind, d.shape_status, d.length_km, d.min_lat, d.min_lng, d.max_lat, d.max_lng
         HAVING COUNT(c.component_id) > 0
         ORDER BY component_count DESC
     """,
+    'shared.component_ids.MAP_SQL': """
+    SELECT old_id::text AS old_id, new_id::text AS new_id
+    FROM tripplanner.component_id_map
+    WHERE old_id = ANY($1::uuid[])
+""",
     'shared.vector_topk.EXACT_SQL': """
         SELECT d.id, d.name, d.lat, d.lng, COUNT(c.id) AS component_count,
                MIN(c.embedding <=> $1::vector) AS best_distance
@@ -365,6 +443,16 @@ READERS = {
         WHERE c.embedding IS NOT NULL <ACTIVE_TOUR_SQL>
         GROUP BY d.id, d.name, d.lat, d.lng
         ORDER BY best_distance ASC, d.id
+        LIMIT 60
+    """,
+    'shared.vector_topk.EXACT_SQL_CIS': """
+        SELECT d.destination_id AS id, d.name, d.lat, d.lng, d.located_by, d.precision, d.shape_kind, d.shape_status, d.length_km, d.min_lat, d.min_lng, d.max_lat, d.max_lng, COUNT(c.id) AS component_count,
+               MIN(c.embedding <=> $1::vector) AS best_distance
+        FROM (SELECT component_id AS id, source_id AS source_tour_id, day_index AS source_day_index, destination_id, activity, intensity_level, season_months, embedding FROM catalog.v_tour_component) c
+        JOIN catalog.v_destination d ON d.destination_id = c.destination_id
+        WHERE c.embedding IS NOT NULL 
+        GROUP BY d.destination_id, d.name, d.lat, d.lng, d.located_by, d.precision, d.shape_kind, d.shape_status, d.length_km, d.min_lat, d.min_lng, d.max_lat, d.max_lng
+        ORDER BY best_distance ASC, d.destination_id
         LIMIT 60
     """,
     'shared.vector_topk.TOPK_SQL': """
@@ -387,6 +475,28 @@ READERS = {
         FROM best b
         JOIN shared.destinations od ON od.id = b.destination_id
         ORDER BY b.best_distance ASC, od.id
+        LIMIT 60
+    """,
+    'shared.vector_topk.TOPK_SQL_CIS': """
+        WITH scan AS MATERIALIZED (
+            SELECT c.id, c.destination_id, c.source_tour_id,
+                   c.embedding <=> $1::vector AS distance
+            FROM (SELECT component_id AS id, source_id AS source_tour_id, destination_id, activity, intensity_level, season_months, embedding FROM catalog.v_component_embedding) c
+            WHERE c.embedding IS NOT NULL
+            ORDER BY c.embedding <=> $1::vector
+            LIMIT $2
+        ), best AS (
+            SELECT c.destination_id, MIN(c.distance) AS best_distance
+            FROM scan c
+            WHERE TRUE 
+            GROUP BY c.destination_id
+        )
+        SELECT od.destination_id AS id, od.name, od.lat, od.lng, od.located_by, od.precision, od.shape_kind, od.shape_status, od.length_km, od.min_lat, od.min_lng, od.max_lat, od.max_lng, b.best_distance,
+               (SELECT COUNT(*) FROM (SELECT component_id AS id, source_id AS source_tour_id, day_index AS source_day_index, destination_id, activity, intensity_level, season_months, embedding FROM catalog.v_tour_component) c
+                WHERE c.destination_id = od.destination_id AND c.embedding IS NOT NULL ) AS component_count
+        FROM best b
+        JOIN catalog.v_destination od ON od.destination_id = b.destination_id
+        ORDER BY b.best_distance ASC, od.destination_id
         LIMIT 60
     """,
 }
