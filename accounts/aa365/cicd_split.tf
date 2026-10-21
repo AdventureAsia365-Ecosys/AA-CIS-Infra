@@ -689,10 +689,24 @@ resource "aws_iam_role_policy" "tf_apply" {
           # AA-816 (S242), bootstrap grant: CreateUserPoolDomain with a custom domain needs the
           # caller to hold cloudfront:UpdateDistribution (AWS-managed distribution, no ARN of ours).
           # Resource "*" is accepted: the distribution lives in an AWS-owned account, so there is no
-          # ARN to scope to, and this repo defines no CloudFront distributions of its own.
+          # ARN to scope to. This repo's own distribution (photos CDN, AA-844) is granted by
+          # PhotosCdnCloudFront below, not by this Sid.
           Sid      = "CognitoCustomDomainCloudFront"
           Effect   = "Allow"
           Action   = ["cloudfront:UpdateDistribution"]
+          Resource = "*"
+        },
+        {
+          # AA-844 (S246), bootstrap grant: photos_cdn.tf distribution, origin access control, cache
+          # policy and response headers policy. CloudFront is global and the OAC / policy actions
+          # take no resource ARN, so the scope is "*". No invalidation, function or key group verbs.
+          Sid    = "PhotosCdnCloudFront"
+          Effect = "Allow"
+          Action = [
+            "cloudfront:*Distribution*", "cloudfront:*OriginAccessControl*",
+            "cloudfront:*CachePolicy*", "cloudfront:*ResponseHeadersPolicy*",
+            "cloudfront:TagResource", "cloudfront:UntagResource", "cloudfront:ListTagsForResource",
+          ]
           Resource = "*"
         },
         {
