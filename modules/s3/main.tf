@@ -112,11 +112,14 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "bronze" {
 
 # Deny cross-tenant access via bucket policy
 # Enforced by prefix: each service must pass tenant slug in path
+#
+# AA-844: the statements below are unchanged; concat() appends one statement only when the photos
+# CDN is on (var.bronze_cloudfront_read), so the plan shows an in-place update of this policy.
 resource "aws_s3_bucket_policy" "bronze" {
   bucket = aws_s3_bucket.bronze.id
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
+    Statement = concat([
       {
         Sid       = "DenyUnencryptedTransport"
         Effect    = "Deny"
@@ -188,7 +191,23 @@ resource "aws_s3_bucket_policy" "bronze" {
           ] }
         }
       }
-    ]
+      ],
+      # AA-844: the photos CDN (accounts/aa365/photos_cdn.tf) reads photos/* through its origin
+      # access control. GetObject only, no ListBucket, so a missing key is a 403, not a listing;
+      # scoped by AWS:SourceArn to that one distribution. A service principal with a SourceArn
+      # condition is not "public" for Block Public Access, which stays fully on.
+      var.bronze_cloudfront_read == null ? [] : [
+        {
+          Sid       = "AllowPhotosCdnRead"
+          Effect    = "Allow"
+          Principal = { Service = "cloudfront.amazonaws.com" }
+          Action    = "s3:GetObject"
+          Resource  = "${aws_s3_bucket.bronze.arn}/${var.bronze_cloudfront_read.prefix}/*"
+          Condition = {
+            StringEquals = { "AWS:SourceArn" = var.bronze_cloudfront_read.distribution_arn }
+          }
+        }
+    ])
   })
 }
 

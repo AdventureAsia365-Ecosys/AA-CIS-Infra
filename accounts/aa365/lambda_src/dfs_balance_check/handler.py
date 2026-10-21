@@ -1,4 +1,4 @@
-"""AA-627 + AA-720 + AA-825 + AA-816 — ops-probe trigger.
+"""AA-627 + AA-720 + AA-825 + AA-816 + AA-844 — ops-probe trigger.
 
 EventBridge Scheduler -> this Lambda -> a short list of secret-gated admin POSTs. Each backend
 endpoint does its own work (read a balance, probe a vendor, sweep a log, enqueue jobs) and raises its
@@ -21,6 +21,9 @@ Called by their own schedules (the event names the path):
           idempotent per UTC day (shared.job idempotency_key retention:<kind>:<day>); each kind
           decides itself whether it runs as a DRY RUN, live or held. Nothing is enqueued while a
           rerun wave is open.
+  AA-844  POST /admin/photos/sync/schedule — enqueue one incremental photo_sync job per country,
+          idempotent per UTC day (idempotency_key photo_sync:schedule:<country>:<day>); skipped while
+          another photo_sync job is queued or running. Not skipped during a rerun wave.
   (AA-832's every-5-minutes /admin/job-runner/rds-role-connections/schedule path was removed in
   AA-751: the CIS api publishes those metrics from an in-process sampler.)
 
@@ -65,7 +68,8 @@ _PATHS = (
 
 # Paths a schedule may name in its event. Anything else is refused.
 RETENTION_SCHEDULE_PATH = "/admin/job-runner/retention/schedule"   # AA-825
-_ALLOWED_PATHS = frozenset(_PATHS + (RETENTION_SCHEDULE_PATH,))
+PHOTO_SYNC_SCHEDULE_PATH = "/admin/photos/sync/schedule"           # AA-844
+_ALLOWED_PATHS = frozenset(_PATHS + (RETENTION_SCHEDULE_PATH, PHOTO_SYNC_SCHEDULE_PATH))
 
 
 def _read_secret(secret_id):
