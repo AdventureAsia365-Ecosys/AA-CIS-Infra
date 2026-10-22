@@ -392,7 +392,14 @@ makes CI Terraform Plan fail with 403.
   app repos). It owns the RDS instance, not what lives inside it. The one exception is the Infra-native
   `db/migrations/roles/` dir (key `rl-NNN`, X1): role bootstrap and attributes (`rl-001` owner roles + `cis_app`,
   `rl-002` `cis_owner` + `db_migrator`), extensions, the `public.*` leftovers and the prepared X1 undo files; it always
-  runs as the RDS master, and no owner dir may create a role or an extension. It does own the **DB Migrate**
+  runs as the RDS master, and no owner dir may create a role or an extension. **Connection budget (AA-879, U-61,
+  data standards C2.3c):** `db/connection_budget.json` is the machine-readable C2.2 table; the **Connection Budget**
+  workflow (`db/check_connection_budget.py`, on every PR touching ECS/RDS/Lambda Terraform or role files, and
+  nightly) parses the process counts from Terraform, the `CONNECTION LIMIT`s from the role files and
+  `local.rds_max_connections`, checks each pool `max_size` against the app's `main`, and fails when a role's pools
+  exceed its limit or the total exceeds 75 % of `max_connections` (an accepted overage needs a reason, an
+  `accept_up_to` cap and an expiry ≤ 60 days). Change a pool, process count, limit or instance class → update the
+  manifest and the root C2.2 table together. It does own the **DB Migrate**
   workflow (`.github/workflows/db-migrate.yml`): `db/migrations/<owner>/` holds byte-identical copies
   of a reviewed app migration, applied from `main` by a one-off ECS task (S225). The
   **Migration Copy Guard** workflow (AA-807) checks each copy byte for byte against the owner
