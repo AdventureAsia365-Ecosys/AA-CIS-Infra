@@ -85,6 +85,7 @@ SESSION_SETTINGS = {
     "idle_in_transaction_session_timeout": "120s",
 }
 MASTER_TENANT = "00000000-0000-0000-0000-000000000001"   # AA master tenant (CIS 239), public constant
+PLATFORM_SCOPE = "platform"                              # acp_contract.tour_atoms.owner_scope of AA's atoms (CIS 266)
 SAMPLE = 10                                              # names shown per finding
 
 
@@ -171,6 +172,17 @@ RLS_PARITY_TABLES = ("gold_aa_internal.content_exports", "gold_aa_internal.publi
                      "shared.pipeline_runs", "silver_aa_internal.generated_content",
                      "silver_aa_internal.quality_scores", "silver_aa_internal.raw_tours",
                      "silver_aa_internal.seo_context")
+
+# Tenant matrix scope of an RLS table (AA-859 wave 4). The tenant column, first match wins: tenant_id (uuid, or text on
+# acp_deliver.tenant_tour_pages, CIS 265), else owner_scope (acp_contract.tour_atoms: 'platform' or the owning tenant's
+# uuid as text, CIS 266). A table with neither whose policy reaches the tenant through a parent row: {table: (its key
+# column, parent table, the parent's key column)}; the parent has a tenant_id and its own policy for the pool.
+TENANT_SCOPE_COLUMNS = ("tenant_id", "owner_scope")
+PARENT_SCOPED = {"acp_shared.quarter_plan_version": ("plan_id", "acp_shared.quarter_plan", "plan_id")}
+# The only constants a tenant-pool policy may share with every tenant: the AA master catalog (CIS 239; 265 compares the
+# text tenant_id of tenant_tour_pages with a '::text' literal) and AA's platform atoms (266). Any other constant in such
+# a policy (another tenant's id) shares nothing: its rows stay cross-tenant.
+SHARED_SCOPE_CONSTANTS = frozenset({MASTER_TENANT, PLATFORM_SCOPE})
 
 CIS_SCHEMAS = OWNERS["cis"].schemas
 CIS_APP = "cis_app"
@@ -366,13 +378,15 @@ RLS_TABLES_SQL = """
 SELECT n.nspname || '.' || c.relname AS fq,
        pg_catalog.quote_ident(n.nspname) || '.' || pg_catalog.quote_ident(c.relname) AS q,
        c.relforcerowsecurity AS forced,
-       EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid = c.oid AND a.attname = 'tenant_id'
-                  AND a.attnum > 0 AND NOT a.attisdropped) AS has_tenant
+       (SELECT a.attname::text FROM pg_catalog.pg_attribute a
+         WHERE a.attrelid = c.oid AND a.attname = ANY($2::text[]) AND a.attnum > 0 AND NOT a.attisdropped
+         ORDER BY pg_catalog.array_position($2::text[], a.attname::text) LIMIT 1) AS tenant_col
   FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
  WHERE n.nspname = ANY($1::text[]) AND c.relkind IN ('r', 'p') AND c.relrowsecurity
  ORDER BY 1"""
 # Permissive SELECT/ALL policies that reach the tenant pool role (TO it or TO public): their constant
-# tenant ids are rows the role may read under any tenant (the AA master catalog, CIS 239).
+# tenant ids / owner scopes in SHARED_SCOPE_CONSTANTS are rows the role may read under any tenant (the AA
+# master catalog, CIS 239 / 265; the platform atoms, 266).
 POOL_POLICIES_SQL = """
 SELECT schemaname || '.' || tablename AS fq, coalesce(qual, '') AS qual
   FROM pg_catalog.pg_policies
@@ -394,7 +408,9 @@ CONSUMER_SQL = {
     "relation": "SELECT pg_catalog.has_table_privilege($1, $2, $3)",
     "function": "SELECT pg_catalog.has_function_privilege($1, $2, $3)",
 }
-UUID_CONST_RE = re.compile(r"tenant_id\s*=\s*'([0-9a-fA-F-]{36})'::uuid")
+# `<scope column> = '<constant>'::uuid|text` as pg_policies deparses it: a uuid tenant_id (CIS 239), a text tenant_id
+# (CIS 265 tenant_tour_pages, `'…'::text`), owner_scope (CIS 266), each possibly table-qualified or cast to text.
+SCOPE_CONST_RE = re.compile(r"\b(?:tenant_id|owner_scope)\)?(?:::text)?\s*=\s*'([^']*)'::(?:uuid|text)\b")
 
 
 class _Undo(Exception):
@@ -470,12 +486,34 @@ def chain_violations(chain: list) -> list:
 
 
 def allowed_tenant_constants(policies: list) -> dict:
-    """{table fq: [tenant id constants readable by the tenant pool under any GUC]}."""
+    """{table fq: [shared constants readable by the tenant pool under any GUC]}: the SHARED_SCOPE_CONSTANTS a
+    pool policy of that table compares its tenant column with (uuid or text literal). Another constant shares
+    nothing, so a policy that names another tenant's id still shows up as cross-tenant rows."""
     out: dict = {}
     for p in policies:
-        for m in UUID_CONST_RE.finditer(p["qual"]):
-            out.setdefault(p["fq"], set()).add(m.group(1).lower())
+        for m in SCOPE_CONST_RE.finditer(p["qual"]):
+            if m.group(1).lower() in SHARED_SCOPE_CONSTANTS:
+                out.setdefault(p["fq"], set()).add(m.group(1).lower())
     return {k: sorted(v) for k, v in out.items()}
+
+
+def matrix_count_sql(t: dict):
+    """The tenant-matrix count for one RLS table (an RLS_TABLES_SQL row) as the tenant pool: visible rows and
+    cross-tenant rows, $1 = the GUC tenant (NULL when unset or ''), $2 = the shared constants its pool
+    policies name. Cross-tenant = a non-NULL tenant column that is neither $1 nor in $2; for a PARENT_SCOPED
+    table, a row without a parent the session can see whose tenant_id is $1 or in $2 (the parent read runs as
+    the pool, through the parent's own policy, so a foreign row's parent is invisible). None = no tenant scope."""
+    col = t.get("tenant_col")
+    if col in TENANT_SCOPE_COLUMNS:
+        return (f"SELECT count(*)::bigint AS visible, count(*) FILTER (WHERE {col} IS NOT NULL "
+                f"AND {col}::text IS DISTINCT FROM $1 AND NOT (lower({col}::text) = ANY($2::text[])))"
+                f"::bigint AS cross FROM {t['q']}")
+    if t["fq"] in PARENT_SCOPED:
+        key, parent, parent_key = PARENT_SCOPED[t["fq"]]
+        return (f"SELECT count(*)::bigint AS visible, count(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM {parent} p "
+                f"WHERE p.{parent_key} = c.{key} AND (p.tenant_id::text = $1 "
+                f"OR lower(p.tenant_id::text) = ANY($2::text[]))))::bigint AS cross FROM {t['q']} c")
+    return None
 
 
 def tenant_labels(tenant_ids: list) -> dict:
@@ -928,7 +966,7 @@ async def collect_catalog(conn, cfg: dict, facts: dict, runtime_user) -> list:
     v, e = await _savepoint(conn, lambda: conn.fetch(ENABLE_ONLY_SQL, list(CIS_SCHEMAS), CIS_APP))
     facts["rls_enable_only"] = {"error": safe_err(e)} if e else {"tables": [dict(r) for r in v]}
 
-    v, e = await _savepoint(conn, lambda: conn.fetch(RLS_TABLES_SQL, list(CIS_SCHEMAS)))
+    v, e = await _savepoint(conn, lambda: conn.fetch(RLS_TABLES_SQL, list(CIS_SCHEMAS), list(TENANT_SCOPE_COLUMNS)))
     rls_tables = [] if e else [dict(r) for r in v]
     if e:
         facts["tenant_matrix"]["error"] = "RLS table list: " + safe_err(e)
@@ -1023,9 +1061,10 @@ async def probe_login(role: str, sid: str, cfg: dict, secrets: Secrets, facts: d
 
 async def tenant_matrix(conn, facts: dict, tenants: list) -> None:
     """aa817 matrix through the tenant pool's own login: visible and cross-tenant rows per RLS table
-    under GUC unset / '' / forged uuid / every tenant of shared.tenants. Cross-tenant = a row with a
-    tenant_id that is neither the GUC tenant nor a constant a policy shares with every tenant (the AA
-    master catalog); NULL tenant_id rows (platform facts) are not tenant rows."""
+    under GUC unset / '' / forged uuid / every tenant of shared.tenants. Cross-tenant = a row whose tenant
+    column (tenant_id, else owner_scope) is neither the GUC tenant nor a constant a policy shares with every
+    tenant (the AA master catalog, the platform atoms); NULL tenant_id rows (platform facts) are not tenant
+    rows; a PARENT_SCOPED row is judged by its parent (matrix_count_sql)."""
     tm = facts["tenant_matrix"]
     if tm.get("error"):
         return
@@ -1042,11 +1081,9 @@ async def tenant_matrix(conn, facts: dict, tenants: list) -> None:
             async def count(t=t, guc=guc, me=me):
                 if guc is not None:
                     await conn.execute("SELECT pg_catalog.set_config('app.tenant_id', $1, true)", guc)
-                if t["has_tenant"]:
-                    r = await conn.fetchrow(
-                        f"SELECT count(*)::bigint AS visible, count(*) FILTER (WHERE tenant_id IS NOT NULL "
-                        f"AND tenant_id::text IS DISTINCT FROM $1 AND NOT (lower(tenant_id::text) = ANY($2::text[])))"
-                        f"::bigint AS cross FROM {t['q']}", me, allowed.get(t["fq"], []))
+                sql = matrix_count_sql(t)
+                if sql:
+                    r = await conn.fetchrow(sql, me, allowed.get(t["fq"], []))
                     return {"visible": r["visible"], "cross": r["cross"]}
                 n = await conn.fetchval(f"SELECT count(*)::bigint FROM {t['q']}")
                 # No tenant column: under a GUC that names no real tenant every visible row is foreign.

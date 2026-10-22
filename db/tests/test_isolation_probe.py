@@ -26,6 +26,16 @@ WORKFLOW = (ROOT / ".github" / "workflows" / "db-isolation-probe.yml").read_text
 MIGRATE_WORKFLOW = (ROOT / ".github" / "workflows" / "db-migrate.yml").read_text(encoding="utf-8")
 
 
+TTP = "acp_deliver.tenant_tour_pages"
+ATOMS = "acp_contract.tour_atoms"
+QP = "acp_shared.quarter_plan"
+QPV = "acp_shared.quarter_plan_version"
+T1 = "11111111-1111-4111-8111-111111111111"
+T2 = "22222222-2222-4222-8222-222222222222"
+GUC = "NULLIF(current_setting('app.tenant_id'::text, true), ''::text)"
+TTP_OWN = f"(tenant_id = {GUC})"
+
+
 def role(name, **kw):
     info = {"exists": True, "rolname": name, "login": True, "super": False, "bypassrls": False,
             "createrole": False, "createdb": False, "replication": False, "connlimit": 15, "comment": None,
@@ -167,6 +177,43 @@ class HelpersTest(unittest.TestCase):
                {"fq": "acp_shared.facts", "qual": "(scope = 'platform'::text)"}]
         self.assertEqual(p.allowed_tenant_constants(pol),
                          {"gold_aa_internal.published_tours": [p.MASTER_TENANT]})
+
+    def test_allowed_constants_text_cast_and_platform_scope(self):
+        # AA-859 wave 4, as pg_policies deparses CIS 265 / 266 (db-schema-reference.md after 268): the text tenant_id of
+        # tenant_tour_pages compares with a '::text' literal; tour_atoms' platform atoms with owner_scope.
+        pol = [{"fq": TTP, "qual": f"(tenant_id = '{p.MASTER_TENANT}'::text)"},
+               {"fq": TTP, "qual": TTP_OWN},
+               {"fq": ATOMS, "qual": "(owner_scope = 'platform'::text)"},
+               {"fq": ATOMS, "qual": "(owner_scope = NULLIF(current_setting('app.tenant_id'::text, true), ''::text))"},
+               {"fq": "acp_shared.x", "qual": f"((tenant_id)::text = '{p.MASTER_TENANT.upper()}'::text)"}]
+        self.assertEqual(p.allowed_tenant_constants(pol), {TTP: [p.MASTER_TENANT], ATOMS: ["platform"],
+                                                           "acp_shared.x": [p.MASTER_TENANT]})
+
+    def test_allowed_constants_never_share_another_tenants_id(self):
+        # A policy that hands one tenant's rows to every tenant is not a shared catalog, whatever the cast.
+        pol = [{"fq": TTP, "qual": f"(tenant_id = '{T2}'::text)"},
+               {"fq": "gold_aa_internal.published_tours", "qual": f"(tenant_id = '{T2}'::uuid)"},
+               {"fq": ATOMS, "qual": f"(owner_scope = '{T2}'::text)"}]
+        self.assertEqual(p.allowed_tenant_constants(pol), {})
+
+    def test_rls_tables_report_the_tenant_scope_column(self):
+        self.assertEqual(p.TENANT_SCOPE_COLUMNS, ("tenant_id", "owner_scope"))     # tenant_id wins when both exist
+        self.assertIn("AS tenant_col", p.RLS_TABLES_SQL)
+        self.assertIn("array_position($2::text[]", p.RLS_TABLES_SQL)
+
+    def test_matrix_count_sql(self):
+        ttp = p.matrix_count_sql({"fq": TTP, "q": '"acp_deliver"."tenant_tour_pages"', "tenant_col": "tenant_id"})
+        self.assertIn("tenant_id::text IS DISTINCT FROM $1", ttp)
+        self.assertIn("lower(tenant_id::text) = ANY($2::text[])", ttp)
+        atoms = p.matrix_count_sql({"fq": ATOMS, "q": '"acp_contract"."tour_atoms"', "tenant_col": "owner_scope"})
+        self.assertIn("owner_scope IS NOT NULL AND owner_scope::text IS DISTINCT FROM $1", atoms)
+        self.assertIn('FROM "acp_contract"."tour_atoms"', atoms)
+        qpv = p.matrix_count_sql({"fq": QPV, "q": '"acp_shared"."quarter_plan_version"', "tenant_col": None})
+        self.assertIn("NOT EXISTS (SELECT 1 FROM acp_shared.quarter_plan p WHERE p.plan_id = c.plan_id", qpv)
+        self.assertIn("p.tenant_id::text = $1", qpv)
+        self.assertTrue(qpv.endswith('FROM "acp_shared"."quarter_plan_version" c'))
+        # No tenant column and no parent: the caller counts every visible row as foreign without a real tenant.
+        self.assertIsNone(p.matrix_count_sql({"fq": "acp_shared.angle_gate_option", "q": "x", "tenant_col": None}))
 
     def test_tenant_labels_hide_ids(self):
         ids = ["22222222-2222-2222-2222-222222222222", p.MASTER_TENANT, "33333333-3333-3333-3333-333333333333"]
@@ -486,6 +533,172 @@ class BuildCellsTest(unittest.TestCase):
         self.assertEqual(p.summarize(p.build_cells(f, keys), keys)["exit"], 0)
         f["logins"]["booking"]["cross"]["shared.tenants"] = {"readable": True, "sqlstate": None}
         self.assertEqual(p.summarize(p.build_cells(f, keys), keys)["exit"], 1)
+
+
+class _Savepoint:
+    """conn.transaction() of _savepoint: set_config(…, true) is undone when the savepoint rolls back."""
+
+    def __init__(self, conn):
+        self.conn = conn
+
+    async def __aenter__(self):
+        self.saved = self.conn.guc
+
+    async def __aexit__(self, *exc):
+        self.conn.guc = self.saved
+        return False
+
+
+class PoolConn:
+    """aa_app_user's session over fixture rows. `policies` = {table: (row, GUC tenant or None, conn) -> visible}, the
+    row filter its RLS policies apply; fetchrow evaluates the matrix count as matrix_count_sql words it (the parent of a
+    PARENT_SCOPED row is looked up among the rows the session can see)."""
+
+    def __init__(self, tables, rows, policies):
+        self.cols = {t["fq"]: t["tenant_col"] for t in tables}
+        self.rows, self.policies, self.guc, self.sql = rows, policies, None, []
+
+    def transaction(self):
+        return _Savepoint(self)
+
+    async def execute(self, sql, guc):
+        self.guc = guc
+
+    def visible(self, fq):
+        return [r for r in self.rows[fq] if self.policies[fq](r, self.guc or None, self)]
+
+    async def fetchrow(self, sql, me, allowed):
+        self.sql.append((sql, me, list(allowed)))
+        fq = next(fq for fq in self.rows if '"{}"."{}"'.format(*fq.split(".")) in sql.split(" FROM ")[-1])
+        vis = self.visible(fq)
+        if fq in p.PARENT_SCOPED:
+            key, parent, pkey = p.PARENT_SCOPED[fq]
+            parents = self.visible(parent)
+
+            def ok(r):
+                return any(pr[pkey] == r[key] and (pr["tenant_id"] == me or pr["tenant_id"].lower() in allowed)
+                           for pr in parents)
+        else:
+            col = self.cols[fq]
+
+            def ok(r):
+                return r[col] is None or r[col] == me or r[col].lower() in allowed
+        return {"visible": len(vis), "cross": sum(not ok(r) for r in vis)}
+
+
+WAVE4_TABLES = [{"fq": fq, "q": '"{}"."{}"'.format(*fq.split(".")), "forced": False, "tenant_col": col}
+                for fq, col in ((ATOMS, "owner_scope"), (TTP, "tenant_id"), (QP, "tenant_id"), (QPV, None))]
+WAVE4_ROWS = {
+    TTP: [{"tenant_id": p.MASTER_TENANT}, {"tenant_id": T1}, {"tenant_id": T2}],
+    ATOMS: [{"owner_scope": "platform"}, {"owner_scope": "platform"}, {"owner_scope": T1}, {"owner_scope": T2}],
+    QP: [{"plan_id": "p1", "tenant_id": T1}, {"plan_id": "p2", "tenant_id": T2}],
+    QPV: [{"plan_id": "p1"}, {"plan_id": "p2"}, {"plan_id": "p2"}],
+}
+# CIS 265 / 266 as live (db-schema-reference.md after 268): the row filters and the pool policies' USING text.
+WAVE4_POLICIES = {
+    TTP: lambda r, g, c: r["tenant_id"] in (g, p.MASTER_TENANT),
+    ATOMS: lambda r, g, c: r["owner_scope"] in ("platform", g),
+    QP: lambda r, g, c: r["tenant_id"] == g,
+    QPV: lambda r, g, c: any(qp["plan_id"] == r["plan_id"] for qp in c.visible(QP)),
+}
+WAVE4_QUALS = [
+    {"fq": TTP, "qual": f"(tenant_id = '{p.MASTER_TENANT}'::text)"},
+    {"fq": TTP, "qual": TTP_OWN},
+    {"fq": ATOMS, "qual": "(owner_scope = 'platform'::text)"},
+    {"fq": ATOMS, "qual": f"(owner_scope = {GUC})"},
+    {"fq": QP, "qual": f"(tenant_id = ({GUC})::uuid)"},
+    {"fq": QPV, "qual": f"(EXISTS ( SELECT 1 FROM acp_shared.quarter_plan qp WHERE ((qp.plan_id = "
+                        f"quarter_plan_version.plan_id) AND (qp.tenant_id = ({GUC})::uuid))))"},
+]
+
+
+class TenantMatrixWave4Test(unittest.TestCase):
+    """AA-859 wave 4: tour_atoms by owner_scope, quarter_plan_version through its plan, tenant_tour_pages' text tenant_id
+    with a '::text' master constant. Pure (PoolConn); the SQL itself ran against a throwaway PostgreSQL with the 265 /
+    266 policies (implementation notes AA-859)."""
+
+    def run_matrix(self, policies=None, quals=None, rows=None):
+        f = today_facts()
+        f["tenant_matrix"] = {}
+        f["_rls_tables"] = WAVE4_TABLES
+        f["_allowed_constants"] = p.allowed_tenant_constants(WAVE4_QUALS if quals is None else quals)
+        conn = PoolConn(WAVE4_TABLES, copy.deepcopy(rows or WAVE4_ROWS), {**WAVE4_POLICIES, **(policies or {})})
+        asyncio.run(p.tenant_matrix(conn, f, [p.MASTER_TENANT, T1, T2]))
+        st, keys = statuses(f)
+        cell = {c.id: c for c in p.build_cells(f, keys)}["tenant.aa_app_user_isolation"]
+        return st["tenant.aa_app_user_isolation"], f["tenant_matrix"]["tables"], cell
+
+    def test_live_policies_pass(self):
+        st, m, _ = self.run_matrix()
+        self.assertEqual(st, "pass")
+        self.assertEqual(set(m), {ATOMS, TTP, QP, QPV})
+        self.assertEqual(m[ATOMS]["unset"], {"visible": 2, "cross": 0})           # platform atoms only
+        self.assertEqual(m[ATOMS]["forged"], {"visible": 2, "cross": 0})
+        self.assertEqual(m[ATOMS]["tenant:t1"], {"visible": 3, "cross": 0})       # + its own atom
+        self.assertEqual(m[TTP]["tenant:t1"], {"visible": 2, "cross": 0})         # own + the master's page
+        self.assertEqual(m[TTP]["forged"], {"visible": 1, "cross": 0})
+        self.assertEqual(m[QPV]["tenant:t2"], {"visible": 2, "cross": 0})         # judged by tenant (not None)
+        self.assertEqual(m[QPV]["unset"], {"visible": 0, "cross": 0})
+
+    def test_text_cast_master_constant_was_a_false_positive(self):
+        # The pre-fix regex (tenant_id = '<uuid>'::uuid only) misses 265's '::text' literal: the master's public trip
+        # page, visible to every tenant by design, counted as a cross-tenant read.
+        old = re.compile(r"tenant_id\s*=\s*'([0-9a-fA-F-]{36})'::uuid")
+        with mock.patch.object(p, "SCOPE_CONST_RE", old):
+            st, m, cell = self.run_matrix()
+        self.assertEqual(st, "FAIL")
+        self.assertEqual(m[TTP]["forged"], {"visible": 1, "cross": 1})
+        self.assertTrue(any(s.startswith(TTP) for s in cell.detail["cross_tenant"]))
+        st, m, _ = self.run_matrix()                                               # the fix
+        self.assertEqual((st, m[TTP]["forged"]), ("pass", {"visible": 1, "cross": 0}))
+
+    def test_policy_sharing_another_tenants_rows_is_caught(self):
+        # A '::text' constant that is not the master (here t2's id) shares nothing: t2's rows read by t1 stay cross.
+        quals = WAVE4_QUALS + [{"fq": TTP, "qual": f"(tenant_id = '{T2}'::text)"}]
+        st, m, _ = self.run_matrix(policies={TTP: lambda r, g, c: r["tenant_id"] in (g, p.MASTER_TENANT, T2)},
+                                   quals=quals)
+        self.assertEqual(st, "FAIL")
+        self.assertEqual(m[TTP]["tenant:t1"], {"visible": 3, "cross": 1})
+
+    def test_tenant_atom_leak_is_caught(self):
+        st, m, _ = self.run_matrix(policies={ATOMS: lambda r, g, c: True})       # tenant_isolation USING (true)
+        self.assertEqual(st, "FAIL")
+        self.assertEqual(m[ATOMS]["tenant:t1"], {"visible": 4, "cross": 1})       # t2's atom
+        self.assertEqual(m[ATOMS]["unset"], {"visible": 4, "cross": 2})
+
+    def test_platform_atoms_only_where_the_policy_says(self):
+        # Without atoms_platform_read, 'platform' is not a shared constant: platform atoms reached through another
+        # policy count as foreign.
+        quals = [q for q in WAVE4_QUALS if "'platform'" not in q["qual"]]
+        st, m, _ = self.run_matrix(quals=quals)
+        self.assertEqual(st, "FAIL")
+        self.assertEqual(m[ATOMS]["unset"], {"visible": 2, "cross": 2})
+
+    def test_quarter_plan_version_leak_is_caught(self):
+        st, m, _ = self.run_matrix(policies={QPV: lambda r, g, c: True})         # USING (true) on the versions
+        self.assertEqual(st, "FAIL")
+        self.assertEqual(m[QPV]["tenant:t1"], {"visible": 3, "cross": 2})         # t2's plan is invisible to t1
+        self.assertEqual(m[QPV]["forged"], {"visible": 3, "cross": 3})
+
+    def test_quarter_plan_leak_through_the_parent_is_caught(self):
+        st, m, _ = self.run_matrix(policies={QP: lambda r, g, c: True})          # the plans leak, versions follow
+        self.assertEqual(st, "FAIL")
+        self.assertEqual(m[QP]["tenant:t1"], {"visible": 2, "cross": 1})
+        self.assertEqual(m[QPV]["tenant:t1"], {"visible": 3, "cross": 2})         # p2's tenant is t2, not t1
+
+    def test_shared_constants_reach_the_query(self):
+        f = today_facts()
+        f["tenant_matrix"] = {}
+        f["_rls_tables"] = WAVE4_TABLES
+        f["_allowed_constants"] = p.allowed_tenant_constants(WAVE4_QUALS)
+        conn = PoolConn(WAVE4_TABLES, copy.deepcopy(WAVE4_ROWS), WAVE4_POLICIES)
+        asyncio.run(p.tenant_matrix(conn, f, [T1]))
+        by_table = {}
+        for sql, me, allowed in conn.sql:
+            by_table.setdefault(sql.split(" FROM ")[-1].split()[0], set()).add(tuple(allowed))
+        self.assertEqual(by_table['"acp_deliver"."tenant_tour_pages"'], {(p.MASTER_TENANT,)})
+        self.assertEqual(by_table['"acp_contract"."tour_atoms"'], {("platform",)})
+        self.assertEqual(by_table['"acp_shared"."quarter_plan_version"'], {()})
 
 
 class MainTest(unittest.TestCase):
