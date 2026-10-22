@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -101,10 +102,17 @@ class CheckTest(unittest.TestCase):
             p.write_text(body, encoding="utf-8")
         return root
 
-    def run_main(self, root, *extra):
+    def run_main(self, root, *extra, github_actions=""):
+        # Pin GITHUB_ACTIONS: in Actions main() adds a "::error" annotation after each FAIL line, so a test
+        # that inherits the runner env would see every message twice (AA-929 review).
         out = io.StringIO()
-        code = crr.main(["--repo-root", str(root), *extra], out=out)
+        with mock.patch.dict(os.environ, {"GITHUB_ACTIONS": github_actions}):
+            code = crr.main(["--repo-root", str(root), *extra], out=out)
         return code, out.getvalue()
+
+    @staticmethod
+    def fail_lines(out, needle="has no row"):
+        return [line for line in out.splitlines() if line.startswith("FAIL  ") and needle in line]
 
     def test_table_without_a_row_fails(self):
         """Done-when E: a table without a DM-7 row fails the PR check."""
@@ -138,7 +146,26 @@ class CheckTest(unittest.TestCase):
         })
         code, out = self.run_main(root, "--registry", str(root / "registry.md"))
         self.assertEqual(code, 1)
+        self.assertEqual(len(self.fail_lines(out)), 3, out)
         self.assertEqual(out.count("has no row"), 3, out)
+
+    def test_github_actions_adds_one_annotation_per_failure(self):
+        """In Actions each FAIL line gets one ::error annotation on its file; the FAIL count is unchanged."""
+        root = self.make_repo({
+            "registry.md": REGISTRY,
+            "db/migrations/crm/001_base.sql": "CREATE TABLE crm.rule_text_only (id int);\n"
+                                              "CREATE TABLE crm.after_section_seven (id int);\n",
+        })
+        code, out = self.run_main(root, "--registry", str(root / "registry.md"), github_actions="true")
+        self.assertEqual(code, 1, out)
+        self.assertEqual(len(self.fail_lines(out)), 2, out)
+        notes = [line for line in out.splitlines() if line.startswith("::error ")]
+        self.assertEqual(len(notes), 2, out)
+        for note in notes:
+            self.assertTrue(note.startswith("::error file=db/migrations/crm/001_base.sql::"), note)
+            self.assertIn("has no row", note)
+        _, plain = self.run_main(root, "--registry", str(root / "registry.md"))
+        self.assertNotIn("::error", plain)
 
     def test_existing_owners_are_grandfathered(self):
         root = self.make_repo({"db/migrations/booking/001_x.sql": "CREATE TABLE booking.new_thing (id int);"})
