@@ -22,17 +22,22 @@ name: Docs Gen (generated infra docs)
 #    lambda:ListFunctions, secretsmanager:ListSecrets metadata) through the runner's preinstalled AWS CLI v2:
 #    every call projects names with a JMESPath --query (Lambda: keys() of the environment), so a value never
 #    leaves the CLI process and is written nowhere. No pip install in this job: it holds the plan role's
-#    credentials and the root write PAT, and only stdlib Python runs next to them. Vercel names come from the API when the repo secret
+#    credentials and a root repo App token, and only stdlib Python runs next to them. Vercel names come from the API when the repo secret
 #    VERCEL_TOKEN is set (team: repo variable VERCEL_TEAM_ID), otherwise from the checked-in snapshot
 #    tools/docs/env_config_vercel.json (refresh: gen_env_config.py vercel-snapshot --cli). A failure there
 #    does not hold back the Terraform pages: the run turns red at the end instead.
 # Triggers: nightly, manual, and Terraform Apply (its separate docs-gen-dispatch job, the only job there
 # with `actions: write`) after every apply that changed something.
-# The ROOT_REPO_DOCS_TOKEN PAT is used by the root checkout (persist-credentials: false) and then only
-# by the final push / gh step; no other step can read it from disk.
-# Secrets (repo level, all already used by other workflows): AWS_ROLE_ARN (the plan role, as in
-# terraform-plan.yml; this job has no environment, so the prod environment's apply-role value does not
-# apply), TF_STATE_BUCKET, ROOT_REPO_DOCS_TOKEN (fine-grained PAT on AA-Ecosys: contents + pull requests).
+# Root repo access (AA-901, root ADR 0011): short-lived installation tokens of the GitHub App aa-ecosys-ci-bot,
+# scoped to AdventureAsia365-Ecosys/AA-Ecosys only and revoked when the job ends. Two tokens, least privilege:
+#   - a Contents READ token for the root checkout (persist-credentials: false), minted before the AWS steps
+#     because the render step checks runbook links against that checkout;
+#   - a Contents + Pull requests WRITE token minted right before the final push / gh step, after every AWS and
+#     Terraform step, and used only there; no other step can read it from disk.
+# Secrets and variables (repo level): AWS_ROLE_ARN (the plan role, as in terraform-plan.yml; this job has no
+# environment, so the prod environment's apply-role value does not apply), TF_STATE_BUCKET, the variable
+# AA_CI_BOT_APP_ID and the secret AA_CI_BOT_PRIVATE_KEY (repo level: this private repo on GitHub Free has no
+# environment branch rule, so the job's main-only guard is what keeps the key off other refs).
 # Cost: $0 AWS (state read from S3, a few GET requests); GitHub Actions about 1 minute a night.
 on:
   workflow_dispatch:
@@ -73,7 +78,7 @@ jobs:
       GEN_PATH: docs/generated
       REASON: ${{ github.event_name == 'schedule' && 'nightly' || inputs.reason || 'manual' }}
       PUBLISH: ${{ github.event_name == 'workflow_dispatch' && inputs.publish && 'true' || 'false' }}
-      HAS_ROOT_TOKEN: ${{ secrets.ROOT_REPO_DOCS_TOKEN != '' }}
+      HAS_CI_BOT_APP: ${{ vars.AA_CI_BOT_APP_ID != '' && secrets.AA_CI_BOT_PRIVATE_KEY != '' }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
       - uses: actions/checkout@v7
@@ -87,17 +92,29 @@ jobs:
       - name: Unit tests (generator)
         run: python -m unittest discover -s tools/docs/tests
 
+      # AA-901: read-only App token for the root checkout (the job runs on main only, see `if:` above).
+      - name: Mint the aa-ecosys-ci-bot token (root repo, contents read)
+        id: root-read-token
+        if: env.HAS_CI_BOT_APP == 'true'
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.AA_CI_BOT_APP_ID }}
+          private-key: ${{ secrets.AA_CI_BOT_PRIVATE_KEY }}
+          owner: AdventureAsia365-Ecosys
+          repositories: AA-Ecosys
+          permission-contents: read
+
       - name: Check out the root repo
-        if: env.HAS_ROOT_TOKEN == 'true'
+        if: env.HAS_CI_BOT_APP == 'true'
         uses: actions/checkout@v7
         with:
           repository: ${{ env.ROOT_REPO }}
           ref: ${{ env.ROOT_BRANCH }}
-          token: ${{ secrets.ROOT_REPO_DOCS_TOKEN }}
+          token: ${{ steps.root-read-token.outputs.token }}
           path: root
           fetch-depth: 1
-          # The write PAT must not sit in root/.git/config while terraform init / show run provider
-          # binaries; only the final push step gets it (passed in the push URL, never stored).
+          # No token in root/.git/config while terraform init / show run provider binaries; only the final
+          # push step gets a (separate, write) token, passed in the push URL and never stored.
           persist-credentials: false
 
       - name: Configure AWS credentials (OIDC, read-only plan role)
@@ -172,12 +189,25 @@ jobs:
           path: generated/
           retention-days: 14
 
+      # AA-901: the write token is minted only here, after every AWS / Terraform step.
+      - name: Mint the aa-ecosys-ci-bot token (root repo, contents + pull requests write)
+        id: root-write-token
+        if: env.HAS_CI_BOT_APP == 'true'
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.AA_CI_BOT_APP_ID }}
+          private-key: ${{ secrets.AA_CI_BOT_PRIVATE_KEY }}
+          owner: AdventureAsia365-Ecosys
+          repositories: AA-Ecosys
+          permission-contents: write
+          permission-pull-requests: write
+
       - name: Open or update the root PR when a page changed
         env:
-          GH_TOKEN: ${{ secrets.ROOT_REPO_DOCS_TOKEN }}
+          GH_TOKEN: ${{ steps.root-write-token.outputs.token }}
         run: |
-          if [ "$HAS_ROOT_TOKEN" != "true" ]; then
-            echo "::error::secret ROOT_REPO_DOCS_TOKEN is not set: the pages are in the artifact, but no root PR can be opened"
+          if [ "$HAS_CI_BOT_APP" != "true" ]; then
+            echo "::error::the aa-ecosys-ci-bot App is not configured (repo variable AA_CI_BOT_APP_ID and/or secret AA_CI_BOT_PRIVATE_KEY missing): the pages are in the artifact, but no root PR can be opened"
             exit 1
           fi
           if [ "$PUBLISH" = "true" ]; then
@@ -199,7 +229,7 @@ jobs:
           git commit -q -m "docs: regenerate infra docs ($(echo $PAGES | tr '\n' ' '))" \
             -m "Generated by AA-CIS-Infra Docs Gen ($REASON): $RUN_URL" -m "Refs AA-893, AA-894"
           # The root checkout keeps no credentials (persist-credentials: false): authenticate this push
-          # only, with the PAT in the URL (masked in logs, never written to .git/config).
+          # only, with the App write token in the URL (masked in logs, never written to .git/config).
           git push -q --force "https://x-access-token:${GH_TOKEN}@github.com/${ROOT_REPO}.git" "HEAD:refs/heads/$PR_BRANCH"
           {
             echo "Generated by the AA-CIS-Infra **Docs Gen** workflow ($REASON): $RUN_URL"
