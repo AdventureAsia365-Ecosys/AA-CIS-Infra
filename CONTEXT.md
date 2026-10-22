@@ -207,8 +207,9 @@ tools/
                     every alarm and SNS-notifying EventBridge rule carries a runbook suffix. Tests in
                     tools/docs/tests (docs-gen-test.yml); run by docs-gen.yml.
                     Plus gen_env_config.py (AA-894 scope 5): the env-config register (APP-03), env var
-                    NAMES of every ECS service, Lambda function and Vercel project (boto3 read-only;
-                    Vercel API or the checked-in names-only snapshot env_config_vercel.json); never a value.
+                    NAMES of every ECS service, Lambda function and Vercel project (AWS CLI read-only,
+                    --query projects names only; Vercel API or the checked-in names-only snapshot
+                    env_config_vercel.json); never a value.
 ```
 
 The **active dev stack** is `accounts/aa365` — it is the root Terraform actually applies against

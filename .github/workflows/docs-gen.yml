@@ -19,8 +19,10 @@ name: Docs Gen (generated infra docs)
 #    A broken or missing runbook link fails this run AFTER the PR is updated, so the bad row is visible.
 #
 # Env config register (AA-894): read live with the same read-only role (ReadOnlyAccess: ecs:Describe*/List*,
-#    lambda:ListFunctions, secretsmanager:ListSecrets metadata). The collector keeps names and secret NAMES
-#    only, in memory; no value is written anywhere. Vercel names come from the API when the repo secret
+#    lambda:ListFunctions, secretsmanager:ListSecrets metadata) through the runner's preinstalled AWS CLI v2:
+#    every call projects names with a JMESPath --query (Lambda: keys() of the environment), so a value never
+#    leaves the CLI process and is written nowhere. No pip install in this job: it holds the plan role's
+#    credentials and the root write PAT, and only stdlib Python runs next to them. Vercel names come from the API when the repo secret
 #    VERCEL_TOKEN is set (team: repo variable VERCEL_TEAM_ID), otherwise from the checked-in snapshot
 #    tools/docs/env_config_vercel.json (refresh: gen_env_config.py vercel-snapshot --cli). A failure there
 #    does not hold back the Terraform pages: the run turns red at the end instead.
@@ -84,10 +86,6 @@ jobs:
 
       - name: Unit tests (generator)
         run: python -m unittest discover -s tools/docs/tests
-
-      # Installed before any AWS credential exists in the job.
-      - name: Install boto3 (env-config collector)
-        run: python -m pip install --disable-pip-version-check -q "boto3==1.43.49"
 
       - name: Check out the root repo
         if: env.HAS_ROOT_TOKEN == 'true'

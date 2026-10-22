@@ -14,7 +14,8 @@ ecosystem gets, with where each one comes from. Never a value.
            from the checked-in snapshot tools/docs/env_config_vercel.json (names only).
 
 Values never leave the extraction functions: `extract_*` keep names and secret names only, so the
-names-only model (JSON) and the page cannot carry a value. tests/test_gen_env_config.py plants
+names-only model (JSON) and the page cannot carry a value. For AWS the CLI --query projections already
+drop them (Lambda: only `keys(Environment.Variables)`), so they never reach this process at all. tests/test_gen_env_config.py plants
 values in every input and asserts they reach neither.
 
 The page lands in the root repo next to the Terraform pages (gen_docs.py) through the same bot PR
@@ -22,8 +23,9 @@ The page lands in the root repo next to the Terraform pages (gen_docs.py) throug
 capture outside the header, so it changes only when a name, a source or a target changes.
 
 Subcommands:
-  collect-aws      --cluster NAME --out FILE        boto3, read-only (ecs:Describe*/List*,
-                                                    lambda:ListFunctions, secretsmanager:ListSecrets)
+  collect-aws      --cluster NAME --out FILE [--profile P]
+                   AWS CLI v2, read-only (ecs:Describe*/List*, lambda:ListFunctions,
+                   secretsmanager:ListSecrets); every call projects names with --query
   vercel-snapshot  (--cli | --api) [--project P ...] --out FILE
                    --cli runs `vercel env ls --project P` (local, logged-in CLI) and keeps only the
                    name, type and environments columns; --api reads VERCEL_TOKEN (and VERCEL_TEAM_ID)
@@ -125,9 +127,21 @@ def secret_ref(value_from: str, names_by_arn: Optional[dict[str, str]] = None) -
         parts = rest.split(":")
         name_part = parts[0]
         key = parts[1] if len(parts) > 1 and parts[1] else None
-        name = (names_by_arn or {}).get(f"{head}:secret:{name_part}")
+        names = names_by_arn or {}
+        name = names.get(f"{head}:secret:{name_part}")  # full ARN (name + "-" + 6 random characters)
+        if not name and names:
+            # Partial ARN (no random suffix): the one listed full ARN that is this + "-" + 6 characters.
+            prefix = f"{head}:secret:{name_part}-"
+            hits = {n for k, n in names.items() if k.startswith(prefix) and len(k) == len(prefix) + 6}
+            if len(hits) == 1:
+                name = hits.pop()
+            else:
+                # Not listed (deleted, or another account's secret): the name part as written, flagged.
+                return {"store": "secretsmanager", "secret": name_part, "key": key, "unlisted": True}
         if not name:
-            m = _SM_SUFFIX_RE.match(name_part)  # full ARN: name + "-" + 6 random characters
+            # ListSecrets denied: strip what looks like the random suffix. A partial ARN whose name ends in
+            # "-" + 6 characters (e.g. "-reader") is cut too; the collector warns when it runs this way.
+            m = _SM_SUFFIX_RE.match(name_part)
             name = m.group(1) if m else name_part
         return {"store": "secretsmanager", "secret": name, "key": key}
     if v.startswith("arn:") and ":ssm:" in v and ":parameter" in v:
@@ -155,15 +169,6 @@ def extract_task_def(td: dict, names_by_arn: Optional[dict[str, str]] = None) ->
         rows.sort(key=lambda r: (r["name"], r["source"]))
         out.append({"name": str(c.get("name") or ""), "vars": rows, "env_files": len(c.get("environmentFiles") or [])})
     return out
-
-
-def extract_lambda(cfg: dict) -> list[str]:
-    """Keys of a Lambda function's environment; the values are not looked at."""
-    env = cfg.get("Environment") or {}
-    variables = env.get("Variables") or {}
-    if not isinstance(variables, dict):
-        raise InputError("Lambda Environment.Variables is not an object")
-    return sorted(str(k) for k in variables)
 
 
 def vercel_kind(raw_type: Any) -> str:
@@ -230,33 +235,66 @@ def parse_vercel_cli(text: str) -> list[dict]:
 # --------------------------------------------------------------------------- collection (read-only)
 
 
-def secret_names_by_arn(sm) -> tuple[dict[str, str], Optional[str]]:
-    """ARN -> name from ListSecrets (metadata only). On failure the suffix heuristic is used."""
-    out: dict[str, str] = {}
+# The AWS CLI v2 (preinstalled on GitHub runners) does the reads; each call projects names with a
+# JMESPath --query, so a plain value or a Lambda env value never leaves the CLI process: not on disk, not
+# in this process. No third-party Python package is installed in the Docs Gen job (it holds the plan
+# role's credentials and the root write PAT; a pip dependency would run code with both in reach).
+Q_LIST_SECRETS = "SecretList[].[ARN,Name]"
+Q_LIST_SERVICES = "serviceArns"
+Q_DESCRIBE_SERVICES = (
+    "services[].{serviceName:serviceName,taskDefinition:taskDefinition,"
+    "deployments:deployments[].{status:status,taskDefinition:taskDefinition}}"
+)
+Q_TASK_DEF = (
+    "taskDefinition.{family:family,containerDefinitions:containerDefinitions[].{name:name,"
+    "environment:environment[].{name:name},secrets:secrets[].{name:name,valueFrom:valueFrom},"
+    "environmentFiles:environmentFiles[].{type:type}}}"
+)
+Q_LIST_FUNCTIONS = "Functions[].{function:FunctionName,keys:keys(Environment.Variables || `{}`)}"
+
+_AWS_ERROR_CODE = re.compile(r"\(([A-Za-z]+)\)")
+
+
+class AwsCli:
+    """Read-only `aws <service> <op> --query Q --output json` runner (pagination is the CLI's own)."""
+
+    def __init__(self, region: str, profile: Optional[str] = None, runner=subprocess.run):
+        self.region, self.profile, self.runner = region, profile, runner
+
+    def call(self, service: str, op: str, *args: str, query: str) -> Any:
+        cmd = ["aws", service, op, *args, "--region", self.region, "--output", "json", "--query", query]
+        if self.profile:
+            cmd += ["--profile", self.profile]
+        res = self.runner(cmd, capture_output=True, text=True, timeout=300, check=False)
+        if res.returncode != 0:
+            m = _AWS_ERROR_CODE.search(res.stderr or "")  # the error code only, never the CLI's full text
+            raise InputError(f"aws {service} {op} failed (exit {res.returncode}{', ' + m.group(1) if m else ''})")
+        out = (res.stdout or "").strip()
+        return json.loads(out) if out else None
+
+
+def secret_names_by_arn(aws: AwsCli) -> tuple[dict[str, str], Optional[str]]:
+    """Full ARN -> name from ListSecrets (metadata only). On failure the suffix heuristic is used."""
     try:
-        for page in sm.get_paginator("list_secrets").paginate(IncludePlannedDeletion=True):
-            for s in page.get("SecretList") or []:
-                if s.get("ARN") and s.get("Name"):
-                    out[s["ARN"]] = s["Name"]
-    except Exception as exc:  # AccessDenied etc.: names fall back to the ARN suffix rule
-        return {}, f"secretsmanager:ListSecrets failed ({exc.__class__.__name__}); secret names from the ARN suffix rule"
-    return out, None
+        rows = aws.call("secretsmanager", "list-secrets", "--include-planned-deletion", query=Q_LIST_SECRETS) or []
+    except InputError as exc:  # AccessDenied etc.: names fall back to the ARN suffix rule
+        return {}, f"secretsmanager:ListSecrets failed ({exc}); secret names from the ARN suffix rule"
+    return {str(arn): str(name) for arn, name in rows if arn and name}, None
 
 
-def collect_ecs(ecs, cluster: str, names_by_arn: dict[str, str]) -> list[dict]:
-    arns: list[str] = []
-    for page in ecs.get_paginator("list_services").paginate(cluster=cluster):
-        arns.extend(page.get("serviceArns") or [])
-    services = []
+def collect_ecs(aws: AwsCli, cluster: str, names_by_arn: dict[str, str]) -> list[dict]:
+    arns = aws.call("ecs", "list-services", "--cluster", cluster, query=Q_LIST_SERVICES) or []
+    services: list[dict] = []
     for i in range(0, len(arns), 10):
-        services.extend(ecs.describe_services(cluster=cluster, services=arns[i : i + 10]).get("services") or [])
+        services.extend(aws.call("ecs", "describe-services", "--cluster", cluster, "--services", *arns[i : i + 10],
+                                 query=Q_DESCRIBE_SERVICES) or [])
     out = []
     for svc in sorted(services, key=lambda s: s.get("serviceName", "")):
         primary = next((d for d in svc.get("deployments") or [] if d.get("status") == "PRIMARY"), None)
         td_arn = (primary or {}).get("taskDefinition") or svc.get("taskDefinition")
         if not td_arn:
             continue
-        td = ecs.describe_task_definition(taskDefinition=td_arn)["taskDefinition"]
+        td = aws.call("ecs", "describe-task-definition", "--task-definition", td_arn, query=Q_TASK_DEF) or {}
         out.append(
             {
                 "service": svc["serviceName"],
@@ -264,31 +302,26 @@ def collect_ecs(ecs, cluster: str, names_by_arn: dict[str, str]) -> list[dict]:
                 "containers": extract_task_def(td, names_by_arn),
             }
         )
-        del td  # the plain values stay in this frame only
     return out
 
 
-def collect_lambda(lam) -> list[dict]:
+def collect_lambda(aws: AwsCli) -> list[dict]:
     out = []
-    for page in lam.get_paginator("list_functions").paginate():
-        for fn in page.get("Functions") or []:
-            out.append({"function": fn["FunctionName"], "vars": [{"name": k, "source": "plain"} for k in extract_lambda(fn)]})
+    for fn in aws.call("lambda", "list-functions", query=Q_LIST_FUNCTIONS) or []:
+        out.append({"function": str(fn["function"]), "vars": [{"name": str(k), "source": "plain"} for k in sorted(fn.get("keys") or [])]})
     return sorted(out, key=lambda f: f["function"])
 
 
-def collect_aws(cluster: str, region: str) -> dict:
-    import boto3  # only this subcommand needs it
-
-    session = boto3.session.Session(region_name=region)
-    names_by_arn, warning = secret_names_by_arn(session.client("secretsmanager"))
-    model = {
+def collect_aws(cluster: str, region: str, profile: Optional[str] = None, runner=subprocess.run) -> dict:
+    aws = AwsCli(region, profile, runner)
+    names_by_arn, warning = secret_names_by_arn(aws)
+    return {
         "format": FORMAT,
         "cluster": cluster,
-        "ecs": collect_ecs(session.client("ecs"), cluster, names_by_arn),
-        "lambda": collect_lambda(session.client("lambda")),
+        "ecs": collect_ecs(aws, cluster, names_by_arn),
+        "lambda": collect_lambda(aws),
         "warnings": [warning] if warning else [],
     }
-    return model
 
 
 def _vercel_get(path: str, token: str, team_id: Optional[str], **params) -> dict:
@@ -349,6 +382,12 @@ def _secret_cell(v: dict) -> Any:
     return s
 
 
+def _secret_note(v: dict) -> str:
+    if v.get("unlisted"):
+        return "secret not found by ListSecrets (deleted, or another account): name as written in the task definition"
+    return ""
+
+
 def _plain_note(name: str, *, vercel: bool = False, kind: str = "") -> str:
     if vercel:
         if kind == "readable" and looks_like_secret(name, vercel=True):
@@ -367,7 +406,7 @@ def _ecs_section(svc: dict) -> list[str]:
     for c in svc["containers"]:
         if multi:
             lines += [f"Container `{c['name']}`:", ""]
-        rows = [[gd.code(v["name"]), v["source"], _secret_cell(v), _plain_note(v["name"]) if v["source"] == "plain" else ""] for v in c["vars"]]
+        rows = [[gd.code(v["name"]), v["source"], _secret_cell(v), _plain_note(v["name"]) if v["source"] == "plain" else _secret_note(v)] for v in c["vars"]]
         if rows:
             lines.append(gd.table(["Variable", "Source", "Secret (store name)", "Note"], rows))
         else:
@@ -492,10 +531,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    a = sub.add_parser("collect-aws", help="names-only model of ECS + Lambda (boto3, read-only)")
+    a = sub.add_parser("collect-aws", help="names-only model of ECS + Lambda (AWS CLI, read-only)")
     a.add_argument("--cluster", default="aa-cis-dev-cluster")
     # Fixed default, not AWS_REGION: a stray shell region must not render an empty page of another region.
     a.add_argument("--region", default="us-west-1")
+    a.add_argument("--profile", help="AWS CLI profile (local runs); CI uses the job's OIDC credentials")
     a.add_argument("--out", required=True, type=Path)
 
     v = sub.add_parser("vercel-snapshot", help="names-only Vercel env list")
@@ -521,7 +561,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = ap.parse_args(argv)
     try:
         if args.cmd == "collect-aws":
-            model = collect_aws(args.cluster, args.region)
+            model = collect_aws(args.cluster, args.region, args.profile)
             _write_json(args.out, model)
             print(f"collected {len(model['ecs'])} ECS services and {len(model['lambda'])} Lambda functions (names only) into {args.out}")
             for w in model["warnings"]:

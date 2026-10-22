@@ -3,7 +3,7 @@
     python3 -m unittest discover -s tools/docs/tests -v
 
 Offline: fake task definitions, Lambda configurations, Vercel API and CLI output with planted values,
-fake boto3 clients; no AWS, no Vercel. The main guarantee under test: a value never reaches the
+a fake AWS CLI runner; no AWS, no Vercel. The main guarantee under test: a value never reaches the
 names-only model or the page.
 """
 from __future__ import annotations
@@ -76,69 +76,54 @@ Retrieving project…
 """
 
 
-# ---------------------------------------------------------------------- fake boto3
+# ---------------------------------------------------------------------- fake AWS CLI
 
 
-class _Pager:
-    def __init__(self, pages):
-        self.pages = pages
+class FakeAws:
+    """Stands in for gen_env_config.AwsCli. ECS answers come back UNprojected (planted values included),
+    as if a --query had been lost, so the extract_* layer is tested as a second line of defence."""
 
-    def paginate(self, **_):
-        return iter(self.pages)
+    def __init__(self, tds: dict[str, dict], lambdas=(), sm_fail=False):
+        self.tds, self.lambdas, self.sm_fail = tds, list(lambdas), sm_fail
+        self.calls: list[tuple] = []
 
-
-class FakeEcs:
-    def __init__(self, tds: dict[str, dict]):
-        self.tds = tds
-
-    def get_paginator(self, name):
-        assert name == "list_services"
-        return _Pager([{"serviceArns": [f"arn:aws:ecs:{REGION}:{ACCT}:service/c/{n}" for n in self.tds]}])
-
-    def describe_services(self, cluster, services):
-        out = []
-        for arn in services:
-            n = arn.rsplit("/", 1)[-1]
-            td = f"arn:aws:ecs:{REGION}:{ACCT}:task-definition/{n}:7"
-            out.append({"serviceName": n, "taskDefinition": td.replace(":7", ":6"),
-                        "deployments": [{"status": "PRIMARY", "taskDefinition": td}, {"status": "ACTIVE", "taskDefinition": td.replace(":7", ":6")}]})
-        return {"services": out}
-
-    def describe_task_definition(self, taskDefinition):
-        assert taskDefinition.endswith(":7"), "must read the PRIMARY deployment's revision"
-        n = taskDefinition.rsplit("/", 1)[-1].split(":")[0]
-        return {"taskDefinition": self.tds[n]}
-
-
-class FakeLambda:
-    def __init__(self, names):
-        self.names = names
-
-    def get_paginator(self, name):
-        assert name == "list_functions"
-        return _Pager([{"Functions": [_lambda_cfg(n) for n in self.names]}])
-
-
-class FakeSm:
-    def __init__(self, fail=False):
-        self.fail = fail
-
-    def get_paginator(self, name):
-        assert name == "list_secrets"
-        if self.fail:
-            raise PermissionError("AccessDenied")
-        return _Pager([{"SecretList": [{"ARN": f"{SM}aa-cis/dev/rds-cis-app-VwwqaP", "Name": "aa-cis/dev/rds-cis-app"}]}])
+    def call(self, service, op, *args, query):
+        self.calls.append((service, op, args, query))
+        if (service, op) == ("secretsmanager", "list-secrets"):
+            if self.sm_fail:
+                raise ec.InputError("aws secretsmanager list-secrets failed (exit 254, AccessDeniedException)")
+            return [[f"{SM}aa-cis/dev/rds-cis-app-VwwqaP", "aa-cis/dev/rds-cis-app"],
+                    [f"{SM}aa-cis/dev/dataforseo-tGjzh7", "aa-cis/dev/dataforseo"]]
+        if (service, op) == ("ecs", "list-services"):
+            return [f"arn:aws:ecs:{REGION}:{ACCT}:service/c/{n}" for n in self.tds]
+        if (service, op) == ("ecs", "describe-services"):
+            out = []
+            for arn in args[args.index("--services") + 1 :]:
+                n = arn.rsplit("/", 1)[-1]
+                td = f"arn:aws:ecs:{REGION}:{ACCT}:task-definition/{n}:7"
+                out.append({"serviceName": n, "taskDefinition": td.replace(":7", ":6"),
+                            "deployments": [{"status": "PRIMARY", "taskDefinition": td}, {"status": "ACTIVE", "taskDefinition": td.replace(":7", ":6")}]})
+            return out
+        if (service, op) == ("ecs", "describe-task-definition"):
+            td = args[args.index("--task-definition") + 1]
+            assert td.endswith(":7"), "must read the PRIMARY deployment's revision"
+            return self.tds[td.rsplit("/", 1)[-1].split(":")[0]]
+        if (service, op) == ("lambda", "list-functions"):
+            # What Q_LIST_FUNCTIONS returns: the keys only (the CLI evaluates keys() on its side).
+            return [{"function": n, "keys": list(_lambda_cfg(n)["Environment"]["Variables"])} for n in self.lambdas]
+        raise AssertionError(f"unexpected call {service} {op}")
 
 
 def _aws_model() -> dict:
-    ecs = FakeEcs({n: _task_def(n, "worker" if "worker" in n else "api") for n in ec.REQUIRED_ECS})
-    names, warn = ec.secret_names_by_arn(FakeSm())
+    aws = FakeAws({n: _task_def(n, "worker" if "worker" in n else "api") for n in ec.REQUIRED_ECS},
+                  list(ec.REQUIRED_LAMBDA) + ["aa-identity-dev-pre-token"])
+    names, warn = ec.secret_names_by_arn(aws)
     assert warn is None
     return {
         "format": 1,
         "cluster": "aa-cis-dev-cluster",
-        "ecs": ec.collect_ecs(ecs, "aa-cis-dev-cluster", names),
-        "lambda": ec.collect_lambda(FakeLambda(list(ec.REQUIRED_LAMBDA) + ["aa-identity-dev-pre-token"])),
+        "ecs": ec.collect_ecs(aws, "aa-cis-dev-cluster", names),
+        "lambda": ec.collect_lambda(aws),
         "warnings": [],
     }
 
@@ -193,20 +178,80 @@ class SecretRefs(unittest.TestCase):
         self.assertEqual(ec.secret_ref(f"{SM}aa-cis/dev/dataforseo-tGjzh7:login::"),
                          {"store": "secretsmanager", "secret": "aa-cis/dev/dataforseo", "key": "login"})
 
-    def test_listsecrets_name_wins_over_suffix_rule(self):
-        # A partial ARN whose name ends in -<6 chars> would be cut by the suffix rule; the map knows better.
-        arn = f"{SM}openai-apikey"
-        self.assertEqual(ec.secret_ref(arn, {arn: "openai-apikey"})["secret"], "openai-apikey")
-        self.assertEqual(ec.secret_ref(arn)["secret"], "openai")  # documented limit of the fallback
+    def test_partial_arn_resolved_through_listsecrets(self):
+        # ListSecrets keys its map by FULL ARN; a partial-ARN valueFrom (no random suffix) whose name ends
+        # in "-" + 6 characters must still come back whole, not cut by the suffix rule.
+        names = {f"{SM}aa-cis/dev/gdrive-photo-reader-Ab12Cd": "aa-cis/dev/gdrive-photo-reader",
+                 f"{SM}aa-cis/dev/gdrive-photo-Zz99Yy": "aa-cis/dev/gdrive-photo"}
+        ref = ec.secret_ref(f"{SM}aa-cis/dev/gdrive-photo-reader", names)
+        self.assertEqual(ref, {"store": "secretsmanager", "secret": "aa-cis/dev/gdrive-photo-reader", "key": None})
+        self.assertEqual(ec.secret_ref(f"{SM}aa-cis/dev/gdrive-photo-reader:token::", names)["key"], "token")
+        self.assertEqual(ec.secret_ref(f"{SM}aa-cis/dev/gdrive-photo-reader-Ab12Cd", names)["secret"],
+                         "aa-cis/dev/gdrive-photo-reader")  # full ARN: exact hit
+        self.assertEqual(ec.secret_ref(f"{SM}aa-cis/dev/gdrive-photo", names)["secret"], "aa-cis/dev/gdrive-photo")
+
+    def test_unlisted_arn_kept_as_written_and_flagged(self):
+        names = {f"{SM}other-Ab12Cd": "other"}
+        ref = ec.secret_ref(f"{SM}api-reader", names)
+        self.assertEqual(ref, {"store": "secretsmanager", "secret": "api-reader", "key": None, "unlisted": True})
+        page = ec.render_body({"cluster": "c", "ecs": [{"service": "aa-cis-x", "family": "f", "containers": [
+            {"name": "api", "vars": [{"name": "K", "source": "secret", **ref}], "env_files": 0}]}], "lambda": []},
+            {"source": "snapshot", "captured": "2026-10-22", "projects": {}})
+        self.assertIn("| `K` | secret | `api-reader` | secret not found by ListSecrets", page)
+
+    def test_suffix_rule_only_without_listsecrets(self):
+        self.assertEqual(ec.secret_ref(f"{SM}aa-cis/dev/rds-cis-app-VwwqaP")["secret"], "aa-cis/dev/rds-cis-app")
+        self.assertEqual(ec.secret_ref(f"{SM}openai-apikey")["secret"], "openai")  # documented limit of the fallback
 
     def test_ssm_and_bare_names(self):
         self.assertEqual(ec.secret_ref(f"arn:aws:ssm:{REGION}:{ACCT}:parameter/aa/dev/flag")["secret"], "/aa/dev/flag")
         self.assertEqual(ec.secret_ref("/aa/dev/flag"), {"store": "ssm", "secret": "/aa/dev/flag", "key": None})
 
     def test_listsecrets_denied_falls_back_with_warning(self):
-        names, warn = ec.secret_names_by_arn(FakeSm(fail=True))
+        names, warn = ec.secret_names_by_arn(FakeAws({}, sm_fail=True))
         self.assertEqual(names, {})
         self.assertIn("ListSecrets", warn)
+
+
+class AwsCliReads(unittest.TestCase):
+    """The --query projections are what keeps values inside the CLI process."""
+
+    def test_queries_project_names_only(self):
+        self.assertIn("keys(Environment.Variables", ec.Q_LIST_FUNCTIONS)
+        self.assertNotRegex(ec.Q_LIST_FUNCTIONS, r"Variables(?!\s*\|\|)")  # never the map itself
+        self.assertIn("environment[].{name:name}", ec.Q_TASK_DEF)
+        self.assertNotIn("value:value", ec.Q_TASK_DEF)
+        self.assertNotRegex(ec.Q_TASK_DEF, r"environment:environment[,}]")
+        for q in (ec.Q_TASK_DEF, ec.Q_DESCRIBE_SERVICES, ec.Q_LIST_FUNCTIONS, ec.Q_LIST_SECRETS):
+            self.assertNotIn("SecretString", q)
+
+    def test_command_line_and_error_code_only(self):
+        seen = []
+
+        class R:
+            def __init__(self, rc, out="", err=""):
+                self.returncode, self.stdout, self.stderr = rc, out, err
+
+        def runner(cmd, **kw):
+            seen.append(cmd)
+            if cmd[1] == "lambda":
+                return R(254, err=f"An error occurred (AccessDeniedException) when calling ListFunctions: {SECRET}")
+            return R(0, out='["x"]')
+
+        cli = ec.AwsCli("us-west-1", "aa365-admin", runner)
+        self.assertEqual(cli.call("ecs", "list-services", "--cluster", "c", query=ec.Q_LIST_SERVICES), ["x"])
+        self.assertEqual(seen[0], ["aws", "ecs", "list-services", "--cluster", "c", "--region", "us-west-1",
+                                   "--output", "json", "--query", "serviceArns", "--profile", "aa365-admin"])
+        with self.assertRaises(ec.InputError) as cm:
+            cli.call("lambda", "list-functions", query=ec.Q_LIST_FUNCTIONS)
+        self.assertIn("AccessDeniedException", str(cm.exception))
+        self.assertNotIn(SECRET, str(cm.exception))
+
+    def test_reads_primary_revision_and_all_services(self):
+        aws = FakeAws({n: _task_def(n) for n in ec.REQUIRED_ECS})
+        model = ec.collect_ecs(aws, "c", {})
+        self.assertEqual([s["service"] for s in model], sorted(ec.REQUIRED_ECS))
+        self.assertTrue(all(q for *_, q in aws.calls))
 
 
 class Render(unittest.TestCase):
