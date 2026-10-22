@@ -54,6 +54,15 @@ TYPE_ABBREV = (
 TYPE_BAD_RE = re.compile(r"[^A-Za-z0-9_\-()\[\]]")
 NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 NAME_BAD_RE = re.compile(r"[^A-Za-z0-9_\-]")
+# Words the Mermaid ER lexer (case-insensitive) reads as keywords before it tries a name. An unquoted entity named
+# one of these fails to parse (mermaid 11.4.1 erDiagram.jison: `one`, `many`, `to`, `u`, `erDiagram`); the
+# multi-word cardinalities start with `one` / `zero` / `only` / `optionally`, and later Mermaid versions add
+# `direction`, `style`, `classDef`, `class`, `title`, `accTitle`, `accDescr`. Such a table is always quoted.
+ENTITY_KEYWORDS = frozenset(("erdiagram", "one", "many", "to", "u", "zero", "only", "optionally", "direction",
+                             "style", "classdef", "class", "title", "acctitle", "accdescr"))
+# Inside an attribute block `PK`, `FK` and `UK` are key markers (any case, whole word): a column with that name
+# (or starting with it before a '-') is written with a '_' suffix, e.g. `pk` -> `pk_`. erd.json keeps the real name.
+ATTRIBUTE_KEY_RE = re.compile(r"^(pk|fk|uk)(-|$)", re.I)
 INDEX_HEAD_RE = re.compile(r"^CREATE (UNIQUE )?INDEX \S+ ON (?:ONLY )?\S+ USING \w+ \(")
 
 
@@ -215,17 +224,21 @@ def mermaid_type(pg_type: str) -> str:
     if "." in t and not t.startswith("("):           # schema-qualified enum or domain: keep the type name
         t = t.split(".", 1)[1]
     t = TYPE_BAD_RE.sub("_", t.replace(",", "_").replace(" ", "_"))
-    return t if t[:1].isalpha() else f"t_{t}"
+    t = t if t[:1].isalpha() else f"t_{t}"
+    return t + "_" if t.lower() in ("pk", "fk", "uk") else t
 
 
 def mermaid_name(name: str) -> str:
     n = NAME_BAD_RE.sub("_", name)
-    return n if n[:1].isalpha() or n[:1] == "_" else f"c_{n}"
+    n = n if n[:1].isalpha() or n[:1] == "_" else f"c_{n}"
+    if ATTRIBUTE_KEY_RE.match(n):
+        n = n[:2] + "_" + n[2:]
+    return n
 
 
 def entity(schema: str, table_schema: str, table: str) -> str:
     """Entity name in the diagram of `schema`: bare for its own tables, quoted "schema.table" for others."""
-    if table_schema == schema and NAME_RE.match(table):
+    if table_schema == schema and NAME_RE.match(table) and table.lower() not in ENTITY_KEYWORDS:
         return table
     label = table if table_schema == schema else f"{table_schema}.{table}"
     return '"' + label.replace('"', "'") + '"'
