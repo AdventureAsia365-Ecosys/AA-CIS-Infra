@@ -15,8 +15,10 @@ name: DB Schema Dump (shared RDS)
 #    section (db/rls_catalogue_rules.py, a byte copy of the CIS CI guard's rules; violations are warnings here).
 #    db/gen_erd.py (AA-894 part 1) renders, from the same JSON, one Mermaid ERD page per schema plus an index
 #    (root docs/architecture/erd/) and erd.json (tables, columns, PK/FK, DM-6.1 tags, owner; no row data). Both are
-#    in the run artifact; erd.json also goes to s3://<bronze>/db-schema-dump/erd/latest.json when the repo variable
-#    ERD_S3_UPLOAD is 'true' (default off; the previous object is kept as previous.json when the model changed).
+#    in the run artifact; erd.json also goes to s3://<bronze>/data-model/erd/latest.json (scope 2: read by the CIS
+#    admin data-model view, the CIS task role may read exactly latest.json + previous.json, modules/ecs ReadErdModel)
+#    unless the repo variable ERD_S3_UPLOAD is 'false'. When the model changed, the object it replaces is kept as
+#    previous.json ("changed since the previous dump").
 # 3. If the STRUCTURE changed (fingerprint in the file differs from the root repo's master, an ERD page differs from
 #    master, or publish=true), the reference and the ERD pages are pushed to the root repo branch
 #    bot/db-schema-reference and a PR is opened or updated. Nightly runs where only statistics moved open nothing.
@@ -76,10 +78,12 @@ jobs:
       PR_BRANCH: bot/db-schema-reference
       REF_PATH: docs/architecture/db-schema-reference.md
       ERD_DIR: docs/architecture/erd
-      # AA-894: erd.json upload for the CIS admin data-model view. Off unless the repo variable ERD_S3_UPLOAD is
-      # 'true'. The CI role already writes this bucket (db-schema-dump/latest.json); readers need their own grant.
-      ERD_S3_UPLOAD: ${{ vars.ERD_S3_UPLOAD == 'true' && 'true' || 'false' }}
-      ERD_S3_PREFIX: db-schema-dump/erd
+      # AA-894: erd.json upload for the CIS admin data-model view (AA-CIS-App GET /admin/data-model). On unless the
+      # repo variable ERD_S3_UPLOAD is 'false'. The CI role already writes this bucket (db-schema-dump/latest.json).
+      # Own prefix, not db-schema-dump/: the migrator task role may put db-schema-dump/* and the CIS task role is
+      # denied that prefix (the full dumps); CIS may read only data-model/erd/{latest,previous}.json (modules/ecs).
+      ERD_S3_UPLOAD: ${{ vars.ERD_S3_UPLOAD != 'false' && 'true' || 'false' }}
+      ERD_S3_PREFIX: data-model/erd
       REASON: ${{ github.event_name == 'schedule' && 'nightly' || inputs.reason || 'manual' }}
       PUBLISH: ${{ github.event_name == 'workflow_dispatch' && inputs.publish && 'true' || 'false' }}
       HAS_ROOT_TOKEN: ${{ secrets.ROOT_REPO_DOCS_TOKEN != '' }}
@@ -193,8 +197,9 @@ jobs:
             erd/
           retention-days: 14
 
-      # AA-894: off by default (repo variable ERD_S3_UPLOAD). latest.json is what the CIS admin view will read;
-      # previous.json is the model before the last structural change ("changed since the previous dump").
+      # AA-894: on by default (repo variable ERD_S3_UPLOAD='false' turns it off). latest.json is what the CIS admin
+      # view reads; previous.json is the model before the last structural change ("changed since the previous dump"),
+      # so it is replaced only when the fingerprint moves and the view keeps showing the last change between them.
       - name: Upload erd.json to S3 (optional)
         if: env.ERD_S3_UPLOAD == 'true'
         run: |

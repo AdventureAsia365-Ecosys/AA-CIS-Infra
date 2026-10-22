@@ -289,6 +289,36 @@ resource "aws_iam_role_policy" "ecs_task_policy" {
           "arn:aws:secretsmanager:${var.aws_region}:005097885195:secret:booking/*",
           "arn:aws:secretsmanager:${var.aws_region}:005097885195:secret:tripplanner/*",
         ]
+      },
+      # AA-894 scope 2 — the admin data-model view (AA-CIS-App GET /admin/data-model) reads the ERD model that
+      # the DB Schema Dump workflow writes (db-schema-dump.yml ERD_S3_PREFIX): exactly these two objects. The
+      # s3:GetObject on "*" above already covers them; this statement names the only read the view needs, so it
+      # keeps working when that "*" is narrowed later.
+      {
+        Sid    = "ReadErdModel"
+        Effect = "Allow"
+        Action = ["s3:GetObject"]
+        Resource = [
+          "arn:aws:s3:::${var.bronze_bucket_name}/data-model/erd/latest.json",
+          "arn:aws:s3:::${var.bronze_bucket_name}/data-model/erd/previous.json",
+        ]
+      },
+      # AA-894 scope 2 — the full catalog dumps (db-schema-dump/latest.json, db-schema-dump/<run id>/schema.json:
+      # roles, grants, policies, functions) are for the dump workflow only; no CIS code reads or writes that prefix
+      # (grep 22/10/2026). The dump task itself runs with the migrator task role (accounts/aa365/db_migrator.tf),
+      # not this one. An explicit Deny wins over the "*" grants above.
+      {
+        Sid      = "DenySchemaDumpPrefix"
+        Effect   = "Deny"
+        Action   = ["s3:GetObject", "s3:PutObject"]
+        Resource = "arn:aws:s3:::${var.bronze_bucket_name}/db-schema-dump/*"
+      },
+      # AA-894 scope 2 — CIS only reads the ERD model; the dump workflow's CI role is its only writer.
+      {
+        Sid      = "DenyErdModelWrite"
+        Effect   = "Deny"
+        Action   = ["s3:PutObject", "s3:DeleteObject"]
+        Resource = "arn:aws:s3:::${var.bronze_bucket_name}/data-model/*"
       }
     ]
   })
