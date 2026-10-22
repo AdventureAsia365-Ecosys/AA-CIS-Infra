@@ -1,4 +1,4 @@
-"""AA-627 + AA-720 + AA-825 + AA-816 + AA-844 — ops-probe trigger.
+"""AA-627 + AA-720 + AA-825 + AA-816 + AA-844 + AA-871 — ops-probe trigger.
 
 EventBridge Scheduler -> this Lambda -> a short list of secret-gated admin POSTs. Each backend
 endpoint does its own work (read a balance, probe a vendor, sweep a log, enqueue jobs) and raises its
@@ -27,6 +27,15 @@ Called by their own schedules (the event names the path):
   (AA-832's every-5-minutes /admin/job-runner/rds-role-connections/schedule path was removed in
   AA-751: the CIS api publishes those metrics from an in-process sampler.)
 
+Uptime mode (AA-871, its own every-5-minutes schedule): event {"health": "<target>"}.
+  GET the target's public health URL (no secret, nothing else called). A target is a key of
+  _HEALTH_TARGETS, whose URL comes from the Lambda env (so an invoke cannot aim the probe at an
+  arbitrary URL). Healthy = HTTP 200 with a JSON body whose "status" is "ok". Anything else is logged
+  (`ops_probe health_failed`) and RAISED, so the invocation counts in the AWS/Lambda Errors metric that
+  the uptime alarm watches. Targets:
+  booking  BOOKING_HEALTH_URL, e.g. https://api-booking.lumiguides.it.com/booking/health — the full
+           public path (DNS, custom domain, REST API, VPC link, NLB, ALB rule, task).
+
 Event (the Scheduler target input; every key optional):
   {"paths": ["/admin/..."], "secret_id": "<Secrets Manager ARN or name>"}
   - paths: which admin paths to POST. Only paths in _ALLOWED_PATHS are called; any other is logged
@@ -43,7 +52,8 @@ function name stays dfs-balance-check (renaming the IAM role would destroy+recre
 permission gap — S200).
 
 Env:
-  API_BASE_URL  — e.g. https://api-cis.lumiguides.it.com (no trailing slash needed)
+  API_BASE_URL        — e.g. https://api-cis.lumiguides.it.com (no trailing slash needed)
+  BOOKING_HEALTH_URL  — AA-871 uptime target "booking" (empty = that target is refused)
 """
 import json
 import logging
@@ -70,6 +80,14 @@ _PATHS = (
 RETENTION_SCHEDULE_PATH = "/admin/job-runner/retention/schedule"   # AA-825
 PHOTO_SYNC_SCHEDULE_PATH = "/admin/photos/sync/schedule"           # AA-844
 _ALLOWED_PATHS = frozenset(_PATHS + (RETENTION_SCHEDULE_PATH, PHOTO_SYNC_SCHEDULE_PATH))
+
+# AA-871 uptime targets: name -> env var holding the URL. Read per call (tests set the env).
+_HEALTH_TARGETS = {"booking": "BOOKING_HEALTH_URL"}
+HEALTH_TIMEOUT_SECONDS = 10
+
+
+class HealthCheckFailed(RuntimeError):
+    """An uptime target did not answer healthy. Raised so the run counts as a Lambda error."""
 
 
 def _read_secret(secret_id):
@@ -135,8 +153,46 @@ def _post(path, secret):
         return False, None, str(exc)[:300]
 
 
+def _health_url(target):
+    env_name = _HEALTH_TARGETS.get(target) if isinstance(target, str) else None
+    url = (os.environ.get(env_name) or "").strip() if env_name else ""
+    return url if url.startswith("https://") else None
+
+
+def _check_health(target):
+    """GET one uptime target. Returns the result dict when healthy, raises HealthCheckFailed otherwise."""
+    url = _health_url(target)
+    if not url:
+        logger.error("ops_probe health_refused target=%s", target)
+        raise HealthCheckFailed(f"health target refused: {target!r}")
+    req = urllib.request.Request(url, headers={"Accept": "application/json"}, method="GET")
+    status, reason = None, None
+    try:
+        with urllib.request.urlopen(req, timeout=HEALTH_TIMEOUT_SECONDS) as resp:
+            status = resp.status
+            body = resp.read(2048).decode(errors="replace")
+        try:
+            payload = json.loads(body)
+        except ValueError:
+            payload = None
+        if status == 200 and isinstance(payload, dict) and payload.get("status") == "ok":
+            logger.info("ops_probe health_ok target=%s status=%s", target, status)
+            return {"target": target, "ok": True, "status": status}
+        reason = "unexpected_body"
+    except urllib.error.HTTPError as exc:
+        status, reason = exc.code, "http_error"
+    except Exception as exc:                       # timeout / DNS / TLS / connection
+        reason = type(exc).__name__
+    logger.error("ops_probe health_failed target=%s status=%s reason=%s", target, status, reason)
+    raise HealthCheckFailed(f"{target} unhealthy: status={status} reason={reason}")
+
+
 def handler(event, context):
     event = event if isinstance(event, dict) else {}
+    if "health" in event:
+        # AA-871 uptime mode: no secret read, no admin POST.
+        result = _check_health(event.get("health"))
+        return {"statusCode": 200, "body": json.dumps(result)}
     paths = _select_paths(event)
     secret = _resolve_secret(event)
     if not secret:
