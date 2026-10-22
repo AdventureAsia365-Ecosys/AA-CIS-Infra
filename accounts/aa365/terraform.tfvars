@@ -55,5 +55,10 @@ booking_github_repo_id = "1418188499"
 # AA-811 (S238): AA-Booking sends the staff "new inquiry" e-mail (SES, ses.tf) to this inbox on Dev.
 booking_staff_notify_email = "nghieppham@adventure.asia"
 
+# AA-871 (S247): map booking/dev/sentry-dsn into the Booking task (SENTRY_DSN + SENTRY_REQUIRED=true).
+# Only after the secret holds the DSN of Sentry project aa-booking-api (ECS cannot start a task on a
+# secret with no value); the next AA-Booking deploy carries the new task-definition revision.
+booking_sentry_enabled = true
+
 # AA-828 (S238): CIS spend budget alert e-mails (job ops_alert_email, SES) go to this inbox on Dev.
 cis_ops_alert_email = "nghieppham@adventure.asia"
