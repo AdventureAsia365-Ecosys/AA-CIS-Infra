@@ -193,6 +193,7 @@ class RenderTest(unittest.TestCase):
         md = self.md
         self.assertIn("**Verified:** 2026-10-15 05:00 UTC", md)
         self.assertIn("CIS **231**, TripPlanner **tp-010**, Booking **bk-009**", md)
+        self.assertIn("**ERD:** [one Mermaid diagram per schema](erd/README.md)", md)   # AA-894 pages, same PR
         self.assertIn("## `shared` (1 objects)", md)
         self.assertIn("### `shared.job` (table, ~428 rows, 80 kB)", md)
         self.assertIn("### `booking.legs` (table, 0 B)", md)       # reltuples -1: no row estimate
