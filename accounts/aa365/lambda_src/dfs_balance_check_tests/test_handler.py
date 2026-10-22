@@ -191,5 +191,77 @@ class PostResultsTest(unittest.TestCase):
         self.assertEqual(json.loads(out["body"]), {RECONCILE: {"ok": False, "status": None}})
 
 
+class _HealthResp(_Resp):
+    def read(self, *_args):
+        return self._body
+
+
+HEALTH_URL = "https://api-booking.example.test/booking/health"
+
+
+class HealthModeTest(unittest.TestCase):
+    """AA-871 uptime mode: GET an allowlisted health URL, raise on anything but 200 + status ok."""
+
+    def setUp(self):
+        patcher = mock.patch.dict(os.environ, {"BOOKING_HEALTH_URL": HEALTH_URL})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _run(self, **urlopen_kwargs):
+        fake, client = _fake_boto3("s3cret")
+        with mock.patch.dict(sys.modules, {"boto3": fake}), \
+                mock.patch("urllib.request.urlopen", **urlopen_kwargs) as urlopen:
+            try:
+                return h.handler({"health": "booking"}, None), urlopen, client
+            except h.HealthCheckFailed as exc:
+                return exc, urlopen, client
+
+    def test_healthy_returns_200_and_gets_the_env_url(self):
+        out, urlopen, client = self._run(return_value=_HealthResp(200, b'{"status":"ok","service":"x"}'))
+        self.assertEqual(out["statusCode"], 200)
+        self.assertEqual(json.loads(out["body"]), {"target": "booking", "ok": True, "status": 200})
+        req = urlopen.call_args[0][0]
+        self.assertEqual(req.full_url, HEALTH_URL)
+        self.assertEqual(req.get_method(), "GET")
+        self.assertIsNone(req.get_header("X-admin-secret"))
+        client.get_secret_value.assert_not_called()  # uptime mode never reads the admin secret
+
+    def test_wrong_body_raises(self):
+        with self.assertLogs(level="ERROR"):
+            out, _, _ = self._run(return_value=_HealthResp(200, b'{"status":"degraded"}'))
+        self.assertIsInstance(out, h.HealthCheckFailed)
+
+    def test_non_json_body_raises(self):
+        with self.assertLogs(level="ERROR"):
+            out, _, _ = self._run(return_value=_HealthResp(200, b"<html>gateway</html>"))
+        self.assertIsInstance(out, h.HealthCheckFailed)
+
+    def test_http_error_raises(self):
+        err = urllib.error.HTTPError(HEALTH_URL, 503, "x", {}, io.BytesIO(b"down"))
+        with self.assertLogs(level="ERROR") as logs:
+            out, _, _ = self._run(side_effect=err)
+        self.assertIsInstance(out, h.HealthCheckFailed)
+        self.assertIn("status=503", "\n".join(logs.output))
+
+    def test_timeout_raises(self):
+        with self.assertLogs(level="ERROR"):
+            out, _, _ = self._run(side_effect=TimeoutError("slow"))
+        self.assertIsInstance(out, h.HealthCheckFailed)
+
+    def test_unknown_target_refused_without_a_request(self):
+        with mock.patch("urllib.request.urlopen") as urlopen, self.assertLogs(level="ERROR"):
+            with self.assertRaises(h.HealthCheckFailed):
+                h.handler({"health": "https://evil.example.com/"}, None)
+        urlopen.assert_not_called()
+
+    def test_missing_or_non_https_url_refused(self):
+        for value in ("", "http://api-booking.example.test/booking/health"):
+            with mock.patch.dict(os.environ, {"BOOKING_HEALTH_URL": value}), \
+                    mock.patch("urllib.request.urlopen") as urlopen, self.assertLogs(level="ERROR"):
+                with self.assertRaises(h.HealthCheckFailed):
+                    h.handler({"health": "booking"}, None)
+            urlopen.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -31,3 +31,15 @@ variable "booking_staff_admin_url" {
     error_message = "booking_staff_admin_url must be an https:// URL."
   }
 }
+
+# AA-871: Sentry for the Booking API + job worker (backend/app/observability/sentry.py reads SENTRY_DSN).
+# The secret shell booking/<env>/sentry-dsn always exists (booking.tf); this flag only decides whether the
+# task definition maps it into the container. Keep it false until the secret HOLDS a value: ECS refuses to
+# start a task whose `secrets` entry points at a secret with no AWSCURRENT version, and the Booking deploy
+# copies the family's latest revision, so flipping it early would break every Booking deploy.
+# true also sets SENTRY_REQUIRED=true (the app's missing-DSN guard: start-up fails on an empty DSN).
+variable "booking_sentry_enabled" {
+  description = "AA-871: map booking/<env>/sentry-dsn into the Booking task as SENTRY_DSN (and set SENTRY_REQUIRED=true). Only after the secret has a value."
+  type        = bool
+  default     = false
+}

@@ -82,9 +82,13 @@ accounts/
                                    AA-878: no secret value in the Lambda env; the edge key is read by
                                    name tripplanner/<ENVIRONMENT>/api-key (grant ReadApiKeySecret);
                                    the Mapbox secret is forgotten via a removed block, not deleted.
-                                   AA-847: PLACES_SOURCE on both Lambdas from var.tripplanner_places_source)
+                                   AA-847: PLACES_SOURCE on both Lambdas from var.tripplanner_places_source.
+                                   AA-871: secret shell tripplanner/<env>/sentry-dsn (no version), read by
+                                   name at cold start, grant ReadSentryDsnSecret; no DSN in the Lambda env)
     booking.tf                    (AA-Booking ECS service, ECR, ALB rule /booking/*, REST API on the
-                                   existing VPC link, OIDC deploy role — AA-678)
+                                   existing VPC link, OIDC deploy role — AA-678; AA-871: secret shell
+                                   booking/<env>/sentry-dsn (no version, execution-role read) mapped to
+                                   SENTRY_DSN + SENTRY_REQUIRED only when var.booking_sentry_enabled)
     bedrock_satellite_assume.tf   (cross-account Bedrock assume-role trust)
     cost_explorer_satellite_assume.tf (acc2 → acc1/acc3 Cost Explorer read roles, AA-623)
     dfs_balance.tf                (ops-probe Lambda: 06:15 UTC schedule POSTs the admin probes, AA-627/720/727,
@@ -92,6 +96,9 @@ accounts/
                                    20:30 UTC schedule POSTs /admin/job-runner/retention/schedule, AA-825;
                                    21:00 UTC schedule POSTs /admin/photos/sync/schedule (one photo_sync
                                    job per country per UTC day), AA-844;
+                                   AA-871: every-5-min booking_uptime schedule, event {"health":"booking"}
+                                   = GET var.booking_health_url (no secret), raises when unhealthy ->
+                                   alarm aa-booking-dev-uptime on the function's Errors;
                                    the AA-832 every-5-min schedule was removed in AA-751. AA-878: the
                                    admin secret is read only by ARN at run time (event secret_id), no
                                    env copy, no Terraform data source; no secret_id or a failed read =

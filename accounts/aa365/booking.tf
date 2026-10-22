@@ -142,6 +142,20 @@ resource "aws_secretsmanager_secret" "booking_db" {
 }
 
 # -----------------------------------------------------------------------------
+# AA-871: Sentry DSN secret — SHELL ONLY, same rule as booking_db above: no secret_version, Terraform
+# never holds the DSN. Nghiep / the orchestrator puts the DSN of Sentry project aa-booking-api with
+# put-secret-value; only then var.booking_sentry_enabled maps it into the task (SENTRY_DSN). A DSN is
+# ingest-only (low sensitivity), but it stays out of the task definition, state and repo like any
+# other credential. The CIS task role cannot read it (modules/ecs DenyMasterAndOtherAppSecrets, booking/*).
+# -----------------------------------------------------------------------------
+resource "aws_secretsmanager_secret" "booking_sentry_dsn" {
+  name                    = "booking/${var.environment}/sentry-dsn"
+  description             = "AA-Booking Sentry DSN (project aa-booking-api), SENTRY_DSN of the api + job worker. Value set out-of-band."
+  recovery_window_in_days = var.environment == "dev" ? 0 : 30
+  tags                    = merge(local.bk_tags, { Issue = "AA-871" })
+}
+
+# -----------------------------------------------------------------------------
 # Execution role (ECS agent): pull this repo's image, write this log group, read this ONE secret.
 # AmazonECSTaskExecutionRolePolicy is NOT attached (it grants ECR pull on every repo and logs on
 # every group).
@@ -202,6 +216,13 @@ resource "aws_iam_role_policy" "booking_ecs_execution" {
         Effect   = "Allow"
         Action   = ["secretsmanager:GetSecretValue"]
         Resource = aws_secretsmanager_secret.booking_db.arn
+      },
+      {
+        # AA-871: granted always (one ARN), used only while var.booking_sentry_enabled maps it.
+        Sid      = "ReadBookingSentryDsnSecret"
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = aws_secretsmanager_secret.booking_sentry_dsn.arn
       },
     ]
   })
@@ -273,7 +294,8 @@ resource "aws_iam_role_policy" "booking_ecs_task" {
 # AA-811 staff e-mail settings (bk_notify_email job): STAFF_NOTIFY_EMAIL, SES_FROM_ADDRESS (must equal
 # var.ses_from_address, the only From the task role may send as, ses.tf), SES_CONFIGURATION_SET (the
 # transactional stream of ses.tf), STAFF_ADMIN_URL (links to the staff admin). GIT_SHA is baked into the
-# image at build time.
+# image at build time. AA-871: SENTRY_DSN (secret booking/<env>/sentry-dsn) and SENTRY_REQUIRED=true, both only
+# while var.booking_sentry_enabled (booking_variables.tf says why it waits for the secret value).
 #
 # A change here registers a new revision that the service ignores (ignore_changes below); the next
 # AA-Booking deploy copies the family's LATEST revision (deploy-dev.yml, AA-811) and carries it to the task.
@@ -292,17 +314,21 @@ resource "aws_ecs_task_definition" "booking" {
     image        = "${aws_ecr_repository.booking.repository_url}:bootstrap"
     essential    = true
     portMappings = [{ containerPort = local.bk_port, protocol = "tcp" }]
-    environment = [
+    environment = concat([
       { name = "ENVIRONMENT", value = var.environment },
       { name = "DB_SSL", value = "require" },
       { name = "STAFF_NOTIFY_EMAIL", value = var.booking_staff_notify_email },
       { name = "SES_FROM_ADDRESS", value = var.ses_from_address },
       { name = "SES_CONFIGURATION_SET", value = aws_sesv2_configuration_set.stream["transactional"].configuration_set_name },
       { name = "STAFF_ADMIN_URL", value = var.booking_staff_admin_url },
-    ]
-    secrets = [
+      ], var.booking_sentry_enabled ? [
+      { name = "SENTRY_REQUIRED", value = "true" },
+    ] : [])
+    secrets = concat([
       { name = "DATABASE_URL", valueFrom = aws_secretsmanager_secret.booking_db.arn },
-    ]
+      ], var.booking_sentry_enabled ? [
+      { name = "SENTRY_DSN", valueFrom = aws_secretsmanager_secret.booking_sentry_dsn.arn },
+    ] : [])
     logConfiguration = {
       logDriver = "awslogs"
       options = {

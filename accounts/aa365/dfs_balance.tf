@@ -18,6 +18,12 @@
 # AA-844 adds a THIRD schedule on the same Lambda (photo_sync_daily, 21:00 UTC = 04:00 ICT, after
 # retention) whose event names /admin/photos/sync/schedule: one incremental photo_sync job per
 # country, idempotent per UTC day. No new role, variable for the secret, or group.
+# AA-871 adds a FOURTH schedule on the same Lambda (booking_uptime, every 5 minutes) whose event is
+# {"health": "booking"}: a plain GET of the public Booking health URL (var.booking_health_url, Lambda env
+# BOOKING_HEALTH_URL), no secret read, no admin POST; an unhealthy answer RAISES, so it shows in the
+# function's AWS/Lambda Errors metric and alarm aa-booking-dev-uptime below e-mails the alerts topic.
+# Cost (us-west-1, 22/10/2026): ~8.7k invocations/month at 128 MB (Lambda + Scheduler both inside free
+# tier / ~0.02 USD), one standard alarm 0.10 USD, logs a few MB: ~0.15 USD/month. No new role or group.
 # AA-832 once added a schedule (rds_role_connections, every 5 minutes) that POSTed
 # /admin/job-runner/rds-role-connections/schedule so the CIS worker published AA/RDS. AA-751 (S240)
 # removed it: the CIS api publishes AA/RDS (and AA/Jobs/CIS) itself from an in-process sampler
@@ -75,8 +81,27 @@ variable "photo_sync_schedule_expression" {
   default     = "cron(0 21 * * ? *)"
 }
 
+# AA-871 — Booking uptime probe (public path). Empty URL = no schedule and no alarm.
+variable "booking_health_url" {
+  description = "AA-871 — Booking public health URL the ops-probe Lambda GETs every 5 minutes (https://, empty = probe off)"
+  type        = string
+  default     = "https://api-booking.lumiguides.it.com/booking/health"
+
+  validation {
+    condition     = var.booking_health_url == "" || startswith(var.booking_health_url, "https://")
+    error_message = "booking_health_url must be empty or an https:// URL."
+  }
+}
+
+variable "booking_uptime_schedule_expression" {
+  description = "AA-871 — schedule for the Booking uptime probe"
+  type        = string
+  default     = "rate(5 minutes)"
+}
+
 locals {
-  dfs_balance_fn_name = "${local.name_prefix}-dfs-balance-check"
+  dfs_balance_fn_name    = "${local.name_prefix}-dfs-balance-check"
+  booking_uptime_enabled = var.booking_health_url != ""
 }
 
 # ── Package the zero-dependency handler ──────────────────────────────────────
@@ -171,7 +196,8 @@ resource "aws_lambda_function" "dfs_balance_check" {
   environment {
     # AA-878: no ADMIN_SECRET here; the handler reads it by ARN (event secret_id) at run time.
     variables = {
-      API_BASE_URL = var.dfs_balance_api_base_url
+      API_BASE_URL       = var.dfs_balance_api_base_url
+      BOOKING_HEALTH_URL = var.booking_health_url # AA-871 uptime target "booking" (public URL, no secret)
     }
   }
 
@@ -323,4 +349,63 @@ resource "aws_scheduler_schedule" "photo_sync_daily" {
       maximum_event_age_in_seconds = 3600
     }
   }
+}
+
+# ── AA-871 — Booking uptime probe (same Lambda, invoke role and group) ───────
+# Every 5 minutes, no flexible window: GET var.booking_health_url (DNS -> custom domain -> REST API ->
+# VPC link -> NLB -> ALB rule -> task) and expect 200 + {"status": "ok"}. Complements the target-group
+# alarms in observability_ecosys.tf (they see the task, not the public edge). Scheduler invokes the
+# Lambda asynchronously, so a failed probe is retried by Lambda (up to 2 more GETs within ~3 minutes);
+# retry_policy here only covers delivery failures and is off so one tick is one probe.
+resource "aws_scheduler_schedule" "booking_uptime" {
+  count = local.booking_uptime_enabled ? 1 : 0
+
+  name        = "${local.name_prefix}-booking-uptime"
+  description = "AA-871 — GET ${var.booking_health_url} every 5 minutes via the ops-probe Lambda"
+  # Same group as dfs_balance_daily: the CI role's scheduler grants are scoped to it.
+  group_name = module.eventbridge.schedule_group_name
+
+  schedule_expression          = var.booking_uptime_schedule_expression
+  schedule_expression_timezone = "UTC"
+
+  flexible_time_window {
+    mode = "OFF"
+  }
+
+  target {
+    arn      = aws_lambda_function.dfs_balance_check.arn
+    role_arn = aws_iam_role.dfs_balance_scheduler.arn
+
+    input = jsonencode({ health = "booking" })
+
+    retry_policy {
+      maximum_retry_attempts       = 0
+      maximum_event_age_in_seconds = 300
+    }
+  }
+}
+
+# Errors of the ops-probe function in 2 consecutive 5-minute periods (~10 minutes of failed probes).
+# The other schedules on this function never raise (they return a status body), so in practice this
+# counts failed uptime probes plus any crash of the function, both worth an e-mail. It also fires while
+# Booking is scaled to 0 on purpose (same as aa-booking-dev-jobs-sampling-stopped).
+resource "aws_cloudwatch_metric_alarm" "booking_uptime" {
+  count = local.booking_uptime_enabled ? 1 : 0
+
+  alarm_name          = "${local.bk_name_prefix}-uptime"
+  alarm_description   = "AA-Booking public health ${var.booking_health_url} failed the ops-probe GET (not 200 + status ok) in 2 consecutive 5-minute periods, or the ops-probe Lambda ${local.dfs_balance_fn_name} crashed.${local.runbook_suffix.api_5xx}"
+  namespace           = "AWS/Lambda"
+  metric_name         = "Errors"
+  dimensions          = { FunctionName = aws_lambda_function.dfs_balance_check.function_name }
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 2
+  datapoints_to_alarm = 2
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  threshold           = 1
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn] # S241 D-20: recovery e-mail too
+
+  tags = merge(local.ecosys_tags, { App = "booking", Issue = "AA-871" })
 }

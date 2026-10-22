@@ -124,6 +124,23 @@ resource "aws_secretsmanager_secret_version" "tripplanner_api_key" {
 }
 
 # -----------------------------------------------------------------------------
+# AA-871: Sentry DSN for both Lambdas (project aa-tripplanner-lambdas) — SHELL ONLY: no secret_version,
+# Terraform never holds the DSN (so terraform plan never reads it either, nothing to add to
+# tf_plan_secret_arns). Same run-time pattern as the edge key (AA-878): the Lambdas read it by NAME,
+# tripplanner/<ENVIRONMENT>/sentry-dsn, once per cold start (backend/shared/observability.py in
+# AA-TripPlanner-Web; grant ReadSentryDsnSecret below), so no DSN in the Lambda environment and no
+# Lambda update when it is set or rotated (new containers pick it up). Until a value is put, the read
+# fails with ResourceNotFoundException and Sentry stays off (logged sentry_disabled); requests are not
+# affected. The CIS task role cannot read it (modules/ecs DenyMasterAndOtherAppSecrets, tripplanner/*).
+# -----------------------------------------------------------------------------
+resource "aws_secretsmanager_secret" "tripplanner_sentry_dsn" {
+  name                    = "tripplanner/${var.environment}/sentry-dsn"
+  description             = "AA-TripPlanner Sentry DSN (project aa-tripplanner-lambdas), read by name at cold start by browse + assembly. Value set out-of-band."
+  recovery_window_in_days = var.environment == "dev" ? 0 : 30
+  tags                    = merge(local.tp_tags, { Issue = "AA-871" })
+}
+
+# -----------------------------------------------------------------------------
 # AA-878 (S243): the Mapbox geocoding token secret (AA-675, tour-day extraction) has had no reader
 # since AA-712 slice 6a moved extraction to CIS: no code on main reads MAPBOX_GEOCODING_TOKEN_ARN,
 # and CloudTrail since 18/10 shows only the plan role (refresh) reading it. Terraform FORGETS the
@@ -296,6 +313,14 @@ resource "aws_iam_role_policy" "tripplanner_lambda_permissions" {
         Effect   = "Allow"
         Action   = ["secretsmanager:GetSecretValue"]
         Resource = [aws_secretsmanager_secret.tripplanner_api_key.arn]
+      },
+      {
+        # AA-871: the Sentry DSN, read by name (tripplanner/<ENVIRONMENT>/sentry-dsn) at cold start,
+        # never a plaintext env value (backend/shared/observability.py in AA-TripPlanner-Web).
+        Sid      = "ReadSentryDsnSecret"
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = [aws_secretsmanager_secret.tripplanner_sentry_dsn.arn]
       },
       {
         Sid      = "Logs"
