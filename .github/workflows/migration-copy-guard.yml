@@ -24,8 +24,10 @@ name: Migration Copy Guard
 #
 # Third job (AA-929, data standards DM-7.1): every table a copy of a new-app dir (check_retention_rows.RETENTION_OWNERS,
 # today crm) creates must have a row in the retention table of Part B section 7 on the root repo's master. The job
-# reads that one file with ROOT_REPO_DOCS_TOKEN (the DB Schema Dump token; read only here) and only when a scoped dir
-# has a copy; with no such copy it passes without the token. The existing owners' tables are grandfathered (DM-7.1).
+# reads that one file with a READ-ONLY installation token of the GitHub App aa-ecosys-ci-bot (AA-901, root ADR 0011:
+# Contents read on AdventureAsia365-Ecosys/AA-Ecosys only, minted in the job, revoked when it ends) and only when a
+# scoped dir has a copy; with no such copy it passes without minting a token. The job also runs on pull_request, so
+# it never asks for a write permission. The existing owners' tables are grandfathered (DM-7.1).
 on:
   pull_request:
     branches: [main]
@@ -58,8 +60,9 @@ concurrency:
   group: migration-copy-guard-${{ github.ref }}
   cancel-in-progress: true
 
-# No AWS: the owner repos are public, GITHUB_TOKEN only lifts the API rate limit. The one secret is
-# ROOT_REPO_DOCS_TOKEN in the retention-rows job (reads one root file; only when a crm copy exists).
+# No AWS: the owner repos are public, GITHUB_TOKEN only lifts the API rate limit. The one secret is the App key
+# AA_CI_BOT_PRIVATE_KEY (with the variable AA_CI_BOT_APP_ID) in the retention-rows job: it mints a Contents-read
+# token for the root repo (reads one root file; only when a crm copy exists).
 permissions:
   contents: read
 
@@ -151,7 +154,7 @@ jobs:
       ROOT_REPO: AdventureAsia365-Ecosys/AA-Ecosys
       ROOT_BRANCH: master
       REGISTRY_PATH: docs/architecture/data-standards/02-data-management.md
-      HAS_ROOT_TOKEN: ${{ secrets.ROOT_REPO_DOCS_TOKEN != '' }}
+      HAS_CI_BOT_APP: ${{ vars.AA_CI_BOT_APP_ID != '' && secrets.AA_CI_BOT_PRIVATE_KEY != '' }}
     steps:
       - uses: actions/checkout@v7
 
@@ -159,13 +162,25 @@ jobs:
         id: scope
         run: echo "scoped=$(python3 db/check_retention_rows.py --scoped)" >> "$GITHUB_OUTPUT"
 
+      # AA-901: Contents READ only (this job runs on pull_request too: it must never mint a write token).
+      - name: Mint the aa-ecosys-ci-bot token (root repo, contents read)
+        id: app-token
+        if: steps.scope.outputs.scoped == 'yes' && env.HAS_CI_BOT_APP == 'true'
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.AA_CI_BOT_APP_ID }}
+          private-key: ${{ secrets.AA_CI_BOT_PRIVATE_KEY }}
+          owner: AdventureAsia365-Ecosys
+          repositories: AA-Ecosys
+          permission-contents: read
+
       - name: Fetch the retention registry from the root repo's master
         if: steps.scope.outputs.scoped == 'yes'
         env:
-          GH_TOKEN: ${{ secrets.ROOT_REPO_DOCS_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
-          if [ "$HAS_ROOT_TOKEN" != "true" ]; then
-            echo "::error::secret ROOT_REPO_DOCS_TOKEN is not set: the retention registry on the root repo cannot be read (see the DB Schema Dump header)"
+          if [ "$HAS_CI_BOT_APP" != "true" ]; then
+            echo "::error::the aa-ecosys-ci-bot App is not configured (repo variable AA_CI_BOT_APP_ID and/or secret AA_CI_BOT_PRIVATE_KEY missing): the retention registry on the root repo cannot be read (see the header of this workflow)"
             exit 1
           fi
           gh api -H "Accept: application/vnd.github.raw" "repos/$ROOT_REPO/contents/$REGISTRY_PATH?ref=$ROOT_BRANCH" > registry.md

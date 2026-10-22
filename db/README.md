@@ -158,8 +158,8 @@ line (a directive after the first statement is an error):
   task gets the runner alone), so DB Migrate itself does not repeat it.
 - **Retention rows** (DM-7.1, AA-929): `db/check_retention_rows.py` (CI job "Retention rows for new-app
   tables") fails when a table created by a copy in a new-app dir (`RETENTION_OWNERS`, today `crm`) has no
-  row in the retention table of data standards Part B §7, read from the root repo's `master` with
-  `ROOT_REPO_DOCS_TOKEN`. Merge the root row first, then the Infra copy. The cis/booking/tripplanner
+  row in the retention table of data standards Part B §7, read from the root repo's `master` with a
+  Contents-read token of the GitHub App `aa-ecosys-ci-bot`. Merge the root row first, then the Infra copy. The cis/booking/tripplanner
   dirs are grandfathered (DM-7.1); a new app's dir is added to `RETENTION_OWNERS` with its
   `owners.yaml` entry.
 - Exit codes: 2 sha256 mismatch, 3 not registered, 4 lint error, 5 destructive without snapshot,
@@ -298,7 +298,8 @@ runs it after the root PR step and writes the report to the step summary. A sche
 yet" and passes; drift fails the step only when the design page says `enforce=true`. Local run:
 `python3 db/check_erd_drift.py /tmp/erd.json ../../docs/architecture/erd/design` (from the workspace checkout).
 
-The workflow needs the secret `ROOT_REPO_DOCS_TOKEN` (see its header).
+The workflow needs the GitHub App `aa-ecosys-ci-bot`: repo variable `AA_CI_BOT_APP_ID` and repo secret
+`AA_CI_BOT_PRIVATE_KEY` (see its header).
 
 ## Isolation probe (X1 plan S2, U-16)
 **DB Isolation Probe** (`.github/workflows/db-isolation-probe.yml`, nightly 04:13 UTC, manual, and

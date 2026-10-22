@@ -28,9 +28,12 @@ name: DB Schema Dump (shared RDS)
 #    it fails only for a live schema whose design page is marked enforce=true.
 #
 # Triggers: nightly, manual, and DB Migrate after every successful apply (gh workflow run).
-# Needs the secret ROOT_REPO_DOCS_TOKEN: a fine-grained PAT (or GitHub App token) on
-# AdventureAsia365-Ecosys/AA-Ecosys only, Contents read/write + Pull requests read/write. Without it
-# the dump and the artifact still run and the publish step fails with a clear error.
+# Root repo access (AA-901, root ADR 0011): a short-lived installation token of the GitHub App aa-ecosys-ci-bot,
+# minted right before the root checkout (after every AWS step that produces the dump) for AdventureAsia365-Ecosys/AA-Ecosys
+# only, Contents write + Pull requests write; revoked when the job ends. Needs the repo variable AA_CI_BOT_APP_ID and
+# the repo secret AA_CI_BOT_PRIVATE_KEY (repo level: this private repo on GitHub Free has no environment branch rule,
+# so the job's main-only guard is what keeps the key off other refs). Without them the dump and the artifact still
+# run and the publish step fails with a clear error.
 on:
   workflow_dispatch:
     inputs:
@@ -91,7 +94,7 @@ jobs:
       ERD_S3_PREFIX: data-model/erd
       REASON: ${{ github.event_name == 'schedule' && 'nightly' || inputs.reason || 'manual' }}
       PUBLISH: ${{ github.event_name == 'workflow_dispatch' && inputs.publish && 'true' || 'false' }}
-      HAS_ROOT_TOKEN: ${{ secrets.ROOT_REPO_DOCS_TOKEN != '' }}
+      HAS_CI_BOT_APP: ${{ vars.AA_CI_BOT_APP_ID != '' && secrets.AA_CI_BOT_PRIVATE_KEY != '' }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
       - uses: actions/checkout@v7
@@ -220,24 +223,37 @@ jobs:
           aws s3 cp erd.json "s3://$BUCKET/$ERD_S3_PREFIX/latest.json" --only-show-errors --content-type application/json
           echo "- erd.json: s3://$BUCKET/$ERD_S3_PREFIX/latest.json" >> "$GITHUB_STEP_SUMMARY"
 
+      # AA-901: App installation token for the root repo only (the job runs on main only, see `if:` above).
+      - name: Mint the aa-ecosys-ci-bot token (root repo, contents + pull requests write)
+        id: app-token
+        if: env.HAS_CI_BOT_APP == 'true'
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.AA_CI_BOT_APP_ID }}
+          private-key: ${{ secrets.AA_CI_BOT_PRIVATE_KEY }}
+          owner: AdventureAsia365-Ecosys
+          repositories: AA-Ecosys
+          permission-contents: write
+          permission-pull-requests: write
+
       - name: Check out the root repo
         id: root
-        if: env.HAS_ROOT_TOKEN == 'true'
+        if: env.HAS_CI_BOT_APP == 'true'
         uses: actions/checkout@v7
         with:
           repository: ${{ env.ROOT_REPO }}
           ref: ${{ env.ROOT_BRANCH }}
-          token: ${{ secrets.ROOT_REPO_DOCS_TOKEN }}
+          token: ${{ steps.app-token.outputs.token }}
           path: root
           fetch-depth: 1
 
       - name: Open or update the root PR when the structure changed
         env:
-          GH_TOKEN: ${{ secrets.ROOT_REPO_DOCS_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           NEW_FP: ${{ steps.render.outputs.fingerprint }}
         run: |
-          if [ "$HAS_ROOT_TOKEN" != "true" ]; then
-            echo "::error::secret ROOT_REPO_DOCS_TOKEN is not set: the dump is in the artifact and S3, but no root PR can be opened (see the header of this workflow)"
+          if [ "$HAS_CI_BOT_APP" != "true" ]; then
+            echo "::error::the aa-ecosys-ci-bot App is not configured (repo variable AA_CI_BOT_APP_ID and/or secret AA_CI_BOT_PRIVATE_KEY missing): the dump is in the artifact and S3, but no root PR can be opened (see the header of this workflow)"
             exit 1
           fi
           OLD_FP=$(grep -oE 'schema-fingerprint: [0-9a-f]{64}' "root/$REF_PATH" | cut -d' ' -f2 || true)
