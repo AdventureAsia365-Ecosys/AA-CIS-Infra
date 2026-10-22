@@ -330,7 +330,10 @@ statement in a savepoint (locks released at once), counts and names only, tenant
   `bk_owner`/`tp_owner` registry grants; `cis_app` cannot write
   `shared.schema_versions`; every ENABLE-without-FORCE CIS table has a permissive policy `TO cis_app`
   (or `rls_enable_only_allowlist`); `aa_app_user` tenant matrix (GUC unset / empty / forged / each
-  tenant: 0 cross-tenant rows); the CIS runtime sees every `tenant_tour_versions` row without a GUC;
+  tenant: 0 cross-tenant rows; the tenant column is `tenant_id`, else `owner_scope` (`tour_atoms`), and
+  `quarter_plan_version` is judged by its plan (`PARENT_SCOPED`); rows a pool policy shares with every
+  tenant only for the AA master tenant id or `'platform'` (`SHARED_SCOPE_CONSTANTS`, `::uuid` or `::text`
+  literal), never another tenant's id); the CIS runtime sees every `tenant_tour_versions` row without a GUC;
   `db_migrator` sessions below its limit − 1; no master session but break-glass.
 - **Pending cells keyed to live state:** a cell that cannot pass before a later X1 step is `pending`
   until its key is true — a `shared.schema_versions` row (`rl-001`, `243`, `244`, `rl-002`); for the
