@@ -453,7 +453,7 @@ makes CI Terraform Plan fail with 403.
   **DB Schema Dump** (`db-schema-dump.yml`, AA-807 N1) runs a read-only catalog dump in a one-off ECS
   task nightly and after every apply, and opens a PR on the root repo that regenerates
   `docs/architecture/db-schema-reference.md` and the generated ERD pages `docs/architecture/erd/` (`db/gen_erd.py`,
-  AA-894; plus `erd.json` in the run artifact) and reports drift between the hand-written design ERDs
+  AA-894; plus `erd.json` in the run artifact and at `s3://<bronze>/data-model/erd/latest.json`, with the model before the last structural change at `previous.json`: the input of the CIS admin view `/admin/data-model`, AA-894 scope 2; the CIS task role may read exactly those two objects (`modules/ecs` `ReadErdModel`) and is denied `db-schema-dump/*`) and reports drift between the hand-written design ERDs
   (`docs/architecture/erd/design/`) and the live model (`db/check_erd_drift.py`). It also runs the X2 RLS catalogue guard (`db/rls_catalogue_rules.py`,
   a byte copy of AA-CIS-App's CI guard rules kept equal by the Copy Guard's `CODE_COPIES`) and writes the result in
   the file's *RLS catalogue guard (X2)* section; violations are warnings there and blocking in CIS CI. Owners and version keys:
