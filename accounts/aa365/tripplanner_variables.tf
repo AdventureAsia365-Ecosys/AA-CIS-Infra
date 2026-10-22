@@ -87,7 +87,7 @@ variable "tripplanner_lambda_reserved_concurrency" {
 variable "tripplanner_places_source" {
   type        = string
   description = "legacy | cis: the TripPlanner place source, env PLACES_SOURCE on browse and assembly (AA-847)."
-  default     = "legacy"
+  default     = "cis"
   validation {
     condition     = contains(["legacy", "cis"], var.tripplanner_places_source)
     error_message = "tripplanner_places_source must be legacy or cis."
