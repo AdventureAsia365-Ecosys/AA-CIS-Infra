@@ -152,6 +152,35 @@ class MermaidTextTest(unittest.TestCase):
         self.assertEqual(erd.entity("booking", "booking", "legs"), "legs")
         self.assertEqual(erd.entity("tripplanner", "shared", "destinations"), '"shared.destinations"')
 
+    def test_mermaid_keywords_are_quoted_and_key_words_suffixed(self):
+        # Mermaid 11.4.1's ER lexer reads these as keywords; unquoted they fail to parse (AA-894 review note 1).
+        for word in ("one", "many", "to", "u", "erDiagram", "One", "MANY", "class", "style", "direction"):
+            with self.subTest(word=word):
+                self.assertEqual(erd.entity("crm", "crm", word), f'"{word}"')
+        self.assertEqual(erd.entity("crm", "crm", "option"), "option")      # not a keyword: stays bare
+        self.assertEqual(erd.entity("crm", "crm", "one_time"), "one_time")
+        for name, expected in (("pk", "pk_"), ("FK", "FK_"), ("uk", "uk_"), ("pk-x", "pk_-x"),
+                               ("pk_id", "pk_id"), ("pkg", "pkg"), ("fkey", "fkey"), ("uk_code", "uk_code")):
+            with self.subTest(name=name):
+                self.assertEqual(erd.mermaid_name(name), expected)
+        self.assertEqual(erd.mermaid_type("pk"), "pk_")
+
+    def test_keyword_table_and_key_column_render(self):
+        dump = copy.deepcopy(fixture())
+        dump["relations"]["booking"]["many"] = rel(
+            [col("pk"), col("trip_case_id"), col("uk", "text")],
+            [pk_index("booking", "many", "pk")],
+            [fk("many_trip_case_id_fkey", "trip_case_id", "booking", "trip_cases", "id")])
+        model = erd.build_model(dump)
+        table = next(t for s in model["schemas"] for t in s["tables"] if t["name"] == "many")
+        self.assertEqual(table["primary_key"], ["pk"])                        # erd.json keeps the real names
+        self.assertEqual([c["name"] for c in table["columns"]], ["pk", "trip_case_id", "uk"])
+        block = mermaid_block(erd.render_schema(model, next(s for s in model["schemas"]
+                                                           if s["schema"] == "booking")))
+        self.assertIn('    "many" {\n        uuid pk_ PK\n', block)
+        self.assertIn('    trip_cases ||--o{ "many" : "many_trip_case_id_fkey"', block)
+        self.assertNotRegex(block, r"(?m)^    many\b")
+
     def test_every_diagram_line_is_well_formed(self):
         entity_re = re.compile(r'^    ("[^"]+"|[A-Za-z_][A-Za-z0-9_\-]*)( \{)?$')
         line_res = (self.ATTR_RE, entity_re, re.compile(r"^    \}$"),

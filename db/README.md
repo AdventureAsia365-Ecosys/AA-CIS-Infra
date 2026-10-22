@@ -286,7 +286,17 @@ from the `is_primary` index definition (the dump keeps only CHECK and FK constra
 as `generator`, so hand-written files under `docs/architecture/erd/design/` are never touched. `erd.json` is in the
 run artifact; with the repo variable `ERD_S3_UPLOAD=true` (default off) it also goes to
 `s3://<bronze>/db-schema-dump/erd/latest.json` (and `previous.json` keeps the model before the last change).
-Local render: `python3 db/gen_erd.py schema.json --out-dir /tmp/erd --json /tmp/erd.json`.
+Local render: `python3 db/gen_erd.py schema.json --out-dir /tmp/erd --json /tmp/erd.json`. Mermaid ER keywords
+(`one`, `many`, `to`, `u`, `erDiagram`, ...) are quoted as table names and a column named `pk`, `fk` or `uk` is
+written `pk_` (the attribute-key words); `erd.json` keeps the real names.
+
+Design ERD drift (AA-894 scope 3): `check_erd_drift.py` compares the hand-written design pages of the root repo
+(`docs/architecture/erd/design/<schema>.md`, marker `<!-- erd-design schema=<s> enforce=<bool> implied-fk=<col>:<table> -->`)
+with `erd.json`: tables missing or extra, primary keys that differ, FK edges missing or extra (an edge is the child
+table, its FK columns and the parent; the design writes the FK columns as the relationship label). The DB Schema Dump
+runs it after the root PR step and writes the report to the step summary. A schema with no relations is "not live
+yet" and passes; drift fails the step only when the design page says `enforce=true`. Local run:
+`python3 db/check_erd_drift.py /tmp/erd.json ../../docs/architecture/erd/design` (from the workspace checkout).
 
 The workflow needs the secret `ROOT_REPO_DOCS_TOKEN` (see its header).
 
