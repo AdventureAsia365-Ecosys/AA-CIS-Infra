@@ -222,3 +222,9 @@ variable "bedrock_acct_fallback" {
   type        = string
   default     = ""
 }
+
+variable "place_shapes_enabled" {
+  description = "AA-847: env PLACE_SHAPES_ENABLED (on/off) on api and worker, the place_shape job's kill switch (default off)."
+  type        = bool
+  default     = false
+}
