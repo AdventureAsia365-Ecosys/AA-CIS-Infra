@@ -43,3 +43,8 @@ output "nlb_security_group_id" {
   description = "Security group of the VPC-link NLB (AA-893 inventory outputs)"
   value       = aws_security_group.nlb.id
 }
+
+output "nlb_arn" {
+  description = "ARN of the internal VPC-link NLB; the CloudFront VPC origin targets it (AA-931)"
+  value       = aws_lb.vpc_link_nlb.arn
+}

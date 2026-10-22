@@ -7,7 +7,7 @@ status: active
 owner: nghiep
 audience: [engineer, devops, agent]
 applies_to: [aa-cis-infra, ecosystem]
-last_reviewed: 2026-10-19
+last_reviewed: 2026-10-22
 review_every_days: 90
 related: [ARCH-01, ARCH-05, ARCH-08, docs/adr/README.md]
 ---
@@ -149,6 +149,21 @@ accounts/
                                    bronze bucket-policy statement AllowPhotosCdnRead (GetObject photos/* for
                                    that distribution only, no ListBucket). The CIS /content/photos/{id}
                                    302 points here; output photos_cdn)
+    alb_rules.tf                  (AA-931, v2.2 V3: the one priority map for the shared ALB :80 listener rules +
+                                   the X-AA-Origin header name; order = CloudFront host rules < "any
+                                   X-AA-Origin -> 403" < API Gateway path rules < default; checked by
+                                   tools/terraform/alb_rule_order.py in alb-rule-order.yml)
+    cicd_crm.tf                   (AA-931, bootstrap: customer managed policy aa-cis-infra-tf-apply-crm on the
+                                   apply role — CloudFront VPC origins / origin request policies / functions,
+                                   SetSecurityGroups on the shared ALB+NLB, ECR aa-crm-<env>-*, KMS create/admin
+                                   only for keys tagged App=crm (no PutKeyPolicy, ScheduleKeyDeletion,
+                                   DisableKey, CreateGrant or crypto use), EventBridge rules aa-crm-*, SES
+                                   contact lists; plus the CRM naming contract)
+    crm_edge_spike.tf             (AA-931 CRM-03 spike, gated by var.crm_edge_enabled && custom_domains_enabled:
+                                   CloudFront partner-dev.lumiguides.it.com -> VPC origin on the existing
+                                   internal NLB -> ALB rule (Host + secret X-AA-Origin) -> hello task
+                                   aa-crm-dev-spike (public python image, ARM64 Spot, desired 0, scaled by
+                                   hand); rule "any X-AA-Origin -> 403"; ACM us-east-1 + alias records)
     variables.tf / tripplanner_variables.tf / booking_variables.tf
   acc1-bedrock/   ← acc1 Bedrock invoker role (fallback) + Cost Explorer reader
   acc3-bedrock/   ← acc3 Bedrock invoker role (primary) + Bedrock Batch (batch.tf)
@@ -226,6 +241,17 @@ admits only :80 from the VPC CIDR (NLB), so it cannot be called directly. The RE
 → VpcLinkInternalAllow → RateLimit → GeoBlock; rate and
 geo only bite on REST API stages (`var.waf_protect_rest_api_stages`, needs `apigateway:SetWebACL`
 on the CI role). RDS `aa-cis-dev-db` has deletion protection on.
+
+**Edge, second path (AA-931, CRM-03):** CloudFront (AA-Partner, `partner-dev.`) → CloudFront VPC origin on the
+same internal NLB → ALB :80. CloudFront adds the secret header `X-AA-Origin` to every origin request. VPC-origin
+traffic keeps a CloudFront source address end to end (an NLB with an `alb` target group preserves the client IP),
+so the NLB group admits the `com.amazonaws.global.cloudfront.origin-facing` prefix list and a second ALB group
+(`aa-cis-dev-sg-alb-from-nlb`) admits the NLB group; the ALB group itself stays VPC-only (the ALB is still
+internet-facing). WAF rule `CloudFrontOriginAllow` (priority 3, exact secret) lets these requests past rate + geo,
+which would otherwise judge the CloudFront edge instead of the viewer; `x-aa-origin` is redacted in the WAF log.
+ALB rules (`alb_rules.tf`): partner host + secret → partner target group; any `X-AA-Origin` → 403, before the
+Booking rule and the CIS default. CloudFront bypasses API Gateway throttling: the AA-Partner app rate-limits on
+`CloudFront-Viewer-Address` (AA-933); the CloudFront WAF comes at Go-real (W8).
 
 **AA-Booking** (`booking.tf`, AA-678, root ADR 0004) is a separate app on the same cluster, VPC,
 ALB and RDS: ECS service `aa-booking-dev-api` (created at `desired_count = 0`, scaled by hand,
@@ -331,7 +357,12 @@ makes CI Terraform Plan fail with 403.
   `permissions_boundary = aws_iam_policy.workload_boundary.arn`** and keep an `aa-*-dev-*` name, or
   CI apply is denied. Changes to the bootstrap objects (the three roles, both boundaries, the GitHub
   OIDC provider, `local.cicd_managed_policies` / `local.cicd_inline_statements` in `cicd.tf` (the
-  apply role's grants), `aa-cis-dev-agent-session`) are applied locally. Step 4
+  apply role's grants), `aa-cis-dev-agent-session`, `cicd_crm.tf`) are applied locally.
+  AA-931 (`cicd_crm.tf`): the apply role holds 9 AWS managed policies (`AWSStepFunctionsFullAccess` dropped, no
+  Step Functions resource since AA-750) plus the customer managed `aa-cis-infra-tf-apply-crm`; the apply boundary
+  denies, on KMS keys tagged `App=crm`, every crypto use plus `CreateGrant` / `PutKeyPolicy` /
+  `ScheduleKeyDeletion` / `DisableKey`, and on `aa-crm-<env>-audit-*` objects governance bypass, retention /
+  legal-hold changes and deletes. CRM key-policy changes therefore stay local MFA applies. Step 4
   sets `aa-workload-boundary` on every existing CI-managed workload role (CIS ECS execution/task
   via `modules/ecs` `permissions_boundary_arn`, the ACP scheduler via `modules/eventbridge`, the NAT
   instance role via `modules/vpc`, Booking/TripPlanner roles, DFS balance Lambda + scheduler,

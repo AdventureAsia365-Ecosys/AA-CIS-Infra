@@ -27,7 +27,10 @@ locals {
     "arn:aws:iam::aws:policy/AmazonSQSFullAccess",
     "arn:aws:iam::aws:policy/AmazonVPCFullAccess",
     "arn:aws:iam::aws:policy/AmazonElastiCacheFullAccess",
-    "arn:aws:iam::aws:policy/AWSStepFunctionsFullAccess",
+    # AA-931: AWSStepFunctionsFullAccess removed. No Step Functions resource exists since AA-750 (the
+    # pipeline state machine was retired) and its only other useful action, iam:ListRoles, is also in
+    # AWSLambda_FullAccess. The freed slot (default quota: 10 managed policies per role) holds the
+    # customer managed aa-cis-infra-tf-apply-crm (cicd_crm.tf).
     "arn:aws:iam::aws:policy/AmazonS3FullAccess",
     "arn:aws:iam::aws:policy/AWSLambda_FullAccess",
   ]

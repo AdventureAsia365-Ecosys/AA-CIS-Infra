@@ -357,7 +357,7 @@ resource "aws_lb_listener_rule" "booking" {
   # API Gateway reaches the ALB on :80 through the VPC-link NLB, so the rule goes on the HTTP
   # listener (modules/alb output http_listener_arn, phase 1). The HTTPS listener is untouched.
   listener_arn = module.alb.http_listener_arn
-  priority     = 100
+  priority     = local.alb_http_rule_priorities.booking # 100; alb_rules.tf owns the order (AA-931)
 
   action {
     type             = "forward"

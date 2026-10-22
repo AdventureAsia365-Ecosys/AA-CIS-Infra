@@ -12,8 +12,10 @@ resource "aws_lb" "main" {
   name               = "${local.name_prefix}-alb"
   internal           = false
   load_balancer_type = "application"
-  security_groups    = [var.sg_alb_id]
-  subnets            = var.public_subnet_ids
+  # AA-931: the second group (CloudFront VPC origin via the NLB) only when that path is enabled.
+  # Changing this list is an in-place SetSecurityGroups, not a replacement.
+  security_groups = concat([var.sg_alb_id], aws_security_group.alb_from_nlb[*].id)
+  subnets         = var.public_subnet_ids
 
   enable_deletion_protection = false
 
