@@ -194,6 +194,8 @@ module "ecs" {
   # AA-847 lines: the place_shape job (line geometry, Geoapify credits). The flip is false -> true in its own PR;
   # it reaches the tasks on the next CIS Deploy Dev (the deploy copies the latest task-def revision).
   place_shapes_enabled = true
+  # AA-779: shadow first (verdicts recorded in writer_input.faq_filter, tenants get the deterministic list).
+  t9_faq_llm_filter = "shadow"
 
   task_cpu              = var.task_cpu
   task_memory           = var.task_memory
