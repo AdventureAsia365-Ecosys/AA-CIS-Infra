@@ -36,7 +36,7 @@ Output (every line starts with `SCRIPT `):
 Returns 1 when the switch to tripplanner is refused or tripplanner.component_id_map is missing (apply tp-017 first).
 """
 
-READ_ONLY = True
+READ_ONLY = False
 
 AA_TENANT_ID = "00000000-0000-0000-0000-000000000001"
 UNMATCHED_CAP = 40
