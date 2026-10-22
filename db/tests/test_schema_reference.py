@@ -14,6 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import check_migration_files as files  # noqa: E402
 import gen_schema_reference as gen  # noqa: E402
 import schema_dump as sd  # noqa: E402
 
@@ -476,7 +477,7 @@ class PiiTagTest(unittest.TestCase):
         self.assertIn("unknown class pii:gendr", p["findings"][0]["finding"])
         md = gen.render(tagged_dump())
         self.assertIn("## Personal and confidential data tags (DM-6.1)", md)
-        self.assertIn("**5 tagged column(s)**, 2 untagged candidate(s) in booking, tripplanner, 2 finding(s).", md)
+        self.assertIn("**5 tagged column(s)**, 2 untagged candidate(s) in booking, crm, tripplanner, 2 finding(s).", md)
         self.assertIn("| `booking` | `pii:contact` | 2 | 0 |", md)
         self.assertIn("| `booking` | `pii:name` | 0 | 1 |", md)
         self.assertIn("| `booking` | `conf:credential` | 1 | 0 |", md)
@@ -526,6 +527,78 @@ class PiiTagTest(unittest.TestCase):
                 self.assertIn(key.split(".")[0], gen.PII_CANDIDATE_SCHEMAS)
                 self.assertTrue(gen._tokens(key.split(".")[2]) & gen.PII_CANDIDATE_TOKENS, "entry can never match")
                 self.assertTrue(reason.strip())
+
+
+class CrmTagClassesTest(unittest.TestCase):
+    """Data standards v1.3 (AA-929): the partner CRM classes are known to the reference and to the migration lint;
+    any other class fails the lint (Done-when R: a column tagged with an unknown class fails lint)."""
+
+    NEW = ("government_id", "health", "emergency_contact")
+
+    def test_standard_classes_including_the_crm_ones(self):
+        self.assertEqual(gen.TAG_CLASSES["pii"], ("contact", "name", "address", "profile", "online_id", "free_text",
+                                                  "travel", "payment", "government_id", "health",
+                                                  "emergency_contact"))
+        self.assertEqual(gen.TAG_CLASSES["conf"], ("commercial", "credential"))
+        self.assertIn("crm", gen.PII_CANDIDATE_SCHEMAS)
+
+    def test_new_classes_are_not_findings_in_the_reference(self):
+        r = rows()
+        for klass in self.NEW:
+            r["columns"].append({"schema": "booking", "name": "legs", "column": f"x_{klass}", "type": "bytea",
+                                 "not_null": False, "comment": f"pii:{klass}; crm-001 test"})
+        p = gen.pii_tags(sd.build_dump(SCHEMAS, r, "x"))
+        self.assertEqual(p["findings"], [])
+        self.assertEqual(sorted(t["tag"] for t in p["tagged"]), sorted(f"pii:{k}" for k in self.NEW))
+
+    def test_unknown_class_is_a_reference_finding(self):
+        r = rows()
+        r["columns"].append({"schema": "booking", "name": "legs", "column": "passport_no", "type": "bytea",
+                             "not_null": False, "comment": "pii:passport; not a DM-6.1 class"})
+        p = gen.pii_tags(sd.build_dump(SCHEMAS, r, "x"))
+        self.assertEqual(p["findings"], [{"key": "booking.legs.passport_no", "finding": "unknown class pii:passport"}])
+
+    def test_tag_lint_on_sql(self):
+        sql = ("BEGIN;\n"
+               "COMMENT ON COLUMN crm.traveler.passport_no_enc IS 'pii:government_id; AES-GCM under the vault DEK';\n"
+               "COMMENT ON COLUMN crm.traveler_health.health_flags_enc IS\n    'pii:health; codes only; it''s consented';\n"
+               "COMMENT ON COLUMN crm.traveler.emergency_contact_enc IS 'pii:emergency_contact';\n"
+               "COMMENT ON COLUMN crm.trip.notes IS 'pii:free_text; also pii:emergency_contact';\n"
+               "COMMENT ON COLUMN crm.t.x IS NULL;\n"
+               "COMMENT ON TABLE crm.t IS 'pii:whatever on a table is not a column tag';\n"
+               "COMMIT;\n")
+        self.assertEqual(files.tag_lint(sql), ([], []))
+        for bad, klass in (("'pii:passport; x'", "pii:passport"), ("'conf:secret'", "conf:secret"),
+                           ("'pii:contact; also pii:medical'", "pii:medical"),
+                           ("E'pii:healt; typo'", "pii:healt"), ("'Contact; see pii:emergency'", "pii:emergency")):
+            with self.subTest(bad=bad):
+                errors, _ = files.tag_lint(f"SELECT 1;\nCOMMENT ON COLUMN crm.traveler.c IS {bad};\n")
+                self.assertEqual(len(errors), 1, errors)
+                self.assertIn(f"line 2: COMMENT ON COLUMN crm.traveler.c: unknown class {klass}", errors[0])
+                self.assertIn("pii:government_id, pii:health, pii:emergency_contact", errors[0])
+        errors, warnings = files.tag_lint("COMMENT ON COLUMN crm.t.c IS 'Home address, pii:address';")
+        self.assertEqual(errors, [])
+        self.assertIn("names pii:address but does not start with a tag", warnings[0])
+
+    def test_unknown_class_fails_the_migration_lint(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            good = root / "db" / "migrations" / "booking" / "001_good.sql"
+            bad = root / "db" / "migrations" / "booking" / "002_bad.sql"
+            good.parent.mkdir(parents=True)
+            good.write_text("COMMENT ON COLUMN booking.t.p IS 'pii:government_id; passport number';\n", encoding="utf-8")
+            bad.write_text("COMMENT ON COLUMN booking.t.p IS 'pii:passport; passport number';\n", encoding="utf-8")
+            out = io.StringIO()
+            self.assertEqual(files.run(files.all_copies(root), root, out=out), 1)
+            self.assertIn("ok    db/migrations/booking/001_good.sql", out.getvalue())
+            self.assertIn("FAIL  db/migrations/booking/002_bad.sql: line 1: COMMENT ON COLUMN booking.t.p: "
+                          "unknown class pii:passport", out.getvalue())
+
+    def test_real_copies_carry_known_classes_only(self):
+        root = Path(__file__).resolve().parent.parent.parent
+        for rel in files.all_copies(root):
+            with self.subTest(rel=rel):
+                self.assertEqual(files.tag_lint((root / rel).read_text(encoding="utf-8"))[0], [])
 
 
 if __name__ == "__main__":

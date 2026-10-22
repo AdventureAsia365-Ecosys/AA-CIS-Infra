@@ -19,6 +19,13 @@ name: Migration Copy Guard
 # today's heads (db/owners.yaml role_lint_from) and the role switch's shape rule for them (one
 # BEGIN … COMMIT block, or no-transaction). DB Migrate runs the same lint before apply.
 # db/migrations/roles/ (key rl-NNN) is Infra-native: path, registration and lint only, no owner compare.
+# The lint also fails a `COMMENT ON COLUMN … IS 'pii:<class>…'` whose class is not a data standards DM-6.1 class
+# (gen_schema_reference.TAG_CLASSES, standards v1.3, AA-929).
+#
+# Third job (AA-929, data standards DM-7.1): every table a copy of a new-app dir (check_retention_rows.RETENTION_OWNERS,
+# today crm) creates must have a row in the retention table of Part B section 7 on the root repo's master. The job
+# reads that one file with ROOT_REPO_DOCS_TOKEN (the DB Schema Dump token; read only here) and only when a scoped dir
+# has a copy; with no such copy it passes without the token. The existing owners' tables are grandfathered (DM-7.1).
 on:
   pull_request:
     branches: [main]
@@ -29,6 +36,7 @@ on:
       - "db/gen_schema_reference.py"
       - "db/schema_dump.py"
       - "db/check_migration_files.py"
+      - "db/check_retention_rows.py"
       - "db/run_migration.py"
       - "db/tests/**"
       - "db/owners.yaml"
@@ -48,7 +56,8 @@ concurrency:
   group: migration-copy-guard-${{ github.ref }}
   cancel-in-progress: true
 
-# No AWS, no secrets: the owner repos are public, GITHUB_TOKEN only lifts the API rate limit.
+# No AWS: the owner repos are public, GITHUB_TOKEN only lifts the API rate limit. The one secret is
+# ROOT_REPO_DOCS_TOKEN in the retention-rows job (reads one root file; only when a crm copy exists).
 permissions:
   contents: read
 
@@ -131,4 +140,44 @@ jobs:
             out=$(python3 db/run_migration.py --inspect-script "$f") || status=1
             jq -r --arg f "$f" '.errors[] | "::error file=" + $f + "::" + .' <<<"$out"
           done
+          exit "$status"
+
+  retention-rows:
+    name: Retention rows for new-app tables
+    runs-on: ubuntu-latest
+    env:
+      ROOT_REPO: AdventureAsia365-Ecosys/AA-Ecosys
+      ROOT_BRANCH: master
+      REGISTRY_PATH: docs/architecture/data-standards/02-data-management.md
+      HAS_ROOT_TOKEN: ${{ secrets.ROOT_REPO_DOCS_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Is any new-app dir in scope?
+        id: scope
+        run: echo "scoped=$(python3 db/check_retention_rows.py --scoped)" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch the retention registry from the root repo's master
+        if: steps.scope.outputs.scoped == 'yes'
+        env:
+          GH_TOKEN: ${{ secrets.ROOT_REPO_DOCS_TOKEN }}
+        run: |
+          if [ "$HAS_ROOT_TOKEN" != "true" ]; then
+            echo "::error::secret ROOT_REPO_DOCS_TOKEN is not set: the retention registry on the root repo cannot be read (see the DB Schema Dump header)"
+            exit 1
+          fi
+          gh api -H "Accept: application/vnd.github.raw" "repos/$ROOT_REPO/contents/$REGISTRY_PATH?ref=$ROOT_BRANCH" > registry.md
+          test -s registry.md
+
+      - name: Every scoped table has a DM-7 row
+        run: |
+          set +e
+          if [ "${{ steps.scope.outputs.scoped }}" = "yes" ]; then
+            python3 db/check_retention_rows.py --registry registry.md > retention.log 2>&1
+          else
+            python3 db/check_retention_rows.py > retention.log 2>&1
+          fi
+          status=$?
+          cat retention.log
+          { echo '### Retention rows (DM-7.1)'; echo '```'; grep -v '^::' retention.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           exit "$status"

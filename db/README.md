@@ -58,7 +58,8 @@ mirror below; with the mirrors they are green. In order:
    (DB Migrate `mode=set-password`); then the mirrors: `run_migration.py` (`OWNER_DIRS`, `IDLE_EXEMPT_KINDS` when the
    owner has a job table, `PASSWORD_ROLES`), `check_migration_copies.py` (`OWNERS`, `PATH_RE`), `db-migrate.yml`
    (dir regex, key-prefix `case`, set-password role regex), `isolation_probe.py` (`OWNERS`, `VERSION_KEYS` with the
-   transfer key, `KEY_TEXT` for the key and `<owner>_transferred`), and the copied `rls_catalogue_rules.py`.
+   transfer key, `KEY_TEXT` for the key and `<owner>_transferred`), the copied `rls_catalogue_rules.py`, and
+   `check_retention_rows.py` `RETENTION_OWNERS` (a new app's tables need DM-7 rows from day one, AA-929).
 3. **Role bootstrap** in the same PR, rendered from `db/templates/new_owner_roles.sql.tmpl`:
    ```
    python3 db/templates/render_new_owner_roles.py --number NNN --owner <dir> --owner-role <app>_owner --runtime-role <app>_app --schema <anchor> --key-prefix <xx-> --conn-limit <n> --issue AA-NNN > db/migrations/roles/NNN_<app>_roles.sql
@@ -149,6 +150,18 @@ line (a directive after the first statement is an error):
   switch, which needs that shape; the lint fails the PR instead of exit 8 at apply.
 - **Unique numbers** (MIG-3): `db/check_migration_files.py` fails when two files in one owner dir
   share a number, `roles/` included (CI job "Migration lint and unique numbers").
+- **PII class lint** (data standards DM-6.1, v1.3, AA-929): the same job fails a copy whose
+  `COMMENT ON COLUMN … IS 'pii:<class>…'` / `'conf:<class>…'` names a class that is not in
+  `gen_schema_reference.TAG_CLASSES` (`contact`, `name`, `address`, `profile`, `online_id`, `free_text`,
+  `travel`, `payment`, `government_id`, `health`, `emergency_contact`; `conf:commercial`, `conf:credential`).
+  A comment that names a tag without starting with one is a warning. Not in `run_migration.py` (the
+  task gets the runner alone), so DB Migrate itself does not repeat it.
+- **Retention rows** (DM-7.1, AA-929): `db/check_retention_rows.py` (CI job "Retention rows for new-app
+  tables") fails when a table created by a copy in a new-app dir (`RETENTION_OWNERS`, today `crm`) has no
+  row in the retention table of data standards Part B §7, read from the root repo's `master` with
+  `ROOT_REPO_DOCS_TOKEN`. Merge the root row first, then the Infra copy. The cis/booking/tripplanner
+  dirs are grandfathered (DM-7.1); a new app's dir is added to `RETENTION_OWNERS` with its
+  `owners.yaml` entry.
 - Exit codes: 2 sha256 mismatch, 3 not registered, 4 lint error, 5 destructive without snapshot,
   6 PostgreSQL error (lock or statement timeout prints a hint), 7 apply refused because a job
   table is busy or a rerun wave is open, 8 role refused, 9 ownership post-check failed (or the
