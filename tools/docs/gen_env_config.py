@@ -238,7 +238,8 @@ def parse_vercel_cli(text: str) -> list[dict]:
 # The AWS CLI v2 (preinstalled on GitHub runners) does the reads; each call projects names with a
 # JMESPath --query, so a plain value or a Lambda env value never leaves the CLI process: not on disk, not
 # in this process. No third-party Python package is installed in the Docs Gen job (it holds the plan
-# role's credentials and the root write PAT; a pip dependency would run code with both in reach).
+# role's credentials and a root repo App write token (aa-ecosys-ci-bot); a pip dependency would run
+# code with both in reach).
 Q_LIST_SECRETS = "SecretList[].[ARN,Name]"
 Q_LIST_SERVICES = "serviceArns"
 Q_DESCRIBE_SERVICES = (
