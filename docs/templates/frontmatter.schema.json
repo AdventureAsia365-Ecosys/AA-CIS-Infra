@@ -93,6 +93,36 @@
       "type": "array",
       "uniqueItems": true,
       "items": {"type": "string"}
+    },
+    "linear": {
+      "description": "PRDs (docs/product/, AA-894): Linear issue keys that deliver this page. tools/docs/check_prd_refs.py requires it on a PRD.",
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "pattern": "^AA-[0-9]+$"}
+    },
+    "adrs": {
+      "description": "PRDs: repo-relative paths of the ADRs the page depends on. Every path must exist (check_prd_refs.py).",
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "contracts": {
+      "description": "PRDs: repo-relative paths of the cross-app contracts (docs/contracts/) the feature produces or consumes. Every path must exist.",
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "erd": {
+      "description": "PRDs: repo-relative paths of the design or generated ERD pages (docs/architecture/erd/). Every path must exist.",
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "migrations": {
+      "description": "PRDs: paths of the migrations that implement the data model; a path in another repo of the workspace starts with its folder (infra/AA-CIS-Infra/db/migrations/...). Empty until the first migration.",
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
     }
   },
   "allOf": [
