@@ -206,6 +206,9 @@ tools/
                     roles) from the accounts/aa365 state JSON (or a plan JSON); `check-source` guards that
                     every alarm and SNS-notifying EventBridge rule carries a runbook suffix. Tests in
                     tools/docs/tests (docs-gen-test.yml); run by docs-gen.yml.
+                    Plus gen_env_config.py (AA-894 scope 5): the env-config register (APP-03), env var
+                    NAMES of every ECS service, Lambda function and Vercel project (boto3 read-only;
+                    Vercel API or the checked-in names-only snapshot env_config_vercel.json); never a value.
 ```
 
 The **active dev stack** is `accounts/aa365` — it is the root Terraform actually applies against
@@ -472,6 +475,12 @@ makes CI Terraform Plan fail with 403.
   changed. A missing or broken alarm runbook link fails the run after the PR is updated. The root
   outputs in `accounts/aa365/outputs_inventory.tf` (VPC, subnets, security groups, NAT, RDS, ECS, load
   balancers, API Gateway, photos CDN) are listed on the inventory page; look IDs up there or with `terraform output`.
+  The same run renders `docs/generated/env-config.md` (AA-894, `tools/docs/gen_env_config.py`): the env var names
+  of every ECS service (primary deployment's task definition, secrets by Secrets Manager name), Lambda function and
+  Vercel project, read live with the same read-only role (`ReadOnlyAccess`), names only. Vercel comes from the API
+  when the repo secret `VERCEL_TOKEN` exists, else from the checked-in snapshot `tools/docs/env_config_vercel.json`
+  (refresh with `gen_env_config.py vercel-snapshot --cli`). A failure there turns the run red at the end without
+  holding back the Terraform pages.
 - No auto-apply on merge — apply is manual/`workflow_dispatch`, and destructive changes need
   explicit human confirmation.
 - Run Terraform from the WSL path (`/home/nghiep/...`), never a Windows UNC path.
