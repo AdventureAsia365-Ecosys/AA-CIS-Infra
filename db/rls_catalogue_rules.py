@@ -98,22 +98,16 @@ ALLOWLIST: dict[str, dict[str, str]] = {
         "shared.jev_tenant_allowlist": f"Jev rollout switch per tenant (admin-managed); {_CIS_ONLY}",
         "shared.notifications": f"staff notifications; {_CIS_ONLY}",
         "shared.acp_runs": f"legacy ACP v1 run table (pre-AA-751); {_CIS_ONLY}",
-        "shared.tenant_brand_rules": f"tenant brand rules, admin + pipeline only; {_CIS_ONLY}",
         "shared.tenant_brand_rule_versions": f"history of tenant brand rules; {_CIS_ONLY}",
         "shared.tenant_brand_rules_deleted_aa404": f"AA-404 backup copy of deleted brand rules; {_CIS_ONLY}",
         "shared.tenant_export_config": f"tenant export settings, admin + pipeline only; {_CIS_ONLY}",
         "shared.tenant_rewrite_usage": f"rewrite quota counter; {_CIS_ONLY}",
-        "shared.tenant_seo_config": f"tenant SEO settings, admin + pipeline only; {_CIS_ONLY}",
         "shared.unmapped_market_requests": f"admin triage list of market requests; {_CIS_ONLY}",
         "acp_contract.route_pick": f"tenant route picks written by the T-pipeline jobs; {_CIS_ONLY}",
-        "acp_deliver.tenant_tour_pages": f"tenant page registry written by the publish job; {_CIS_ONLY}",
         "acp_shared.acp_output_rules": "RLS on with the X1 cis_app parity policy only (CIS 244); no tenant-pool grant",
         "acp_shared.acp_quota_ledger": f"tenant quota ledger; {_CIS_ONLY}",
         "acp_shared.audit_log": f"tenant action audit log; {_CIS_ONLY}",
         "acp_shared.debate_brand_fit_cache": f"pipeline cache keyed by tenant; {_CIS_ONLY}",
-        "acp_shared.quarter_plan": f"tenant content plan, pipeline + admin only; {_CIS_ONLY}",
-        "acp_shared.year_plan": f"tenant content plan, pipeline + admin only; {_CIS_ONLY}",
-        "acp_shared.subject": f"tenant subjects, pipeline + admin only; {_CIS_ONLY}",
         "acp_shared.tenant_atom_state": f"per-tenant atom state, pipeline only; {_CIS_ONLY}",
         "acp_shared.tenant_config": f"tenant settings, admin + pipeline only; {_CIS_ONLY}",
         "silver_aa_internal.raw_sources": f"source registry, admin + pipeline only; {_CIS_ONLY}",
@@ -170,7 +164,10 @@ ALLOWLIST: dict[str, dict[str, str]] = {
         "tripplanner:cis_app": "contract: schema USAGE for the CIS ops view (tp-015)",
         "tripplanner.v_ops_traffic_daily:cis_app": "contract: CIS ops dashboard (tp-015)",
     },
-    "t": {},
+    "t": {
+        "acp_contract.tour_atoms:catalog_owner_read": "catalog_owner views read every atom as before (CIS 266); D9 = 0 "
+                                                      "guarded",
+    },
 }
 
 
