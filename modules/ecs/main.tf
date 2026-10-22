@@ -31,6 +31,12 @@ locals {
   place_shapes_env = [
     { name = "PLACE_SHAPES_ENABLED", value = var.place_shapes_enabled ? "on" : "off" },
   ]
+
+  # AA-779 (CIS ADR 0011): the T9 blog FAQ question filter's mode (AA-CIS-App services/acp_content_writing/faq_filter.py).
+  # The T9 write runs as a job on the worker, so only the worker task definition carries it.
+  t9_faq_filter_env = [
+    { name = "T9_FAQ_LLM_FILTER", value = var.t9_faq_llm_filter },
+  ]
 }
 
 # ── ECS Exec session log (S241 D-07) ──────────────────────────
@@ -691,6 +697,7 @@ resource "aws_ecs_task_definition" "worker" {
       local.ops_alert_mail_env,
       local.bedrock_satellite_env,
       local.place_shapes_env,
+      local.t9_faq_filter_env,
       var.redis_host != null ? [{ name = "REDIS_HOST", value = var.redis_host }] : []
     )
     secrets = [
