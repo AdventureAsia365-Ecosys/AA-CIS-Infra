@@ -19,6 +19,21 @@ resource "aws_security_group" "nlb" {
     cidr_blocks = [var.vpc_cidr_block]
   }
 
+  # AA-931 (CRM-03): CloudFront VPC origin -> this NLB. VPC-origin traffic arrives from CloudFront's
+  # origin-facing addresses through a service-managed ENI in the private subnets (AWS guide "Restrict
+  # access with VPC origins", option 1: the managed prefix list). The NLB is internal, so only a VPC
+  # origin can deliver traffic from those addresses here.
+  dynamic "ingress" {
+    for_each = var.cloudfront_vpc_origin_enabled ? [1] : []
+    content {
+      description     = "HTTP from CloudFront VPC origins (AA-931)"
+      from_port       = 80
+      to_port         = 80
+      protocol        = "tcp"
+      prefix_list_ids = [data.aws_ec2_managed_prefix_list.cloudfront_origin_facing[0].id]
+    }
+  }
+
   egress {
     from_port   = 0
     to_port     = 0
@@ -100,5 +115,40 @@ resource "aws_api_gateway_vpc_link" "this" {
 
   tags = merge(var.tags, {
     Name = "${local.name_prefix}-vpc-link"
+  })
+}
+
+# AA-931 (CRM-03) — CloudFront VPC origin support, gated by var.cloudfront_vpc_origin_enabled.
+data "aws_ec2_managed_prefix_list" "cloudfront_origin_facing" {
+  count = var.cloudfront_vpc_origin_enabled ? 1 : 0
+  name  = "com.amazonaws.global.cloudfront.origin-facing"
+}
+
+# An NLB with an `alb` target group always preserves the client IP towards the ALB (ELB guide, "Edit
+# target group attributes"), so CloudFront VPC-origin traffic reaches the ALB with a CloudFront source
+# address that the ALB group's VPC-CIDR rule does not match. AWS's rule for targets of an NLB that has a
+# security group: reference the NLB's group. This second ALB group does exactly that and nothing else.
+# The ALB group itself is deliberately NOT opened to the CloudFront prefix list: the ALB is still
+# internet-facing, so that would let any third-party CloudFront distribution call it and skip API
+# Gateway. API Gateway VPC-link traffic is unaffected (PrivateLink is always source-NATed to the NLB).
+resource "aws_security_group" "alb_from_nlb" {
+  count = var.cloudfront_vpc_origin_enabled ? 1 : 0
+
+  name        = "${local.name_prefix}-sg-alb-from-nlb"
+  description = "ALB: HTTP from the VPC-link NLB group (CloudFront VPC origin, AA-931)"
+  vpc_id      = var.vpc_id
+
+  ingress {
+    description     = "HTTP from the NLB security group (client IP preserved)"
+    from_port       = 80
+    to_port         = 80
+    protocol        = "tcp"
+    security_groups = [aws_security_group.nlb.id]
+  }
+
+  # No egress block: the ALB's main group keeps the egress to the targets.
+
+  tags = merge(var.tags, {
+    Name = "${local.name_prefix}-sg-alb-from-nlb"
   })
 }

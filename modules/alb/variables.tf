@@ -51,3 +51,9 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "cloudfront_vpc_origin_enabled" {
+  description = "AA-931 (CRM-03): admit CloudFront VPC-origin traffic on the internal NLB (prefix-list ingress) and attach a second ALB security group that admits the NLB group. false = no change to either group."
+  type        = bool
+  default     = false
+}

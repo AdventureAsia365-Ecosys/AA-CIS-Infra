@@ -260,7 +260,42 @@ data "aws_iam_policy_document" "tf_apply_boundary" {
     resources = [
       aws_iam_policy.workload_boundary.arn,
       "arn:aws:iam::${var.account_id}:policy/aa-cis-infra-tf-apply-boundary",
+      # AA-931: the apply role's own CRM grants (cicd_crm.tf) must not be widened by CI either.
+      "arn:aws:iam::${var.account_id}:policy/aa-cis-infra-tf-apply-crm",
     ]
+  }
+
+  # AA-931 (CRM-03, design-v3 §4.1): the apply role administers the CRM keys but never uses them and
+  # never changes their policy, deletion or state, whatever a key policy or a later identity grant
+  # says. A boundary deny also beats a key policy that names this role directly. Keys are matched by
+  # the App = crm tag, which cicd_crm.tf makes mandatory at CreateKey and impossible to untag via CI.
+  statement {
+    sid    = "DenyCrmKeyUseAndPolicyEdits"
+    effect = "Deny"
+    actions = [
+      "kms:Decrypt", "kms:Encrypt", "kms:GenerateDataKey*", "kms:ReEncrypt*", "kms:Sign",
+      "kms:CreateGrant", "kms:PutKeyPolicy", "kms:ScheduleKeyDeletion", "kms:DisableKey",
+      "kms:ImportKeyMaterial", "kms:DeleteImportedKeyMaterial",
+    ]
+    resources = ["*"]
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/App"
+      values   = ["crm"]
+    }
+  }
+
+  # AA-931: the CRM audit archive (Object Lock buckets aa-crm-<env>-audit-*, CRM-04 / CRM-12). CI may
+  # create and configure the buckets but never shorten a retention, lift a legal hold, bypass governance
+  # mode or delete an object version. AmazonS3FullAccess would otherwise allow all of these.
+  statement {
+    sid    = "DenyCrmAuditObjectTampering"
+    effect = "Deny"
+    actions = [
+      "s3:BypassGovernanceRetention", "s3:PutObjectRetention", "s3:PutObjectLegalHold",
+      "s3:DeleteObject", "s3:DeleteObjectVersion",
+    ]
+    resources = [local.crm_audit_object_arns]
   }
 
   # No users, keys, groups or account/org changes, whatever the identity policy says later.
@@ -540,8 +575,8 @@ resource "aws_iam_role" "tf_apply" {
   })
 }
 
-# Same managed policies as the retired aa-cis-dev-role (10, the default per-role quota), so the
-# apply role can refresh and change everything the old role could.
+# The managed policies of the retired aa-cis-dev-role minus AWSStepFunctionsFullAccess (AA-931), plus
+# aa-cis-infra-tf-apply-crm (cicd_crm.tf): 10, the default per-role quota.
 resource "aws_iam_role_policy_attachment" "tf_apply_managed" {
   for_each   = toset(local.cicd_managed_policies)
   role       = aws_iam_role.tf_apply.name
