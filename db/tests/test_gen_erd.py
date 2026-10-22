@@ -178,7 +178,7 @@ class MermaidTextTest(unittest.TestCase):
         block = mermaid_block(erd.render_schema(model, next(s for s in model["schemas"]
                                                            if s["schema"] == "booking")))
         self.assertIn('    "many" {\n        uuid pk_ PK\n', block)
-        self.assertIn('    trip_cases ||--o{ "many" : "many_trip_case_id_fkey"', block)
+        self.assertIn('    trip_cases ||--o{ "many" : "trip_case_id"', block)
         self.assertNotRegex(block, r"(?m)^    many\b")
 
     def test_every_diagram_line_is_well_formed(self):
@@ -281,15 +281,15 @@ class PagesTest(unittest.TestCase):
         self.assertIn("    trip_cases {\n        uuid id PK\n        varchar(32) code UK\n"
                       "        numeric(12_2) total\n        timestamptz created_at\n    }", block)
         self.assertIn('        text email "pii:contact"', block)
-        self.assertIn('    trip_cases ||--o{ legs : "legs_trip_case_id_fkey"', block)
-        self.assertIn('    trip_cases |o..o{ notes : "notes_trip_case_id_fkey"', block)   # nullable + NOT VALID
+        self.assertIn('    trip_cases ||--o{ legs : "trip_case_id"', block)
+        self.assertIn('    trip_cases |o..o{ notes : "trip_case_id"', block)   # nullable + NOT VALID
         self.assertNotIn("v_cases", block)                                   # views are listed, not drawn
         self.assertIn("| `v_cases` | view | 2 |", self.pages["booking.md"])
 
     def test_cross_schema_edge_drawn_on_the_child_page_listed_on_the_parent(self):
         tp = mermaid_block(self.pages["tripplanner.md"])
         self.assertIn('    "shared.destinations"\n', tp)
-        self.assertIn('    "shared.destinations" ||--o{ tour_stop : "tour_stop_destination_id_fkey"', tp)
+        self.assertIn('    "shared.destinations" ||--o{ tour_stop : "destination_id"', tp)
         shared = self.pages["shared.md"]
         self.assertNotIn("tour_stop", mermaid_block(shared))
         incoming = shared.split("## Foreign keys in from other schemas")[1]
@@ -378,7 +378,7 @@ class PagesTest(unittest.TestCase):
         diff = difflib.unified_diff(self.pages["booking.md"].splitlines(), after["booking.md"].splitlines(),
                                     lineterm="", n=0)
         added = [ln for ln in diff if ln.startswith("+") and not ln.startswith("+++")]
-        self.assertIn('+    legs |o--o{ notes : "notes_leg_id_fkey"', added)
+        self.assertIn('+    legs |o--o{ notes : "trip_case_id"', added)
         self.assertIn("+| `notes_leg_id_fkey` | `booking.notes` (trip_case_id) | `booking.legs` (id) | yes |", added)
         dropped = fixture()
         dropped["relations"]["tripplanner"]["tour_stop"]["constraints"] = []

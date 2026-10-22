@@ -199,6 +199,10 @@ def parse_design(text: str, path: str = "<design>") -> Design:
 # ── live side ──────────────────────────────────────────────────────────────────────────────────────────────────
 
 
+# Base relations (same as gen_erd.BASE_KINDS); every other kind in erd.json is a view or materialized view.
+BASE_KINDS = ("table", "partitioned table")
+
+
 def live_schema(model: dict, schema: str) -> Optional[dict]:
     """{'tables': {name: pk list}, 'edges': {(child, cols, parent)}} or None when the schema has no relations."""
     entry = next((s for s in model.get("schemas", []) if s.get("schema") == schema), None)
@@ -210,7 +214,8 @@ def live_schema(model: dict, schema: str) -> Optional[dict]:
         for fk in t.get("foreign_keys", []):
             parent = fk["ref_table"] if fk.get("ref_schema") == schema else f"{fk.get('ref_schema')}.{fk['ref_table']}"
             edges.add((t["name"], tuple(sorted(fk.get("columns", []))), parent))
-    return {"tables": {t["name"]: list(t.get("primary_key", [])) for t in tables}, "edges": edges}
+    views = {t["name"] for t in tables if t.get("kind") not in BASE_KINDS}
+    return {"tables": {t["name"]: list(t.get("primary_key", [])) for t in tables}, "edges": edges, "views": views}
 
 
 def _edge(e: tuple) -> str:
@@ -228,7 +233,10 @@ def compare(design: Design, live: dict) -> dict:
             pk.append(f"`{name}`: design ({', '.join(want)}), live ({', '.join(have) or 'none'})")
     d_edges = {e for e in design.edges if e[0] in both}
     l_edges = {e for e in live["edges"] if e[0] in both}
-    return {"missing_tables": sorted(d_tables - l_tables), "extra_tables": sorted(l_tables - d_tables),
+    # A live view the design does not draw is not drift (views carry no keys; the generated pages leave them out of
+    # the diagram too). A view the design does draw must exist live, like a table.
+    extra = l_tables - d_tables - live.get("views", set())
+    return {"missing_tables": sorted(d_tables - l_tables), "extra_tables": sorted(extra),
             "pk": pk, "missing_edges": sorted(d_edges - l_edges), "extra_edges": sorted(l_edges - d_edges)}
 
 
