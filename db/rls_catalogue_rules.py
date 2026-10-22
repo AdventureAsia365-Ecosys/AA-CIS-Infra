@@ -83,6 +83,9 @@ _NULLIF_OPEN_RE = re.compile(r"NULLIF\s*\(\s*$", re.IGNORECASE)
 TENANT_POOL_ROLES = ("aa_app_user",)
 _CIS_ONLY = "platform table, cis_app only (no tenant-pool grant); tenant_id is filtered in code"
 _GRANDFATHERED_TP = "grandfathered TripPlanner read (owners.yaml consumer_grants), removed by X4"
+# AA-847: the raw_tours (179) and tour_atoms (180) reads are revoked by CIS 254; these entries go stale (reported,
+# not fatal) once 254 is applied, and are removed in a later cleanup.
+_REVOKED_254 = "grandfathered TripPlanner read, revoked by CIS 254 (AA-847)"
 ALLOWLIST: dict[str, dict[str, str]] = {
     "a": {
         "shared.tenants": "the tenant registry itself (tenant_id is its key); cis_app only, no tenant-pool grant",
@@ -145,11 +148,11 @@ ALLOWLIST: dict[str, dict[str, str]] = {
         "shared.destinations:tripplanner": f"CIS 201; {_GRANDFATHERED_TP}",
         "shared.v_destination_photos:tripplanner": f"CIS 201; {_GRANDFATHERED_TP}",
         "shared.v_tour_photos:tripplanner": f"CIS 201; {_GRANDFATHERED_TP}",
-        "silver_aa_internal:tripplanner": f"schema USAGE for the raw_tours columns; {_GRANDFATHERED_TP}",
-        "silver_aa_internal.raw_tours.tour_id:tripplanner": f"CIS 179; {_GRANDFATHERED_TP}",
-        "silver_aa_internal.raw_tours.country:tripplanner": f"CIS 179; {_GRANDFATHERED_TP}",
+        "silver_aa_internal:tripplanner": f"schema USAGE for the raw_tours columns; {_REVOKED_254}",
+        "silver_aa_internal.raw_tours.tour_id:tripplanner": f"CIS 179; {_REVOKED_254}",
+        "silver_aa_internal.raw_tours.country:tripplanner": f"CIS 179; {_REVOKED_254}",
         "acp_contract:tripplanner": f"schema USAGE for the atom columns; {_GRANDFATHERED_TP}",
-        "acp_contract.tour_atoms.*:tripplanner": f"column grants, CIS 180; {_GRANDFATHERED_TP}",
+        "acp_contract.tour_atoms.*:tripplanner": f"column grants, CIS 180; {_REVOKED_254}",
         "acp_contract.v_active_tour_atoms.*:tripplanner": f"column grants, CIS 216; {_GRANDFATHERED_TP}",
         "gold_aa_internal:tripplanner": f"schema USAGE for published_tours; {_GRANDFATHERED_TP}",
         "gold_aa_internal.published_tours:tripplanner": f"tenant RLS read; {_GRANDFATHERED_TP}",
