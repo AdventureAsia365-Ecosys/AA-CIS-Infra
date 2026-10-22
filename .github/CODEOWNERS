@@ -1,0 +1,24 @@
+# CODEOWNERS - AA-CIS-Infra.
+#
+# Owners of the risky paths: CI and workflows, all Terraform (accounts, modules), database migrations and the
+# DB Migrate / isolation / schema tooling, Step Functions, security and secrets tooling, and the agent rules.
+# Dev phase: nothing is enforced. This repo is private on GitHub Free, where code owners are not active at all
+# (root ADR 0014); the file is ready for the prod trigger, when the plan choice in ADR 0014 decides how these paths
+# are gated. Later rules win over earlier ones.
+
+# CI, workflows, Dependabot, CI scripts and this file
+/.github/                                     @pqnghiep1354
+
+# Terraform: every account root (IAM, Cognito, networks, data stores, Lambdas) and every module
+/accounts/                                    @pqnghiep1354
+/modules/                                     @pqnghiep1354
+/step_functions/                              @pqnghiep1354
+
+# Database: migration copies of every owner, DB Migrate runner, ownership registry, RLS and isolation checks
+/db/                                          @pqnghiep1354
+
+# Plan guard, secrets register check, identity, contract and docs tooling run by CI
+/tools/                                       @pqnghiep1354
+
+# Agent rules
+/.claude/                                     @pqnghiep1354
