@@ -1,0 +1,103 @@
+{
+  "_comment": [
+    "AA-879 (U-61, data standards Part C C2.2 / C2.3c): machine-readable connection budget of the shared RDS.",
+    "db/check_connection_budget.py reads the PROCESS counts from Terraform in this repo (ECS max_capacity,",
+    "worker_max_count, Lambda reserved concurrency, Booking deployment overlap), the CONNECTION LIMITs from the",
+    "role files (db/migrations/roles, then cis), max_connections from accounts/aa365/observability_ecosys.tf,",
+    "and, with --verify-sources, each pool max_size from the owner app's main branch. It fails when a role's",
+    "pools exceed its CONNECTION LIMIT or the total exceeds ceiling_pct of max_connections, unless an",
+    "accepted_overages entry (reason, accept_up_to, until <= 60 days ahead) covers that exact value.",
+    "Change a pool, a process count, a limit or the instance class: update this file and the root",
+    "docs/architecture/data-standards/03-scaling.md C2.2 table in the same change (C2.3c)."
+  ],
+  "ceiling_pct": 75,
+  "max_connections": {
+    "tf_file": "accounts/aa365/observability_ecosys.tf",
+    "tf_regex": "rds_max_connections\\s*=\\s*(\\d+)",
+    "instance_class": {
+      "tf_file": "modules/rds/variables.tf",
+      "tf_regex": "variable \"instance_class\" \\{[^}]*?default\\s*=\\s*\"([^\"]+)\"",
+      "override_glob": "accounts/aa365/*.tf",
+      "override_regex": "module \"rds\" \\{[^}]*?instance_class\\s*=\\s*\"([^\"]+)\""
+    },
+    "by_class": {
+      "db.t4g.small": 181
+    }
+  },
+  "role_limits": {
+    "cis_app": 90,
+    "aa_app_user": 15,
+    "tripplanner": 30,
+    "booking": 15,
+    "db_migrator": 5
+  },
+  "pools": [
+    {
+      "name": "cis-api",
+      "role": "cis_app",
+      "max_size": 10,
+      "source": {"repo": "AA-CIS-App", "path": "api/main.py", "regex": "os\\.environ\\[\"DATABASE_URL\"\\],\\s*min_size=\\d+,\\s*max_size=(\\d+)"},
+      "processes": {"tf_file": "modules/ecs/main.tf", "tf_regex": "resource \"aws_appautoscaling_target\" \"api\" \\{[^}]*?max_capacity\\s*=\\s*(\\d+)"}
+    },
+    {
+      "name": "cis-tenant",
+      "role": "aa_app_user",
+      "max_size": 2,
+      "source": {"repo": "AA-CIS-App", "path": "api/core/aa544_tenant_pool.py", "regex": "^TENANT_POOL_MAX_SIZE\\s*=\\s*(\\d+)"},
+      "processes": {"tf_file": "modules/ecs/main.tf", "tf_regex": "resource \"aws_appautoscaling_target\" \"api\" \\{[^}]*?max_capacity\\s*=\\s*(\\d+)"}
+    },
+    {
+      "name": "cis-worker",
+      "role": "cis_app",
+      "max_size": 10,
+      "source": {"repo": "AA-CIS-App", "path": "shared/jobs/worker.py", "regex": "^WORKER_MAX_PARALLEL_DEFAULT\\s*=\\s*(\\d+)", "transform": "worker_pool"},
+      "processes": {"tf_file": "modules/ecs/variables.tf", "tf_regex": "variable \"worker_max_count\" \\{[^}]*?default\\s*=\\s*(\\d+)", "override_glob": "accounts/aa365/*.tf", "override_regex": "worker_max_count\\s*=\\s*(\\d+)"},
+      "tf_must_not_contain": [{"glob": "modules/ecs/*.tf", "text": "JOB_WORKER_MAX_PARALLEL", "why": "the worker pool size is max(5, max_parallel + 2) from the code default; a Terraform override must be modelled here first"}]
+    },
+    {
+      "name": "tp-browse",
+      "role": "tripplanner",
+      "max_size": 1,
+      "source": {"repo": "AA-TripPlanner-Web", "path": "backend/shared/db.py", "regex": "create_pool\\(.*?max_size=(\\d+)"},
+      "processes": {"tf_file": "accounts/aa365/tripplanner_variables.tf", "tf_regex": "variable \"tripplanner_browse_reserved_concurrency\" \\{[^}]*?default\\s*=\\s*(\\d+)"}
+    },
+    {
+      "name": "tp-assembly",
+      "role": "tripplanner",
+      "max_size": 1,
+      "source": {"repo": "AA-TripPlanner-Web", "path": "backend/shared/db.py", "regex": "create_pool\\(.*?max_size=(\\d+)"},
+      "processes": {"tf_file": "accounts/aa365/tripplanner_variables.tf", "tf_regex": "variable \"tripplanner_lambda_reserved_concurrency\" \\{[^}]*?default\\s*=\\s*(\\d+)"}
+    },
+    {
+      "name": "booking-api",
+      "role": "booking",
+      "max_size": 5,
+      "source": {"repo": "AA-Booking", "path": "backend/app/db.py", "regex": "create_pool\\(.*?max_size=(\\d+)"},
+      "processes": {"tf_file": "accounts/aa365/booking.tf", "tf_regex": "resource \"aws_ecs_service\" \"booking\" \\{.*?deployment_maximum_percent\\s*=\\s*(\\d+)", "scale": 0.01, "note": "1 task (Dev, no autoscaling) x deployment overlap 200 %"}
+    },
+    {
+      "name": "db-migrate / schema dump / isolation probe",
+      "role": "db_migrator",
+      "max_size": 1,
+      "processes": {"fixed": 3, "note": "three workflow concurrency groups can overlap"}
+    }
+  ],
+  "reserves": [
+    {"name": "aa_cis_admin (roles files, set-password, run-script, break-glass)", "connections": 10},
+    {"name": "rdsadmin + superuser_reserved_connections", "connections": 5}
+  ],
+  "accepted_overages": [
+    {
+      "check": "role:cis_app",
+      "accept_up_to": 100,
+      "until": "2026-12-15",
+      "reason": "cis-api main pool is still 10 (C2.2 target 5, shrink to be decided from the aa859_main_pool_gauge baseline). Worst case needs 7 api + 3 worker tasks; Dev runs 1 + 1 and the measured instance-wide DatabaseConnections daily max was 28 (05-18/10/2026). The CONNECTION LIMIT 90 is the backstop."
+    },
+    {
+      "check": "total",
+      "accept_up_to": 162,
+      "until": "2026-12-15",
+      "reason": "Same cause as role:cis_app: with the cis-api main pool at its C2.2 target of 5 the total is 127, under the 135 ceiling."
+    }
+  ]
+}
