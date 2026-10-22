@@ -1,6 +1,7 @@
 # =============================================================================
 # AA-59 — WAF Module
-# Rules: AWSManagedRulesCommonRuleSet + VpcLinkInternalAllow + RateLimit + GeoBlock (S235 order)
+# Rules: AWSManagedRulesCommonRuleSet + VpcLinkInternalAllow + CloudFrontOriginAllow + RateLimit + GeoBlock
+# (S235 order; CloudFrontOriginAllow inserted at 3 by AA-931)
 # Imported from existing manually-created WAF: aa-cis-dev-waf
 # Country list matches AWS state at import time; priority order changed in S235 (see below).
 # =============================================================================
@@ -40,8 +41,9 @@ resource "aws_wafv2_web_acl" "main" {
   #
   #   1 AWSManagedRulesCommonRuleSet  content inspection, valid for every caller
   #   2 VpcLinkInternalAllow          (ALB only) VPC-link traffic stops here
-  #   3 RateLimit1000                 per source IP
-  #   4 GeoBlockNonAllowed            per source IP
+  #   3 CloudFrontOriginAllow         (ALB only, AA-931) CloudFront VPC-origin traffic stops here
+  #   4 RateLimit1000                 per source IP (was 3 before AA-931)
+  #   5 GeoBlockNonAllowed            per source IP (was 4 before AA-931)
   #
   # Before S235 the VPC allow rule was priority 0, so every request that came through API Gateway
   # (it reaches the ALB from the NLB's private IPs, i.e. inside the VPC CIDR) skipped ALL rules.
@@ -131,10 +133,55 @@ resource "aws_wafv2_web_acl" "main" {
     }
   }
 
-  # Rule 3 — Rate limit (per real client IP on the REST API stages)
+  # Rule 3 — AA-931 (CRM-03): allow CloudFront VPC-origin traffic past the IP-based rules below.
+  # An NLB with an `alb` target group preserves the source IP, so these requests reach the ALB from
+  # CloudFront's origin-facing addresses: the geo rule would judge the EDGE's country (a viewer
+  # outside the allowed list could be blocked) and the rate rule would count a whole edge as one
+  # client. CloudFront adds the secret header to every origin request; the exact value is required
+  # (a guessed or empty header falls through to rate + geo, and the ALB then answers 403 anyway).
+  # Content inspection (rule 1) has already run. Optional, gated via var.origin_verify_header.
+  dynamic "rule" {
+    # nonsensitive: only whether the header is set decides the rule count, never its value.
+    for_each = nonsensitive(var.origin_verify_header != null) ? [1] : []
+
+    content {
+      name     = "CloudFrontOriginAllow"
+      priority = 3
+
+      action {
+        allow {}
+      }
+
+      statement {
+        byte_match_statement {
+          search_string         = var.origin_verify_header.value
+          positional_constraint = "EXACTLY"
+
+          field_to_match {
+            single_header {
+              name = lower(var.origin_verify_header.name)
+            }
+          }
+
+          text_transformation {
+            priority = 0
+            type     = "NONE"
+          }
+        }
+      }
+
+      visibility_config {
+        cloudwatch_metrics_enabled = true
+        metric_name                = "CloudFrontOriginAllow"
+        sampled_requests_enabled   = true
+      }
+    }
+  }
+
+  # Rule 4 — Rate limit (per real client IP on the REST API stages)
   rule {
     name     = "RateLimit1000"
-    priority = 3
+    priority = 4
 
     action {
       block {}
@@ -154,11 +201,11 @@ resource "aws_wafv2_web_acl" "main" {
     }
   }
 
-  # Rule 4 — Geo Block (allow major markets only)
+  # Rule 5 — Geo Block (allow major markets only)
   # Country list matches AWS state at import — do not change without checking console
   rule {
     name     = "GeoBlockNonAllowed"
-    priority = 4
+    priority = 5
 
     action {
       block {}

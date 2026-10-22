@@ -163,6 +163,10 @@ module "alb" {
   access_logs_bucket  = aws_s3_bucket.diag_alb_logs.id # AA-272 diagnostic only
   tags                = local.shared_app_tags          # AA-828: CIS + Booking (/booking/* rule) behind it
 
+  # AA-931 (crm_edge_spike.tf): CloudFront VPC origin on the NLB -> prefix-list ingress on the NLB
+  # group + a second ALB group admitting the NLB group. Plain bool from variables (no resource ref).
+  cloudfront_vpc_origin_enabled = local.crm_edge_on == 1
+
   depends_on = [module.vpc, aws_s3_bucket_policy.diag_alb_logs]
 }
 
@@ -278,7 +282,14 @@ module "waf" {
   alb_arn        = module.alb.alb_arn
   rate_limit     = 1000
   vpc_allow_cidr = var.vpc_cidr
-  tags           = local.shared_tags # AA-828: on the ALB and on the CIS + Booking REST API stages
+
+  # AA-931: CloudFront VPC-origin requests carry the origin secret; rule CloudFrontOriginAllow lets them
+  # past rate + geo (their source is a CloudFront edge address, not the viewer). null = no rule.
+  origin_verify_header = local.crm_edge_on == 1 ? {
+    name  = local.alb_origin_header_name
+    value = random_password.crm_origin_verify[0].result
+  } : null
+  tags = local.shared_tags # AA-828: on the ALB and on the CIS + Booking REST API stages
 
   # S235 Phase 0: CommonRuleSet started in observe mode (whole group COUNT); enforced since
   # AA-806 S239 (var.waf_common_rules_count_only = false) after the count review + pre-flip test.

@@ -51,5 +51,16 @@ variable "common_rules_count_only" {
 variable "log_redacted_headers" {
   type        = list(string)
   description = "Request headers replaced with REDACTED in the WAF log (AA-806 S239: credentials must not be logged)"
-  default     = ["authorization", "x-admin-secret", "x-api-key", "cookie"]
+  # AA-931: x-aa-origin is the CloudFront origin-verify secret (var.origin_verify_header).
+  default = ["authorization", "x-admin-secret", "x-api-key", "cookie", "x-aa-origin"]
+}
+
+variable "origin_verify_header" {
+  description = "AA-931 (CRM-03): header that CloudFront adds to every origin request ({ name, value }). When set, rule CloudFrontOriginAllow (priority 3) allows requests carrying exactly this value past the rate and geo rules. null = no rule. Add the header name to log_redacted_headers."
+  type = object({
+    name  = string
+    value = string
+  })
+  default   = null
+  sensitive = true
 }
