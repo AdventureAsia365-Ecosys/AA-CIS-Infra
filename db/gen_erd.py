@@ -277,7 +277,9 @@ def relationship(fk_edge: dict, schema: str, tables: dict) -> str:
     left = "||" if mandatory else "|o"
     right = "o|" if one_to_one else "o{"
     line = "--" if fk_edge["validated"] else ".."
-    label = fk_edge["name"].replace('"', "'")
+    # The child's FK column list ("trip_id", "a_id, b_id"): the convention the hand-written design pages use and
+    # check_erd_drift.py reads (AA-894). The constraint name stays in the FK table below the diagram.
+    label = ", ".join(fk_edge["from_columns"]).replace('"', "'") or fk_edge["name"].replace('"', "'")
     return (f"    {entity(schema, parent_schema, parent)} {left}{line}{right} "
             f'{entity(schema, child_schema, child)} : "{label}"')
 
