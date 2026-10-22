@@ -383,6 +383,9 @@ def render(d: dict, source: Optional[str] = None) -> str:
     if source:
         w(f"> Source: {source}")
     w("")
+    w("**ERD:** [one Mermaid diagram per schema](erd/README.md) (keys and foreign keys), generated from the same "
+      "dump by AA-CIS-Infra `db/gen_erd.py` (AA-894).")
+    w("")
     w(f"**Totals:** {len(d['schemas'])} schemas ({len(empty)} empty: {', '.join(empty) or 'none'}), "
       f"{n_rel} tables/views, {d['counts'].get('indexes', 0)} indexes, {len(fks)} FKs, "
       f"{d['counts'].get('policies', 0)} RLS policy(ies), {len(d.get('functions', []))} functions, "

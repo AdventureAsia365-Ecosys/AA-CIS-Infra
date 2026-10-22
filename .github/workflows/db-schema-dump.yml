@@ -13,10 +13,14 @@ name: DB Schema Dump (shared RDS)
 #    (data standards DM-4.2, AA-830: aggregate counts only; a warning when a key has orphans).
 # 2. db/gen_schema_reference.py renders the Markdown here on the runner, including the X2 RLS catalogue guard
 #    section (db/rls_catalogue_rules.py, a byte copy of the CIS CI guard's rules; violations are warnings here).
-# 3. If the STRUCTURE changed (fingerprint in the file differs from the root repo's master, or
-#    publish=true), the file is pushed to the root repo branch bot/db-schema-reference and a PR is
-#    opened or updated. Nightly runs where only statistics moved open nothing. The root PR is merged
-#    by hand (root repo rule).
+#    db/gen_erd.py (AA-894 part 1) renders, from the same JSON, one Mermaid ERD page per schema plus an index
+#    (root docs/architecture/erd/) and erd.json (tables, columns, PK/FK, DM-6.1 tags, owner; no row data). Both are
+#    in the run artifact; erd.json also goes to s3://<bronze>/db-schema-dump/erd/latest.json when the repo variable
+#    ERD_S3_UPLOAD is 'true' (default off; the previous object is kept as previous.json when the model changed).
+# 3. If the STRUCTURE changed (fingerprint in the file differs from the root repo's master, an ERD page differs from
+#    master, or publish=true), the reference and the ERD pages are pushed to the root repo branch
+#    bot/db-schema-reference and a PR is opened or updated. Nightly runs where only statistics moved open nothing.
+#    The root PR is merged by hand (root repo rule).
 #
 # Triggers: nightly, manual, and DB Migrate after every successful apply (gh workflow run).
 # Needs the secret ROOT_REPO_DOCS_TOKEN: a fine-grained PAT (or GitHub App token) on
@@ -68,6 +72,11 @@ jobs:
       ROOT_BRANCH: master
       PR_BRANCH: bot/db-schema-reference
       REF_PATH: docs/architecture/db-schema-reference.md
+      ERD_DIR: docs/architecture/erd
+      # AA-894: erd.json upload for the CIS admin data-model view. Off unless the repo variable ERD_S3_UPLOAD is
+      # 'true'. The CI role already writes this bucket (db-schema-dump/latest.json); readers need their own grant.
+      ERD_S3_UPLOAD: ${{ vars.ERD_S3_UPLOAD == 'true' && 'true' || 'false' }}
+      ERD_S3_PREFIX: db-schema-dump/erd
       REASON: ${{ github.event_name == 'schedule' && 'nightly' || inputs.reason || 'manual' }}
       PUBLISH: ${{ github.event_name == 'workflow_dispatch' && inputs.publish && 'true' || 'false' }}
       HAS_ROOT_TOKEN: ${{ secrets.ROOT_REPO_DOCS_TOKEN != '' }}
@@ -151,12 +160,16 @@ jobs:
           python3 db/gen_schema_reference.py schema.json --out reference.md \
             --source "AA-CIS-Infra DB Schema Dump ($REASON), $RUN_URL"
           echo "fingerprint=$(python3 db/gen_schema_reference.py schema.json --fingerprint)" >> "$GITHUB_OUTPUT"
+          # AA-894: generated ERD (one Mermaid page per schema + index) and erd.json, from the same dump.
+          python3 db/gen_erd.py schema.json --out-dir erd --json erd.json \
+            --source "AA-CIS-Infra DB Schema Dump ($REASON), $RUN_URL"
           {
             echo "### Schema dump ($REASON)"
             jq -r '"- latest: CIS \(.migrations_latest_per_owner.cis), TripPlanner \(.migrations_latest_per_owner.tripplanner), Booking \(.migrations_latest_per_owner.booking)",
                    "- \(.counts.schemas) schemas, \(.counts.relations) tables/views, \(.counts.indexes) indexes, \(.counts.policies) policies, \(.counts.functions) functions",
                    "- JSON: s3://'"$BUCKET"'/'"$PREFIX"'/schema.json (also db-schema-dump/latest.json)"' schema.json
             jq -r '(.soft_keys // [])[] | "- soft key \(.name): \(.status), rows \(.total // "-"), without key \(.without_key // "-"), orphans \(.orphans // "-")"' schema.json
+            jq -r '"- ERD: \([.schemas[] | select(.tables | length > 0)] | length) schema page(s), \(.edges | length) FK edge(s), model `\(.fingerprint[0:12])`"' erd.json
           } >> "$GITHUB_STEP_SUMMARY"
           # DM-4.2: orphans are reported, not fatal (the dump must still publish); the annotation shows on the run.
           jq -r '(.soft_keys // [])[] | select((.orphans // 0) > 0) | "::warning::soft key \(.name): \(.orphans) orphan row(s) of \(.total - .without_key) keyed"' schema.json
@@ -173,7 +186,26 @@ jobs:
           path: |
             schema.json
             reference.md
+            erd.json
+            erd/
           retention-days: 14
+
+      # AA-894: off by default (repo variable ERD_S3_UPLOAD). latest.json is what the CIS admin view will read;
+      # previous.json is the model before the last structural change ("changed since the previous dump").
+      - name: Upload erd.json to S3 (optional)
+        if: env.ERD_S3_UPLOAD == 'true'
+        run: |
+          NEW_FP=$(jq -r .fingerprint erd.json)
+          if aws s3 cp "s3://$BUCKET/$ERD_S3_PREFIX/latest.json" erd-prev.json --only-show-errors 2>/dev/null; then
+            OLD_FP=$(jq -r '.fingerprint // empty' erd-prev.json || true)
+            if [ -n "$OLD_FP" ] && [ "$OLD_FP" != "$NEW_FP" ]; then
+              aws s3 cp erd-prev.json "s3://$BUCKET/$ERD_S3_PREFIX/previous.json" --only-show-errors \
+                --content-type application/json
+              echo "- erd.json: model changed (\`${OLD_FP:0:12}\` -> \`${NEW_FP:0:12}\`), previous kept" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
+          aws s3 cp erd.json "s3://$BUCKET/$ERD_S3_PREFIX/latest.json" --only-show-errors --content-type application/json
+          echo "- erd.json: s3://$BUCKET/$ERD_S3_PREFIX/latest.json" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Check out the root repo
         if: env.HAS_ROOT_TOKEN == 'true'
@@ -196,8 +228,16 @@ jobs:
           fi
           OLD_FP=$(grep -oE 'schema-fingerprint: [0-9a-f]{64}' "root/$REF_PATH" | cut -d' ' -f2 || true)
           echo "fingerprint master=${OLD_FP:-none} dump=$NEW_FP"
-          if [ "$OLD_FP" = "$NEW_FP" ] && [ "$PUBLISH" != "true" ]; then
-            echo "- structure unchanged since master (\`${NEW_FP:0:12}\`): no PR" >> "$GITHUB_STEP_SUMMARY"
+          # AA-894: replace the generated ERD pages (only files written by this workflow; a hand-written design/
+          # subdirectory is never touched), then see whether any page differs from master.
+          mkdir -p "root/$ERD_DIR"
+          { grep -lxF 'generator: infra/AA-CIS-Infra/.github/workflows/db-schema-dump.yml' "root/$ERD_DIR"/*.md 2>/dev/null \
+            || true; } | xargs -r rm -f --
+          cp erd/*.md "root/$ERD_DIR/"
+          ERD_CHANGES=$(git -C root status --porcelain --untracked-files=all -- "$ERD_DIR")
+          echo "ERD pages changed vs master: $(grep -c . <<<"$ERD_CHANGES" || true)"
+          if [ "$OLD_FP" = "$NEW_FP" ] && [ -z "$ERD_CHANGES" ] && [ "$PUBLISH" != "true" ]; then
+            echo "- structure and ERD unchanged since master (\`${NEW_FP:0:12}\`): no PR" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           cp reference.md "root/$REF_PATH"
@@ -205,8 +245,8 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -q -B "$PR_BRANCH"
-          git add "$REF_PATH"
-          git commit -q -m "docs: regenerate db-schema-reference.md from the live dump" \
+          git add -A -- "$REF_PATH" "$ERD_DIR"
+          git commit -q -m "docs: regenerate db-schema-reference.md and the ERD pages from the live dump" \
             -m "Generated by AA-CIS-Infra DB Schema Dump ($REASON): $RUN_URL"
           git push -q --force origin "$PR_BRANCH"
           {
@@ -215,6 +255,12 @@ jobs:
             jq -r '"- Latest migration per owner: CIS **\(.migrations_latest_per_owner.cis)**, TripPlanner **\(.migrations_latest_per_owner.tripplanner)**, Booking **\(.migrations_latest_per_owner.booking)**",
                    "- \(.counts.schemas) schemas, \(.counts.relations) tables/views, \(.counts.indexes) indexes, \(.counts.policies) RLS policies, \(.counts.functions) functions"' ../schema.json
             echo "- Structural fingerprint: \`${OLD_FP:-none}\` on master -> \`$NEW_FP\`"
+            if [ -n "$ERD_CHANGES" ]; then
+              echo "- ERD pages changed (\`$ERD_DIR/\`, Mermaid; a new or dropped FK is a relationship line):"
+              sed -E 's/^ *[^ ]+ +/  - `/; s/$/`/' <<<"$ERD_CHANGES"
+            else
+              echo "- ERD pages: unchanged"
+            fi
             echo
             echo "Review the diff for objects no migration explains (DDL outside DB Migrate, standards MIG-5), then merge by hand."
             echo "Do not push to \`$PR_BRANCH\`: every run force-pushes it from master. This PR is updated in place until merged."
@@ -225,7 +271,7 @@ jobs:
             echo "- updated root PR #$PR" >> "$GITHUB_STEP_SUMMARY"
           else
             URL=$(gh pr create --repo "$ROOT_REPO" --base "$ROOT_BRANCH" --head "$PR_BRANCH" \
-              --title "docs: regenerate db-schema-reference.md (live dump)" --body-file ../pr-body.md)
+              --title "docs: regenerate db-schema-reference.md and ERD (live dump)" --body-file ../pr-body.md)
             echo "- opened root PR $URL" >> "$GITHUB_STEP_SUMMARY"
           fi
 

@@ -34,6 +34,7 @@ on:
       - "db/check_migration_copies.py"
       - "db/rls_catalogue_rules.py"
       - "db/gen_schema_reference.py"
+      - "db/gen_erd.py"
       - "db/schema_dump.py"
       - "db/check_migration_files.py"
       - "db/check_retention_rows.py"

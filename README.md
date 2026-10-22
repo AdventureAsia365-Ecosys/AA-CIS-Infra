@@ -22,7 +22,7 @@ accounts/aa365/   main.tf, cicd.tf, tripplanner.tf, booking.tf, observability.tf
 modules/          vpc, rds, ecs, alb, api_gateway, s3, secrets, waf, eventbridge, monitoring, …
 db/               run_migration.py + migrations/<owner>/ copies applied by DB Migrate,
                   check_migration_copies.py + check_migration_files.py (+ tests/) for the guards,
-                  schema_dump.py + gen_schema_reference.py for the schema reference
+                  schema_dump.py + gen_schema_reference.py for the schema reference, gen_erd.py for the ERD
 .github/workflows terraform-plan.yml (PR), terraform-apply.yml (manual), db-migrate.yml (manual),
                   migration-copy-guard.yml (PR on db/migrations/**, nightly),
                   db-schema-dump.yml (nightly, manual, after each DB Migrate apply),
