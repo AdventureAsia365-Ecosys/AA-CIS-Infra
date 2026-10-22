@@ -25,6 +25,12 @@ locals {
     { name = "BEDROCK_ACCT_PRIMARY", value = var.bedrock_acct_primary },
     { name = "BEDROCK_ACCT_FALLBACK", value = var.bedrock_acct_fallback },
   ]
+
+  # AA-847 lines: the place_shape job's kill switch (AA-CIS-App services/jobs/place_shape_job.py; the job runs on the
+  # worker, the api reads it for the /admin/places/shapes/backfill 409). Same value on api and worker.
+  place_shapes_env = [
+    { name = "PLACE_SHAPES_ENABLED", value = var.place_shapes_enabled ? "on" : "off" },
+  ]
 }
 
 # ── ECS Exec session log (S241 D-07) ──────────────────────────
@@ -450,6 +456,7 @@ resource "aws_ecs_task_definition" "api" {
       ],
       local.ops_alert_mail_env,
       local.bedrock_satellite_env,
+      local.place_shapes_env,
       var.redis_host != null ? [{ name = "REDIS_HOST", value = var.redis_host }] : []
     )
     secrets = [
@@ -653,6 +660,7 @@ resource "aws_ecs_task_definition" "worker" {
       ],
       local.ops_alert_mail_env,
       local.bedrock_satellite_env,
+      local.place_shapes_env,
       var.redis_host != null ? [{ name = "REDIS_HOST", value = var.redis_host }] : []
     )
     secrets = [

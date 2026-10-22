@@ -77,3 +77,19 @@ variable "tripplanner_lambda_reserved_concurrency" {
   description = "Reserved concurrent executions for the TripPlanner assembly Lambda (1 DB connection each)."
   default     = 5
 }
+
+# -----------------------------------------------------------------------------
+# AA-847: which store the TripPlanner place readers read (AA-TripPlanner-Web backend/shared/places_source.py).
+# legacy = the frozen tripplanner place tables; cis = the CIS catalog views. Set on BOTH Lambdas together: the
+# component ids differ between the two stores (tripplanner.component_id_map, tp-017, bridges drafts and cached
+# answers). The flip is this default -> "cis" in its own PR; rollback = back to "legacy" and apply.
+# -----------------------------------------------------------------------------
+variable "tripplanner_places_source" {
+  type        = string
+  description = "legacy | cis: the TripPlanner place source, env PLACES_SOURCE on browse and assembly (AA-847)."
+  default     = "legacy"
+  validation {
+    condition     = contains(["legacy", "cis"], var.tripplanner_places_source)
+    error_message = "tripplanner_places_source must be legacy or cis."
+  }
+}

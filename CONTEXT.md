@@ -81,7 +81,8 @@ accounts/
     tripplanner.tf                (TripPlanner OIDC deploy role + TripPlanner-specific resources.
                                    AA-878: no secret value in the Lambda env; the edge key is read by
                                    name tripplanner/<ENVIRONMENT>/api-key (grant ReadApiKeySecret);
-                                   the Mapbox secret is forgotten via a removed block, not deleted)
+                                   the Mapbox secret is forgotten via a removed block, not deleted.
+                                   AA-847: PLACES_SOURCE on both Lambdas from var.tripplanner_places_source)
     booking.tf                    (AA-Booking ECS service, ECR, ALB rule /booking/*, REST API on the
                                    existing VPC link, OIDC deploy role — AA-678)
     bedrock_satellite_assume.tf   (cross-account Bedrock assume-role trust)
@@ -228,7 +229,9 @@ the runtime role `cis_app` (`secret_rds_arn` → `aws_secretsmanager_secret.rds_
 role has an explicit Deny on `GetSecretValue` for the master, `db-migrator`, `booking/*` and `tripplanner/*` secrets
 (`DenyMasterAndOtherAppSecrets`, X1 S19), so ECS-exec scripts run as `cis_app` too. A Terraform Apply that touches
 `aws_ecs_service`, `aws_ecs_task_definition` or `aws_lambda_function` rolls services and has no job guard: run the
-manual idle gate first (root `skill/aa-ship`, X1 plan standing rules). The old S3 → Lambda → Step Functions pipeline
+manual idle gate first (root `skill/aa-ship`, X1 plan standing rules). Env on the CIS task definitions comes only
+from `modules/ecs/main.tf` (e.g. AA-847 `PLACE_SHAPES_ENABLED` from `place_shapes_enabled`); CIS Deploy Dev copies
+the latest revision and swaps the image, so a Terraform env change ships with the next CIS deploy. The old S3 → Lambda → Step Functions pipeline
 (ingestion/seo/validation/content/export Lambdas, the state machine, 6 SQS queues) and the
 `authorizer` / `brand-brief-parser` Lambdas were retired in AA-750; the pipeline runs in the API
 and the durable job worker.
