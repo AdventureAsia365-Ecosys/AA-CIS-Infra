@@ -1,0 +1,63 @@
+name: Connection Budget
+
+# AA-879 (U-61): data standards Part C C2.3c, "a CI script that parses the Terraform values and fails on an
+# over-budget sum". db/check_connection_budget.py reads the process counts from this repo's Terraform, the
+# CONNECTION LIMITs from the role files and max_connections from observability_ecosys.tf, compares them with
+# db/connection_budget.json, and (--verify-sources) checks every pool max_size against the owner app's main.
+#
+# pull_request / push: when any input of the budget changes here. schedule: nightly, because a pool size can
+# change in an app repo without any Infra change. No AWS, no secrets: the app repos are public and
+# GITHUB_TOKEN only lifts the API rate limit. Unit tests of the script run in "Copies match owner main"
+# (migration-copy-guard.yml discovers db/tests).
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "db/connection_budget.json"
+      - "db/check_connection_budget.py"
+      - "db/migrations/roles/**"
+      - "db/migrations/cis/**"
+      - "modules/ecs/**"
+      - "modules/rds/**"
+      - "accounts/aa365/*.tf"
+      - ".github/workflows/connection-budget.yml"
+  push:
+    branches: [main]
+    paths:
+      - "db/connection_budget.json"
+      - "db/check_connection_budget.py"
+      - "db/migrations/roles/**"
+      - "db/migrations/cis/**"
+      - "modules/ecs/**"
+      - "modules/rds/**"
+      - "accounts/aa365/*.tf"
+      - ".github/workflows/connection-budget.yml"
+  schedule:
+    - cron: "43 2 * * *"   # nightly, 02:43 UTC
+  workflow_dispatch:
+
+concurrency:
+  group: connection-budget-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  budget:
+    name: Connection budget (C2.2)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Unit tests of the budget check
+        run: python3 -B -m unittest db/tests/test_connection_budget.py -v
+
+      - name: Budget within limits (Terraform + role files + app sources on main)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 -B db/check_connection_budget.py --verify-sources
