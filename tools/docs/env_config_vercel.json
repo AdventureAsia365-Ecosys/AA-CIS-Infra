@@ -1,0 +1,256 @@
+{
+  "captured": "2026-10-22",
+  "format": 1,
+  "projects": {
+    "aa-booking-admin": [
+      {
+        "key": "BOOKING_API_URL",
+        "kind": "readable",
+        "target": [
+          "development",
+          "preview",
+          "production"
+        ]
+      },
+      {
+        "key": "COGNITO_BOOKING_STAFF_CLIENT_SECRET",
+        "kind": "sensitive",
+        "target": [
+          "production"
+        ]
+      },
+      {
+        "key": "COGNITO_BOOKING_STAFF_PREVIEW_CLIENT_SECRET",
+        "kind": "sensitive",
+        "target": [
+          "preview"
+        ]
+      }
+    ],
+    "aa-cis-frontend": [
+      {
+        "key": "ADMIN2_PASSWORD",
+        "kind": "readable",
+        "target": [
+          "production"
+        ]
+      },
+      {
+        "key": "ADMIN2_USERNAME",
+        "kind": "readable",
+        "target": [
+          "production"
+        ]
+      },
+      {
+        "key": "ADMIN_DISPLAY_NAME",
+        "kind": "sensitive",
+        "target": [
+          "production"
+        ]
+      },
+      {
+        "key": "ADMIN_PASSWORD",
+        "kind": "sensitive",
+        "target": [
+          "production"
+        ]
+      },
+      {
+        "key": "ADMIN_SECRET",
+        "kind": "sensitive",
+        "target": [
+          "preview"
+        ]
+      },
+      {
+        "key": "ADMIN_SECRET",
+        "kind": "sensitive",
+        "target": [
+          "production"
+        ]
+      },
+      {
+        "key": "ADMIN_USERNAME",
+        "kind": "sensitive",
+        "target": [
+          "production"
+        ]
+      },
+      {
+        "key": "API_URL",
+        "kind": "readable",
+        "target": [
+          "preview",
+          "production"
+        ]
+      },
+      {
+        "key": "COGNITO_BREAKGLASS_CLIENT_SECRET",
+        "kind": "sensitive",
+        "target": [
+          "production"
+        ]
+      },
+      {
+        "key": "COGNITO_CIS_ADMIN_CLIENT_SECRET",
+        "kind": "sensitive",
+        "target": [
+          "production"
+        ]
+      },
+      {
+        "key": "COGNITO_CIS_ADMIN_PREVIEW_CLIENT_SECRET",
+        "kind": "sensitive",
+        "target": [
+          "preview"
+        ]
+      },
+      {
+        "key": "INTERNAL_API_KEY",
+        "kind": "sensitive",
+        "target": [
+          "production"
+        ]
+      },
+      {
+        "key": "LEGACY_ADMIN_LOGIN_ENABLED",
+        "kind": "readable",
+        "target": [
+          "production"
+        ]
+      },
+      {
+        "key": "NEXT_PUBLIC_API_URL",
+        "kind": "readable",
+        "target": [
+          "production"
+        ]
+      },
+      {
+        "key": "NEXT_PUBLIC_BUILD_SHA",
+        "kind": "readable",
+        "target": [
+          "preview",
+          "production"
+        ]
+      },
+      {
+        "key": "NEXT_PUBLIC_ENV",
+        "kind": "readable",
+        "target": [
+          "preview",
+          "production"
+        ]
+      },
+      {
+        "key": "NEXT_PUBLIC_LANGFUSE_URL",
+        "kind": "sensitive",
+        "target": [
+          "production"
+        ]
+      },
+      {
+        "key": "NEXT_PUBLIC_SENTRY_DSN",
+        "kind": "readable",
+        "target": [
+          "preview",
+          "production"
+        ]
+      },
+      {
+        "key": "SENTRY_AUTH_TOKEN",
+        "kind": "readable",
+        "target": [
+          "preview",
+          "production"
+        ]
+      }
+    ],
+    "aa-cis-portal": [],
+    "aa-tripplanner": [
+      {
+        "key": "BROWSE_API_URL",
+        "kind": "readable",
+        "target": [
+          "development",
+          "preview"
+        ]
+      },
+      {
+        "key": "BROWSE_API_URL",
+        "kind": "sensitive",
+        "target": [
+          "production"
+        ]
+      },
+      {
+        "key": "NEXT_PUBLIC_MAPBOX_TOKEN",
+        "kind": "sensitive",
+        "target": [
+          "preview",
+          "production"
+        ]
+      },
+      {
+        "key": "NEXT_PUBLIC_SITE_URL",
+        "kind": "readable",
+        "target": [
+          "production"
+        ]
+      },
+      {
+        "key": "SENTRY_DSN",
+        "kind": "sensitive",
+        "target": [
+          "preview"
+        ]
+      },
+      {
+        "key": "SENTRY_DSN",
+        "kind": "sensitive",
+        "target": [
+          "production"
+        ]
+      },
+      {
+        "key": "SENTRY_ENVIRONMENT",
+        "kind": "sensitive",
+        "target": [
+          "production"
+        ]
+      },
+      {
+        "key": "TRIPPLANNER_API_KEY",
+        "kind": "readable",
+        "target": [
+          "development",
+          "preview"
+        ]
+      },
+      {
+        "key": "TRIPPLANNER_API_KEY",
+        "kind": "sensitive",
+        "target": [
+          "production"
+        ]
+      },
+      {
+        "key": "TRIP_API_URL",
+        "kind": "readable",
+        "target": [
+          "development",
+          "preview"
+        ]
+      },
+      {
+        "key": "TRIP_API_URL",
+        "kind": "sensitive",
+        "target": [
+          "production"
+        ]
+      }
+    ]
+  },
+  "source": "snapshot"
+}
