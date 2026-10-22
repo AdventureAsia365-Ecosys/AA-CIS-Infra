@@ -228,3 +228,13 @@ variable "place_shapes_enabled" {
   type        = bool
   default     = false
 }
+
+variable "t9_faq_llm_filter" {
+  description = "AA-779: env T9_FAQ_LLM_FILTER on the worker — off (no model call), shadow (record the LLM verdicts, deliver the deterministic list) or on (deliver the LLM-kept list; needs CIS ADR 0011 accepted)."
+  type        = string
+  default     = "off"
+  validation {
+    condition     = contains(["off", "shadow", "on"], var.t9_faq_llm_filter)
+    error_message = "t9_faq_llm_filter must be off, shadow or on."
+  }
+}
