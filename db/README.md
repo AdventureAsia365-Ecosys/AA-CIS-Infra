@@ -276,6 +276,18 @@ tag, every tagged column, findings (unknown class, a tag not at the start) and t
 the candidate outcome, so rewording an untagged comment opens no PR, while a new tag or an allowlist change does. The tagged-columns table is the input of the
 AA-Ecosys RoPA generator (`tools/data/gen_pii_inventory.py` → `docs/legal/register.md` section (a)).
 
+Generated ERD (AA-894 part 1): `gen_erd.py` renders, from the same JSON, one Mermaid `erDiagram` page per schema
+plus an index (root `docs/architecture/erd/<schema>.md`, `README.md`; catalog `APP-04-erd*`, `generated: true`) and
+`erd.json` (schemas, tables, columns with full types, PK, unique keys, FKs, DM-6.1 tags, owner app and role; no row
+data, no comment text, no grants). The pages hold nothing volatile, so they change only with the structure, and the
+root PR is opened when the reference fingerprint moved **or** an ERD page differs from master. Primary keys come
+from the `is_primary` index definition (the dump keeps only CHECK and FK constraints); schemas over 20 tables or
+150 columns show key columns only. The publish step replaces only pages whose front matter names this workflow
+as `generator`, so hand-written files under `docs/architecture/erd/design/` are never touched. `erd.json` is in the
+run artifact; with the repo variable `ERD_S3_UPLOAD=true` (default off) it also goes to
+`s3://<bronze>/db-schema-dump/erd/latest.json` (and `previous.json` keeps the model before the last change).
+Local render: `python3 db/gen_erd.py schema.json --out-dir /tmp/erd --json /tmp/erd.json`.
+
 The workflow needs the secret `ROOT_REPO_DOCS_TOKEN` (see its header).
 
 ## Isolation probe (X1 plan S2, U-16)
