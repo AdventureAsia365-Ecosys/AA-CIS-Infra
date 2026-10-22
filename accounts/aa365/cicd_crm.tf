@@ -64,6 +64,19 @@ data "aws_iam_policy_document" "tf_apply_crm" {
     resources = ["*"]
   }
 
+  # Read-only lookups the spike's data sources need at plan time (S247: the first CI apply failed on all
+  # three). The wildcards above do not cover them: "*OriginRequestPolicy*" / "*CachePolicy*" never match the
+  # plural List*Policies verbs. The prefix list is CloudFront's origin-facing list for the NLB security group.
+  statement {
+    sid = "CrmEdgeReadLookups"
+    actions = [
+      "cloudfront:ListCachePolicies", "cloudfront:GetCachePolicy",
+      "cloudfront:ListOriginRequestPolicies", "cloudfront:GetOriginRequestPolicy",
+      "ec2:DescribeManagedPrefixLists", "ec2:GetManagedPrefixListEntries",
+    ]
+    resources = ["*"]
+  }
+
   # The first CreateVpcOrigin in the account creates AWSServiceRoleForCloudFrontVPCOrigin. Only that
   # one service-linked role.
   statement {
