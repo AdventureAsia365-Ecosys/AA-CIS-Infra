@@ -125,9 +125,9 @@ owners:
       - {grantee: tripplanner, privilege: INSERT,          object: shared.llm_call_log,                  status: contract,      source: "173 (standing write exception)"}
       - {grantee: tripplanner, privilege: SELECT,          object: "shared.llm_role_config, shared.llm_model_catalog", status: grandfathered, source: "173"}
       - {grantee: tripplanner, privilege: SELECT,          object: "silver_aa_internal.raw_tours (tour_id, country)",  status: grandfathered, source: "179; revoked by CIS 254 (AA-847)"}
-      - {grantee: tripplanner, privilege: SELECT,          object: "acp_contract.tour_atoms, acp_contract.v_active_tour_atoms (columns)", status: grandfathered, source: "180 (revoked by CIS 254, AA-847), 216"}
-      - {grantee: tripplanner, privilege: SELECT,          object: "shared.destinations, shared.v_destination_photos, shared.v_tour_photos", status: grandfathered, source: "201"}
-      - {grantee: tripplanner, privilege: SELECT,          object: gold_aa_internal.published_tours,     status: grandfathered, source: "tenant RLS read"}
+      - {grantee: tripplanner, privilege: SELECT,          object: "acp_contract.tour_atoms, acp_contract.v_active_tour_atoms (columns)", status: grandfathered, source: "180 (revoked by CIS 254, AA-847), 216 (revoked by CIS 270, AA-712)"}
+      - {grantee: tripplanner, privilege: SELECT,          object: "shared.destinations, shared.v_destination_photos, shared.v_tour_photos", status: grandfathered, source: "201; revoked by CIS 270 (AA-712)"}
+      - {grantee: tripplanner, privilege: SELECT,          object: gold_aa_internal.published_tours,     status: grandfathered, source: "tenant RLS read; revoked by CIS 270 (AA-712)"}
     # Grants to other owners' NOLOGIN owner roles (input for the X2 grant guard and the S2 probe's owner-role
     # cell; not enforced yet). CIS 243 (X1 S4): what DB Migrate needs to register a Booking / TripPlanner file
     # as its owner role (MIG-2) and what booking.v_schema_versions reads with its owner's rights. No grant
