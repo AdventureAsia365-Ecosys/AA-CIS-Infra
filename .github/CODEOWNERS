@@ -9,6 +9,10 @@
 # CI, workflows, Dependabot, CI scripts and this file
 /.github/                                     @pqnghiep1354
 
+# Secret scan rules and baseline (AA-981): a change here can hide a leaked secret from CI
+/.gitleaks.toml                               @pqnghiep1354
+/.gitleaksignore                              @pqnghiep1354
+
 # Terraform: every account root (IAM, Cognito, networks, data stores, Lambdas) and every module
 /accounts/                                    @pqnghiep1354
 /modules/                                     @pqnghiep1354

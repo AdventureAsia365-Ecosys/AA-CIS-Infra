@@ -2,8 +2,14 @@
 # local commands in README.md ("Secret scan").
 #
 # The default gitleaks rules (cloud keys, tokens, private keys, generic high-entropy api keys) plus
-# two repo rules for the leak shapes the defaults miss and this repo has actually had: a DSN with an
-# embedded password, and a plaintext password/key assigned in Terraform (tfvars/tf/hcl).
+# three repo rules for the leak shapes the defaults miss and this repo has actually had: a DSN with an
+# embedded password, a plaintext password/key assigned in Terraform code or variables (tf/tfvars/hcl), and a
+# credential-named key with a literal value in a config data file (tfvars, .env, json, yaml).
+# The last one exists because credentials in an old variables file sat in history unseen until an
+# external scanner flagged them after the repo went public (AA-981).
+#
+# The same rule set is used by the PR scan (lines a PR adds) and by the full-history scan
+# (every commit of every branch, nightly + on push to main); see .github/workflows/secret-scan.yml.
 #
 # Known false positives: prefer a narrow allowlist entry here (path or exact placeholder regex) for
 # a class of values; use .gitleaksignore (one fingerprint per line) for a single finding.
@@ -36,11 +42,14 @@ keywords = ["://"]
   description = "X1 S12 runner tests: fake DSNs (hosts db.example / h / host) that exercise DSN parsing and redaction"
   paths = ['''^db/tests/test_runner_modes\.py$''']
 
-# Plaintext secret assigned in Terraform: <name>_password / _api_key / _secret_key / _token ... = "value"
-# Only names whose *value* is the secret: secret_*_arn / *_secret_name style keys do not match.
+# Plaintext secret assigned in Terraform code or variables: <name>_password / _api_key / _secret_key /
+# _token ... = "value". Only names whose *value* is the secret: secret_*_arn / *_secret_name style keys
+# do not match. No entropy floor, the key may sit anywhere on the line (inline maps included).
+# tfvars are ALSO checked by credential-key-literal below, on purpose: the two rules overlap there and a
+# tfvars password can produce two findings (one per rule). Keep both; each catches shapes the other misses.
 [[rules]]
 id = "terraform-plaintext-secret"
-description = "Plaintext password, API key or token assigned in a Terraform file"
+description = "Plaintext password, API key or token assigned in a Terraform file or variables file"
 path = '''(?i)\.(?:tf|tfvars|hcl)(?:\.json)?$'''
 regex = '''(?i)\b[a-z0-9_]*(?:password|passwd|api_key|apikey|access_key|secret_key|private_key|client_secret|auth_token|_token)\s*=\s*"([^"\s]{4,})"'''
 secretGroup = 1
@@ -55,6 +64,58 @@ keywords = ["password", "passwd", "api_key", "apikey", "access_key", "secret_key
     '''^<[^>]*>$''',
     '''^(?:seconds|minutes|hours|days)$''',  # Cognito token_validity_units (access_token = "minutes")
   ]
+
+# Credential-named key with a literal value in a config data file (AA-981):
+#   tfvars / tfvars.json:  dataforseo_password = "value"      rds = { user = "a", password = "value" }
+#   .env*:                 DB_PASSWORD=value                  export GITHUB_TOKEN="value"
+#   json / yaml:           "client_secret": "value"           db: {user: a, password: value}
+# The key must END in the credential word (password, passwd, pwd, secret, api key, secret/access/
+# private key, *_token), so names that only point at a secret (secret_arn, secret_name,
+# password_secret_id, token_validity_units) do not match. The key is either quoted (JSON/YAML), or
+# unquoted at the start of its line (after indentation, `- `, `export `) or right after `{`, `,` or `;`
+# (an inline map). Prose that happens to say "the main secret: rotate it" or "$PWD:/repo" does not match.
+# Value: a quoted value is read up to its closing quote (spaces and commas inside are kept); an
+# unquoted value up to the first space, quote, backtick, comma, } or ]. 4+ characters.
+# No secretGroup: gitleaks takes the first non-empty group (quoted "..", quoted '..', or unquoted).
+[[rules]]
+id = "credential-key-literal"
+description = "Literal value for a password / secret / API key / token key in tfvars, .env, JSON or YAML"
+path = '''(?i)(?:\.tfvars(?:\.json)?|(?:^|/)\.env[^/]*|\.json|\.ya?ml)$'''
+regex = '''(?im)(?:(?:^|[{,;])[ \t]*(?:-[ \t]+)?(?:export[ \t]+)?[a-z0-9_.-]*(?:password|passwd|pwd|secret|api[_.-]?key|secret[_.-]?key|access[_.-]?key|private[_.-]?key|[_.-]token)|["'][a-z0-9_.-]*(?:password|passwd|pwd|secret|api[_.-]?key|secret[_.-]?key|access[_.-]?key|private[_.-]?key|[_.-]token)["'])[ \t]*[:=][ \t]*(?:"([^"\r\n]{4,})"|'([^'\r\n]{4,})'|([^\s"'`,}\]]{4,}))'''
+# Shannon entropy floor: drops plain words (`id-token: write`, `set-password: role`) and keeps
+# anything password-like ("admin123" = 3.0, "Summer 2024!" = 3.25, a random 12-char value > 3.5).
+entropy = 2.5
+keywords = ["password", "passwd", "pwd", "secret", "api_key", "api-key", "apikey", "access_key", "private_key", "token"]
+
+  [[rules.allowlists]]
+  description = "Placeholders, references and non-secret literals, not real secrets"
+  regexTarget = "secret"
+  regexes = [
+    # REPLACE_ME and friends, type names from schemas, booleans / null
+    '''(?i)^(?:replace_?me|change_?me|placeholder|redacted|example|dummy|test|testing|todo|tbd|xxx+|\*+|\.\.\.|null|none|nil|true|false|undefined|string|required|optional|secret|password|token|read|write)$''',
+    '''^\$[{(]''',          # ${var.x}, ${{ secrets.X }}, $(command)
+    '''^\$[A-Za-z_][A-Za-z0-9_]*$''',  # $ENV_VAR
+    '''^!''',                # YAML tag: !Ref, !Sub, !GetAtt
+    '''^%\(''',             # %(name)s
+    '''^<[^>]*>?$''',        # <your-api-key>
+    '''(?i)^your[_.-]''',    # your_api_key_here
+    '''^arn:aws[a-z-]*:''',  # an ARN names a secret, it is not one
+    # a Secrets Manager / SSM secret name: <app>/<env>/<name> (aa-cis/dev/rds, booking/dev/database-url,
+    # aa-ecosys/ops/linear-api-key). The middle part must be an environment word, so a password that
+    # merely contains slashes ("aa/bb/cc123") is still reported.
+    '''^/?[a-z0-9][a-z0-9_.-]*/(?:dev|stg|staging|prod|production|uat|qa|test|shared|ops)/[a-z0-9][a-z0-9_./-]*$''',
+  ]
+
+  [[rules.allowlists]]
+  description = "Test fixtures: synthetic values in test directories"
+  paths = ['''(?:^|/)(?:tests?|__tests__|fixtures?)/''']
+
+# AWS resource IDs (security group, VPC endpoint, subnet, ...): identifiers, never credentials. They
+# show up in generated inventories and state notes, where the generic-api-key rule takes them for keys.
+[[allowlists]]
+description = "AWS network resource IDs"
+regexTarget = "secret"
+regexes = ['''^(?:sg|vpce|vpc|subnet|rtb|igw|nat|eni|acl|pl|tgw)-[0-9a-f]{8,17}$''']
 
 # Global allowlist: binary build outputs and provider lock files (hashes, not secrets).
 [[allowlists]]
