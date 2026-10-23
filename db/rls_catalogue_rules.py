@@ -91,6 +91,8 @@ _GRANDFATHERED_TP = "grandfathered TripPlanner read (owners.yaml consumer_grants
 # AA-847: the raw_tours (179) and tour_atoms (180) reads are revoked by CIS 254; these entries go stale (reported,
 # not fatal) once 254 is applied, and are removed in a later cleanup.
 _REVOKED_254 = "grandfathered TripPlanner read, revoked by CIS 254 (AA-847)"
+# AA-712 X4: CIS 270 revokes the rest of the pilot's reads (TripPlanner keeps the catalog views and the gateway).
+_REVOKED_270 = "grandfathered TripPlanner read, revoked by CIS 270 (AA-712 X4)"
 ALLOWLIST: dict[str, dict[str, str]] = {
     "a": {
         "shared.tenants": "the tenant registry itself (tenant_id is its key); cis_app only, no tenant-pool grant",
@@ -141,20 +143,20 @@ ALLOWLIST: dict[str, dict[str, str]] = {
         "catalog.*:booking": "contract: catalog.* views for Booking (CIS 225, 228)",
         "catalog.*:tripplanner": "contract: catalog.* views for TripPlanner (CIS 225, 228)",
         "shared.llm_call_log:tripplanner": "contract: standing INSERT exception for TripPlanner cost logging (CIS 173)",
-        "shared:tripplanner": f"schema USAGE for the shared.* reads below; {_GRANDFATHERED_TP}",
+        "shared:tripplanner": f"schema USAGE for the Model Gateway tables below (CIS 173); {_GRANDFATHERED_TP}",
         "shared.llm_role_config:tripplanner": f"CIS 173; {_GRANDFATHERED_TP}",
         "shared.llm_model_catalog:tripplanner": f"CIS 173; {_GRANDFATHERED_TP}",
-        "shared.destinations:tripplanner": f"CIS 201; {_GRANDFATHERED_TP}",
-        "shared.v_destination_photos:tripplanner": f"CIS 201; {_GRANDFATHERED_TP}",
-        "shared.v_tour_photos:tripplanner": f"CIS 201; {_GRANDFATHERED_TP}",
+        "shared.destinations:tripplanner": f"CIS 201; {_REVOKED_270}",
+        "shared.v_destination_photos:tripplanner": f"CIS 201; {_REVOKED_270}",
+        "shared.v_tour_photos:tripplanner": f"CIS 201; {_REVOKED_270}",
         "silver_aa_internal:tripplanner": f"schema USAGE for the raw_tours columns; {_REVOKED_254}",
         "silver_aa_internal.raw_tours.tour_id:tripplanner": f"CIS 179; {_REVOKED_254}",
         "silver_aa_internal.raw_tours.country:tripplanner": f"CIS 179; {_REVOKED_254}",
-        "acp_contract:tripplanner": f"schema USAGE for the atom columns; {_GRANDFATHERED_TP}",
+        "acp_contract:tripplanner": f"schema USAGE for the atom columns; {_REVOKED_270}",
         "acp_contract.tour_atoms.*:tripplanner": f"column grants, CIS 180; {_REVOKED_254}",
-        "acp_contract.v_active_tour_atoms.*:tripplanner": f"column grants, CIS 216; {_GRANDFATHERED_TP}",
-        "gold_aa_internal:tripplanner": f"schema USAGE for published_tours; {_GRANDFATHERED_TP}",
-        "gold_aa_internal.published_tours:tripplanner": f"tenant RLS read; {_GRANDFATHERED_TP}",
+        "acp_contract.v_active_tour_atoms.*:tripplanner": f"column grants, CIS 216; {_REVOKED_270}",
+        "gold_aa_internal:tripplanner": f"schema USAGE for published_tours; {_REVOKED_270}",
+        "gold_aa_internal.published_tours:tripplanner": f"tenant RLS read; {_REVOKED_270}",
         # owners.yaml cis owner_grants (CIS 243, MIG-2 self-registration)
         "shared:bk_owner": "contract: Booking owner role registers bk- keys (CIS 243)",
         "shared:tp_owner": "contract: TripPlanner owner role registers tp- keys (CIS 243)",
