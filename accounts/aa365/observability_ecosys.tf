@@ -639,6 +639,14 @@ locals {
       log_group = "/ecs/${local.bk_name_prefix}"
       queue     = "booking.job"
     }
+    crm = {
+      namespace = "AA/Jobs/Crm"
+      prefix    = local.crm_name_prefix
+      app       = "crm"
+      sampler   = "the AA-Partner JobMetricsSampler (api/app/jobs/metrics.py)"
+      log_group = "/ecs/${local.crm_name_prefix}"
+      queue     = "crm.job"
+    }
   }
 }
 
@@ -686,7 +694,7 @@ resource "aws_cloudwatch_metric_alarm" "jobs_sampling_stopped" {
   for_each = local.job_backlog_owners
 
   alarm_name          = "${each.value.prefix}-jobs-sampling-stopped"
-  alarm_description   = "No ${each.value.namespace} OldestQueuedAgeSeconds sample for 45 minutes: ${each.value.sampler} is not publishing, so the queue-age and overdue-running alarms are blind. Expected while the service is scaled to 0${each.value.app == "booking" ? " or the Booking worker is off (WORKER_ENABLED false)" : ""}. Check ${each.value.log_group}.${local.runbook_suffix.queue_stuck}"
+  alarm_description   = "No ${each.value.namespace} OldestQueuedAgeSeconds sample for 45 minutes: ${each.value.sampler} is not publishing, so the queue-age and overdue-running alarms are blind. Expected while the service is scaled to 0${each.value.app != "cis" ? " or the worker is off (WORKER_ENABLED false)" : ""}. Check ${each.value.log_group}.${local.runbook_suffix.queue_stuck}"
   namespace           = each.value.namespace
   metric_name         = "OldestQueuedAgeSeconds"
   statistic           = "SampleCount"

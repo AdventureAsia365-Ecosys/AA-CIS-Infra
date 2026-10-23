@@ -24,6 +24,7 @@ locals {
   alb_origin_header_name = "X-AA-Origin"
 
   alb_http_rule_priorities = {
+    crm_api           = 5   # crm_app.tf: partner-dev. host + /crm, /crm/* -> AA-Partner API (AA-933)
     crm_spike_partner = 10  # crm_edge_spike.tf: partner-dev. host -> hello target group (AA-931)
     crm_origin_deny   = 20  # crm_edge_spike.tf: any X-AA-Origin -> 403 (AA-931)
     booking           = 100 # booking.tf: /booking, /booking/* (AA-678)

@@ -194,6 +194,17 @@ accounts/
                                    only for AWS resources. Alarms aa-crm-<env>-kms-key-admin (policy/grant/deletion/
                                    disable/alias) and -kms-foreign-use (crypto by anyone but the task role / AWS
                                    services) -> SNS alerts; live check tools/terraform/crm_kms_alarm_check.py)
+    crm_app.tf                    (AA-933 CRM-05, AA-Partner API runtime: ECR aa-crm-<env>-api (IMMUTABLE, git-SHA
+                                   tags), log group /ecs/aa-crm-<env>, secret shell crm/<env>/sentry-dsn, execution
+                                   role (this repo, this log group, the two crm/ secrets), task role
+                                   aa-crm-<env>-ecs-task-role (the name the crm_data.tf key policies trust; ECS Exec +
+                                   PutMetricData AA/Jobs/Crm only), task definition Fargate ARM64 with the route-class
+                                   identity env, target group aa-crm-<env>-api-tg (/crm/health), ALB rule crm_api
+                                   (partner host + X-AA-Origin + /crm, /crm/*; above the spike rule), service
+                                   aa-crm-<env>-api (desired 0, ignore_changes count + task definition), GitHub OIDC
+                                   deploy role aa-crm-<env>-app-deploy (immutable subject, var.crm_github_repo_id),
+                                   target-group / CPU alarms; security group sg-crm-api in app_security_groups.tf,
+                                   job backlog alarms AA/Jobs/Crm in observability_ecosys.tf)
     variables.tf / tripplanner_variables.tf / booking_variables.tf
   acc1-bedrock/   ← acc1 Bedrock invoker role (fallback) + Cost Explorer reader
   acc3-bedrock/   ← acc3 Bedrock invoker role (primary) + Bedrock Batch (batch.tf)
@@ -362,7 +373,8 @@ makes CI Terraform Plan fail with 403.
 - App repos deploy via **GitHub Actions OIDC**, assuming IAM roles defined in `cicd_split.tf`
   (`aa-cis-dev-app-deploy` for AA-CIS-App, `aa-cis-infra-tf-plan` / `aa-cis-infra-tf-apply` for this
   repo's own Terraform / DB Migrate / schema-dump workflows), `tripplanner.tf`
-  (`aa-tripplanner-dev-app-deploy`) and `booking.tf` (`aa-booking-dev-app-deploy`). Each app repo
+  (`aa-tripplanner-dev-app-deploy`), `booking.tf` (`aa-booking-dev-app-deploy`) and `crm_app.tf`
+  (`aa-crm-dev-app-deploy`, AA-Partner, AA-933). Each app repo
   and each job type gets its **own** role. The old shared `aa-cis-dev-role` is retired (AA-806
   step 3); the apply boundary denies every write on that name so it cannot come back.
 - **OIDC subject fact (learned AA-588, re-verified AA-678):** the repos have GitHub's immutable
