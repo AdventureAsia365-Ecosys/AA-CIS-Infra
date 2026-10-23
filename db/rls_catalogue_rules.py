@@ -160,6 +160,9 @@ ALLOWLIST: dict[str, dict[str, str]] = {
         "shared:tp_owner": "contract: TripPlanner owner role registers tp- keys (CIS 243)",
         "shared.schema_versions:bk_owner": "contract: bk- keys only, key guard (CIS 243)",
         "shared.schema_versions:tp_owner": "contract: tp- keys only, key guard (CIS 243)",
+        # owners.yaml cis owner_grants (CIS 269, AA-932: partner CRM self-registration)
+        "shared:crm_owner": "contract: partner CRM owner role registers crm- keys (CIS 269)",
+        "shared.schema_versions:crm_owner": "contract: crm- keys only, key guard (CIS 269)",
         # owners.yaml booking / tripplanner consumer_grants
         "booking:cis_app": "contract: schema USAGE for the CIS ops views (bk-017)",
         "booking.v_ops_funnel_daily:cis_app": "contract: CIS ops dashboard (bk-017)",

@@ -288,6 +288,22 @@ class MirrorsAgreeTest(unittest.TestCase):
         self.assertNotIn(REGISTRY["master_role"], rls.ROLE_OWNERS)
         self.assertNotIn(REGISTRY["migrator_role"], rls.ROLE_OWNERS)
 
+    def test_owner_grants_allowlisted_for_rule_g(self):
+        """AA-932 review: every owner_grants row to another owner's role has a rule g allowlist entry, or the
+        CIS X2 guard (test_rls_catalogue_guard) and the nightly schema reference flag the grant as a violation."""
+        for name, o in SCHEMA_OWNERS.items():
+            for g in o.get("owner_grants", []):
+                if rls.ROLE_OWNERS.get(g["grantee"], name) == name:
+                    continue
+                obj = re.sub(r"\s*\(schema\)$", "", str(g["object"]).strip())
+                schema = obj.split(".")[0]
+                dump = {"schemas": [{"schema": obj, "grants": [{"grantee": g["grantee"], "privileges": g["privilege"]}]}]} \
+                    if obj == schema else \
+                    {"relations": {schema: {obj.split(".", 1)[1]: {"kind": "r", "grants": [
+                        {"grantee": g["grantee"], "privileges": g["privilege"]}]}}}}
+                with self.subTest(owner=name, grant=f"{obj}:{g['grantee']}"):
+                    self.assertEqual(rls.check(dump).violations, [])
+
     def test_db_migrate_workflow(self):
         on, run = validate_step()
         inputs = on["workflow_dispatch"]["inputs"]
