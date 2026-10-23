@@ -229,6 +229,23 @@ variable "place_shapes_enabled" {
   default     = false
 }
 
+variable "erasure_apply_enabled" {
+  description = "AA-839: env ERASURE_APPLY_ENABLED (true/false) on api and worker. The data_erasure apply runs only when true; default false (DRY RUN only)."
+  type        = bool
+  default     = false
+}
+
+variable "erasure_tenant_retention_days" {
+  description = "AA-839: env ERASURE_TENANT_RETENTION_DAYS on api and worker, days a tenant stays offboarded before an erasure apply may run. Default 30 = the code default."
+  type        = number
+  default     = 30
+  nullable    = false # null from the caller = this default
+  validation {
+    condition     = var.erasure_tenant_retention_days >= 0 && floor(var.erasure_tenant_retention_days) == var.erasure_tenant_retention_days
+    error_message = "erasure_tenant_retention_days must be a whole number >= 0."
+  }
+}
+
 variable "t9_faq_llm_filter" {
   description = "AA-779: env T9_FAQ_LLM_FILTER on the worker — off (no model call), shadow (record the LLM verdicts, deliver the deterministic list) or on (deliver the LLM-kept list; needs CIS ADR 0011 accepted)."
   type        = string
