@@ -8,12 +8,21 @@ touches a guarded resource type with any action other than no-op or read. Guarde
   random_password                     a generated credential (a replace changes the password)
   aws_db_instance                     the shared RDS instance (all three apps)
 
+Object Lock (AA-932, the CRM audit buckets), guarded by rule rather than by type:
+
+  aws_s3_bucket_object_lock_configuration   refused on any update, delete, replace, forget or import, and on a
+                                            create whose default retention mode is COMPLIANCE (irreversible for
+                                            every locked version; Dev is governance only, design v3 §3.6). A
+                                            GOVERNANCE create passes.
+  aws_s3_bucket                             refused when the plan deletes or replaces a bucket that has
+                                            object_lock_enabled = true.
+
 Matching is on the resource type, so module addresses (module.rds.aws_db_instance.main) count too.
 `forget` (a `removed` block) and imports of a guarded type are refused as well: they change what
 Terraform owns, which deserves the same explicit opt-in.
 
 The guard prints only addresses, types and actions, never attribute values: the plan JSON holds
-sensitive values in clear text.
+sensitive values in clear text. The one exception is the Object Lock mode word (COMPLIANCE), which is not secret.
 
 Exit codes:
   0  nothing guarded is touched, or it is but --allow-reason was given (each change is listed as a
@@ -40,6 +49,9 @@ GUARDED_TYPES = frozenset(
         "aws_db_instance",
     }
 )
+
+OBJECT_LOCK_CONFIG_TYPE = "aws_s3_bucket_object_lock_configuration"
+BUCKET_TYPE = "aws_s3_bucket"
 
 # Actions that leave the real resource and its state untouched.
 _SAFE_ACTIONS = (["no-op"], ["read"])
@@ -85,6 +97,11 @@ def find_guarded_changes(plan: dict, guarded_types: Iterable[str] = GUARDED_TYPE
         if not isinstance(rc, dict):
             raise InputError("resource_changes entry is not an object")
         rtype = rc.get("type")
+        if rtype in (OBJECT_LOCK_CONFIG_TYPE, BUCKET_TYPE):
+            lock = _object_lock_change(rc)
+            if lock is not None:
+                found.append(lock)
+            continue
         if rtype not in guarded:
             continue
         change = rc.get("change")
@@ -96,9 +113,45 @@ def find_guarded_changes(plan: dict, guarded_types: Iterable[str] = GUARDED_TYPE
     return found
 
 
+def _compliance_mode(after: object) -> bool:
+    """True when an object lock configuration's planned default retention is COMPLIANCE."""
+    if not isinstance(after, dict):
+        return False
+    for rule in after.get("rule") or []:
+        for ret in (rule or {}).get("default_retention") or []:
+            if (ret or {}).get("mode") == "COMPLIANCE":
+                return True
+    return False
+
+
+def _object_lock_change(rc: dict) -> Optional[GuardedChange]:
+    """The Object Lock rule (module docstring): a GuardedChange, or None when the change is allowed."""
+    change = rc.get("change")
+    if not isinstance(change, dict) or not isinstance(change.get("actions"), list):
+        raise InputError(f"{rc.get('address', '?')}: change.actions missing")
+    actions = change["actions"]
+    importing = bool(change.get("importing"))
+    address, rtype = str(rc.get("address", "?")), rc["type"]
+    if rtype == BUCKET_TYPE:
+        before = change.get("before") if isinstance(change.get("before"), dict) else {}
+        if "delete" in actions and before.get("object_lock_enabled") is True:
+            return GuardedChange(address=address, type=rtype, action=",".join(actions) + " (Object Lock bucket)")
+        return None
+    if actions == ["create"] and not importing:
+        if _compliance_mode(change.get("after")):
+            return GuardedChange(address=address, type=rtype, action="create (COMPLIANCE)")
+        return None
+    label = _action_label(actions, importing)
+    if label is None:
+        return None
+    if "create" in actions and _compliance_mode(change.get("after")):
+        label += " (COMPLIANCE)"
+    return GuardedChange(address=address, type=rtype, action=label)
+
+
 def render(changes: list[GuardedChange], allow_reason: Optional[str]) -> tuple[str, int]:
     """Report text (Markdown-friendly) and the exit code."""
-    types = ", ".join(sorted(GUARDED_TYPES))
+    types = ", ".join(sorted(GUARDED_TYPES) + ["Object Lock rule"])
     if not changes:
         return f"Plan guard: OK, no change on a guarded type ({types}).", 0
     lines = [f"- `{c.address}` ({c.type}): {c.action}" for c in changes]

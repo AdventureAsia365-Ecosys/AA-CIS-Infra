@@ -162,6 +162,7 @@ variable "alert_email" {
 #   cis         150 — ECS api + worker (Fargate), ElastiCache, S3 medallion buckets, REST API; most of the account.
 #   tripplanner  25 — 2 Lambdas + REST API + Cohere embed calls in acc2.
 #   booking      25 — Fargate service (desired_count 0 today) + REST API + SES.
+#   crm          25 — AA-Partner (AA-932): KMS keys, CloudFront edge, ECR, secrets, buckets; Fargate once it runs.
 #   shared       50 — shared RDS, NAT instance + EIP, ALB + VPC-link NLB, WAF, CloudTrail (App =
 #                     "shared", DM-10.1/10.3; added with the tag coverage, AA-828).
 # Starting points only: tune after one full month of Cost Explorer data grouped by App.
@@ -172,10 +173,14 @@ variable "per_app_monthly_budgets" {
   # cis ~58, shared ~84 (RDS db.t4g.small since ~15/10, ALB + NLB, WAF, NAT instance), booking ~10,
   # tripplanner ~1 USD/month. shared at 50 would alarm every month; cis at 150 never would. Sum stays
   # within the 250 USD account budget (untagged spend, ~37 USD/month, only counts there).
+  # AA-932 (S248): crm 25 for the AA-Partner Dev stack (design v3 §7: Dev $13-22, worst $26-33; KMS keys, the CloudFront
+  # edge, ECR, secrets now, Fargate once the service runs). tripplanner 25 -> 10 (run-rate ~1 USD/month) keeps the sum
+  # at the 250 USD account budget.
   default = {
     cis         = 90
-    tripplanner = 25
+    tripplanner = 10
     booking     = 25
+    crm         = 25
     shared      = 100 # shared RDS/NAT/ALB/NLB/WAF
   }
 

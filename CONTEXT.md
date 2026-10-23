@@ -66,7 +66,8 @@ Cross-account pieces added 15-25/09/2026 (same assume-role pattern as the Bedroc
   `accounts/acc3-bedrock/batch.tf`). IAM is complete, but **AWS has not enabled Batch
   Inference on acc3 yet** (support case 178979743800653, Linear AA-624): job creation fails with
   a `ValidationException` about account authorization, which is an entitlement, not IAM.
-- **Spend guards per account (AA-896)**: acc2 has the account and per-App budgets
+- **Spend guards per account (AA-896)**: acc2 has the account and per-App budgets (cis, tripplanner, booking,
+  crm since AA-932, shared)
   (`accounts/aa365/observability.tf`) and an IMMEDIATE anomaly subscription to the alerts topic
   (`accounts/aa365/cost_anomaly.tf`). acc3, where almost all LLM spend lands, has its own monthly
   budget (credits excluded) and a DAILY anomaly e-mail on the AWS-created services monitor
@@ -198,6 +199,19 @@ accounts/
                                    only for AWS resources. Alarms aa-crm-<env>-kms-key-admin (policy/grant/deletion/
                                    disable/alias) and -kms-foreign-use (crypto by anyone but the task role / AWS
                                    services) -> SNS alerts; live check tools/terraform/crm_kms_alarm_check.py)
+    crm_storage.tf                (AA-932 CRM-04 rest: buckets aa-crm-<env>-{audit-c,audit-g,documents,ingest}-<account>,
+                                   SSE-KMS + S3 Bucket Keys (audit + ingest: ingest key; documents: data key), BPA,
+                                   BucketOwnerEnforced, TLS only, PutObject naming another key/algorithm denied. audit-c:
+                                   Object Lock 365 days, GOVERNANCE on Dev (COMPLIANCE only via
+                                   var.crm_audit_compliance_enabled, refused on Dev by a precondition and by plan_guard);
+                                   audit-g: GOVERNANCE 7 years; lifecycle expires a version 1 day after its retention.
+                                   documents: versioned, replaced versions 7 days, exports/ 7 days (+1 day noncurrent). ingest: 1-day expiry,
+                                   SES PutObject only from rules aa-crm-<env>-*. No task-role object grants yet (CRM-09/12/17).
+                                   KMS Decrypt-rate anomaly alarm: EventBridge (Decrypt on the 3 keys) -> log group
+                                   /aws/events/aa-crm-<env>-kms-decrypt (365 d) -> metric AA/Crm/Kms DecryptCalls ->
+                                   alarm aa-crm-<env>-kms-decrypt-anomaly (band 3, 2 of 3 x 5 min). The nightly
+                                   key-policy diff is .github/workflows/crm-key-policy-diff.yml +
+                                   tools/terraform/crm_key_policy_diff.py (plan role, read-only: live GetKeyPolicy vs state))
     crm_app.tf                    (AA-933 CRM-05, AA-Partner API runtime: ECR aa-crm-<env>-api (IMMUTABLE, git-SHA
                                    tags), log group /ecs/aa-crm-<env>, secret shell crm/<env>/sentry-dsn, execution
                                    role (this repo, this log group, the two crm/ secrets), task role
@@ -463,7 +477,9 @@ makes CI Terraform Plan fail with 403.
   - **Plan guard (AA-846):** between plan and apply, `tools/terraform/plan_guard.py` reads
     `terraform show -json tfplan` and refuses the apply (the run goes red, nothing is applied) when
     the plan changes an `aws_secretsmanager_secret_version`, a `random_password` or an
-    `aws_db_instance` with any action other than no-op/read (forget and import included). An
+    `aws_db_instance` with any action other than no-op/read (forget and import included), or (AA-932) creates an
+    Object Lock configuration in COMPLIANCE mode, changes / deletes / imports any Object Lock configuration, or
+    deletes a bucket with Object Lock enabled (a GOVERNANCE create passes). An
     intended change is dispatched with `allow_guarded=true` plus a non-empty `allow_reason`, which
     is written to the job summary. `guard_selftest=true` runs only the guard, on the committed
     fixture `tools/terraform/tests/fixtures/plan_guarded.json`, with no AWS step; the expected
