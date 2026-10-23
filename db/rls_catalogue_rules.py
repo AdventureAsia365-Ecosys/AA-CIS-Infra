@@ -103,7 +103,6 @@ ALLOWLIST: dict[str, dict[str, str]] = {
         "shared.dfs_call_log": f"DataForSEO cost log; tenant_id is attribution; {_CIS_ONLY}",
         "shared.decision_log": f"Jev decision audit; tenant_id is attribution; {_CIS_ONLY}",
         "shared.jev_tenant_allowlist": f"Jev rollout switch per tenant (admin-managed); {_CIS_ONLY}",
-        "shared.notifications": f"staff notifications; {_CIS_ONLY}",
         "shared.acp_runs": f"legacy ACP v1 run table (pre-AA-751); {_CIS_ONLY}",
         "shared.tenant_brand_rule_versions": f"history of tenant brand rules; {_CIS_ONLY}",
         "shared.tenant_brand_rules_deleted_aa404": f"AA-404 backup copy of deleted brand rules; {_CIS_ONLY}",
