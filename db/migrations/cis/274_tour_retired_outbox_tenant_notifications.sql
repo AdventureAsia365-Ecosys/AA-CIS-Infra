@@ -29,11 +29,15 @@
 --   SELECT to booking, tripplanner and aa_app_user (225 / 257 pattern, unguarded: contracts README rule 5):
 --     6. catalog.v_tour_retired: one row per catalog key that is not served now (from gold_aa_internal.
 --        v_tour_liveness, the derived state of ADR 0015 decision 1: state retired | paused with its reason) or that is
---        served again after a change (the latest lifecycle event of a served key is `restored`: state restored, the
---        event's reason). Columns: source_system, source_id (= raw_tours.source_key), tour_id (the live version, else
---        the newest), state, reason, changed_at. A key never served has no row (404 for consumers). Built on the
---        derived state, so the tombstone can never disagree with catalog.v_tour (guard 7), even for a key retired
---        before L2 wrote events.
+--        served again after being retired / paused (state restored, the event's reason): the latest lifecycle event
+--        of a served key is `restored` AND the newest event before it that is not `superseded` is `retired` or
+--        `paused` (not superseded_pending). The service (services/tour_lifecycle _cascade) also writes `restored`
+--        after a supersede of a key that stayed served (set_active / supersede onto a version with a live Master) and
+--        when the new Master closes a superseded_pending gap: neither is a restore for consumers (Q2, a supersede is
+--        invisible), so neither gives a row. A restored row stays until the key's next event. Columns:
+--        source_system, source_id (= raw_tours.source_key), tour_id (the live version, else the newest), state,
+--        reason, changed_at. A key never served has no row (404 for consumers). Built on the derived state, so the
+--        tombstone can never disagree with catalog.v_tour (guard 7), even for a key retired before L2 wrote events.
 --     7. catalog.v_tour_lifecycle_outbox: every row of gold_aa_internal.tour_lifecycle_event, without the internal
 --        columns (action, actor, details): event_id (the cursor), source_system, source_id, tour_id, event
 --        (retired | paused | restored | superseded), reason, replaced_by_tour_id, occurred_at, idempotency_key.
@@ -304,21 +308,34 @@ SELECT l.source_system,
        e.occurred_at AS changed_at
   FROM gold_aa_internal.v_tour_liveness l
   JOIN LATERAL (
-        SELECT ev.event, ev.reason, ev.occurred_at
+        SELECT ev.id, ev.event, ev.reason, ev.occurred_at
           FROM gold_aa_internal.tour_lifecycle_event ev
          WHERE ev.source_id = l.source_id
          ORDER BY ev.occurred_at DESC, ev.id DESC
          LIMIT 1
        ) e ON true
+  JOIN LATERAL (
+        -- the state the restore closed: the newest event before it that is not a `superseded` one
+        SELECT pv.event, pv.reason
+          FROM gold_aa_internal.tour_lifecycle_event pv
+         WHERE pv.source_id = l.source_id
+           AND pv.event <> 'superseded'
+           AND (pv.occurred_at, pv.id) < (e.occurred_at, e.id)
+         ORDER BY pv.occurred_at DESC, pv.id DESC
+         LIMIT 1
+       ) p ON true
  WHERE l.state = 'served'
-   AND e.event = 'restored';
+   AND e.event = 'restored'
+   AND (p.event = 'retired' OR (p.event = 'paused' AND p.reason <> 'superseded_pending'));
 
 COMMENT ON VIEW catalog.v_tour_retired IS
     'AA-986 L4 (CIS 274, contract catalog.tour.v1.3, root ADR 0015 decision 4): the tombstone of the CIS catalog. One '
     'row per catalog key (source_system, source_id) that AA does not serve now (state retired: answer 410, list as '
-    'withdrawn; state paused: temporarily absent, answer 404 and keep the URL) or that is served again after a change '
-    '(state restored: undo what was done on retired / paused). Derived from the served state (gold_aa_internal.'
-    'v_tour_liveness), so it never disagrees with catalog.v_tour. A key never served has no row.';
+    'withdrawn; state paused: temporarily absent, answer 404 and keep the URL) or that was retired / paused and is '
+    'served again (state restored: undo what was done on retired / paused; the row stays until the key''s next event). '
+    'A supersede never gives a row, even when the service closed it with a restored event (Q2). Derived from the '
+    'served state (gold_aa_internal.v_tour_liveness), so it never disagrees with catalog.v_tour. A key never served '
+    'has no row.';
 
 CREATE OR REPLACE VIEW catalog.v_tour_lifecycle_outbox WITH (security_barrier = true) AS
 SELECT e.id AS event_id,
