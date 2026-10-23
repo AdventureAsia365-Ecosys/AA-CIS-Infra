@@ -14,7 +14,9 @@
 #   audit-g   the 7-year tier. Object Lock GOVERNANCE, default retention 7 years.
 #   documents agency documents: client-side encrypted by the app with the tenant `docs` DEK, then SSE-KMS with the data
 #             key (second layer, design §4.1). Versioned; a replaced or deleted version is gone after 7 days (erased
-#             data <= 30 days, DM-7). Export zips go under exports/ and expire after 7 days (DM-7 "export files").
+#             data <= 30 days, DM-7). Export zips go under exports/ and expire after 7 days (DM-7 "export files"):
+#             day 7 adds a delete marker and the then-noncurrent zip goes 1 day later (rule exports-7d; S3 applies
+#             the shorter of the overlapping noncurrent expirations), so an export is gone by day 8, not day 14.
 #   ingest    raw inbound mail from the CRM SES receipt rules (aa-crm-<env>-*, CRM-17): SSE-KMS with the ingest key,
 #             not versioned, every object expires after 1 day (DM-7 "raw inbound mail <= 1 day").
 # Both audit buckets use the ingest key (design §4.1: "ingest for raw mail and the audit export"); every bucket uses
@@ -220,7 +222,9 @@ resource "aws_s3_bucket_lifecycle_configuration" "crm_documents" {
     }
   }
 
-  # DM-7 "export files: 7 days" (owner-only download, 7-day link, design §4.10).
+  # DM-7 "export files: 7 days" (owner-only download, 7-day link, design §4.10). The bucket is versioned, so the
+  # day-7 expiration only adds a delete marker; noncurrent_version_expiration removes the zip itself 1 day later
+  # (without it, replaced-versions-7d would keep it to about day 14).
   rule {
     id     = "exports-7d"
     status = "Enabled"
@@ -230,6 +234,9 @@ resource "aws_s3_bucket_lifecycle_configuration" "crm_documents" {
 
     expiration {
       days = 7
+    }
+    noncurrent_version_expiration {
+      noncurrent_days = 1
     }
   }
 

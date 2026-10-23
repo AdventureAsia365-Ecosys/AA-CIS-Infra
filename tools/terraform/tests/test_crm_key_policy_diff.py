@@ -141,3 +141,15 @@ def test_workflow_is_read_only_nightly_and_uses_the_plan_role():
     assert "tools/terraform/crm_key_policy_diff.py" in text
     for verb in ("terraform apply", "terraform plan", "put-key-policy", "aws s3 cp", "git push"):
         assert verb not in text
+
+
+def test_guard_test_workflow_triggers_on_the_files_its_tests_read():
+    """Two tests here read files outside tools/terraform: an edit to only one of them must still run the tests."""
+    path = os.path.join(REPO_ROOT, ".github", "workflows", "tf-plan-guard-test.yml")
+    with open(path, encoding="utf-8") as fh:
+        wf = yaml.safe_load(fh)
+    on = wf.get("on", wf.get(True))
+    for event in ("pull_request", "push"):
+        paths = on[event]["paths"]
+        for needed in ("accounts/aa365/crm_storage.tf", ".github/workflows/crm-key-policy-diff.yml"):
+            assert needed in paths, (event, needed)

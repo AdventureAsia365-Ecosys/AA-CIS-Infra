@@ -205,7 +205,7 @@ accounts/
                                    Object Lock 365 days, GOVERNANCE on Dev (COMPLIANCE only via
                                    var.crm_audit_compliance_enabled, refused on Dev by a precondition and by plan_guard);
                                    audit-g: GOVERNANCE 7 years; lifecycle expires a version 1 day after its retention.
-                                   documents: versioned, replaced versions 7 days, exports/ 7 days. ingest: 1-day expiry,
+                                   documents: versioned, replaced versions 7 days, exports/ 7 days (+1 day noncurrent). ingest: 1-day expiry,
                                    SES PutObject only from rules aa-crm-<env>-*. No task-role object grants yet (CRM-09/12/17).
                                    KMS Decrypt-rate anomaly alarm: EventBridge (Decrypt on the 3 keys) -> log group
                                    /aws/events/aa-crm-<env>-kms-decrypt (365 d) -> metric AA/Crm/Kms DecryptCalls ->
