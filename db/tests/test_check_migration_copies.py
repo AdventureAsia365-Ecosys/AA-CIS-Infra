@@ -216,9 +216,17 @@ class GuardTest(unittest.TestCase):
     def test_github_fetch_404_token_fallback_and_retry(self):
         env = {"GITHUB_TOKEN": "t0k", "GH_TOKEN": ""}
         with mock.patch.dict("os.environ", env), mock.patch.object(guard.time, "sleep"):
-            seen = []
-            with mock.patch.object(guard.urllib.request, "urlopen", self._urlopen([self._http(404)], seen)):
+            seen = []   # 404 with the token and anonymously → the file is really not on main
+            outcomes = [self._http(404), self._http(404)]
+            with mock.patch.object(guard.urllib.request, "urlopen", self._urlopen(outcomes, seen)):
                 self.assertIsNone(guard.github_fetch("AA-CIS-App", "api/migrations/228_x.sql"))
+            self.assertEqual(seen, ["Bearer t0k", None])
+
+            seen = []   # an Actions token scoped to this repo gets 404 on another repo; anonymous reads it
+            outcomes = [self._http(404), b"rules"]
+            with mock.patch.object(guard.urllib.request, "urlopen", self._urlopen(outcomes, seen)):
+                self.assertEqual(guard.github_fetch("AA-CIS-App", "tests/integration/rls_catalogue_rules.py"), b"rules")
+            self.assertEqual(seen, ["Bearer t0k", None])
 
             seen = []   # token refused → anonymous retry succeeds
             outcomes = [self._http(403), b"sql"]
