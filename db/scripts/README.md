@@ -183,3 +183,15 @@ components and two 2-seat departures. Writes as `bk_owner` in one transaction; r
 prints the ids the live check needs (`SCRIPT verify …`). Apply = one-line PR `READ_ONLY = False`; cleanup = one-line PR
 `ACTION = "cleanup"` (retires everything it wrote, children first: components, departures, plan, contract → expired,
 supply → inactive). Notes: `docs/implementation-notes/AA-973.md`.
+
+`aa974_b2b_verify_seed.py` (AA-974, S248, Dev only; merged `READ_ONLY = True` = DRY RUN): builds on the AA-973 seed
+(refuses without it) for the booking.b2b.v1 commercial-rules live check — one synthetic approved VND rate
+(`booking.fx_rates` VND 25000 per USD, buffer 0, `as_of` today UTC, source `SYNTHETIC S248 AA-974`, written by the
+AA-973 seed maker and approved by the seed checker in `booking.policy_approvals`, bk-007 maker-checker) and three
+4-seat departures of the seed plan at +28 / +35 / +42 days (extend + cancel, the per-proposal and the per-departure
+re-hold loops). Writes as `bk_owner` in one transaction under the AA-973 seed's advisory lock and its own. A VND rate
+already in force from another source is used as it is. Idempotent (`SCRIPT summary steps=0`). Reports bk-021, partner,
+`b2b` rule, the four B2B settings and the cancellation policy in force with its tiers (`SCRIPT readiness`), prints the
+FX row and departures with the fee % the check expects (`SCRIPT verify`) and `SCRIPT verdict ready=…`. Apply = one-line
+PR `READ_ONLY = False`. No cleanup action: FX rows are append-only (a later real VND row supersedes it); the departures
+go with the AA-973 seed cleanup. Notes: `docs/implementation-notes/AA-974.md`.
