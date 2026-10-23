@@ -12,8 +12,9 @@
 #     - secret shell crm/dev/sentry-dsn (no value; the DSN secret crm/dev/database-url is crm_data.tf, AA-932)
 #     - execution role aa-crm-dev-ecs-execution-role: pull this repo, write this log group, read the two secrets
 #     - task role aa-crm-dev-ecs-task-role (the name the AA-932 KMS key policies already trust): ECS Exec channel,
-#       exec session logs, PutMetricData into AA/Jobs/Crm only. No KMS, S3 or SES grant yet: the cards that use
-#       them add them (CRM-06 KeyProvider, CRM-12 audit, CRM-17 mail).
+#       exec session logs, PutMetricData into AA/Jobs/Crm, and (AA-934, CRM-06 KeyProvider) GenerateDataKey /
+#       Decrypt / Encrypt on the CRM data key with exactly the context {tenant_id, purpose} the key policy allows.
+#       No S3 or SES grant yet: the cards that use them add them (CRM-12 audit, CRM-17 mail).
 #     - task definition aa-crm-dev-api (Fargate ARM64, 0.25 vCPU / 0.5 GB, placeholder tag `bootstrap`)
 #     - ALB target group aa-crm-dev-api-tg (health /crm/health) + ONE listener rule on the HTTP listener:
 #       Host = the partner host AND X-AA-Origin = the CloudFront secret AND path /crm or /crm/*  (alb_rules.tf crm_api,
@@ -250,6 +251,21 @@ resource "aws_iam_role_policy" "crm_ecs_task" {
         Resource  = "*"
         Condition = { StringEquals = { "cloudwatch:namespace" = "AA/Jobs/Crm" } }
       },
+      {
+        # AA-934 (CRM-06, design v3 §4.1): the KeyProvider's envelope keys. One DEK per agency per purpose, generated
+        # and unwrapped under the encryption context {tenant_id, purpose}; Encrypt re-wraps a DEK (rewrap, the BYOK
+        # path). Same conditions as the key policy's CrmRuntimeEnvelopeKeys (crm_data.tf): both must allow, because
+        # that statement delegates to the account (IAM). No ReEncrypt: the app rewraps by Decrypt + Encrypt.
+        Sid      = "CrmDataKeyEnvelope"
+        Effect   = "Allow"
+        Action   = ["kms:GenerateDataKey", "kms:Decrypt", "kms:Encrypt"]
+        Resource = aws_kms_key.crm_data.arn
+        Condition = {
+          "ForAllValues:StringEquals" = { "kms:EncryptionContextKeys" = ["tenant_id", "purpose"] }
+          "Null"                      = { "kms:EncryptionContext:tenant_id" = "false" }
+          "StringEquals"              = { "kms:EncryptionContext:purpose" = local.crm_dek_purposes }
+        }
+      },
     ]
   })
 }
@@ -263,7 +279,9 @@ resource "aws_iam_role_policy" "crm_ecs_task" {
 # Env names read by the app (api/app/settings.py): DATABASE_URL (secret, role crm_app), DB_SSL, ENVIRONMENT,
 # WORKER_ENABLED, JOB_RETENTION_DRY_RUN (DM-7.2: counts only until a human turns it off), RATE_LIMIT_PUBLIC_PER_MINUTE,
 # RATE_LIMIT_XFF_HOPS (2 = CloudFront viewer address appended, then the NLB's; verify on the first live request),
-# SENTRY_DSN / SENTRY_REQUIRED (only with var.crm_sentry_enabled), the identity values (local.crm_identity_env).
+# SENTRY_DSN / SENTRY_REQUIRED (only with var.crm_sentry_enabled), the identity values (local.crm_identity_env),
+# and the key provider (AA-934): KEY_PROVIDER=kms and KMS_DATA_KEY_ID = the alias of the CRM data key (an alias, not the
+# key ARN, so the public app repo never needs the account id; the app stores the ARN KMS returns per wrapped DEK).
 # GIT_SHA and APP_VERSION are baked into the image.
 # -----------------------------------------------------------------------------
 resource "aws_ecs_task_definition" "crm_api" {
@@ -293,6 +311,8 @@ resource "aws_ecs_task_definition" "crm_api" {
       { name = "JOB_RETENTION_DRY_RUN", value = "true" },
       { name = "RATE_LIMIT_PUBLIC_PER_MINUTE", value = "60" },
       { name = "RATE_LIMIT_XFF_HOPS", value = "2" },
+      { name = "KEY_PROVIDER", value = "kms" },
+      { name = "KMS_DATA_KEY_ID", value = aws_kms_alias.crm["data"].name },
       ], local.crm_identity_env, var.crm_sentry_enabled ? [
       { name = "SENTRY_REQUIRED", value = "true" },
     ] : [])
