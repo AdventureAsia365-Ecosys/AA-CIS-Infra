@@ -96,8 +96,11 @@ password / API key / token in `.tf` / `.tfvars` / `.hcl`; a credential-named key
 
 - **gitleaks** (every PR, AA-841): the lines the PR's commits add. A PR that only deletes a file passes.
   The rules and the baseline are read from the PR's **base** commit, so a PR cannot add a secret and its
-  ignore line together. A PR that changes `.gitleaks.toml` or `.gitleaksignore` fails until a reviewer adds
-  the label `secret-scan-baseline-reviewed` (then the PR's own copies are used); both files are in CODEOWNERS.
+  ignore line together. A PR that changes `.gitleaks.toml` or `.gitleaksignore`, or adds an inline
+  `gitleaks:allow` comment, fails until a reviewer adds the label `secret-scan-baseline-reviewed` (then the
+  PR's own copies are used); a later push that touches them again, a force push or a reopen removes the label.
+  Both files are in CODEOWNERS. For a false positive prefer a narrow allowlist in `.gitleaks.toml`: a commit
+  fingerprint does not survive the squash merge (header of `.gitleaksignore`).
 - **gitleaks full history** (nightly, every push to `main`, on demand; AA-981): every commit of every
   branch and tag, plus the head of every pull request (`refs/pull/*/head`, closed PRs included: GitHub
   keeps them public after the branch is deleted). Historical findings are pinned by commit fingerprint in
