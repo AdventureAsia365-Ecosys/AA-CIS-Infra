@@ -168,11 +168,15 @@ variable "alert_email" {
 variable "per_app_monthly_budgets" {
   description = "Monthly USD budget per App cost allocation tag value (AA-828)"
   type        = map(number)
+  # AA-896 (S248): rebalanced from the run-rate 16-22/10/2026 (Cost Explorer by App tag, x 30.4 days):
+  # cis ~58, shared ~84 (RDS db.t4g.small since ~15/10, ALB + NLB, WAF, NAT instance), booking ~10,
+  # tripplanner ~1 USD/month. shared at 50 would alarm every month; cis at 150 never would. Sum stays
+  # within the 250 USD account budget (untagged spend, ~37 USD/month, only counts there).
   default = {
-    cis         = 150
+    cis         = 90
     tripplanner = 25
     booking     = 25
-    shared      = 50 # shared RDS/NAT/ALB
+    shared      = 100 # shared RDS/NAT/ALB/NLB/WAF
   }
 
   validation {
