@@ -66,6 +66,12 @@ Cross-account pieces added 15-25/09/2026 (same assume-role pattern as the Bedroc
   `accounts/acc3-bedrock/batch.tf`). IAM is complete, but **AWS has not enabled Batch
   Inference on acc3 yet** (support case 178979743800653, Linear AA-624): job creation fails with
   a `ValidationException` about account authorization, which is an entitlement, not IAM.
+- **Spend guards per account (AA-896)**: acc2 has the account and per-App budgets
+  (`accounts/aa365/observability.tf`) and an IMMEDIATE anomaly subscription to the alerts topic
+  (`accounts/aa365/cost_anomaly.tf`). acc3, where almost all LLM spend lands, has its own monthly
+  budget (credits excluded) and a DAILY anomaly e-mail on the AWS-created services monitor
+  (`accounts/acc3-bedrock/cost_guard.tf`, e-mail because IMMEDIATE needs an SNS topic in the same
+  account). acc1 keeps the two budgets created by hand in its console (spend there is cents).
 
 ## Layout
 
@@ -175,7 +181,8 @@ accounts/
     variables.tf / tripplanner_variables.tf / booking_variables.tf
   acc1-bedrock/   ← acc1 Bedrock invoker role (fallback) + Cost Explorer reader
   acc3-bedrock/   ← acc3 Bedrock invoker role (primary) + Bedrock Batch (batch.tf)
-                    + Cost Explorer reader
+                    + Cost Explorer reader + spend guards (cost_guard.tf: monthly budget,
+                    daily anomaly e-mail; AA-896)
 modules/          ← reusable building blocks, consumed by the account roots
   vpc, rds, ecs, alb, api_gateway, s3, secrets, waf, dynamodb, efs,
   elasticache, eventbridge, langfuse, monitoring
