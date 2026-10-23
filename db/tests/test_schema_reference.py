@@ -184,6 +184,26 @@ class BuildDumpTest(unittest.TestCase):
         self.assertEqual(sd.SESSION_SETTINGS["default_transaction_read_only"], "on")
 
 
+class NoAwsIdentifierLeakTest(unittest.TestCase):
+    """AA-981 CI guard: the published reference carries no 12-digit account id and no `arn:aws:` ARN, even when
+    a catalog policy quotes one; a UUID (the AA master tenant id) is not mistaken for an account id."""
+
+    FAKE_ACCT = "111122223333"   # fake
+    TENANT = "00000000-0000-0000-0000-000000000001"
+
+    def test_reference_is_masked(self):
+        d = dump()
+        pol = d["relations"]["shared"]["job"]["policies"][0]
+        pol["qual"] = (f"((tenant_id = '{self.TENANT}'::uuid) AND (src = "
+                       f"'arn:aws:secretsmanager:us-west-1:{self.FAKE_ACCT}:secret:a/b-AbC123') AND (acct = '{self.FAKE_ACCT}'))")
+        md = gen.render(d, source="https://example/run/1")
+        self.assertNotRegex(md.replace(self.TENANT, ""), r"\b\d{12}\b")
+        self.assertNotIn("arn:aws:", md)
+        self.assertIn(self.TENANT, md)
+        self.assertIn("arn:{partition}:secretsmanager:us-west-1:{aws-account}:secret:a/b", md)
+        self.assertIn("`aa-cis/dev/rds`, acc2, us-west-1, PostgreSQL 15.17", md)
+
+
 class RenderTest(unittest.TestCase):
     def setUp(self):
         self.d = dump()

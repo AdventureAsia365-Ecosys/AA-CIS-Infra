@@ -596,7 +596,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         (args.out_dir / PAGE).write_text(render_page(aws, vercel, date=args.date, sha=args.sha, source=args.source), encoding="utf-8")
         print(f"rendered {PAGE} into {args.out_dir}")
         return 0
-    except InputError as exc:
+    except (InputError, gd.aws_mask.AliasError) as exc:
         print(f"::error::{exc}", file=sys.stderr)
         return 2
 
