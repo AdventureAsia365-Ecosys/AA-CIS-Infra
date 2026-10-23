@@ -24,6 +24,7 @@ locals {
     aws_security_group.cis_api.id,
     aws_security_group.cis_worker.id,
     aws_security_group.booking_api.id,
+    aws_security_group.crm_api.id,
     aws_security_group.tp_lambda.id,
     aws_security_group.db_migrate.id,
   ]
@@ -102,6 +103,31 @@ resource "aws_security_group" "booking_api" {
   }
 
   tags = merge(local.bk_tags, { Name = "${local.name_prefix}-sg-booking-api" })
+}
+
+# ── AA-Partner api (ECS service aa-crm-dev-api, crm_app.tf, AA-933): API + crm.job worker ──
+resource "aws_security_group" "crm_api" {
+  name        = "${local.name_prefix}-sg-crm-api"
+  description = "AA-Partner (CRM) api service (ADR 0004b)"
+  vpc_id      = module.vpc.vpc_id
+
+  ingress {
+    description     = "App port from the ALB (/crm/* rule behind CloudFront)"
+    from_port       = local.crm_port
+    to_port         = local.crm_port
+    protocol        = "tcp"
+    security_groups = [module.vpc.sg_alb_id]
+  }
+
+  egress {
+    description = "All outbound (NAT: AWS APIs, Cognito JWKS, Sentry; RDS)"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = merge(local.crm_app_tags, { Name = "${local.name_prefix}-sg-crm-api" })
 }
 
 # ── TripPlanner Lambdas (browse + assembly, tripplanner.tf): no ingress ─────────

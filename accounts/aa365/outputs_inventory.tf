@@ -33,6 +33,7 @@ output "network_security_group_ids" {
     cis_api     = aws_security_group.cis_api.id
     cis_worker  = aws_security_group.cis_worker.id
     booking_api = aws_security_group.booking_api.id
+    crm_api     = aws_security_group.crm_api.id
     tp_lambda   = aws_security_group.tp_lambda.id
     db_migrate  = aws_security_group.db_migrate.id
     ops_lambda  = aws_security_group.ops_lambda.id
@@ -57,7 +58,7 @@ output "ecs" {
   description = "ECS cluster and its services."
   value = {
     cluster_name = module.ecs.cluster_name
-    services     = [module.ecs.service_name, module.ecs.worker_service_name, aws_ecs_service.booking.name]
+    services     = [module.ecs.service_name, module.ecs.worker_service_name, aws_ecs_service.booking.name, aws_ecs_service.crm_api.name]
   }
 }
 

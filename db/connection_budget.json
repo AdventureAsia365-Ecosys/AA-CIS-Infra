@@ -80,7 +80,13 @@
       "name": "crm-api",
       "role": "crm_app",
       "max_size": 3,
-      "processes": {"fixed": 2, "note": "AA-932: AA-Partner api + in-process crm.job worker, 1 task (desired 0 until AA-933) x deployment overlap 200 %. When AA-933 adds the ECS service, replace this with its tf_file / deployment_maximum_percent regex and add the pool source (AA-Partner api/app/db.py)"}
+      "source": {"repo": "AA-Partner", "path": "api/app/db.py", "regex": "create_pool\\(.*?max_size=(\\d+)"},
+      "processes": {
+        "tf_file": "accounts/aa365/crm_app.tf",
+        "tf_regex": "resource \"aws_ecs_service\" \"crm_api\" \\{.*?deployment_maximum_percent\\s*=\\s*(\\d+)",
+        "scale": 0.01,
+        "note": "AA-933: AA-Partner api + in-process crm.job worker, 1 task (Dev, no autoscaling) x deployment overlap 200 %"
+      }
     },
     {
       "name": "db-migrate / schema dump / isolation probe",
