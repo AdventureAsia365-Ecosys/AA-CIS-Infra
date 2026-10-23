@@ -24,7 +24,7 @@
 --        2026-10-16 00:00 UTC (slice 6a removed the writers on 14/10; one day of margin): a later row means a writer
 --        is still alive somewhere, so stop and find it.
 --   2. DROP TABLE IF EXISTS the eight tables in one statement (RESTRICT, the default: their indexes, the HNSW index
---      itinerary_components_embedding_idx and their foreign keys to shared.destinations go with them).
+--      itinerary_components_embedding_idx and their foreign keys to shared.destinations go with them; see Locks).
 --   3. Register tp-018.
 --   Kept: tripplanner.component_id_map (tp-017). It maps the old itinerary_components ids that trip_events of drafts
 --   from before the flip still carry to catalog component ids; it has no foreign key to the dropped table.
@@ -33,7 +33,21 @@
 -- (restore to a new instance, then pg_dump/pg_restore the eight tables as tp_owner), and revert the TripPlanner
 -- readers (the PR before this one). Only needed if a decision to read the frozen pilot data again is ever made.
 --
--- Locks: ACCESS EXCLUSIVE on the eight tables only (nobody reads them); lock_timeout 5s (DB Migrate default).
+-- Exception to the written retirement rules (needs Nghiệp's written approval in the PR and the session log, data
+-- standards README "MUST"): root ADR 0007 section 10 says "dropped 14 days after the flip" (flip 22/10/2026, so not
+-- before 05/11), and data standards DM-3.8 / DM-3.9 ask for 14 days of pg_stat_user_tables, a quarantine step
+-- (ALTER ... SET SCHEMA retired) and an S3 archive of rows with real data. This drop skips all three on Dev because:
+-- the rows are derived data CIS rebuilds in schema geo (ADR 0007); nothing has read or written them since the flip
+-- (two DRY RUN dispatches compare the counters); the DM-7.3 S3 archive does not exist yet (N4), so the archive is the
+-- DB Migrate pre-apply RDS snapshot, kept past its default 30 days by an aa:retain-until tag (approval package).
+--
+-- Locks: ACCESS EXCLUSIVE on the eight tables AND on shared.destinations (CIS-owned): seven of the eight tables hold
+-- foreign keys to it (11 in all), and dropping them removes their RI triggers on shared.destinations, which takes
+-- ACCESS EXCLUSIVE on that table for the rest of this transaction. While the DROP waits for that lock (up to
+-- lock_timeout, 5s by DB Migrate default) every new reader of shared.destinations queues behind it, which includes
+-- every catalog view (TripPlanner browse, CIS API and worker). Apply only while the CIS and Booking job tables are idle
+-- (DB Migrate waits for that) and accept a retry when a long reader makes the apply fail on the lock timeout; the
+-- transaction then rolls back with nothing changed.
 -- Re-runnable (test_replay_twice_pg.py): IF EXISTS everywhere; the write-time guard reads a table only when it exists.
 
 BEGIN;
