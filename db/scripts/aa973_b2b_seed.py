@@ -58,7 +58,7 @@ import uuid
 from datetime import timedelta
 
 READ_ONLY = False
-ACTION = "seed"  # "seed" or "cleanup"
+ACTION = "cleanup"  # "seed" or "cleanup"
 
 SCRIPT_NAME = "aa973_b2b_seed"
 ACTOR = f"script:{SCRIPT_NAME}"
