@@ -293,7 +293,8 @@ resource "aws_iam_role_policy" "booking_ecs_task" {
 # Env names read by the app (backend/app/settings.py): DATABASE_URL (secret), DB_SSL, ENVIRONMENT, and the
 # AA-811 staff e-mail settings (bk_notify_email job): STAFF_NOTIFY_EMAIL, SES_FROM_ADDRESS (must equal
 # var.ses_from_address, the only From the task role may send as, ses.tf), SES_CONFIGURATION_SET (the
-# transactional stream of ses.tf), STAFF_ADMIN_URL (links to the staff admin). GIT_SHA is baked into the
+# transactional stream of ses.tf), STAFF_ADMIN_URL (links to the staff admin). AA-972: COGNITO_M2M_ISSUER and
+# COGNITO_M2M_CRM_CLIENT_ID (identity_m2m.tf; the B2B API answers 503 without them). GIT_SHA is baked into the
 # image at build time. AA-871: SENTRY_DSN (secret booking/<env>/sentry-dsn) and SENTRY_REQUIRED=true, both only
 # while var.booking_sentry_enabled (booking_variables.tf says why it waits for the secret value).
 #
@@ -321,6 +322,10 @@ resource "aws_ecs_task_definition" "booking" {
       { name = "SES_FROM_ADDRESS", value = var.ses_from_address },
       { name = "SES_CONFIGURATION_SET", value = aws_sesv2_configuration_set.stream["transactional"].configuration_set_name },
       { name = "STAFF_ADMIN_URL", value = var.booking_staff_admin_url },
+      # AA-972: the B2B API /booking/b2b/v1 trusts client-credentials tokens of the M2M pool (identity_m2m.tf) from
+      # the AA-Partner (CRM) client only. Public values (issuer, client id); the client secret never reaches Booking.
+      { name = "COGNITO_M2M_ISSUER", value = "https://${aws_cognito_user_pool.m2m.endpoint}" },
+      { name = "COGNITO_M2M_CRM_CLIENT_ID", value = aws_cognito_user_pool_client.m2m_crm.id },
       ], var.booking_sentry_enabled ? [
       { name = "SENTRY_REQUIRED", value = "true" },
     ] : [])
