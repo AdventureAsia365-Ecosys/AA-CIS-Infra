@@ -2,6 +2,8 @@ name: Terraform Plan Guard Tests
 
 # AA-846: unit tests of tools/terraform/plan_guard.py, the check that refuses a CI apply whose plan
 # changes a guarded type (aws_secretsmanager_secret_version, random_password, aws_db_instance).
+# AA-932: plus the Object Lock rule (COMPLIANCE create, any change to a lock configuration, deleting an Object
+# Lock bucket) and the CRM key-policy diff tool (tools/terraform/crm_key_policy_diff.py), same test folder.
 # The guarded fixture must exit non-zero, the clean and no-op fixtures must exit 0, and the guard
 # must stay wired in front of the apply step in terraform-apply.yml. Offline, no AWS access.
 

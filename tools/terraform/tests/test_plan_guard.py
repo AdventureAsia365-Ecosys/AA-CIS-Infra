@@ -116,6 +116,85 @@ def test_malformed_plan_is_an_input_error(bad):
         pg.find_guarded_changes(bad)
 
 
+# --- Object Lock rule (AA-932) ---------------------------------------------------------------------
+
+LOCK = "aws_s3_bucket_object_lock_configuration"
+
+
+def _lock_plan(actions, mode=None, before_mode=None, importing=False, rtype=LOCK, before=None):
+    change = {"actions": actions}
+    if mode is not None:
+        change["after"] = {"rule": [{"default_retention": [{"mode": mode, "days": 365, "years": None}]}]}
+    if before_mode is not None:
+        change["before"] = {"rule": [{"default_retention": [{"mode": before_mode, "days": 365}]}]}
+    if before is not None:
+        change["before"] = before
+    if importing:
+        change["importing"] = {"id": "placeholder"}
+    return {"format_version": "1.2", "planned_values": {}, "resource_changes": [
+        {"address": f'{rtype}.crm_audit["audit-c"]', "mode": "managed", "type": rtype, "change": change}]}
+
+
+def test_governance_lock_create_passes():
+    assert pg.find_guarded_changes(_lock_plan(["create"], mode="GOVERNANCE")) == []
+
+
+def test_compliance_lock_create_is_refused():
+    found = pg.find_guarded_changes(_lock_plan(["create"], mode="COMPLIANCE"))
+    assert [(c.type, c.action) for c in found] == [(LOCK, "create (COMPLIANCE)")]
+
+
+@pytest.mark.parametrize("actions", [["update"], ["delete"], ["delete", "create"], ["create", "delete"], ["forget"]])
+def test_any_change_to_an_existing_lock_is_refused(actions):
+    found = pg.find_guarded_changes(_lock_plan(actions, mode="GOVERNANCE", before_mode="GOVERNANCE"))
+    assert len(found) == 1 and found[0].action.startswith(",".join(actions))
+
+
+def test_replace_into_compliance_is_labelled():
+    found = pg.find_guarded_changes(_lock_plan(["delete", "create"], mode="COMPLIANCE", before_mode="GOVERNANCE"))
+    assert found[0].action == "delete,create (COMPLIANCE)"
+
+
+def test_lock_import_is_refused_and_noop_passes():
+    assert [c.action for c in pg.find_guarded_changes(_lock_plan(["no-op"], importing=True))] == ["import"]
+    assert pg.find_guarded_changes(_lock_plan(["no-op"], mode="GOVERNANCE", before_mode="GOVERNANCE")) == []
+
+
+@pytest.mark.parametrize("actions", [["delete"], ["delete", "create"], ["create", "delete"]])
+def test_deleting_an_object_lock_bucket_is_refused(actions):
+    plan = _lock_plan(actions, rtype="aws_s3_bucket", before={"object_lock_enabled": True})
+    found = pg.find_guarded_changes(plan)
+    assert len(found) == 1 and found[0].action.endswith("(Object Lock bucket)")
+
+
+def test_other_bucket_changes_pass():
+    assert pg.find_guarded_changes(_lock_plan(["delete"], rtype="aws_s3_bucket",
+                                              before={"object_lock_enabled": False})) == []
+    assert pg.find_guarded_changes(_lock_plan(["update"], rtype="aws_s3_bucket",
+                                              before={"object_lock_enabled": True})) == []
+    assert pg.find_guarded_changes(_lock_plan(["create"], rtype="aws_s3_bucket")) == []
+
+
+def test_cli_compliance_lock_is_refused_and_names_the_mode(tmp_path):
+    p = tmp_path / "plan.json"
+    p.write_text(json.dumps(_lock_plan(["create"], mode="COMPLIANCE")), encoding="utf-8")
+    res = _run(str(p))
+    assert res.returncode == 1
+    assert "create (COMPLIANCE)" in res.stderr
+
+
+def test_terraform_never_puts_dev_in_compliance():
+    # Static guard on the source (design v3 §3.6: Dev governance only): only audit-c can switch, behind a
+    # variable that defaults to false and a precondition that refuses it on Dev; audit-g is GOVERNANCE.
+    tf = open(os.path.join(REPO_ROOT, "accounts", "aa365", "crm_storage.tf"), encoding="utf-8").read()
+    var = tf.split('variable "crm_audit_compliance_enabled"', 1)[1].split("\n}", 1)[0]
+    assert "default     = false" in var
+    assert tf.count('"COMPLIANCE"') == 1
+    assert 'mode = var.crm_audit_compliance_enabled ? "COMPLIANCE" : "GOVERNANCE", days = 365' in tf
+    assert 'audit-g = { mode = "GOVERNANCE", days = null, years = 7 }' in tf
+    assert 'each.value.mode == "GOVERNANCE" || (each.key == "audit-c" && var.environment != "dev")' in tf
+
+
 # --- CLI ------------------------------------------------------------------------------------------
 
 
