@@ -94,7 +94,7 @@ resource "aws_cognito_user_pool" "m2m" {
 
 resource "aws_cognito_resource_server" "booking_b2b" {
   identifier   = local.idm2m_booking_identifier
-  name         = "AA-Booking B2B API (booking.b2b.v1)"
+  name         = "AA-Booking B2B API booking.b2b.v1"
   user_pool_id = aws_cognito_user_pool.m2m.id
 
   dynamic "scope" {
