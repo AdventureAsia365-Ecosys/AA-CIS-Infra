@@ -165,3 +165,10 @@ that depends on them; how many trip events and drafts still carry pre-flip ids (
 `SCRIPT verdict drop_ready=… revoke_ready=… reasons=…`. Counts, names and timestamps only. Dispatch it twice some
 minutes apart to see whether a read counter moves. Notes: AA-CIS-App / AA-TripPlanner-Web
 `docs/implementation-notes/AA-712-x4.md`.
+
+**Obsolete since TripPlanner tp-018 (AA-712 X4, frozen place tables dropped):** `x1_photo_itinerary_parity.py`,
+`aa847_component_id_map_fill.py` and the legacy half of `aa847_places_probe.py` read
+`tripplanner.itinerary_components` / `tour_stop` / `tour_leg` / `tour_junction` and `shared.destinations`; they fail
+once tp-018 is applied. They stay as the record of the flip evidence; do not dispatch them again (the probe's `cis`
+half lives on in the TripPlanner tests over the catalog views). Remove them in a later cleanup together with their
+tests.
