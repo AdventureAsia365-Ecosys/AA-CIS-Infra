@@ -173,11 +173,14 @@ CREATE OR REPLACE FUNCTION booking.b2b_answer_due(start_at TIMESTAMPTZ, business
     RETURNS TIMESTAMPTZ
     LANGUAGE plpgsql
     STABLE
+    STRICT
     SET search_path = pg_catalog
 AS $$
 DECLARE
+    -- STRICT: any NULL argument returns NULL at once (a NULL start or zone would otherwise loop forever).
     v_local TIMESTAMP := start_at AT TIME ZONE tz;
-    v_left  INTEGER := greatest(business_days, 0);
+    -- Capped at 10 business days, the same bound the app applies to the setting.
+    v_left  INTEGER := least(greatest(business_days, 0), 10);
 BEGIN
     -- A request on Saturday or Sunday starts the clock at 00:00 of the next Monday.
     WHILE extract(isodow FROM v_local) > 5 LOOP
@@ -193,7 +196,7 @@ BEGIN
 END $$;
 
 COMMENT ON FUNCTION booking.b2b_answer_due(TIMESTAMPTZ, INTEGER, TEXT) IS
-    'bk-022 (AA-975): start_at + n business days (Mon-Fri) in time zone tz; a weekend start counts from the next Monday 00:00. No public holidays.';
+    'bk-022 (AA-975): start_at + n business days (Mon-Fri) in time zone tz; a weekend start counts from the next Monday 00:00. STRICT (NULL in, NULL out); business_days capped to 0..10. No public holidays.';
 
 -- ── Event triggers ───────────────────────────────────────────────────────────
 
