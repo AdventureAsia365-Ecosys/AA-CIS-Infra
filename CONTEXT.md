@@ -143,6 +143,8 @@ accounts/
                                    task-role PutMetricData grants, AA-751; every alarm e-mails on
                                    ALARM only, no ok_actions), diagnostics.tf
     dns.tf                        (Route 53 public zone lumiguides.it.com + records copied from Namecheap, AA-811)
+    db_dns.tf                     (AA-829: private zone <env>.internal on the VPC, CNAME db.<env>.internal -> RDS,
+                                   TTL 60; every DSN secret names it; var.db_dns_target_override repoints it)
     ses.tf                        (SES domain identity, DKIM/MAIL FROM/DMARC records, configuration sets,
                                    ses:SendEmail grants for the app roles, reputation alarms — AA-811)
     e2e_mailbox.tf                (AA-816 I5: SES inbound for the Cognito E2E: MX e2e-mail.lumiguides.it.com,
@@ -322,6 +324,14 @@ Every new `*.lumiguides.it.com` record goes into this zone, not into the Nameche
 TripPlanner Lambda exec role may `ses:SendEmail` only as that From address (`ses:FromAddress`) and
 only through the transactional set. The account is in the SES sandbox until the production-access
 request (console, human) is granted.
+
+**Private DB hostname (AA-829, S248):** `db_dns.tf` adds a private hosted zone `<env>.internal`
+associated with the one VPC and a CNAME `db.<env>.internal` (TTL 60) to the RDS endpoint address
+(`module.rds` output `db_address`). Every DSN secret names this host, not the RDS endpoint, so a restore or
+replacement of the instance changes one record (`var.db_dns_target_override` for an instance outside
+Terraform). It resolves only inside the VPC. Clients connect with sslmode/ssl `require` (no certificate
+hostname check); a client on `verify-full` must keep the RDS endpoint name. `set-password` still requires the
+role secret and the master secret to name the same host, so the secrets move together.
 
 **RDS + job metrics (AA-832, AA-751):** the CIS api process publishes AA/RDS per-role connection
 counts and AA/Jobs/CIS backlog metrics every 5 minutes from an in-process sampler
