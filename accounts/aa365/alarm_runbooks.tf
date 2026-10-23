@@ -36,6 +36,7 @@ locals {
     database       = "${local.runbook_base_url}/database-operations.md"
     break_glass    = "${local.runbook_base_url}/runbooks/break-glass.md"
     incident       = "${local.runbook_base_url}/incident-response.md"
+    crm_keys       = "${local.runbook_base_url}/runbooks/crm-keys.md"
   }
 
   # Suffix appended to alarm_description, e.g. "${...}.${local.runbook_suffix.database}".

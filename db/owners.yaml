@@ -48,13 +48,15 @@ master_secret: aa-cis/dev/rds
 # refuses (exit 8, also in check mode) a file whose SET LOCAL ROLE target the login cannot reach.
 migrator_role: db_migrator
 migrator_secret: aa-cis/dev/db-migrator
-migrator_member_of: [bk_owner, catalog_owner, cis_app, cis_owner, pg_read_all_stats, tp_owner]
+migrator_member_of: [bk_owner, catalog_owner, cis_app, cis_owner, crm_owner, pg_read_all_stats, tp_owner]
 
 # DB Migrate mode=set-password (X1 S12, plan XD2): the LOGIN roles whose password the workflow sets, and the
 # DSN secret each one's password is read from inside the task (Nghiệp writes the DSN in the Console, S17 /
 # S20). Mirrored by db/run_migration.py PASSWORD_ROLES and the role regex of db-migrate.yml "Validate input".
 # The legacy runtime roles (booking, tripplanner, aa_app_user) keep the passwords they have (XD1).
-password_roles: {cis_app: aa-cis/dev/rds-cis-app, db_migrator: aa-cis/dev/db-migrator}
+# crm_app (AA-932, rl-003): the partner CRM runtime; its DSN secret crm/dev/database-url is a Terraform shell
+# (accounts/aa365/crm_data.tf) that Nghiệp fills in the Console before set-password.
+password_roles: {cis_app: aa-cis/dev/rds-cis-app, crm_app: crm/dev/database-url, db_migrator: aa-cis/dev/db-migrator}
 
 owners:
   cis:
@@ -136,6 +138,10 @@ owners:
       - {grantee: bk_owner, privilege: "SELECT, INSERT", object: shared.schema_versions, status: contract, source: "243 (MIG-2 self-registration; bk- keys only, key guard)"}
       - {grantee: tp_owner, privilege: USAGE,          object: "shared (schema)",      status: contract, source: "243 (MIG-2 self-registration)"}
       - {grantee: tp_owner, privilege: "SELECT, INSERT", object: shared.schema_versions, status: contract, source: "243 (MIG-2 self-registration; tp- keys only, key guard)"}
+      # CIS 269 (AA-932): the same two grants for the partner CRM owner role, and the key guard lets crm_owner insert
+      # crm- keys only.
+      - {grantee: crm_owner, privilege: USAGE,          object: "shared (schema)",      status: contract, source: "269 (MIG-2 self-registration, AA-932)"}
+      - {grantee: crm_owner, privilege: "SELECT, INSERT", object: shared.schema_versions, status: contract, source: "269 (MIG-2 self-registration; crm- keys only, key guard)"}
 
   booking:
     repo: AA-Booking
@@ -202,6 +208,44 @@ owners:
     consumer_grants:
       - {grantee: booking, privilege: "USAGE, SELECT", object: tripplanner.v_inquiry_outbox, status: contract, source: "tp-009"}
       - {grantee: cis_app, privilege: "USAGE, SELECT", object: tripplanner.v_ops_traffic_daily, status: contract, source: "tp-015 (AA-858)", expected_from: tp-015}
+
+  crm:
+    # Partner CRM (AA-Partner, ADR 0010 / 0008a, data standards DM-6.8; AA-932 = design v3 card CRM-04). Born under
+    # its owner role: rl-003 creates crm_owner (NOLOGIN), crm_app (LOGIN, limit 6) and the EMPTY schema crm owned by
+    # crm_owner, so the first file crm-001 already runs as crm_owner (XD8) and there is no ownership transfer.
+    # owner_transfer_key is therefore the owner's first file: the probe's ownership / runtime-grant cells are
+    # expected once crm-001 is registered and crm is owned by crm_owner. No cross-schema grant in either direction
+    # (ADR 0008a decision 1): no consumer_grants, no owner_grants, and the isolation probe asserts 42501 both ways.
+    repo: AA-Partner
+    path: api/migrations
+    key_prefix: crm-
+    anchor_schema: crm
+    schemas: [crm]
+    owner_role: crm_owner                # rl-003
+    owner_role_today: crm_owner          # schema crm is created owned by crm_owner (rl-003)
+    owner_transfer_key: crm-001          # first owner file (crm.job, grants, default privileges)
+    runtime_roles: [crm_app]             # AA-Partner API + in-process crm.job worker (AA-933)
+    runtime_roles_today: []              # nothing connects yet: the service arrives with AA-933
+    runtime_secrets: {crm_app: crm/dev/database-url}
+    # NOLOGIN roles crm_app reaches only by SET LOCAL ROLE inside tenant_tx() (rl-004; crm_app is NOINHERIT): they
+    # open no connection and own nothing; their object grants come with the CRM cards that need them.
+    nologin_roles: [crm_ai_reader, crm_eraser, crm_insights, crm_support_reader]
+    # crm_app gets DML on every table and sequence rights through default privileges FOR ROLE crm_owner (crm-001).
+    # Functions: no schema-wide EXECUTE (functions = []): crm.erase_subject() is for crm_eraser only (design §4.10),
+    # so crm-001 revokes the PUBLIC default and every function is granted by name.
+    runtime_privileges:
+      crm_app:
+        schemas: [crm]
+        objects: {relation: [SELECT], sequence: [USAGE], function: []}
+        default_acl: {tables: [DELETE, INSERT, SELECT, UPDATE], sequences: [SELECT, USAGE]}
+    job_table: crm.job
+    job_kind_prefix: crm_
+    # crm_heartbeat: the always-queued liveness kind of the AA-Partner worker (AA-933 registers it under this name),
+    # so a CIS / Booking / TripPlanner DB Migrate apply is never blocked by the CRM (card CRM-04 E check).
+    idle_exempt_kinds: [crm_heartbeat]
+    set_local_roles: []
+    role_lint_from: 1
+    consumer_grants: []
 
   roles:
     # Infra-native (no owner repo): role bootstrap (LOGIN/NOLOGIN roles, attributes, memberships,

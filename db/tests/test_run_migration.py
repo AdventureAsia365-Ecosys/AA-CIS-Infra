@@ -813,9 +813,9 @@ class RoleSwitchTest(unittest.TestCase):
                       log)
 
     def test_unknown_dir_is_refused_and_missing_anchor_does_not_switch(self):
-        code, conn, _, log = self.run_task(PLAIN, file="crm/001_x.sql", version="crm-001")
+        code, conn, _, log = self.run_task(PLAIN, file="zz/001_x.sql", version="zz-001")
         self.assertEqual((code, conn.executed), (8, []))
-        self.assertIn("unknown migration dir 'crm'", log)
+        self.assertIn("unknown migration dir 'zz'", log)
         code, conn, _, log = self.run_task(PLAIN, file="tripplanner/013_x.sql", version="tp-013",
                                            conn=FakeConn(owners={"shared": "aa_cis_admin"}))
         self.assertEqual((code, conn.executed), (0, [PLAIN]))

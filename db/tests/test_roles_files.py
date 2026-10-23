@@ -266,5 +266,48 @@ class Rl002Test(unittest.TestCase):
         self.assertRegex(self.view, r"ON CONFLICT \(VERSION\) DO NOTHING")
 
 
+RL003 = ROLES / "003_crm_roles.sql"
+RL004 = ROLES / "004_crm_nologin_roles.sql"
+CRM_READERS = ["CRM_AI_READER", "CRM_INSIGHTS", "CRM_SUPPORT_READER", "CRM_ERASER"]
+
+
+class Rl003Test(unittest.TestCase):
+    """AA-932: the partner CRM's role bootstrap is the template, rendered with the owners.yaml values (ADR 0008
+    playbook step 3) and the C2.2 connection limit (crm_app 6, data standards v1.3)."""
+
+    def test_is_the_rendered_template(self):
+        sys.path.insert(0, str(ROOT / "db" / "templates"))
+        import render_new_owner_roles as tmpl
+        expected = tmpl.render("003", "crm", "crm_owner", "crm_app", "crm", "crm-", 6, "AA-932")
+        self.assertEqual(RL003.read_text(encoding="utf-8"), expected)
+
+    def test_limits_and_memberships(self):
+        view = code_view(RL003.read_text(encoding="utf-8"))
+        self.assertEqual(connection_limits(view), {"crm_app": 6})
+        self.assertEqual(membership_grants(view), ["GRANT CRM_OWNER TO AA_CIS_ADMIN", "GRANT CRM_OWNER TO DB_MIGRATOR"])
+
+
+class Rl004Test(unittest.TestCase):
+    """AA-932: the CRM NOLOGIN roles (design v3 §3.1), granted to crm_app only; crm_app NOINHERIT."""
+    view = code_view(RL004.read_text(encoding="utf-8"))
+
+    def test_readers_are_nologin_and_granted_to_crm_app_only(self):
+        for r in CRM_READERS:
+            self.assertRegex(self.view, rf"\bALTER ROLE {r} NOLOGIN;")
+        self.assertEqual(membership_grants(self.view), [f"GRANT {', '.join(CRM_READERS)} TO CRM_APP"])
+        self.assertRegex(self.view, r"\bALTER ROLE CRM_APP NOINHERIT;")
+
+    def test_no_object_grant_no_limit_change(self):
+        self.assertEqual([s for s in statements(self.view) if re.match(r"^GRANT\b", s) and re.search(r"\bON\b", s)],
+                         [])
+        self.assertEqual(connection_limits(self.view), {})
+        self.assertNotRegex(self.view, r"\bOWNER TO\b|\bAUTHORIZATION\b|\bALTER DEFAULT PRIVILEGES\b")
+
+    def test_registers_rl_004(self):
+        self.assertRegex(RL004.read_text(encoding="utf-8"),
+                         r"INSERT INTO shared\.schema_versions \(version, applied_at, description\)\s+"
+                         r"VALUES \('rl-004',")
+
+
 if __name__ == "__main__":
     unittest.main()

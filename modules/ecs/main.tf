@@ -294,6 +294,7 @@ resource "aws_iam_role_policy" "ecs_task_policy" {
           "arn:aws:secretsmanager:${var.aws_region}:005097885195:secret:${var.project}/${var.environment}/db-migrator-??????",
           "arn:aws:secretsmanager:${var.aws_region}:005097885195:secret:booking/*",
           "arn:aws:secretsmanager:${var.aws_region}:005097885195:secret:tripplanner/*",
+          "arn:aws:secretsmanager:${var.aws_region}:005097885195:secret:crm/*", # AA-932 partner CRM
         ]
       },
       # AA-894 scope 2 — the admin data-model view (AA-CIS-App GET /admin/data-model) reads the ERD model that

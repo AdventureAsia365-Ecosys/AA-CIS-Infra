@@ -60,6 +60,11 @@ FORCE tables + tenant_tour_versions) through cis_app's own login, without a GUC 
 and compares with the catalog login's reference counts taken before and after (a concurrent insert falls
 between them). Expected from 244 + the cis_app password (S17).
 
+Partner CRM (AA-932): owner crm (rl-003 crm_owner / crm_app, rl-004 NOLOGIN readers, CIS 269 registry grant,
+crm-001 first file). Cells: crm_app role and NOINHERIT, each NOLOGIN reader granted to crm_app only, crm_owner
+registry grants, crm_app login after its own set-password (crm_app_secret_ready / crm_app_password_set), 42501
+both ways (crm_app -> booking / tripplanner / shared; every AA app role -> crm.job).
+
 Mirrors db/owners.yaml (schemas, anchor schemas, owner roles, transfer keys, runtime secrets, view
 owners, runtime privileges, contract consumer grants on single objects, RLS allowlist, master role):
 db/tests/test_owners_registry.py fails when they disagree.
@@ -138,6 +143,12 @@ OWNERS = {
                               runtime_privileges=(RuntimePrivileges(
                                   "tripplanner", ("tripplanner",), BASELINE,
                                   (("tables", DML), ("sequences", ("SELECT", "USAGE")))),)),
+    # AA-932: partner CRM. Born under crm_owner (rl-003), so the "transfer" key is its first file crm-001. No
+    # schema-wide EXECUTE for crm_app: crm.erase_subject() belongs to crm_eraser (functions granted by name).
+    "crm": ProbeOwner(("crm",), "crm", "crm_owner", "crm-001", (("crm_app", "crm/dev/database-url"),),
+                      runtime_privileges=(RuntimePrivileges(
+                          "crm_app", ("crm",), (("relation", ("SELECT",)), ("sequence", ("USAGE",)), ("function", ())),
+                          (("tables", DML), ("sequences", ("SELECT", "USAGE")))),)),
 }
 # pg_default_acl.defaclobjtype of each owners.yaml default_acl word.
 DEFACL_OBJTYPE = {"tables": "r", "sequences": "S", "functions": "f"}
@@ -201,6 +212,15 @@ CIS_RUNTIME = "cis_runtime"            # label: the login the running api task d
 FORBIDDEN_IN_CHAIN = ("rds_superuser", "pg_read_all_data", "pg_write_all_data", MASTER_ROLE)
 
 CIS_APP_LOGIN_KEYS = ("cis_app_secret_ready", "cis_app_password_set")
+# Partner CRM (AA-932, owners.yaml crm): crm_app logs in only after Nghiệp writes crm/dev/database-url and DB Migrate
+# mode=set-password marks the role (same window as cis_app in X1 S17). Its NOLOGIN roles (owners.yaml
+# nologin_roles, rl-004) are reached only by SET LOCAL ROLE: crm_app is NOINHERIT and the only member of each.
+CRM_APP = "crm_app"
+CRM_APP_LOGIN_KEYS = ("crm_app_secret_ready", "crm_app_password_set")
+CRM_OWNER = "crm_owner"
+CRM_NOLOGIN_ROLES = ("crm_ai_reader", "crm_eraser", "crm_insights", "crm_support_reader")
+# Password roles whose login cell waits for their DSN secret and the set-password marker.
+LOGIN_KEYS = {CIS_APP: CIS_APP_LOGIN_KEYS, CRM_APP: CRM_APP_LOGIN_KEYS}
 # Cross-app reads (X1 plan S2): each must raise 42501 through the role's own login.
 CROSS_APP = (
     ("booking", "tripplanner.sessions", ()),
@@ -212,9 +232,20 @@ CROSS_APP = (
     (CIS_APP, "tripplanner.sessions", ("cis_app_secret_ready", "cis_app_password_set")),
     (CIS_RUNTIME, "booking.customers", ("cis_runtime_on_cis_app",)),
     (CIS_RUNTIME, "tripplanner.sessions", ("cis_runtime_on_cis_app",)),
+    # AA-932 (ADR 0008a decision 1, design N5): no cross-schema grant in either direction. crm_app reads nothing
+    # outside crm; no AA app role reads crm.* (crm.job exists from crm-001).
+    (CRM_APP, "booking.customers", CRM_APP_LOGIN_KEYS),
+    (CRM_APP, "tripplanner.sessions", CRM_APP_LOGIN_KEYS),
+    (CRM_APP, "shared.tenants", CRM_APP_LOGIN_KEYS),
+    ("booking", "crm.job", ("crm-001",)),
+    ("tripplanner", "crm.job", ("crm-001",)),
+    ("aa_app_user", "crm.job", ("crm-001",)),
+    (CIS_APP, "crm.job", ("crm-001",) + CIS_APP_LOGIN_KEYS),
+    (CIS_RUNTIME, "crm.job", ("crm-001", "cis_runtime_on_cis_app")),
 )
 
-VERSION_KEYS = ("rl-001", "243", "bk-014", "tp-013", "244", "rl-002", "245") + CONSUMER_GRANT_KEYS
+VERSION_KEYS = ("rl-001", "243", "bk-014", "tp-013", "244", "rl-002", "245", "rl-003", "rl-004", "269",
+                "crm-001") + CONSUMER_GRANT_KEYS
 TRANSFER_KEYS = {name: f"{name}_transferred" for name in OWNERS}
 KEY_TEXT = {
     "rl-001": "rl-001 registered (X1 S3, first apply of the S8 train)",
@@ -224,6 +255,14 @@ KEY_TEXT = {
     "244": "CIS 244 registered (X1 S16)",
     "rl-002": "rl-002 registered (X1 S20)",
     "245": "CIS 245 registered (X1 S21)",
+    "rl-003": "rl-003 registered (AA-932: crm_owner, crm_app, schema crm)",
+    "rl-004": "rl-004 registered (AA-932: CRM NOLOGIN roles granted to crm_app, crm_app NOINHERIT)",
+    "269": "CIS 269 registered (AA-932: crm_owner may register crm- keys)",
+    "crm-001": "crm-001 registered (AA-932: crm.job, crm_app grants and default privileges)",
+    "crm_transferred": "crm-001 registered and schema crm owned by crm_owner (AA-932)",
+    "crm_app_secret_ready": "crm/dev/database-url holds a crm_app DSN (Nghiệp's hand edit, AA-932)",
+    "crm_app_password_set": (f"role crm_app carries the '{PASSWORD_MARKER}' comment of DB Migrate "
+                             f"mode=set-password (AA-932)"),
     "booking_transferred": "bk-014 registered and schema booking owned by bk_owner (X1 S6)",
     "tripplanner_transferred": "tp-013 registered and schema tripplanner owned by tp_owner (X1 S7)",
     "cis_transferred": "245 registered and schema shared owned by cis_owner (X1 S21)",
@@ -247,8 +286,14 @@ REGISTERED_SQL = "SELECT version FROM shared.schema_versions WHERE version = ANY
 ROLE_SQL = """
 SELECT rolname, rolcanlogin AS login, rolsuper AS super, rolbypassrls AS bypassrls,
        rolcreaterole AS createrole, rolcreatedb AS createdb, rolreplication AS replication,
-       rolconnlimit AS connlimit, pg_catalog.shobj_description(oid, 'pg_authid') AS comment
+       rolconnlimit AS connlimit, rolinherit AS inherit,
+       pg_catalog.shobj_description(oid, 'pg_authid') AS comment
   FROM pg_catalog.pg_roles WHERE rolname = $1"""
+# Direct members of role $1 (who may SET ROLE to it): the partner CRM's NOLOGIN roles are granted to crm_app only.
+MEMBERS_SQL = """
+SELECT pg_catalog.pg_get_userbyid(m.member)::text AS role
+  FROM pg_catalog.pg_auth_members m JOIN pg_catalog.pg_roles r ON r.oid = m.roleid
+ WHERE r.rolname = $1 ORDER BY 1"""
 ANCHOR_SQL = """
 SELECT nspname::text AS schema, pg_catalog.pg_get_userbyid(nspowner)::text AS owner
   FROM pg_catalog.pg_namespace WHERE nspname = ANY($1::text[])"""
@@ -615,6 +660,8 @@ def state_keys(facts: dict) -> dict:
     keys["cis_runtime_on_cis_app"] = secret_name(facts["cis_runtime"]["value_from"]) == CIS_APP_SECRET
     keys["cis_app_secret_ready"] = facts["logins"].get(CIS_APP, {}).get("secret_user") == CIS_APP
     keys["cis_app_password_set"] = PASSWORD_MARKER in (facts["roles"].get(CIS_APP, {}).get("comment") or "")
+    keys["crm_app_secret_ready"] = facts["logins"].get(CRM_APP, {}).get("secret_user") == CRM_APP
+    keys["crm_app_password_set"] = PASSWORD_MARKER in (facts["roles"].get(CRM_APP, {}).get("comment") or "")
     keys["catalog_login_not_master"] = facts["catalog"]["login"] != MASTER_ROLE
     return keys
 
@@ -653,6 +700,32 @@ def _role_cells(cid: str, label: str, info: dict, when: tuple) -> list:
     ]
 
 
+def _crm_nologin_cells(roles: dict) -> list:
+    """rl-004: each CRM NOLOGIN role exists, cannot log in, has no elevated attribute, owns nothing, is a member of
+    nothing and is granted to crm_app only (a PostgreSQL 16+ ADMIN row of the creating master is tolerated); crm_app
+    is NOINHERIT, so it never holds a reader's rights and no policy TO <reader> applies to its own session."""
+    cells = []
+    for r in CRM_NOLOGIN_ROLES:
+        info = roles.get(r, {})
+        members = [m for m in info.get("members", []) if m != MASTER_ROLE]
+        ok = (bool(info.get("exists")) and not info.get("login") and not any(info.get(a) for a in ELEVATED_ATTRS)
+              and not info.get("owned") and not info.get("chain") and members == [CRM_APP])
+        cells.append(Cell(f"nologin.{r}", "owner role",
+                          f"{r}: NOLOGIN, no elevated attribute, owns nothing, member of nothing, granted to "
+                          f"{CRM_APP} only", ("rl-004",), ok=ok, error=info.get("error", ""),
+                          detail={"exists": info.get("exists"), "login": info.get("login"),
+                                  "owned": len(info.get("owned", [])), "member_of": info.get("chain", []),
+                                  "granted_to": info.get("members", [])}))
+    app = roles.get(CRM_APP, {})
+    ok = bool(app.get("exists")) and app.get("inherit") is False and sorted(app.get("chain", [])) == list(
+        CRM_NOLOGIN_ROLES)
+    cells.append(Cell(f"role.{CRM_APP}.noinherit", "runtime role",
+                      f"{CRM_APP}: NOINHERIT, member of exactly the CRM NOLOGIN roles (SET LOCAL ROLE only)",
+                      ("rl-004",), ok=ok, error=app.get("error", ""),
+                      detail={"inherit": app.get("inherit"), "member_of": app.get("chain", [])}))
+    return cells
+
+
 def build_cells(facts: dict, keys: dict) -> list:
     cells: list = []
     roles = facts["roles"]
@@ -661,6 +734,7 @@ def build_cells(facts: dict, keys: dict) -> list:
     for r in LEGACY_RUNTIME_ROLES:
         cells += _role_cells(f"role.{r}", r, roles.get(r, {}), ())
     cells += _role_cells(f"role.{CIS_APP}", CIS_APP, roles.get(CIS_APP, {}), ("rl-001",))
+    cells += _role_cells(f"role.{CRM_APP}", CRM_APP, roles.get(CRM_APP, {}), ("rl-003",))
     rt_user = facts["cis_runtime"].get("user")
     cells += _role_cells("role.cis_runtime", f"CIS runtime ({rt_user or 'unknown'})",
                          roles.get(rt_user, {}) if rt_user else {"error": facts["cis_runtime"].get("error")
@@ -668,7 +742,7 @@ def build_cells(facts: dict, keys: dict) -> list:
                          ("cis_runtime_on_cis_app",))
 
     # Owner roles (rl-001, rl-002).
-    for owner, key in (("bk_owner", "rl-001"), ("tp_owner", "rl-001"), ("cis_owner", "rl-002")):
+    for owner, key in (("bk_owner", "rl-001"), ("tp_owner", "rl-001"), ("cis_owner", "rl-002"), (CRM_OWNER, "rl-003")):
         info = roles.get(owner, {})
         ok = bool(info.get("exists")) and not info.get("login") and not any(info.get(a) for a in ELEVATED_ATTRS)
         cells.append(Cell(f"owner_role.{owner}", "owner role",
@@ -676,19 +750,22 @@ def build_cells(facts: dict, keys: dict) -> list:
                           (key,), ok=ok, error=info.get("error", ""),
                           detail={k: info.get(k) for k in ("exists", "login", *ELEVATED_ATTRS)}))
 
+    # Partner CRM NOLOGIN roles (rl-004): reached only by SET LOCAL ROLE from crm_app, which is NOINHERIT.
+    cells += _crm_nologin_cells(roles)
+
     # Logins through each role's own secret.
     # cis_app: Nghiệp writes its DSN first (S17), set-password runs after; in between the login fails
     # with 28P01. Expected only once set-password has marked the role; a warning while the secret is
     # ready but the marker is missing (so a forgotten set-password does not stay silent).
-    pw_gap = keys.get("cis_app_secret_ready", False) and not keys.get("cis_app_password_set", False)
     for role, login in sorted(facts["logins"].items()):
-        when = CIS_APP_LOGIN_KEYS if role == CIS_APP else ()
+        when = LOGIN_KEYS.get(role, ())
+        pw_gap = bool(when) and keys.get(when[0], False) and not keys.get(when[1], False)
         expected_user = None if role == CIS_RUNTIME else role
         ok = not login.get("error") and (expected_user is None or login.get("current_user") == expected_user)
         cells.append(Cell(f"login.{role}", "login", f"{role}: logs in with its own secret "
                           f"{login.get('secret', '?')}", when, ok=ok, error=login.get("error", ""),
                           detail={"secret": login.get("secret"), "current_user": login.get("current_user")},
-                          warn_while_pending=role == CIS_APP and pw_gap))
+                          warn_while_pending=pw_gap))
 
     # Cross-app reads (42501 through the role's own login).
     for role, target, when in CROSS_APP:
@@ -725,7 +802,9 @@ def build_cells(facts: dict, keys: dict) -> list:
             missing = g.get("missing", [])
             cells.append(Cell(f"runtime_grants.{name}{suffix}", "runtime grants",
                               f"{rp.role}: USAGE on its {len(rp.schemas)} schema(s), SELECT on every relation, USAGE on "
-                              f"every non-identity sequence, EXECUTE on every non-trigger function", (key,),
+                              f"every non-identity sequence"
+                              + (", EXECUTE on every non-trigger function" if dict(rp.objects).get("function")
+                                 else " (functions granted by name)"), (key,),
                               ok=not g.get("error") and not missing, error=g.get("error", ""),
                               detail={"missing": len(missing),
                                       "sample": [f"{m['kind']} {m['name']}: {m['missing']}"
@@ -749,11 +828,11 @@ def build_cells(facts: dict, keys: dict) -> list:
                           detail={"checked": len(grants), "missing": bad}))
 
     # Owner roles may register their own keys (CIS 243); cis_app may not write the registry (244).
-    for owner in ("bk_owner", "tp_owner"):
+    for owner, key in (("bk_owner", "243"), ("tp_owner", "243"), (CRM_OWNER, "269")):
         g = facts["owner_grants"].get(owner, {})
         ok = not g.get("error") and g.get("usage_shared") and g.get("select_registry") and g.get("insert_registry")
         cells.append(Cell(f"registry.{owner}", "registry",
-                          f"{owner}: USAGE on shared + SELECT, INSERT on shared.schema_versions", ("243",),
+                          f"{owner}: USAGE on shared + SELECT, INSERT on shared.schema_versions", (key,),
                           ok=bool(ok), error=g.get("error", ""), detail={k: v for k, v in g.items() if k != "error"}))
     w = facts["registry_writes"].get(CIS_APP, {})
     cells.append(Cell(f"registry.{CIS_APP}", "registry",
@@ -887,6 +966,7 @@ async def _role_info(conn, role: str) -> dict:
     info = {"exists": True, **dict(row)}
     info["chain"] = [r["role"] for r in await conn.fetch(CHAIN_SQL, role)]
     info["owned"] = [dict(r) for r in await conn.fetch(OWNED_SQL, role)]
+    info["members"] = [r["role"] for r in await conn.fetch(MEMBERS_SQL, role)]
     return info
 
 
@@ -906,7 +986,8 @@ async def collect_catalog(conn, cfg: dict, facts: dict, runtime_user) -> list:
         raise RuntimeError(f"state keys: anchor schema owners unreadable: {safe_err(e)}")
     facts["catalog"]["anchor_owner"] = {r["schema"]: r["owner"] for r in v}
 
-    names = set(LEGACY_RUNTIME_ROLES) | {CIS_APP, "bk_owner", "tp_owner", "cis_owner"}
+    names = set(LEGACY_RUNTIME_ROLES) | {CIS_APP, "bk_owner", "tp_owner", "cis_owner", CRM_APP, CRM_OWNER,
+                                         *CRM_NOLOGIN_ROLES}
     if runtime_user:
         names.add(runtime_user)
     for role in sorted(names):
@@ -959,7 +1040,7 @@ async def collect_catalog(conn, cfg: dict, facts: dict, runtime_user) -> list:
     v, e = await _savepoint(conn, consumer)
     facts["consumer"] = {"error": safe_err(e)} if e else {"grants": v}
 
-    for owner in ("bk_owner", "tp_owner"):
+    for owner in ("bk_owner", "tp_owner", CRM_OWNER):
         if not facts["roles"].get(owner, {}).get("exists"):
             facts["owner_grants"][owner] = {"error": f"role {owner} does not exist"}
             continue

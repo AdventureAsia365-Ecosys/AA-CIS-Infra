@@ -57,6 +57,7 @@ OWNERS: dict[str, Owner] = {
     "cis": Owner("AA-CIS-App", "api/migrations", ""),
     "tripplanner": Owner("AA-TripPlanner-Web", "migrations", "tp-"),
     "booking": Owner("AA-Booking", "migrations", "bk-"),
+    "crm": Owner("AA-Partner", "api/migrations", "crm-"),
     "roles": Owner("AA-CIS-Infra", "db/migrations/roles", "rl-", native=True),
 }
 
@@ -67,7 +68,7 @@ CODE_COPIES: dict[str, tuple[str, str]] = {
 }
 
 # Same shape db-migrate.yml accepts at dispatch time.
-PATH_RE = re.compile(r"^db/migrations/(cis|tripplanner|booking|roles)/([0-9]{3})_[a-z0-9_]+\.sql$")
+PATH_RE = re.compile(r"^db/migrations/(cis|tripplanner|booking|crm|roles)/([0-9]{3})_[a-z0-9_]+\.sql$")
 INSERT_RE = re.compile(r"INSERT\s+INTO\s+shared\.schema_versions\b(.*?);", re.IGNORECASE | re.DOTALL)
 KEY_RE = re.compile(r"\(\s*'([^']*)'\s*,")
 
