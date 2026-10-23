@@ -97,7 +97,10 @@ TOMBSTONE_COLUMNS = ("source_id", "state")
 # Latest lifecycle event of a key -> the derived state it must agree with (L2 service: a supersede leaves the key
 # paused / superseded_pending until `publish` writes `restored`).
 EVENT_STATE = {"retired": "retired", "paused": "paused", "superseded": "paused", "restored": "served"}
-TOMBSTONE_STATE = {"retired": "retired", "paused": "paused", "superseded_pending": "paused", "superseded": "paused"}
+# CIS 274 catalog.v_tour_retired states: retired | paused | restored ("restored" = served again after a
+# retire/pause; the row stays in the view). superseded_* kept for older shapes.
+TOMBSTONE_STATE = {"retired": "retired", "paused": "paused", "restored": "served",
+                   "superseded_pending": "paused", "superseded": "paused"}
 
 VERSIONS_SQL = """
 SELECT rt.tour_id::text AS tour_id, rt.source_key, rt.source_status::text AS source_status,

@@ -432,6 +432,17 @@ class CheckTest(unittest.TestCase):
         self.assertIn("pending=0", verdict(lines))
         self.assertIn("SET LOCAL ROLE booking", conn.executed)
 
+    def test_restored_tombstone_row_of_a_served_key_is_not_a_violation(self):
+        # CIS 274 keeps a restored key in catalog.v_tour_retired with state 'restored'; it is served.
+        objects = dict(L2_OBJECTS, **{script.TOMBSTONE_VIEW: ["source_system", "source_id", "state", "reason"]})
+        liveness = LIVENESS + [lv("k-gone", "retired", "source_deleted")]
+        events = {"k-gone": "retired", "k-live": "restored"}
+        tombstone = {"k-gone": "retired", "k-live": "restored"}
+        _, lines = run(FakeConn(objects=objects, liveness=liveness, events=events, tombstone=tombstone))
+        c = checks(lines)["tombstone_disagrees_with_state"]
+        self.assertEqual((c["n"], c["sample"]), (0, []))
+        self.assertNotIn("check.tombstone_disagrees_with_state", result(lines)["violations"])
+
     def test_tombstone_with_other_column_names_is_an_error_not_a_silent_pass(self):
         objects = dict(L2_OBJECTS, **{script.TOMBSTONE_VIEW: ["key", "served_state"]})
         _, lines = run(FakeConn(objects=objects))
