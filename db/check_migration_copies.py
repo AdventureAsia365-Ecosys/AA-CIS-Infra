@@ -202,6 +202,8 @@ def github_fetch(repo: str, path: str, attempts: int = 3) -> Optional[bytes]:
                     return r.read()
             except urllib.error.HTTPError as e:
                 if e.code == 404:
+                    if auth:
+                        continue        # an Actions token scoped to this repo answers 404 for another repo: ask anonymously
                     return None
                 last = f"HTTP {e.code}"
                 if e.code in (401, 403, 429):
