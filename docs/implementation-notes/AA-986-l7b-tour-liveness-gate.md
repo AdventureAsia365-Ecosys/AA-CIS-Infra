@@ -65,3 +65,35 @@ root branch `docs/aa986-l7b-tour-liveness-gate`.
   turned it red; the gate script read both logs correctly.
 - After merge: dispatch once by hand (lesson "a workflow must run for real once before it is called done").
 - When L3 / L5 deploy: set `ENFORCED_SINCE`; when L4 lands: check the first run shows the tombstone check `zero`.
+
+## Review round (S248)
+
+An independent review raised five should-fix findings; all applied in a second commit.
+
+- **Silent pass when a landed slice loses its object.** New `LANDED = frozenset({"L2"})` and `OBJECT_SLICE` in the
+  probe: a missing object of a landed slice is an `ObjectMissing` error (red) and every check needing it reports
+  `error: object missing: …`; checks wait as `pending` only when every missing object belongs to a slice not landed
+  yet. JSON `landed`; the gate also fails when a check of a landed slice reports `pending` (defence in depth) or the
+  JSON has no `landed` / `visibility` (an older probe). After the L4 deploy a one-line PR adds `"L4"`. The old test
+  that asserted pending for missing L2 objects now asserts red.
+- **Visibility floor.** `raw_tours` / `published_tours` are FORCE RLS; a master that lost its `cis_owner` / `cis_app`
+  membership reads 0 rows with no error. The probe now prints `SCRIPT visibility …` and records a `RowsHidden` error
+  when the login sees no AA source version, 0 active Masters while `catalog.v_tour` lists tours
+  (`ACTIVE_MASTERS_SQL`, read as the login), fewer source groups than `v_tour_liveness` (owner-rights view) has keys,
+  or fewer served keys than the catalog lists. Proven on a throwaway PostgreSQL 16: a login under FORCE RLS without
+  the exemption got `versions=0 … liveness_keys=4` → 3 errors, gate RED, while every master check read `n=0`.
+- **JSON line size.** The JSON drops `layer_definitions` / `check_definitions` (they live in `LAYERS` / `CHECKS`) and
+  is printed as `SCRIPT json[i/n] <part>|`, parts of at most `JSON_CHUNK = 8000` characters (ASCII JSON); the
+  closing `|` keeps a trailing space and shows a cut part. The gate joins the parts by index (order in the log does
+  not matter) and is red on a missing, repeated or cut part. Worst case in the tests (every bucket and layer with 5
+  uuid samples, every check hit): 23 KB of JSON in 3 parts, longest line about 8 KB (test bound 12 KB). The workflow
+  hides `^SCRIPT json\[` lines from the printed log (artifact keeps them).
+- **ADR 0015 decision 6, all-superseded group.** New strict check `superseded_orphan_without_retired` (L2, zero):
+  keys of `v_tour_liveness` with reason `superseded_orphan` (so the group had a Master: the view lists only keys ever
+  served) and no lifecycle event at all; a wrong latest event is already `lifecycle_record_contradicts_state`.
+  `not_served_without_record` (keep_warn) now covers the other reasons only. No date filter: for such a key without
+  an event `changed_at` falls back to old column dates, so a date filter would hide exactly the case; ADR 0015
+  decision 1 records that no all-superseded group on Dev had a Master before L2, so a first-night hit is a real
+  finding (clean it up through the lifecycle service).
+- **Gap stated.** db/README, the probe docstring, CONTEXT.md and root DM-4.9 now say the CIS and tenant layers of the
+  memo probe are not in the gate (follow-up slice under AA-986).

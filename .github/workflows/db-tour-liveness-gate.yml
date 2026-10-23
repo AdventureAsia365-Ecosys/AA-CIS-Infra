@@ -10,7 +10,8 @@ name: DB Tour Liveness Gate (shared RDS)
 # (db/owners.yaml master_secret), checks the sha256, and runs the script READ_ONLY (default_transaction_read_only=on;
 # the job-table idle check only reports). The probe prints ids, keys, statuses and counts only.
 # db/tour_liveness_gate.py then reads the task log: red when the task failed, the run was not READ_ONLY, the probe
-# printed no verdict, `SCRIPT verdict violations>0` or `errors>0`, or no catalog role could read the catalog.
+# printed no verdict, `SCRIPT verdict violations>0` or `errors>0` (errors include the visibility floor and a missing
+# object of a landed slice), a `SCRIPT json[i/n]` part is missing or cut short, or no catalog role could read the catalog.
 # Report: step summary (verdict, violations, failed layers, the ADR 0015 checks with the ones still `pending` for a
 # later slice, keep_warn hits) + artifact (task log, gate.json).
 #
@@ -160,8 +161,8 @@ jobs:
             [ "$NEXT" = "$TOKEN" ] && break
             TOKEN="$NEXT"
           done
-          # The probe's JSON line is long: it stays in the artifact, the rest is printed here.
-          grep -v '^SCRIPT json ' task.log || true
+          # The probe's JSON parts are long: they stay in the artifact, the rest is printed here.
+          grep -v '^SCRIPT json\[' task.log || true
           DESC=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$TASK_ARN" --output json)
           EXIT=$(jq -r '.tasks[0].containers[] | select(.name=="migrate") | .exitCode // ""' <<<"$DESC")
           STATUS=$(jq -r '.tasks[0].lastStatus' <<<"$DESC")

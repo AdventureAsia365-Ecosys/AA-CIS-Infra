@@ -5,10 +5,13 @@ DB Migrate run-script mechanism (one-off ECS task of the migrator task definitio
 login, READ_ONLY) and saves the task's log. This script reads that log and decides:
 
   green  the task exited 0, the runner logged a READ_ONLY run, the probe printed exactly one
-         `SCRIPT verdict violations=0 errors=0 ...` line and its `SCRIPT json` agrees with it
+         `SCRIPT verdict violations=0 errors=0 ...` line and its JSON (`SCRIPT json[i/n] <part>|` lines, joined in
+         order) agrees with it
   red    anything else: a `zero` layer or check with hits (violations > 0), a layer or check that failed to run
-         (errors > 0), no catalog role could read the catalog, the task failed or never printed a verdict, the run
-         was not read-only, or the verdict line and the JSON disagree
+         (errors > 0, which includes the probe's visibility floor and a missing object of a landed slice), no
+         catalog role could read the catalog, the task failed or never printed a verdict, the run was not read-only,
+         a JSON part is missing or cut short, the verdict line and the JSON disagree, or a check of a landed slice
+         reports `pending`
 
 It writes a Markdown report to the step summary (`--summary`), one `::error::` / `::warning::` annotation per finding,
 and the verdict as JSON (`--out`). Exit 0 = green, 1 = red, 2 = bad arguments. No AWS, no database: stdlib only.
@@ -17,6 +20,7 @@ and the verdict as JSON (`--out`). Exit 0 = green, 1 = red, 2 = bad arguments. N
 """
 import argparse
 import json
+import re
 import sys
 
 READ_ONLY_MARK = "READ_ONLY: default_transaction_read_only=on"
@@ -28,6 +32,32 @@ TASK_EXIT = {
     "10": "the runner refused the mode input or the script's shape (see the MIGRATE ERROR line)",
     "13": "the probe raised or returned non-zero (see the MIGRATE ERROR line)",
 }
+
+
+JSON_PART_RE = re.compile(r"^SCRIPT json\[(\d+)/(\d+)\] (.*)$")
+
+
+def read_json(lines):
+    """The probe's result from its `SCRIPT json[i/n] <part>|` lines: (dict, None) or (None, why it is unusable)."""
+    parts = [JSON_PART_RE.match(x.rstrip("\r\n")) for x in lines if x.startswith("SCRIPT json")]
+    if not parts:
+        return None, "no `SCRIPT json[i/n]` line: the probe did not finish"
+    if not all(parts):
+        return None, "a `SCRIPT json` line is not of the form `SCRIPT json[i/n] <part>|`"
+    total = {int(m[2]) for m in parts}
+    idx = [int(m[1]) for m in parts]
+    if len(total) != 1 or sorted(idx) != list(range(1, total.pop() + 1)):
+        return None, f"the `SCRIPT json` parts are incomplete or repeated (got {sorted(idx)} of {parts[0][2]})"
+    if not all(m[3].endswith("|") for m in parts):
+        return None, "a `SCRIPT json` part was cut short (no closing `|`)"
+    text = "".join(m[3][:-1] for m in sorted(parts, key=lambda m: int(m[1])))
+    try:
+        res = json.loads(text)
+    except ValueError:
+        return None, "the joined `SCRIPT json` parts are not valid JSON"
+    if not isinstance(res, dict):
+        return None, "the `SCRIPT json` value is not an object"
+    return res, None
 
 
 def kv(line, prefix):
@@ -61,22 +91,18 @@ def evaluate(lines, exit_code):
                         "the probe must stay READ_ONLY = True")
 
     verdicts = [x for x in lines if x.startswith("SCRIPT verdict ")]
-    jsons = [x for x in lines if x.startswith("SCRIPT json ")]
-    verdict, res = None, None
+    verdict = None
     if len(verdicts) != 1:
         failures.append(f"expected one `SCRIPT verdict` line, found {len(verdicts)}: the probe did not finish")
     else:
         verdict = kv(verdicts[0], "SCRIPT verdict ")
-    if len(jsons) != 1:
-        failures.append(f"expected one `SCRIPT json` line, found {len(jsons)}")
-    else:
-        try:
-            res = json.loads(jsons[0][len("SCRIPT json "):])
-        except ValueError:
-            failures.append("the `SCRIPT json` line is not valid JSON")
+    res, why = read_json(lines)
+    if why:
+        failures.append(why)
 
     out = {"green": False, "failures": failures, "warnings": warnings, "verdict": verdict,
-           "violations": [], "errors": [], "pending": [], "checks": {}, "keep_warn": [], "catalog_role": None}
+           "violations": [], "errors": [], "pending": [], "checks": {}, "keep_warn": [], "catalog_role": None,
+           "visibility": None}
     if verdict is not None:
         nv, ne = _int(verdict.get("violations")), _int(verdict.get("errors"))
         if nv is None or ne is None:
@@ -85,7 +111,8 @@ def evaluate(lines, exit_code):
             if nv:
                 failures.append(f"{nv} violation(s): {verdict.get('list', '-')}")
             if ne:
-                failures.append(f"{ne} layer(s) or check(s) failed to run")
+                failures.append(f"{ne} error(s): a layer or check that failed to run, a missing object of a landed "
+                                "slice, or the visibility floor (rows hidden from the login)")
             if res is not None and (nv != len(res.get("violations", [])) or ne != len(res.get("errors", []))):
                 failures.append("the verdict line and the JSON disagree on violations / errors")
     if res is not None:
@@ -95,6 +122,15 @@ def evaluate(lines, exit_code):
         out["checks"] = dict(res.get("checks", {}))
         out["catalog_role"] = (res.get("catalog") or {}).get("role")
         out["as_of"], out["db_role"], out["totals"] = res.get("as_of"), res.get("db_role"), res.get("totals")
+        landed = set(res.get("landed") or [])
+        stuck = [n for n in out["pending"] if (out["checks"].get(n) or {}).get("slice") in landed]
+        if stuck:
+            failures.append(f"check(s) of a landed slice report pending (their object is gone): {', '.join(stuck)}")
+        out["visibility"] = res.get("visibility")
+        for key in ("landed", "visibility"):
+            if key not in res:
+                failures.append(f"the probe's JSON has no `{key}`: an older probe without the landed-slice rule or the "
+                                "visibility floor ran")
         if out["catalog_role"] is None:
             failures.append("no catalog role (booking, tripplanner) could read catalog.v_tour: the catalog layers "
                             "and the cross-app references were not checked")
@@ -126,6 +162,10 @@ def markdown(g, reason, res=None):
         lines.append(f"- probe as of {g['as_of']}, login `{g.get('db_role')}`, catalog read as "
                      f"`{g.get('catalog_role') or '-'}`; {t.get('groups', '?')} tour groups, "
                      f"{t.get('groups_dead', '?')} with no live version")
+        vis = g.get("visibility") or {}
+        if vis:
+            lines.append("- visibility (the login must see the AA rows): "
+                         + ", ".join(f"{k} {'-' if v is None else v}" for k, v in vis.items()))
     for f in g["failures"]:
         lines.append(f"- failure: {_cell(f)}")
     flat = {}
@@ -173,20 +213,15 @@ def main(argv=None):
         print(f"::error::tour liveness gate: cannot read the task log ({type(e).__name__})")
         lines = []
     g = evaluate(lines, a.exit_code)
-    res = None
-    jsons = [x for x in lines if x.startswith("SCRIPT json ")]
-    if len(jsons) == 1:
-        try:
-            res = json.loads(jsons[0][len("SCRIPT json "):])
-        except ValueError:
-            res = None
+    res, _ = read_json(lines)
     if a.summary:
         with open(a.summary, "a", encoding="utf-8") as f:
             f.write(markdown(g, a.reason, res))
     if a.out:
         with open(a.out, "w", encoding="utf-8") as f:
-            json.dump({k: g[k] for k in ("green", "failures", "warnings", "verdict", "violations", "errors",
-                                         "pending", "checks", "catalog_role")} | {"reason": a.reason}, f, indent=1)
+            json.dump({k: g.get(k) for k in ("green", "failures", "warnings", "verdict", "violations", "errors",
+                                             "pending", "checks", "catalog_role", "visibility")}
+                      | {"reason": a.reason}, f, indent=1)
     for f_ in g["failures"]:
         print(f"::error::tour liveness gate: {_cell(f_)}")
     for w in g["warnings"]:

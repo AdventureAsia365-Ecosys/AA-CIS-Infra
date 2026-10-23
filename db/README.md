@@ -374,8 +374,10 @@ runs `scripts/s248_tour_deletion_probe.py` exactly as DB Migrate `mode=run-scrip
 `run_migration.py`, master login read in the task, `READ_ONLY`: `default_transaction_read_only=on`, idle check
 report-only); the boot command also checks the runner's sha256. Then `tour_liveness_gate.py` reads the task log and
 fails the job when the task did not exit 0, the run was not READ_ONLY, the probe printed no verdict,
-`SCRIPT verdict violations>0` or `errors>0`, or no catalog role (`booking`, `tripplanner`) could read
-`catalog.v_tour`. The step summary lists the violations, the layers that failed to run (exception class + SQLSTATE,
+`SCRIPT verdict violations>0` or `errors>0`, no catalog role (`booking`, `tripplanner`) could read
+`catalog.v_tour`, a `SCRIPT json[i/n]` part is missing or cut short, or a check of a landed slice reports `pending`.
+The probe's JSON is printed in parts of at most 8000 characters (`SCRIPT json[i/n] <part>|`; a container log line
+over ~16 KB is split into several CloudWatch events) and the gate joins them. The step summary lists the violations, the layers that failed to run (exception class + SQLSTATE,
 the server message only for class 42), every ADR 0015 check and the keep_warn hits; `task.log` + `gate.json` are the
 artifact (30 days).
 
@@ -392,19 +394,33 @@ What the probe checks (details in its docstring and `db/scripts/README.md`):
 | `catalog_key_not_served` (catalog serves a key `gold_aa_internal.v_tour_liveness` says is not served) | L2 | zero |
 | `served_key_not_in_catalog` | L2 | info |
 | `lifecycle_record_contradicts_state` (latest `tour_lifecycle_event` vs the derived state) | L2 | zero |
-| `not_served_without_record` (state changed before L2 or outside the service) | L2 | keep_warn |
+| `superseded_orphan_without_retired` (all-superseded group that had a Master, no lifecycle event; ADR 0015 decision 6) | L2 | zero |
+| `not_served_without_record` (other reasons: state changed before L2 or outside the service) | L2 | keep_warn |
 | `tombstone_disagrees_with_state` (`catalog.v_tour_retired` vs the derived state, keys with an event) | L4 | zero |
 | `t2_rewrite_after_not_served` | L3 | keep_warn until `ENFORCED_SINCE["L3"]`, then zero |
 | `b2b_quotes_after_not_served`, `b2b_holds_after_not_served` | L5 | keep_warn until `ENFORCED_SINCE["L5"]`, then zero |
 
 - **Pending until the slice lands, then strict on its own:** a check whose object does not exist yet (read from
-  `pg_class`, no privilege needed) prints `expect=pending` and never counts (`SCRIPT verdict … pending=<n>`). When L4
+  `pg_class`, no privilege needed) prints `expect=pending` and never counts (`SCRIPT verdict … pending=<n>`).
+  `LANDED` in the probe names the slices live on Dev (`{"L2"}` today): a missing object of a landed slice is an
+  **error** (red), never pending, so a later migration that drops or renames `gold_aa_internal.v_tour_liveness` or
+  `tour_lifecycle_event` turns the night red; the gate also fails when a landed slice's check reports `pending`.
+  After the L4 deploy a one-line PR adds `"L4"` to `LANDED`. When L4
   creates `catalog.v_tour_retired` the tombstone check runs at once, read as the catalog role; a view without the
   columns `source_id` and `state` is an error (red), not a silent pass: the L4 PR updates `TOMBSTONE_SQL` if it
   picks other names. The "nothing new after the key stopped being served" checks need a refusal in the app, which
   no object shows, so they turn strict by a one-line PR: `ENFORCED_SINCE["L3"|"L5"] = "<YYYY-MM-DD>"` (the UTC date
   the slice went live on Dev); only rows created after that date and after the key's last state change count.
+- **Visibility floor.** `raw_tours` and `published_tours` are FORCE RLS; the master login sees AA rows only through
+  its `cis_owner` / `cis_app` membership, and without it every read returns 0 rows with no error, which would make
+  every `zero` check pass. The probe records an error (red) when the login sees no AA source version, no active
+  Master while `catalog.v_tour` lists tours, fewer source groups than `v_tour_liveness` (an owner-rights view) has
+  keys, or fewer served keys than the catalog lists (`SCRIPT visibility …`, JSON `visibility`).
 - Changing an answer of ADR 0015 = changing one `expect` value in the script's `LAYERS` / `CHECKS`.
+- **Not covered yet (follow-up slice under AA-986):** the CIS and tenant layers of the S248 memo probe (atoms,
+  ranking / routes, T2 copies, Slate, T8 angles, T9 pieces, T11 posts, warnings). They need a `cis_app` session
+  (tenant RLS), not the master; until they are ported a green night says nothing about them. Today they are covered
+  by the CIS lifecycle service's own tests and the L1 view condition.
 
 A red night: read the summary table, find the key or id in the sample (ids and keys only), and fix the writer that
 leaked (CIS `services/tour_lifecycle`, AA-Booking, TripPlanner), never the probe, unless the rule itself changed.

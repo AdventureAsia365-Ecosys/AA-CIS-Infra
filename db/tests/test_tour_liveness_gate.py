@@ -89,6 +89,7 @@ class EvaluateTest(unittest.TestCase):
         g = gate.evaluate(lines, "0")
         self.assertFalse(g["green"])
         self.assertTrue(any("found 0" in f for f in g["failures"]))
+        self.assertTrue(any("no `SCRIPT json[i/n]` line" in f for f in g["failures"]))
         self.assertFalse(gate.evaluate(HEADER, "0")["green"])
         self.assertFalse(gate.evaluate([], "0")["green"])
 
@@ -96,8 +97,73 @@ class EvaluateTest(unittest.TestCase):
         lines = log()
         v = [x for x in lines if x.startswith("SCRIPT verdict")][0]
         self.assertFalse(gate.evaluate(lines + [v], "0")["green"])
-        bad = [("SCRIPT json {not json" if x.startswith("SCRIPT json") else x) for x in lines]
+        bad = [("SCRIPT json[1/1] {not json|" if x.startswith("SCRIPT json") else x) for x in lines]
         self.assertFalse(gate.evaluate(bad, "0")["green"])
+        legacy = [("SCRIPT json {}" if x.startswith("SCRIPT json") else x) for x in lines]
+        self.assertFalse(gate.evaluate(legacy, "0")["green"])
+
+
+def big_log(**kw):
+    """A log whose JSON comes in several parts (JSON_CHUNK made small)."""
+    with tp.mock.patch.object(tp.script, "JSON_CHUNK", 500):
+        return log(**kw)
+
+
+class JsonPartsTest(unittest.TestCase):
+    """The probe's JSON is cut into `SCRIPT json[i/n] <part>|` lines (CloudWatch splits lines over ~16 KB)."""
+
+    def test_parts_are_joined_in_order(self):
+        lines = big_log()
+        parts = [x for x in lines if x.startswith("SCRIPT json[")]
+        self.assertGreater(len(parts), 5)
+        g = gate.evaluate(lines, "0")
+        self.assertTrue(g["green"], g["failures"])
+        # Out of order in the log (same-millisecond events): still the same result.
+        shuffled = [x for x in lines if not x.startswith("SCRIPT json[")] + parts[::-1]
+        self.assertTrue(gate.evaluate(shuffled, "0")["green"])
+
+    def test_missing_repeated_or_cut_part_is_red(self):
+        lines = big_log()
+        parts = [i for i, x in enumerate(lines) if x.startswith("SCRIPT json[")]
+        missing = [x for i, x in enumerate(lines) if i != parts[2]]
+        repeated = lines + [lines[parts[2]]]
+        cut = [(x[:-40] if i == parts[1] else x) for i, x in enumerate(lines)]
+        for bad, word in ((missing, "incomplete"), (repeated, "incomplete"), (cut, "cut short")):
+            g = gate.evaluate(bad, "0")
+            self.assertFalse(g["green"])
+            self.assertTrue(any(word in f for f in g["failures"]), g["failures"])
+
+    def test_carriage_returns_are_ignored(self):
+        self.assertTrue(gate.evaluate([x + "\r" for x in big_log()], "0")["green"])
+
+
+class LandedSliceTest(unittest.TestCase):
+    def _with(self, mutate):
+        lines = log()
+        idx = [i for i, x in enumerate(lines) if x.startswith("SCRIPT json[")]
+        res = tp.result(lines)
+        mutate(res)
+        text = "SCRIPT json[1/1] " + json.dumps(res) + "|"
+        return [x for i, x in enumerate(lines) if i not in idx] + [text]
+
+    def test_pending_check_of_a_landed_slice_is_red(self):
+        # Defence in depth: the probe already turns this into an error; an edited LANDED in the JSON must still fail.
+        g = gate.evaluate(self._with(lambda r: r.update(landed=["L2", "L4"])), "0")
+        self.assertFalse(g["green"])
+        self.assertTrue(any("landed slice report pending" in f and "tombstone_disagrees_with_state" in f
+                            for f in g["failures"]), g["failures"])
+
+    def test_probe_without_landed_or_visibility_is_red(self):
+        for key in ("landed", "visibility"):
+            g = gate.evaluate(self._with(lambda r, k=key: r.pop(k)), "0")
+            self.assertFalse(g["green"])
+            self.assertTrue(any(f"no `{key}`" in f for f in g["failures"]), g["failures"])
+
+    def test_hidden_rows_are_red(self):
+        g = gate.evaluate(log(versions=[], active_masters=0), "0")
+        self.assertFalse(g["green"])
+        self.assertTrue(any(e["layer"] == "check.visibility" for e in g["errors"]))
+        self.assertEqual(g["visibility"]["versions"], 0)
 
     def test_verdict_line_that_disagrees_with_the_json_is_red(self):
         lines = [("SCRIPT verdict violations=0 errors=0 list=- pending=1" if x.startswith("SCRIPT verdict") else x)
@@ -135,6 +201,8 @@ class MainTest(unittest.TestCase):
         self.assertIn("| `tombstone_disagrees_with_state` | L4 | pending | - | catalog.v_tour_retired |", summary)
         self.assertEqual((data["green"], data["reason"], data["pending"]),
                          (True, "nightly", ["tombstone_disagrees_with_state"]))
+        self.assertIn("- visibility (the login must see the AA rows): versions 6, groups 5, active_masters 3", summary)
+        self.assertEqual(data["visibility"]["liveness_served"], 3)
 
     def test_red_run_annotates_and_tables_the_violation(self):
         rc, stdout, summary, data = self._main(log(masters_dead=["t-sup1"]))
@@ -184,6 +252,9 @@ class WorkflowTest(unittest.TestCase):
         self.assertIn("RUNNER_SHA=$(sha256sum db/run_migration.py | cut -d' ' -f1)", t)
         self.assertIn("exec(b) if h=='$RUNNER_SHA' else exit(", t)
         self.assertIn('command: ["python3", "-c", $boot]', t)
+
+    def test_json_parts_stay_out_of_the_printed_log(self):
+        self.assertIn("grep -v '^SCRIPT json\\[' task.log || true", self.TEXT)
 
     def test_verdict_comes_from_this_script_and_the_task_exit_code(self):
         t = self.TEXT

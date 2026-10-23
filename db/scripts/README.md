@@ -206,9 +206,11 @@ For each bucket it counts what still references the tour: the real `catalog.v_to
 `booking.trip_plans` (sellable), components, upcoming departures (unsold, and sold = with a confirmed hold), open B2B
 quotes, active and confirmed holds, open and closed trip cases, and `tripplanner.trip_drafts` (draft / sent). Each layer carries `expect=zero|keep_warn|info`;
 `SCRIPT verdict violations=<n> errors=<n> list=… pending=<n>` lists the `zero` layers and checks with hits, and
-`SCRIPT json {...}` holds everything. `SCRIPT check …` lines are the ADR 0015 decision 6 invariants (L2 Masters and
-lifecycle record, L4 tombstone, L3 / L5 "nothing new after the key stopped being served"; `pending` until their slice
-lands). main() always returns 0; since AA-986 L7b the nightly **DB Tour Liveness Gate** runs it and fails on the
+`SCRIPT json[i/n] <part>|` lines hold everything (parts of at most 8000 characters, joined in order; the closing `|`
+shows a part cut short). `SCRIPT check …` lines are the ADR 0015 decision 6 invariants (L2 Masters, lifecycle record and
+all-superseded groups, L4 tombstone, L3 / L5 "nothing new after the key stopped being served"; `pending` until their
+slice lands, an error once the slice is in `LANDED` and its object is missing). `SCRIPT visibility …` is the floor
+that turns a login hidden from the FORCE RLS rows into an error instead of a silent pass. main() always returns 0; since AA-986 L7b the nightly **DB Tour Liveness Gate** runs it and fails on the
 verdict (`db/README.md`, "Tour liveness gate"). Prints counts, ids and keys only (at most 5 per line, anything not
 id-shaped printed as `masked`); a failed layer logs its exception class and SQLSTATE, with the server message only for
 class 42. The `expect` values follow ADR 0015 (Q4: sold Booking items kept and flagged; Q9: `lifecycle_stage` is

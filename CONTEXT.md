@@ -536,8 +536,11 @@ makes CI Terraform Plan fail with 403.
   READ_ONLY) and `db/tour_liveness_gate.py` fails the run on any violation (a derivative of a tour that is no longer
   served still live in the catalog, AA-Booking or TripPlanner; two active Masters in a group; an active Master over a
   dead source; the lifecycle record or, from L4, the tombstone disagreeing with the derived served state) or any layer
-  that failed to run. Checks of later slices report `pending` until their object exists (L4) or `ENFORCED_SINCE` in
-  the script names the date the slice went live (L3, L5). The CIS
+  that failed to run; an all-superseded group that had a Master but carries no `retired` record; or a visibility
+  floor error, when the login sees no AA rows through FORCE RLS). Checks of later slices report `pending` until their
+  object exists (L4) or `ENFORCED_SINCE` in the script names the date the slice went live (L3, L5); a slice in
+  `LANDED` (L2 today) whose object goes missing is red, never pending. The CIS and tenant layers of the S248 memo
+  probe are not in the gate yet (follow-up slice under AA-986). The CIS
   migration freeze and the `catalog.*` view freeze (XD9) ended with CIS 246 (S22, 19/10/2026).
 - **Docs Gen** (`docs-gen.yml`, AA-893) reads the `accounts/aa365` state with the read-only plan role
   (`terraform show -json`, no plan, no lock) nightly and after every Terraform Apply that changed
