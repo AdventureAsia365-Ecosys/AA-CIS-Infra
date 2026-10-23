@@ -61,7 +61,7 @@ locals {
   # days, for the approved drill on a synthetic tenant only (root docs/legal/dsar-erasure-runbook.md
   # section 5). A change reaches the tasks only after Terraform Apply AND a CIS Deploy Dev dispatch
   # (the services ignore task_definition; the deploy copies the latest revision and swaps the image).
-  erasure_drill = false
+  erasure_drill = true
 }
 
 module "vpc" {
