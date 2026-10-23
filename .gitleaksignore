@@ -7,11 +7,11 @@
 #                                          in git mode too, so it suppresses the PR job and the full-history job
 #                                          for any later commit, a real secret at the same place included. Avoid
 #                                          it; if one is unavoidable, put it in its own block with a comment why.
-# Squash merges: a pinned fingerprint names the PR's commit, and the squash merge writes the same line in a new
-# commit on main. The PR job is green with the PR-commit pin, but the full-history job then reports the squash
-# commit (and keeps scanning the PR commit through refs/pull/N/head). For a false positive that a PR adds:
-#   1. prefer a narrow allowlist entry (regex or path) in .gitleaks.toml: it matches every commit;
-#   2. otherwise pin the PR commit in the PR, then pin the squash commit in a follow-up PR right after the merge.
+# Squash merges: a pinned fingerprint names one commit, and the squash merge writes the same line in a new commit on
+# main. The PR check also scans a squash preview (the PR's final tree as one commit), which a pin of a PR commit does
+# not cover, so it stays red, as the full-history job would after the merge. For a false positive that a PR adds, use
+# a narrow allowlist entry (regex or path) in .gitleaks.toml: it matches every commit. Pins are for findings already
+# in history (old commits, squash commits on the default branch, closed PR heads).
 # An inline gitleaks:allow comment on the line also survives the squash, but it hides that line from both jobs, so
 # the PR job treats it like a change to this file (label needed).
 # Add a short comment above each entry: what the value is and why it is not a secret. Never write the value here.
