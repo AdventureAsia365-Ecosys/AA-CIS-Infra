@@ -117,9 +117,11 @@ resource "aws_cognito_user_pool_client" "m2m_crm" {
   # Cognito always allows refresh-token auth; nothing else (no SRP, no password, no USER_AUTH: there are no users).
   explicit_auth_flows = ["ALLOW_REFRESH_TOKEN_AUTH"]
 
-  access_token_validity  = var.identity_m2m_access_token_minutes
-  id_token_validity      = 60
-  refresh_token_validity = 60
+  access_token_validity = var.identity_m2m_access_token_minutes
+  id_token_validity     = 60
+  # Cognito requires access/id token validity <= refresh token validity; client_credentials never uses a
+  # refresh token, so it only has to be at least as long as the access token.
+  refresh_token_validity = max(var.identity_m2m_access_token_minutes, 60)
   token_validity_units {
     access_token  = "minutes"
     id_token      = "minutes"
