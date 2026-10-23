@@ -20,10 +20,13 @@
 --   schema catalog + SELECT on the catalog views (225, 228, 253, 256, 257); EXECUTE on geo.name_norm(text) (228).
 --   3. Register 270.
 --
--- Guards (RAISE on failure, nothing changes): afterwards tripplanner has no table or column privilege on any relation
--- of gold_aa_internal, silver_aa_internal, acp_contract or acp_shared, and on shared exactly the three gateway
--- relations; the catalog reads are untouched (has_table_privilege on catalog.v_tour). Skipped with a NOTICE when the
--- role tripplanner does not exist.
+-- Guards (RAISE on failure, nothing changes): afterwards tripplanner has no table privilege (any of the seven:
+-- SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER) or column privilege (SELECT, INSERT, UPDATE,
+-- REFERENCES) on any relation of gold_aa_internal, silver_aa_internal, acp_contract or acp_shared, and on shared
+-- exactly the three gateway relations; when step 2 revoked a schema's USAGE, has_schema_privilege must be false
+-- afterwards (a USAGE granted by another grantor survives the REVOKE and fails the apply, naming the grantor); the
+-- catalog reads are untouched (has_table_privilege on catalog.v_tour). Skipped with a NOTICE when the role
+-- tripplanner does not exist.
 --
 -- Order (AA-712 X4 plan): apply AFTER the TripPlanner reader removal is deployed on both Lambdas. (The live
 -- PLACES_SOURCE=cis path already reads none of these objects, so an earlier apply would only break the
@@ -75,12 +78,19 @@ BEGIN
           FROM pg_class c
           JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = sch
          WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f', 'S')
-           AND (has_table_privilege('tripplanner', c.oid, 'SELECT, INSERT, UPDATE, DELETE')
+           AND (has_table_privilege('tripplanner', c.oid, 'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER')
                 OR EXISTS (SELECT 1 FROM pg_attribute a
                             WHERE a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
-                              AND has_column_privilege('tripplanner', c.oid, a.attnum, 'SELECT, INSERT, UPDATE')));
+                              AND has_column_privilege('tripplanner', c.oid, a.attnum, 'SELECT, INSERT, UPDATE, REFERENCES')));
         IF remaining IS NULL THEN
             EXECUTE format('REVOKE USAGE ON SCHEMA %I FROM tripplanner', sch);
+            -- guard: a USAGE grant made by another grantor (out of band) survives cis_owner's REVOKE silently
+            IF has_schema_privilege('tripplanner', sch, 'USAGE') THEN
+                RAISE EXCEPTION 'migration 270: tripplanner still holds USAGE on schema % (granted by: %)', sch,
+                    (SELECT string_agg(DISTINCT pg_get_userbyid(a.grantor), ', ')
+                       FROM pg_namespace n, aclexplode(n.nspacl) a
+                      WHERE n.nspname = sch AND a.grantee = 'tripplanner'::regrole AND a.privilege_type = 'USAGE');
+            END IF;
         ELSE
             RAISE NOTICE 'migration 270: tripplanner keeps USAGE on % (still granted: %)', sch, remaining;
         END IF;
@@ -93,10 +103,10 @@ BEGIN
      WHERE n.nspname IN ('gold_aa_internal', 'silver_aa_internal', 'acp_contract', 'acp_shared', 'shared')
        AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
        AND NOT (n.nspname = 'shared' AND c.relname IN ('llm_role_config', 'llm_model_catalog', 'llm_call_log'))
-       AND (has_table_privilege('tripplanner', c.oid, 'SELECT, INSERT, UPDATE, DELETE')
+       AND (has_table_privilege('tripplanner', c.oid, 'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER')
             OR EXISTS (SELECT 1 FROM pg_attribute a
                         WHERE a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
-                          AND has_column_privilege('tripplanner', c.oid, a.attnum, 'SELECT, INSERT, UPDATE')));
+                          AND has_column_privilege('tripplanner', c.oid, a.attnum, 'SELECT, INSERT, UPDATE, REFERENCES')));
     IF leftover IS NOT NULL THEN
         RAISE EXCEPTION 'migration 270: tripplanner still holds privileges on %', leftover;
     END IF;
