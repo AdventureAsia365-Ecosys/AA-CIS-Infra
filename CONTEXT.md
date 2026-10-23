@@ -279,7 +279,8 @@ role has an explicit Deny on `GetSecretValue` for the master, `db-migrator`, `bo
 (`DenyMasterAndOtherAppSecrets`, X1 S19), so ECS-exec scripts run as `cis_app` too. A Terraform Apply that touches
 `aws_ecs_service`, `aws_ecs_task_definition` or `aws_lambda_function` rolls services and has no job guard: run the
 manual idle gate first (root `skill/aa-ship`, X1 plan standing rules). Env on the CIS task definitions comes only
-from `modules/ecs/main.tf` (e.g. AA-847 `PLACE_SHAPES_ENABLED` from `place_shapes_enabled`); CIS Deploy Dev copies
+from `modules/ecs/main.tf` (e.g. AA-847 `PLACE_SHAPES_ENABLED` from `place_shapes_enabled`; AA-839
+`ERASURE_APPLY_ENABLED` / `ERASURE_TENANT_RETENTION_DAYS` from `local.erasure_drill` in `accounts/aa365`); CIS Deploy Dev copies
 the latest revision and swaps the image, so a Terraform env change ships with the next CIS deploy. The old S3 → Lambda → Step Functions pipeline
 (ingestion/seo/validation/content/export Lambdas, the state machine, 6 SQS queues) and the
 `authorizer` / `brand-brief-parser` Lambdas were retired in AA-750; the pipeline runs in the API
