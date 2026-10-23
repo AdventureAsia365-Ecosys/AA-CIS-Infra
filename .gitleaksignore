@@ -3,7 +3,7 @@
 #
 # Fingerprint formats (printed by gitleaks with --redact, never the value itself):
 #   <commit sha>:<file>:<rule id>:<line>   pinned: that finding in that one commit only. Use this format.
-#   <file>:<rule id>:<line>                global: that file, rule and line in EVERY commit. gitleaks 8.28 honours it
+#   <file>:<rule id>:<line>                global: that file, rule and line in EVERY commit. gitleaks 8.30 honours it
 #                                          in git mode too, so it suppresses the PR job and the full-history job
 #                                          for any later commit, a real secret at the same place included. Avoid
 #                                          it; if one is unavoidable, put it in its own block with a comment why.
@@ -19,7 +19,7 @@
 # A change to this file needs the PR label `secret-scan-baseline-reviewed` (see the workflow header).
 
 # --- Full-history baseline (AA-981, S248). Historical findings that were already in history when the
-# full-history job in secret-scan.yml started. Each entry is pinned to its commit, so the same file/line
+# full-history job started (then in secret-scan.yml, now secret-scan-history.yml). Each entry is pinned to its commit, so the same file/line
 # in any later commit is still reported. Handling and status are in the private record (Linear AA-981),
 # not here. Never pin a new real secret without rotating it first.
 76dc29fbb477a45daaaf0d97f67861b745968592:envs/dev/terraform.tfvars:credential-key-literal:5

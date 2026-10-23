@@ -1,5 +1,5 @@
-# gitleaks config for AA-CIS-Infra (AA-841). Used by .github/workflows/secret-scan.yml and by the
-# local commands in README.md ("Secret scan").
+# gitleaks config for AA-CIS-Infra (AA-841). Used by .github/workflows/secret-scan.yml (PR check),
+# .github/workflows/secret-scan-history.yml (full history) and by the local commands in README.md ("Secret scan").
 #
 # The default gitleaks rules (cloud keys, tokens, private keys, generic high-entropy api keys) plus
 # three repo rules for the leak shapes the defaults miss and this repo has actually had: a DSN with an
@@ -10,6 +10,10 @@
 #
 # The same rule set is used by the PR scan (lines a PR adds) and by the full-history scan
 # (every commit of every branch, nightly + on push to main); see .github/workflows/secret-scan.yml.
+#
+# Everything from [extend] down to the "Repo-specific entries" line is byte-identical to the .gitleaks.toml
+# of the AA-Ecosys root repo and the four app repos (AA-981): a rule change lands in all six. Only the
+# entries below that line belong to this repo.
 #
 # Known false positives: prefer a narrow allowlist entry here (path or exact placeholder regex) for
 # a class of values; use .gitleaksignore (one fingerprint per line) for a single finding.
@@ -37,10 +41,6 @@ keywords = ["://"]
     '''^<[^>]*>$''',
     '''^\{[^}]*\}$''',
   ]
-
-  [[rules.allowlists]]
-  description = "X1 S12 runner tests: fake DSNs (hosts db.example / h / host) that exercise DSN parsing and redaction"
-  paths = ['''^db/tests/test_runner_modes\.py$''']
 
 # Plaintext secret assigned in Terraform code or variables: <name>_password / _api_key / _secret_key /
 # _token ... = "value". Only names whose *value* is the secret: secret_*_arn / *_secret_name style keys
@@ -117,10 +117,24 @@ description = "AWS network resource IDs"
 regexTarget = "secret"
 regexes = ['''^(?:sg|vpce|vpc|subnet|rtb|igw|nat|eni|acl|pl|tgw)-[0-9a-f]{8,17}$''']
 
-# Global allowlist: binary build outputs and provider lock files (hashes, not secrets).
+# Global allowlist: Terraform provider lock files and package lock files (hashes, not secrets).
 [[allowlists]]
-description = "Built Lambda zips and Terraform provider lock files"
+description = "Lock files"
 paths = [
-  '''(?:^|/)dist/lambdas/[^/]+\.zip$''',
   '''(?:^|/)\.terraform\.lock\.hcl$''',
+  '''(?:^|/)(?:package-lock\.json|pnpm-lock\.yaml|yarn\.lock)$''',
 ]
+
+# --- Repo-specific entries (AA-CIS-Infra only; not in the shared rule set above) ---
+
+# X1 S12 runner tests: fake DSNs (hosts db.example / h / host) that exercise DSN parsing and redaction. The file
+# is Python, so the shared test-fixture path allowlist (credential-key-literal only) does not cover it.
+[[allowlists]]
+description = "X1 S12 runner tests: fake DSNs (hosts db.example / h / host) that exercise DSN parsing and redaction"
+targetRules = ["uri-embedded-credentials"]
+paths = ['''^db/tests/test_runner_modes\.py$''']
+
+# Built Lambda zips: binary build outputs (hashes and compressed bytes, not secrets).
+[[allowlists]]
+description = "Built Lambda zips"
+paths = ['''(?:^|/)dist/lambdas/[^/]+\.zip$''']
