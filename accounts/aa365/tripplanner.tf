@@ -385,8 +385,6 @@ resource "aws_lambda_function" "tripplanner_browse" {
       # AA-902: account IDs left the public TripPlanner repo; browse embeds through the same satellites.
       BEDROCK_ACCT_PRIMARY  = local.bedrock_acct_primary
       BEDROCK_ACCT_FALLBACK = local.bedrock_acct_fallback
-      # AA-847: legacy | cis, the same value on browse and assembly (tripplanner_variables.tf).
-      PLACES_SOURCE = var.tripplanner_places_source
     }
   }
 
@@ -436,8 +434,6 @@ resource "aws_lambda_function" "tripplanner_assembly" {
       BEDROCK_EXTERNAL_ID_FALLBACK = "aa296-satellite-bedrock"
       # No ADVISOR_NOTIFY_EMAIL: the advisor e-mail is sent by AA-Booking (bk_notify_email, AA-811 S238).
       REQUIRE_REGISTRATION_BEFORE_HANDOFF = "true"
-      # AA-847: legacy | cis, the same value on browse and assembly (tripplanner_variables.tf).
-      PLACES_SOURCE = var.tripplanner_places_source
       # AA-878: no TRIPPLANNER_API_KEY here (read by name from Secrets Manager, see browse) and no
       # MAPBOX_GEOCODING_TOKEN_ARN (no reader since AA-712 slice 6a).
     }
