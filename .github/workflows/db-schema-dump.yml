@@ -116,6 +116,13 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: us-west-1
 
+      # AA-981: this repo is public; mask the account id in every later log line (task and
+      # task-definition ARNs below carry it).
+      - name: Mask the account id in the log
+        run: |
+          ACC=$(aws sts get-caller-identity --query Account --output text)
+          echo "::add-mask::$ACC"
+
       # X1 S12: a revision of aa-cis-dev-db-migrate with the api service's current image (deregistered
       # by the last step). Its task role may put only db-schema-dump/* (accounts/aa365/db_migrator.tf).
       - name: Register the migrator revision (api image)
@@ -147,7 +154,7 @@ jobs:
             --started-by "gh-db-schema-dump-${{ github.run_id }}" \
             --query 'tasks[0].taskArn' --output text)
           [ -n "$TASK_ARN" ] && [ "$TASK_ARN" != "None" ] || { echo "::error::run-task returned no task"; exit 1; }
-          echo "task: $TASK_ARN"
+          echo "task: ${TASK_ARN##*/}"
           echo "arn=$TASK_ARN" >> "$GITHUB_OUTPUT"
           # The waiter gives up after 10 min; retry it so a slow start does not fail the step.
           for i in 1 2 3; do aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$TASK_ARN" && break; done

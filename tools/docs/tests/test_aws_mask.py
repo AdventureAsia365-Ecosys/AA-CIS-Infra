@@ -196,8 +196,31 @@ class NoLeakGuard(unittest.TestCase):
                 self.assertEqual(gd.main(["render", "--tf-json", str(src), "--out-dir", str(Path(t) / "o")]), 2)
 
     def test_env_config_page_has_no_leak(self):
-        page = ec.render_page(tec._aws_model(), tec._vercel_model(), date="2026-10-23", sha="s", source="s")
-        self.assertEqual(am.find_leaks(page), [])
+        # The clean fixture holds no id, so plant some where the page prints model values: a secret
+        # referenced by full ARN (cross-account or not resolved to a name), an SSM parameter ARN, and a
+        # collector warning. Without masking, each would reach the page as-is.
+        def leaky_model() -> dict:
+            aws = tec._aws_model()
+            vars_ = aws["ecs"][0]["containers"][0]["vars"]
+            by_name = {v["name"]: v for v in vars_}
+            by_name["DATABASE_URL"]["secret"] = f"arn:aws:secretsmanager:us-west-1:{tgd.ACCT}:secret:aa-cis/dev/rds-cis-app-AbC123"
+            by_name["FROM_SSM"]["secret"] = f"arn:aws:ssm:us-west-1:{A3}:parameter/aa/dev/flag"
+            aws["warnings"] = [f"task definition aa-cis-dev-api lists image {tgd.ACCT}.dkr.ecr.us-west-1.amazonaws.com/aa-cis-dev-api"]
+            return aws
+
+        for env, label in (({am.ENV_VAR: f"acc2={tgd.ACCT},acc3={A3}"}, "acc2"), ({}, "aws-account")):
+            with mock.patch.dict(os.environ, env, clear=False):
+                if not env:
+                    os.environ.pop(am.ENV_VAR, None)
+                page = ec.render_page(leaky_model(), tec._vercel_model(), date="2026-10-23", sha="s", source="s")
+            self.assertEqual(am.find_leaks(page), [], label)
+            self.assertNotIn(tgd.ACCT, page)
+            self.assertNotIn(A3, page)
+            self.assertIn(f"arn:{{partition}}:secretsmanager:us-west-1:{{{label}}}:secret:aa-cis/dev/rds-cis-app", page)
+            self.assertNotIn("rds-cis-app-AbC123", page)
+            acc3 = "acc3" if env else "aws-account"
+            self.assertIn(f"arn:{{partition}}:ssm:us-west-1:{{{acc3}}}:parameter/aa/dev/flag", page)
+            self.assertIn(f"{{{label}}}.dkr.ecr.us-west-1.amazonaws.com/aa-cis-dev-api", page)
 
 
 if __name__ == "__main__":

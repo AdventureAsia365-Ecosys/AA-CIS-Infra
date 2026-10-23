@@ -58,3 +58,20 @@ Root part: AA-Ecosys `docs/implementation-notes/AA-981-mask-generated-docs.md`.
   is reconnaissance only. No credential is involved.
 - **Hand-written docs still hold ids** (root: about 167 files, most in `docs/audits/`, `docs/linear-export/`,
   `docs/sessions/`; this repo: about 56 files, e.g. `.claude/CLAUDE.md`, the state bucket name). Out of scope here.
+
+## Review round (agent review, S248)
+
+- **Test fixtures used real Dev ids** (VPC, subnet, NAT instance, ENI, IGW, route table, ALB ids, a Secrets
+  Manager suffix, an API Gateway domain id). Replaced with AWS-documentation-style fakes and folded into the
+  original commit, so the real values never enter this repo's history. The test module docstring now says every
+  identifier in it is fake.
+- **`db-schema-dump.yml` printed the full ECS task ARN** (with the account id) in the public Actions log. It now
+  masks the account id right after the OIDC step (`::add-mask::` from `sts get-caller-identity`) and prints only
+  the task id. `db-migrate.yml`, `db-isolation-probe.yml`, `terraform-plan.yml` and `terraform-apply.yml` are not
+  changed here: their logs (and every run before this change) can still show ids and ARNs.
+- **Artifacts:** `docs-gen-<run>` and `db-schema-dump-<run>` keep 14 days. Runs before this change hold unmasked
+  pages; the dump artifact also keeps the raw `schema.json`, which this change does not mask. Any signed-in
+  GitHub user can download artifacts of a public repo.
+- **The env-config guard test now plants leaks** (a secret referenced by full ARN, an SSM parameter ARN from a
+  second account, an ECR image URI in a collector warning) and checks both the `{acc2}`/`{acc3}` labels and the
+  `{aws-account}` fallback; it fails when masking is switched off.
