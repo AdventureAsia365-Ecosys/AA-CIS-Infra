@@ -1,0 +1,191 @@
+name: DB Tour Liveness Gate (shared RDS)
+# AA-986 L7b (root ADR 0015 decision 6): the nightly regression gate of the tour liveness rule. When a tour is no
+# longer served (deleted at S0/A0, Master trashed or paused), nothing derived from it may stay live in the catalog,
+# AA-Booking or TripPlanner, and the served state, the lifecycle record and (from L4) the tombstone must agree.
+#
+# Mechanism = DB Migrate mode=run-script, unchanged: a one-off ECS Fargate task of the migrator task definition
+# (.github/scripts/migrator-task.sh registers a revision with the CIS api service's current image and the last step
+# deregisters it; api subnets, security group aa-cis-dev-sg-db-migrate) runs db/run_migration.py with
+# MIGRATION_MODE=run-script:db/scripts/s248_tour_deletion_probe.py. The runner reads the RDS master DSN in the task
+# (db/owners.yaml master_secret), checks the sha256, and runs the script READ_ONLY (default_transaction_read_only=on;
+# the job-table idle check only reports). The probe prints ids, keys, statuses and counts only.
+# db/tour_liveness_gate.py then reads the task log: red when the task failed, the run was not READ_ONLY, the probe
+# printed no verdict, `SCRIPT verdict violations>0` or `errors>0`, or no catalog role could read the catalog.
+# Report: step summary (verdict, violations, failed layers, the ADR 0015 checks with the ones still `pending` for a
+# later slice, keep_warn hits) + artifact (task log, gate.json).
+#
+# Triggers: nightly 04:43 UTC (schema dump 03:43, isolation probe 04:13: never two migrator tasks at once, and the
+# isolation probe cell sessions.master_break_glass_only fails on any master session but its own, which this run
+# holds for its few seconds), manual. Not dispatched by DB Migrate. A DB Migrate apply that needs an exclusive lock while the probe reads (seconds) fails
+# on its lock_timeout and can be re-run.
+on:
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "Why this run (shown in the step summary)"
+        required: false
+        type: string
+        default: manual
+  schedule:
+    - cron: "43 4 * * *"   # nightly, 04:43 UTC (schema dump 03:43, isolation probe 04:13)
+
+# Own group: never queued behind or ahead of DB Migrate (a pending run in a shared group would cancel a pending
+# migration), the schema dump or the isolation probe.
+concurrency:
+  group: db-tour-liveness-gate
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  gate:
+    name: Tour liveness gate
+    runs-on: ubuntu-latest
+    # Same OIDC subject as DB Migrate, the schema dump and the isolation probe (environment:prod ->
+    # aa-cis-infra-tf-apply).
+    environment: prod
+    if: github.ref == 'refs/heads/main'
+    timeout-minutes: 30
+    env:
+      AWS_REGION: us-west-1
+      CLUSTER: aa-cis-dev-cluster
+      SERVICE: aa-cis-dev-api
+      LOG_GROUP: /ecs/aa-cis-dev
+      SCRIPT: db/scripts/s248_tour_deletion_probe.py
+      REASON: ${{ github.event_name == 'schedule' && 'nightly' || inputs.reason || 'manual' }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Unit tests (probe, gate, runner)
+        run: |
+          python -m pip install --quiet pyyaml==6.0.2
+          python -m unittest discover -s db/tests
+
+      # The same shape check DB Migrate runs, plus: the gate only ever runs a READ_ONLY script.
+      - name: Check the probe is a READ_ONLY run-script file
+        id: file
+        run: |
+          set +e
+          INSPECT=$(python3 db/run_migration.py --inspect-script "$SCRIPT"); SHAPE=$?
+          set -e
+          jq -r '.errors[] | "::error file='"$SCRIPT"'::" + .' <<<"$INSPECT"
+          [ "$SHAPE" = "0" ] || exit 1
+          python3 -c 'import sys; sys.path.insert(0, "db"); import run_migration as r; sys.exit(0 if r.script_is_read_only(open(sys.argv[1]).read()) else 1)' "$SCRIPT" \
+            || { echo "::error file=$SCRIPT::the gate runs only a READ_ONLY = True script"; exit 1; }
+          echo "sha256=$(sha256sum "$SCRIPT" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-west-1
+
+      # The bronze bucket name carries the account id: read at run time and masked, never written in this public
+      # repo (AA-981).
+      - name: Bronze bucket name
+        run: |
+          ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+          echo "::add-mask::$ACCOUNT"
+          echo "BUCKET=aa-cis-bronze-$ACCOUNT" >> "$GITHUB_ENV"
+
+      - name: Register the migrator revision (api image)
+        id: td
+        run: bash .github/scripts/migrator-task.sh prepare
+
+      # Presigned URLs (15 min) are created and used in this one step (a masked value in a step output can be
+      # dropped by Actions). Same task inputs as DB Migrate run-script; no new environment variable name.
+      - name: Upload runner + probe, run one-off ECS task
+        id: task
+        env:
+          SHA256: ${{ steps.file.outputs.sha256 }}
+        run: |
+          PREFIX="db-tour-liveness-gate/${{ github.run_id }}"
+          echo "prefix=$PREFIX" >> "$GITHUB_OUTPUT"
+          aws s3 cp db/run_migration.py "s3://$BUCKET/$PREFIX/run_migration.py" --only-show-errors
+          RUNNER_URL=$(aws s3 presign "s3://$BUCKET/$PREFIX/run_migration.py" --expires-in 900)
+          echo "::add-mask::$RUNNER_URL"
+          aws s3 cp "$SCRIPT" "s3://$BUCKET/$PREFIX/payload" --only-show-errors
+          FILE_URL=$(aws s3 presign "s3://$BUCKET/$PREFIX/payload" --expires-in 900)
+          echo "::add-mask::$FILE_URL"
+
+          TASK_DEF="${{ steps.td.outputs.arn }}"
+          NET='${{ steps.td.outputs.network }}'
+          echo "task definition: $TASK_DEF (image of ${{ steps.td.outputs.api_task_definition }})"
+          # The task checks the runner's sha256 too (the payload's is checked by the runner): the bucket prefix is
+          # writable by more roles than this one, and the runner reads the master DSN.
+          RUNNER_SHA=$(sha256sum db/run_migration.py | cut -d' ' -f1)
+          BOOT="import os,hashlib,urllib.request;b=urllib.request.urlopen(os.environ['RUNNER_URL'],timeout=30).read();h=hashlib.sha256(b).hexdigest();exec(b) if h=='$RUNNER_SHA' else exit('runner sha256 mismatch: '+h)"
+          OVERRIDES=$(jq -nc --arg runner "$RUNNER_URL" --arg file_url "$FILE_URL" --arg file "$SCRIPT" \
+            --arg sha "$SHA256" --arg mode "run-script:$SCRIPT" --arg boot "$BOOT" \
+            '{containerOverrides: [{name: "migrate",
+              command: ["python3", "-c", $boot],
+              environment: [
+                {name: "RUNNER_URL", value: $runner}, {name: "MIGRATION_URL", value: $file_url},
+                {name: "MIGRATION_FILE", value: $file}, {name: "MIGRATION_VERSION", value: ""},
+                {name: "MIGRATION_SHA256", value: $sha}, {name: "MIGRATION_MODE", value: $mode},
+                {name: "MIGRATION_SNAPSHOT", value: ""}, {name: "MIGRATION_IDLE_OVERRIDE", value: ""}]}]}')
+          TASK_ARN=$(aws ecs run-task --cluster "$CLUSTER" --task-definition "$TASK_DEF" \
+            --launch-type FARGATE --network-configuration "$NET" --overrides "$OVERRIDES" \
+            --started-by "gh-db-tour-liveness-${{ github.run_id }}" \
+            --query 'tasks[0].taskArn' --output text)
+          [ -n "$TASK_ARN" ] && [ "$TASK_ARN" != "None" ] || { echo "::error::run-task returned no task"; exit 1; }
+          echo "task: $TASK_ARN"
+          echo "arn=$TASK_ARN" >> "$GITHUB_OUTPUT"
+          # The waiter gives up after 10 min; retry it so a slow start does not fail the step.
+          for i in 1 2 3; do aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$TASK_ARN" && break; done
+
+      - name: Task log, gate verdict, summary
+        if: always() && steps.task.outputs.arn != ''
+        env:
+          TASK_ARN: ${{ steps.task.outputs.arn }}
+        run: |
+          TASK_ID="${TASK_ARN##*/}"
+          STREAM="migrate/migrate/$TASK_ID"
+          : > task.log
+          TOKEN=""
+          for _ in $(seq 1 50); do
+            if [ -z "$TOKEN" ]; then
+              R=$(aws logs get-log-events --log-group-name "$LOG_GROUP" --log-stream-name "$STREAM" --start-from-head --output json) || break
+            else
+              R=$(aws logs get-log-events --log-group-name "$LOG_GROUP" --log-stream-name "$STREAM" --next-token "$TOKEN" --output json) || break
+            fi
+            jq -r '.events[].message' <<<"$R" >> task.log
+            NEXT=$(jq -r '.nextForwardToken' <<<"$R")
+            [ "$NEXT" = "$TOKEN" ] && break
+            TOKEN="$NEXT"
+          done
+          # The probe's JSON line is long: it stays in the artifact, the rest is printed here.
+          grep -v '^SCRIPT json ' task.log || true
+          DESC=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$TASK_ARN" --output json)
+          EXIT=$(jq -r '.tasks[0].containers[] | select(.name=="migrate") | .exitCode // ""' <<<"$DESC")
+          STATUS=$(jq -r '.tasks[0].lastStatus' <<<"$DESC")
+          echo "exit code: ${EXIT:-none}  status: $STATUS  stopped: $(jq -r '.tasks[0].stoppedReason' <<<"$DESC")"
+          if [ "$STATUS" != "STOPPED" ]; then
+            echo "::error::the task is still $STATUS after the 30-minute wait (READ_ONLY master session; the log above is partial). Watch $STREAM in CloudWatch"
+          fi
+          python3 db/tour_liveness_gate.py --log task.log --exit-code "$EXIT" --reason "$REASON" \
+            --summary "$GITHUB_STEP_SUMMARY" --out gate.json
+
+      - name: Keep the task log + gate.json as an artifact
+        if: always() && steps.task.outputs.arn != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: db-tour-liveness-gate-${{ github.run_id }}
+          path: |
+            task.log
+            gate.json
+          retention-days: 30
+
+      - name: Deregister the migrator revision
+        if: always() && steps.td.outputs.arn != ''
+        run: bash .github/scripts/migrator-task.sh deregister "${{ steps.td.outputs.arn }}"
+
+      - name: Remove S3 objects
+        if: always() && steps.task.outputs.prefix != ''
+        run: aws s3 rm "s3://$BUCKET/${{ steps.task.outputs.prefix }}/" --recursive --only-show-errors
