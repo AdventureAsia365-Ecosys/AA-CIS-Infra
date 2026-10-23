@@ -470,9 +470,10 @@ resource "aws_ecs_service" "crm_api" {
 }
 
 # -----------------------------------------------------------------------------
-# App deploy role — assumed via GitHub OIDC by AA-Partner's Deploy Dev workflow ONLY. Least privilege (booking.tf
-# booking_app_deploy): push to this repo, register revisions of THIS family, point THIS service at them, read the
-# service's task counts (the deploy job guard) and the running image.
+# App deploy role — assumed via GitHub OIDC by AA-Partner's Deploy Dev workflows ONLY (API: deploy-dev.yml; web:
+# deploy-web-dev.yml, AA-935). Least privilege (booking.tf booking_app_deploy): push to the two CRM repos, register
+# revisions of the two CRM families, point the two CRM services at them, read their task counts (the API deploy job
+# guard) and the running image.
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "crm_app_deploy" {
   name                 = "${local.crm_name_prefix}-app-deploy"
@@ -527,7 +528,7 @@ resource "aws_iam_role_policy" "crm_app_deploy" {
           "ecr:DescribeImages",
           "ecr:DescribeRepositories",
         ]
-        Resource = aws_ecr_repository.crm_api.arn
+        Resource = [aws_ecr_repository.crm_api.arn, aws_ecr_repository.crm_web.arn]
       },
       {
         Sid      = "EcsDescribeTaskDefinition" # read-only, no resource-level scoping
@@ -541,13 +542,13 @@ resource "aws_iam_role_policy" "crm_app_deploy" {
         Sid      = "EcsRegisterCrmTaskDefinition"
         Effect   = "Allow"
         Action   = ["ecs:RegisterTaskDefinition"]
-        Resource = local.crm_task_def_pattern
+        Resource = [local.crm_task_def_pattern, local.crm_web_task_def_pattern]
       },
       {
         Sid      = "EcsTagOnRegister"
         Effect   = "Allow"
         Action   = ["ecs:TagResource"]
-        Resource = local.crm_task_def_pattern
+        Resource = [local.crm_task_def_pattern, local.crm_web_task_def_pattern]
         Condition = {
           StringEquals = { "ecs:CreateAction" = "RegisterTaskDefinition" }
         }
@@ -557,7 +558,7 @@ resource "aws_iam_role_policy" "crm_app_deploy" {
         Sid      = "EcsDescribeCrmService"
         Effect   = "Allow"
         Action   = ["ecs:DescribeServices"]
-        Resource = local.crm_service_arn
+        Resource = [local.crm_service_arn, local.crm_web_service_arn]
       },
       {
         # Only a CRM task definition. IfExists: a desired-count-only call carries none (the workflow never makes one).
@@ -568,6 +569,18 @@ resource "aws_iam_role_policy" "crm_app_deploy" {
         Condition = {
           StringLikeIfExists = {
             "ecs:task-definition" = [local.crm_task_def_pattern, "${local.crm_service}:*"]
+          }
+        }
+      },
+      {
+        # AA-935: the web service takes only a web revision (a web deploy can never point the API at a web image).
+        Sid      = "EcsUpdateCrmWebService"
+        Effect   = "Allow"
+        Action   = ["ecs:UpdateService"]
+        Resource = local.crm_web_service_arn
+        Condition = {
+          StringLikeIfExists = {
+            "ecs:task-definition" = [local.crm_web_task_def_pattern, "${local.crm_web_service}:*"]
           }
         }
       },
@@ -593,6 +606,8 @@ resource "aws_iam_role_policy" "crm_app_deploy" {
         Resource = [
           aws_iam_role.crm_ecs_execution.arn,
           aws_iam_role.crm_ecs_task.arn,
+          aws_iam_role.crm_web_ecs_execution.arn,
+          aws_iam_role.crm_web_ecs_task.arn,
         ]
         Condition = {
           StringEquals = { "iam:PassedToService" = "ecs-tasks.amazonaws.com" }
