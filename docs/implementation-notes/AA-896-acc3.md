@@ -1,4 +1,4 @@
-# AA-896 (S248) — spend guards on acc3 (budget + anomaly e-mail)
+# AA-896 (S248) — spend guards on acc3 (budget + anomaly e-mail), per-App budgets rebalanced
 
 Session S248 (23/10/2026), Claude Code lane `aa896-finops`. Branch `feat/aa896-cost-anomaly-detection`.
 
@@ -28,9 +28,17 @@ Session S248 (23/10/2026), Claude Code lane `aa896-finops`. Branch `feat/aa896-c
 - **acc1 unchanged.** It has two hand-made budgets (`AAA-Monthly-Total` 180 USD, `aa-practice-monthly` 150 USD) and
   spends cents a month since September.
 
+- **Per-App budgets on acc2 rebalanced** (`accounts/aa365/variables.tf`, `var.per_app_monthly_budgets`):
+  cis 150 → 90, shared 50 → 100, booking and tripplanner stay 25. Run-rate 16–22/10/2026 by `App` tag
+  (Cost Explorer, x 30.4): cis ~58, shared ~84, booking ~10, tripplanner ~1 USD/month. `shared` grew when RDS
+  moved to db.t4g.small (~15/10) and carries ALB + NLB + WAF + NAT, so at 50 it would alarm every month and
+  teach people to ignore it; `cis` at 150 could never alarm. Budgets read live 23/10: shared 20.84 of 50 after
+  7 tagged days. The 250 USD account budget is unchanged (October forecast 187.75 USD).
+
 ## Changed
 
 - `accounts/acc3-bedrock/cost_guard.tf` (new), `CONTEXT.md` (acc3 root description + spend guards bullet).
+- `accounts/aa365/variables.tf`: per-App budget defaults (CI plan: 2 budgets updated in place, cis and shared).
 
 ## Tradeoffs
 
