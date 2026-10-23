@@ -195,3 +195,17 @@ already in force from another source is used as it is. Idempotent (`SCRIPT summa
 FX row and departures with the fee % the check expects (`SCRIPT verify`) and `SCRIPT verdict ready=…`. Apply = one-line
 PR `READ_ONLY = False`. No cleanup action: FX rows are append-only (a later real VND row supersedes it); the departures
 go with the AA-973 seed cleanup. Notes: `docs/implementation-notes/AA-974.md`.
+
+`s248_tour_deletion_probe.py` (AA-986, S248, read-only): the cross-app half of the tour-deletion propagation probe
+(root repo audit `docs/audits/2026-10-23-S248-tour-deletion-propagation/`; the CIS half runs by ECS exec as
+`cis_app`). Buckets the AA master tenant's `silver_aa_internal.raw_tours` versions by the live rule
+(`source_status = 'active' AND deleted_at IS NULL`, grouped by `source_key`): `group_dead`, `trashed_versions`,
+`superseded_versions`, `lifecycle_retired` / `lifecycle_phasing_out` (context only) and `live_source_not_in_catalog`.
+For each bucket it counts what still references the tour: the real `catalog.v_tour` (read as `booking`, else
+`tripplanner`; `SCRIPT catalog role=-` when neither can, and the catalog layer and `global` lines are skipped),
+`booking.trip_plans` (sellable), components, upcoming departures (unsold, and sold = with a confirmed hold), open B2B
+quotes, active and confirmed holds, open and closed trip cases, and `tripplanner.trip_drafts` (draft / sent). Each layer carries `expect=zero|keep_warn|info`;
+`SCRIPT verdict violations=<n> errors=<n> list=…` lists the `zero` layers with hits, and `SCRIPT json {...}` holds
+everything. Always returns 0 (evidence, not a gate). Prints counts, ids and keys only (at most 5 per line, anything not
+id-shaped printed as `masked`); a failed layer logs its exception class and SQLSTATE, with the server message only for
+class 42. The `expect` values follow the memo's proposed answers Q4 and Q9 (pending): one constant each to change.
