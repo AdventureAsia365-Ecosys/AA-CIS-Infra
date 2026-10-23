@@ -26,6 +26,13 @@ PATH = "db/scripts/s248_tour_deletion_probe.py"
 _spec = importlib.util.spec_from_file_location("s248_tour_deletion_probe", ROOT / PATH)
 script = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(script)
+# The configuration the probe ships with (asserted by ShippedConfigTest below), then the fixtures' world: the fake
+# database of these tests is the pre-L4 one (only the L2 objects exist unless a test adds more), so the suite runs
+# with L2 landed and no slice enforced; tests that need otherwise patch these.
+SHIPPED_LANDED = script.LANDED
+SHIPPED_ENFORCED_SINCE = dict(script.ENFORCED_SINCE)
+script.LANDED = frozenset({"L2"})
+script.ENFORCED_SINCE.update({"L3": None, "L5": None})
 
 WRITE_RE = re.compile(r"\b(INSERT|UPDATE|DELETE|MERGE|TRUNCATE|CREATE|ALTER|DROP|GRANT|REVOKE|COPY|CALL|DO)\b", re.I)
 
@@ -668,6 +675,17 @@ class PublicLogTest(unittest.TestCase):
         self.assertEqual(script.safe_id("tp:123"), "tp:123")
         self.assertEqual(script.safe_id("a b"), "masked")
 
+
+
+
+class ShippedConfigTest(unittest.TestCase):
+    """What runs nightly on Dev (AA-986): L2 and L4 landed, L3 and L5 enforced from their Dev deploy day."""
+
+    def test_l2_and_l4_landed(self):
+        self.assertEqual(SHIPPED_LANDED, frozenset({"L2", "L4"}))
+
+    def test_l3_and_l5_enforced_since_their_deploy_day(self):
+        self.assertEqual(SHIPPED_ENFORCED_SINCE, {"L3": "2026-10-23", "L5": "2026-10-23"})
 
 if __name__ == "__main__":
     unittest.main()

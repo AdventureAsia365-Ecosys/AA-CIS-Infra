@@ -84,10 +84,10 @@ CONTEXT_BUCKETS = frozenset({"lifecycle_retired", "lifecycle_phasing_out"})
 
 # ADR 0015 decision 6 checks. ENFORCED_SINCE: the UTC date (YYYY-MM-DD) slice L3 / L5 went live on Dev; None = not
 # yet (its "nothing new after the key stopped being served" check is keep_warn).
-ENFORCED_SINCE = {"L3": None, "L5": None}
+ENFORCED_SINCE = {"L3": "2026-10-23", "L5": "2026-10-23"}  # CIS #967 and Booking #75 deployed on Dev 23/10/2026
 # Slices live on Dev: their objects must exist (a missing one is an error, never `pending`). L2 = CIS 272 + the
-# lifecycle service (23/10/2026). Add "L4" in a one-line PR once catalog.v_tour_retired is live.
-LANDED = frozenset({"L2"})
+# lifecycle service (23/10/2026); L4 = CIS 274 (catalog.v_tour_retired + outbox, applied 23/10/2026).
+LANDED = frozenset({"L2", "L4"})
 LIVENESS_VIEW = "gold_aa_internal.v_tour_liveness"       # CIS 272 (L2)
 LIFECYCLE_RECORD = "gold_aa_internal.tour_lifecycle_event"  # CIS 272 (L2)
 TOMBSTONE_VIEW = "catalog.v_tour_retired"                  # L4 (ADR working name), read as the catalog role
