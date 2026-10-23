@@ -1,0 +1,83 @@
+name: CRM Key Policy Diff
+# AA-932 (CRM-04, design v3 §4.1 "a nightly GetKeyPolicy diff"): compares the live key policy of the three AA-Partner
+# KMS keys (alias/crm-dev/{data,ingest,seal}) with the policy Terraform last applied (state of accounts/aa365).
+# A difference means someone changed a key policy outside Terraform: the run turns red (GitHub e-mails the failure) and
+# the summary names the key and the statement Sids, never ARNs or account ids. Runbook: root
+# docs/ops/runbooks/crm-keys.md, section "Nightly key-policy diff is red".
+#
+# Read-only, like docs-gen.yml: the OIDC sub is `ref:refs/heads/main` (no environment), trusted only by the read-only
+# plan role aa-cis-infra-tf-plan (ReadOnlyAccess: kms:GetKeyPolicy; the key policies delegate it to IAM through the
+# IamAdministration statement). terraform init + `terraform show -json` only: nothing is planned, locked or applied.
+# The state JSON holds secret values in clear text: it stays in RUNNER_TEMP (umask 077), is never printed or uploaded,
+# and is deleted right after the check. Only stdlib Python and the runner's AWS CLI run next to the credentials.
+# Cost: $0 AWS (a few GetKeyPolicy calls, one state read); GitHub Actions about 1 minute a night.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "29 4 * * *"   # nightly, 04:29 UTC (after Docs Gen at 04:17)
+
+concurrency:
+  group: crm-key-policy-diff
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  diff:
+    name: CRM key policies = Terraform state
+    runs-on: ubuntu-latest
+    # No environment: the OIDC sub is `ref:refs/heads/main`, trusted only by the read-only plan role.
+    if: github.ref == 'refs/heads/main'
+    timeout-minutes: 10
+    env:
+      AWS_REGION: us-west-1
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Configure AWS credentials (OIDC, read-only plan role)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-west-1
+
+      # Fail closed if the repo-level secret ever names a role with write rights. Mask the account id (public logs).
+      - name: Verify the role is the read-only plan role
+        run: |
+          ACC=$(aws sts get-caller-identity --query Account --output text)
+          echo "::add-mask::$ACC"
+          ARN=$(aws sts get-caller-identity --query Arn --output text)
+          case "$ARN" in
+            *:assumed-role/aa-cis-infra-tf-plan/*) echo "role: aa-cis-infra-tf-plan" ;;
+            *) echo "::error::crm-key-policy-diff must run with the read-only role aa-cis-infra-tf-plan (got another role)"; exit 1 ;;
+          esac
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.15.5"
+          terraform_wrapper: false   # clean JSON on stdout
+
+      - name: Terraform Init (read-only)
+        working-directory: accounts/aa365
+        run: |
+          terraform init -input=false -lockfile=readonly \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="key=dev/terraform.tfstate" \
+            -backend-config="region=us-west-1"
+
+      - name: Compare live key policies with the state
+        run: |
+          umask 077
+          STATE="$RUNNER_TEMP/state.json"
+          trap 'rm -f "$STATE"' EXIT
+          terraform -chdir=accounts/aa365 show -json > "$STATE"
+          python3 -B tools/terraform/crm_key_policy_diff.py --state "$STATE" --region "$AWS_REGION" \
+            --summary "$GITHUB_STEP_SUMMARY"
