@@ -50,7 +50,10 @@ output "rds_instance" {
   value = {
     identifier = module.rds.db_identifier
     endpoint   = module.rds.db_endpoint
+    address    = module.rds.db_address
     port       = module.rds.db_port
+    # AA-829: the name the DSN secrets use (db_dns.tf), a CNAME to `address` unless overridden.
+    private_dns_name = aws_route53_record.db.fqdn
   }
 }
 
