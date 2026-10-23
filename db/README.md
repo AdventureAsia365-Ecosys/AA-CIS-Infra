@@ -331,7 +331,8 @@ statement in a savepoint (locks released at once), counts and names only, tenant
   `shared.schema_versions`; every ENABLE-without-FORCE CIS table has a permissive policy `TO cis_app`
   (or `rls_enable_only_allowlist`); `aa_app_user` tenant matrix (GUC unset / empty / forged / each
   tenant: 0 cross-tenant rows; the tenant column is `tenant_id`, else `owner_scope` (`tour_atoms`), and
-  `quarter_plan_version` is judged by its plan (`PARENT_SCOPED`); rows a pool policy shares with every
+  `quarter_plan_version` / `angle_gate_option` are judged by their plan / request (`PARENT_SCOPED`; an RLS table
+  with neither is an error of the cell under a real tenant, never a silent pass); rows a pool policy shares with every
   tenant only for the AA master tenant id or `'platform'` (`SHARED_SCOPE_CONSTANTS`, `::uuid` or `::text`
   literal), never another tenant's id); the CIS runtime sees every `tenant_tour_versions` row without a GUC;
   `db_migrator` sessions below its limit − 1; no master session but break-glass.

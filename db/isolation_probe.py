@@ -176,9 +176,15 @@ RLS_PARITY_TABLES = ("gold_aa_internal.content_exports", "gold_aa_internal.publi
 # Tenant matrix scope of an RLS table (AA-859 wave 4). The tenant column, first match wins: tenant_id (uuid, or text on
 # acp_deliver.tenant_tour_pages, CIS 265), else owner_scope (acp_contract.tour_atoms: 'platform' or the owning tenant's
 # uuid as text, CIS 266). A table with neither whose policy reaches the tenant through a parent row: {table: (its key
-# column, parent table, the parent's key column)}; the parent has a tenant_id and its own policy for the pool.
+# column, parent table, the parent's key column)}; the parent has a tenant_id and its own policy for the pool. An RLS
+# table with neither a tenant column nor an entry here cannot be judged under a real tenant: its visible rows there are
+# an error of the matrix cell (register the table here), never a silent pass.
 TENANT_SCOPE_COLUMNS = ("tenant_id", "owner_scope")
-PARENT_SCOPED = {"acp_shared.quarter_plan_version": ("plan_id", "acp_shared.quarter_plan", "plan_id")}
+PARENT_SCOPED = {
+    "acp_shared.angle_gate_option": ("request_id", "acp_shared.angle_gate_request", "request_id"),       # CIS 241
+    "acp_shared.quarter_plan_version": ("plan_id", "acp_shared.quarter_plan", "plan_id"),                 # CIS 265
+}
+UNJUDGED = "not judged: no tenant column and not PARENT_SCOPED"
 # The only constants a tenant-pool policy may share with every tenant: the AA master catalog (CIS 239; 265 compares the
 # text tenant_id of tenant_tour_pages with a '::text' literal) and AA's platform atoms (266). Any other constant in such
 # a policy (another tenant's id) shares nothing: its rows stay cross-tenant.
@@ -773,6 +779,8 @@ def build_cells(facts: dict, keys: dict) -> list:
                 errors.append(f"{fq} [{mode}] {r['error']}")
             elif (r.get("cross") or 0) > 0:
                 cross.append(f"{fq} [{mode}] cross={r['cross']} visible={r['visible']}")
+            elif r.get("cross") is None and (r.get("visible") or 0) > 0:
+                errors.append(f"{fq} [{mode}] {UNJUDGED} ({r['visible']} visible rows)")
     cells.append(Cell("tenant.aa_app_user_isolation", "tenant",
                       "aa_app_user sees 0 cross-tenant rows under unset/empty/forged/each tenant GUC", (),
                       ok=not tm.get("error") and not cross and not errors and bool(tm.get("tables")),
@@ -1086,7 +1094,8 @@ async def tenant_matrix(conn, facts: dict, tenants: list) -> None:
                     r = await conn.fetchrow(sql, me, allowed.get(t["fq"], []))
                     return {"visible": r["visible"], "cross": r["cross"]}
                 n = await conn.fetchval(f"SELECT count(*)::bigint FROM {t['q']}")
-                # No tenant column: under a GUC that names no real tenant every visible row is foreign.
+                # No tenant scope: under a GUC that names no real tenant every visible row is foreign; under a real
+                # tenant the rows cannot be judged (build_cells reports them, UNJUDGED).
                 return {"visible": n, "cross": n if mode in ("unset", "empty", "forged") else None}
             v, e = await _savepoint(conn, count)
             row_out[mode] = {"error": safe_err(e)} if e else v
