@@ -124,11 +124,15 @@ accounts/
                                    lambda_src/identity_triggers + tests; SES (ses.tf identity) on,
                                    EXTERNAL native sign-up, WAF and custom domains gated by
                                    variables, default off — AA-854)
-    identity_m2m.tf               (AA-972, root ADR 0006b d7: M2M pool aa-m2m-dev, resource server
-                                   booking.b2b (read/quote/hold/book), client-credentials client
-                                   aa-m2m-dev-crm (AA-Partner -> Booking B2B), prefix domain for the token
-                                   endpoint, secret container aa-crm/dev/m2m-booking-client (no value);
-                                   booking.tf passes COGNITO_M2M_ISSUER / COGNITO_M2M_CRM_CLIENT_ID)
+    identity_m2m.tf               (AA-972, root ADR 0006b d7: M2M pool aa-m2m-dev, resource servers
+                                   booking.b2b (read/quote/hold/book) and, AA-976, cis.catalog (read),
+                                   client-credentials client aa-m2m-dev-crm (AA-Partner -> Booking B2B
+                                   and -> CIS catalog.http.v1; each receiver checks only its own scope),
+                                   prefix domain for the token endpoint, secret container
+                                   aa-crm/dev/m2m-booking-client (no value); booking.tf passes
+                                   COGNITO_M2M_ISSUER / COGNITO_M2M_CRM_CLIENT_ID. CIS needs no env var: it
+                                   keeps the Dev issuer and CRM client id as code constants with an env
+                                   override, api/core/m2m_auth.py)
     identity_iam.tf               (AA-816: CIS task role (api + worker) allow-list on the WORKFORCE pool
                                    only — create/group/disable/enable/global sign-out + ListUsers*;
                                    no AdminGetUser / AdminSetUserPassword / attribute writes, ADR 0006)
@@ -451,7 +455,9 @@ makes CI Terraform Plan fail with 403.
   `/auth/*` route (verify-admin, verify-tenant, booking-token, refresh) stays on the stage default on purpose: a
   bucket is global to all callers, so a tight cap on `{auth_proxy+}` would let one client cut every BFF off
   session verification (no per-IP rule while the WAF is off). `/content/{content_proxy+}` has a higher override
-  300 / 600 (TripPlanner cover `<img>` bursts; busiest second 100). Per-IP login limits and per-user backoff are in
+  300 / 600 (TripPlanner cover `<img>` bursts; busiest second 100). `/catalog/{catalog_proxy+}` (AA-976, ANY,
+  NONE at the gateway, HTTP_PROXY to `/catalog/{catalog_proxy}`; the CIS app verifies the M2M token) serves
+  `catalog.http.v1` to the partner CRM on the stage default. Per-IP login limits and per-user backoff are in
   the CIS app (`api/core/login_throttle.py`). The login and content overrides keep detailed metrics off where they
   would be new (~0.30 USD per metric-month). The WAF on the REST stages stays deferred (S241: on when customer
   sign-up opens); reusing the existing ALB web ACL would cost ~0.60 USD per million requests inspected, no new ACL
