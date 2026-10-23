@@ -88,11 +88,22 @@ secrets are referenced by ARN).
 
 ## Secret scan
 
-**Secret Scan** (`.github/workflows/secret-scan.yml`, AA-841) runs gitleaks on every PR against the
-lines the PR's commits add, with the default rules plus two repo rules in `.gitleaks.toml` (a DSN
-with an embedded password; a plaintext password / API key / token in `.tf` / `.tfvars` / `.hcl`).
-It fails on any finding; values are redacted in the log. It does not scan old history (no history
-rewrite under AA-841), so a PR that only deletes a file passes.
+**Secret Scan** (`.github/workflows/secret-scan.yml`) has two jobs, both on gitleaks with the default
+rules plus three repo rules in `.gitleaks.toml` (a DSN with an embedded password; a plaintext
+password / API key / token in `.tf` / `.tfvars` / `.hcl`; a credential-named key — `*password`, `*passwd`,
+`*pwd`, `*secret`, `*api_key`, `*_token` — with a literal value in `*.tfvars`, `*.tfvars.json`,
+`.env*`, `*.json`, `*.yaml`, inline maps included). Values are redacted in the log.
+
+- **gitleaks** (every PR, AA-841): the lines the PR's commits add. A PR that only deletes a file passes.
+  The rules and the baseline are read from the PR's **base** commit, so a PR cannot add a secret and its
+  ignore line together. A PR that changes `.gitleaks.toml` or `.gitleaksignore` fails until a reviewer adds
+  the label `secret-scan-baseline-reviewed` (then the PR's own copies are used); both files are in CODEOWNERS.
+- **gitleaks full history** (nightly, every push to `main`, on demand; AA-981): every commit of every
+  branch and tag, plus the head of every pull request (`refs/pull/*/head`, closed PRs included: GitHub
+  keeps them public after the branch is deleted). Historical findings are pinned by commit fingerprint in
+  `.gitleaksignore`; anything else turns the job red. A new real finding is rotated first, then pinned.
+
+GitHub secret scanning and push protection are on for this repo as well (S248).
 
 Never commit a real `terraform.tfvars`: `.gitignore` ignores every tfvars except
 `accounts/aa365/terraform.tfvars`, whose secret-shaped variables stay `REPLACE_ME` placeholders.
@@ -104,8 +115,11 @@ the terminal):
 IMG=ghcr.io/gitleaks/gitleaks:v8.28.0
 # The commits on this branch that main does not have (what the PR check sees)
 docker run --rm -u "$(id -u):$(id -g)" -v "$PWD:/repo" -w /repo $IMG git /repo --log-opts="origin/main..HEAD" -c /repo/.gitleaks.toml -i /repo/.gitleaksignore --redact --verbose --no-banner
+# The full history of every local branch (the nightly job also scans every PR head: use a
+# `git clone --mirror` of the repo to include them)
+docker run --rm -u "$(id -u):$(id -g)" -v "$PWD:/repo" -w /repo $IMG git /repo -c /repo/.gitleaks.toml -i /repo/.gitleaksignore --redact --verbose --no-banner
 # The whole working tree, untracked files included
-docker run --rm -u "$(id -u):$(id -g)" -v "$PWD:/repo" -w /repo $IMG dir /repo -c /repo/.gitleaks.toml -i /repo/.gitleaksignore --redact --verbose --no-banner
+docker run --rm -u "$(id -u):$(id -g)" -v "$PWD:/repo" -w /repo $IMG dir . -c /repo/.gitleaks.toml -i /repo/.gitleaksignore --redact --verbose --no-banner
 ```
 
 Run from a normal clone: in a `git worktree`, `.git` is a file pointing outside the mount, so the

@@ -8,7 +8,8 @@ name: Docs lint
 #     account IDs, ARNs and user-pool IDs only warn, because this private repo holds the account map (STYLE.md)
 #   - internal links, offline (lychee): no network, no external sites
 # Weekly (and on demand): freshness report of pages past their review date, as a run artifact.
-# gitleaks already runs on every PR in secret-scan.yml, so it is not repeated here.
+# gitleaks already runs on every PR (and nightly over the full history) in secret-scan.yml, so it is not
+# repeated here.
 #
 # Cost: private repo, so runs count against the free Actions minutes. The PR job runs only when Markdown or the
 # lint tools change (about 1 minute), plus one short job a week. No AWS, no secrets beyond the read-only token.
