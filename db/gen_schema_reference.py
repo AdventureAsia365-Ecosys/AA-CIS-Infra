@@ -86,10 +86,7 @@ PII_ALLOWLIST = {
     "booking.trip_case_version_itinerary.title": "itinerary item title (tour, hotel or service name)",
     "booking.job.payload": "job payloads carry ids only (DM-6.3; the intake enqueues {inbox_event_id}, staff_email "
                            "the notification id)",
-    "tripplanner.itinerary_components.name": "frozen read model of the CIS catalog: component name",
     "tripplanner.narration_cache.itinerary_hash": "hash of a catalog itinerary (cache key), no identity",
-    "tripplanner.tour_day.title": "frozen read model of the CIS catalog: tour day title",
-    "tripplanner.tour_graph_node.name": "frozen read model of the CIS catalog: place name",
 }
 
 
