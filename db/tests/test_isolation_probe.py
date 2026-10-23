@@ -30,6 +30,8 @@ TTP = "acp_deliver.tenant_tour_pages"
 ATOMS = "acp_contract.tour_atoms"
 QP = "acp_shared.quarter_plan"
 QPV = "acp_shared.quarter_plan_version"
+AGR = "acp_shared.angle_gate_request"
+AGO = "acp_shared.angle_gate_option"
 T1 = "11111111-1111-4111-8111-111111111111"
 T2 = "22222222-2222-4222-8222-222222222222"
 GUC = "NULLIF(current_setting('app.tenant_id'::text, true), ''::text)"
@@ -212,8 +214,19 @@ class HelpersTest(unittest.TestCase):
         self.assertIn("NOT EXISTS (SELECT 1 FROM acp_shared.quarter_plan p WHERE p.plan_id = c.plan_id", qpv)
         self.assertIn("p.tenant_id::text = $1", qpv)
         self.assertTrue(qpv.endswith('FROM "acp_shared"."quarter_plan_version" c'))
+        ago = p.matrix_count_sql({"fq": AGO, "q": '"acp_shared"."angle_gate_option"', "tenant_col": None})
+        self.assertIn("NOT EXISTS (SELECT 1 FROM acp_shared.angle_gate_request p "
+                      "WHERE p.request_id = c.request_id", ago)
         # No tenant column and no parent: the caller counts every visible row as foreign without a real tenant.
-        self.assertIsNone(p.matrix_count_sql({"fq": "acp_shared.angle_gate_option", "q": "x", "tenant_col": None}))
+        self.assertIsNone(p.matrix_count_sql({"fq": "acp_shared.some_new_table", "q": "x", "tenant_col": None}))
+
+    def test_every_rls_table_without_a_tenant_column_is_parent_scoped(self):
+        # db-schema-reference.md (dump after 268): the only RLS tables of the CIS schemas with neither tenant_id nor
+        # owner_scope are these two, each with a pool policy through its parent.
+        self.assertEqual(set(p.PARENT_SCOPED), {AGO, QPV})
+        for fq, (key, parent, pkey) in p.PARENT_SCOPED.items():
+            self.assertEqual(fq.split(".")[0], parent.split(".")[0])
+            self.assertEqual((key, pkey), {AGO: ("request_id",) * 2, QPV: ("plan_id",) * 2}[fq])
 
     def test_tenant_labels_hide_ids(self):
         ids = ["22222222-2222-2222-2222-222222222222", p.MASTER_TENANT, "33333333-3333-3333-3333-333333333333"]
@@ -585,6 +598,10 @@ class PoolConn:
                 return r[col] is None or r[col] == me or r[col].lower() in allowed
         return {"visible": len(vis), "cross": sum(not ok(r) for r in vis)}
 
+    async def fetchval(self, sql):
+        """The plain count tenant_matrix runs for a table without a tenant scope."""
+        return len(self.visible(next(fq for fq in self.rows if sql.endswith('"{}"."{}"'.format(*fq.split("."))))))
+
 
 WAVE4_TABLES = [{"fq": fq, "q": '"{}"."{}"'.format(*fq.split(".")), "forced": False, "tenant_col": col}
                 for fq, col in ((ATOMS, "owner_scope"), (TTP, "tenant_id"), (QP, "tenant_id"), (QPV, None))]
@@ -699,6 +716,80 @@ class TenantMatrixWave4Test(unittest.TestCase):
         self.assertEqual(by_table['"acp_deliver"."tenant_tour_pages"'], {(p.MASTER_TENANT,)})
         self.assertEqual(by_table['"acp_contract"."tour_atoms"'], {("platform",)})
         self.assertEqual(by_table['"acp_shared"."quarter_plan_version"'], {()})
+
+
+AG_TABLES = [{"fq": fq, "q": '"{}"."{}"'.format(*fq.split(".")), "forced": False, "tenant_col": col}
+             for fq, col in ((AGR, "tenant_id"), (AGO, None))]
+AG_ROWS = {
+    AGR: [{"request_id": "r1", "tenant_id": T1}, {"request_id": "r2", "tenant_id": T2}],
+    AGO: [{"request_id": "r1"}, {"request_id": "r1"}, {"request_id": "r2"}, {"request_id": "r2"}, {"request_id": "r2"}],
+}
+# CIS 241 as live (db-schema-reference.md after 268): tenant_isolation on the request, and on the option through it.
+AG_POLICIES = {
+    AGR: lambda r, g, c: r["tenant_id"] == g,
+    AGO: lambda r, g, c: any(rq["request_id"] == r["request_id"] for rq in c.visible(AGR)),
+}
+AG_QUALS = [
+    {"fq": AGR, "qual": f"(tenant_id = ({GUC})::uuid)"},
+    {"fq": AGO, "qual": f"(EXISTS ( SELECT 1 FROM acp_shared.angle_gate_request r WHERE ((r.request_id = "
+                        f"angle_gate_option.request_id) AND (r.tenant_id = ({GUC})::uuid))))"},
+]
+# A pool policy that admits any real tenant (wrong table in the tenant check): nothing under unset / '' / forged, so
+# only the per-tenant modes can catch it.
+ANY_REAL_TENANT = (p.MASTER_TENANT, T1, T2)
+
+
+class TenantMatrixAngleGateTest(unittest.TestCase):
+    """AA-859 (S247 follow-up): acp_shared.angle_gate_option is judged through its angle_gate_request under each real
+    tenant. Before, it had no tenant column and no PARENT_SCOPED entry: its per-tenant cross was None (never judged)."""
+
+    def run_matrix(self, policies=None):
+        f = today_facts()
+        f["tenant_matrix"] = {}
+        f["_rls_tables"] = AG_TABLES
+        f["_allowed_constants"] = p.allowed_tenant_constants(AG_QUALS)
+        conn = PoolConn(AG_TABLES, copy.deepcopy(AG_ROWS), {**AG_POLICIES, **(policies or {})})
+        asyncio.run(p.tenant_matrix(conn, f, [p.MASTER_TENANT, T1, T2]))
+        st, keys = statuses(f)
+        cell = {c.id: c for c in p.build_cells(f, keys)}["tenant.aa_app_user_isolation"]
+        return st["tenant.aa_app_user_isolation"], f["tenant_matrix"]["tables"], cell
+
+    def test_live_policies_pass_and_are_judged_per_tenant(self):
+        st, m, cell = self.run_matrix()
+        self.assertEqual(st, "pass")
+        self.assertEqual(m[AGO]["tenant:t1"], {"visible": 2, "cross": 0})         # judged (not None)
+        self.assertEqual(m[AGO]["tenant:t2"], {"visible": 3, "cross": 0})
+        self.assertEqual(m[AGO]["tenant:master"], {"visible": 0, "cross": 0})
+        self.assertEqual(m[AGO]["unset"], {"visible": 0, "cross": 0})
+        self.assertEqual(cell.detail["errors"], [])
+
+    def test_option_leak_is_caught(self):
+        st, m, _ = self.run_matrix(policies={AGO: lambda r, g, c: True})         # tenant_isolation USING (true)
+        self.assertEqual(st, "FAIL")
+        self.assertEqual(m[AGO]["tenant:t1"], {"visible": 5, "cross": 3})         # r2 belongs to t2
+        self.assertEqual(m[AGO]["forged"], {"visible": 5, "cross": 5})
+
+    def test_leak_only_under_real_tenants_is_caught(self):
+        leak = {AGO: lambda r, g, c: g in ANY_REAL_TENANT}
+        st, m, cell = self.run_matrix(policies=leak)
+        self.assertEqual(st, "FAIL")
+        self.assertEqual(m[AGO]["forged"], {"visible": 0, "cross": 0})            # invisible without a real tenant
+        self.assertEqual(m[AGO]["tenant:t1"], {"visible": 5, "cross": 3})
+        self.assertEqual(m[AGO]["tenant:master"], {"visible": 5, "cross": 5})
+        self.assertTrue(any(s.startswith(f"{AGO} [tenant:t1]") for s in cell.detail["cross_tenant"]))
+
+    def test_unregistered_table_is_an_error_not_a_silent_pass(self):
+        # The pre-fix PARENT_SCOPED (quarter_plan_version only): the same per-tenant leak used to pass, its cross None.
+        old = {QPV: p.PARENT_SCOPED[QPV]}
+        with mock.patch.object(p, "PARENT_SCOPED", old):
+            st, m, cell = self.run_matrix(policies={AGO: lambda r, g, c: g in ANY_REAL_TENANT})
+            self.assertEqual(m[AGO]["tenant:t1"], {"visible": 5, "cross": None})
+            self.assertEqual(st, "FAIL")
+            self.assertIn(p.UNJUDGED, cell.error)
+            # The live policies too: rows visible under a real tenant that nothing judges fail the cell.
+            st, m, cell = self.run_matrix()
+            self.assertEqual(st, "FAIL")
+            self.assertIn(f"{AGO} [tenant:t1] {p.UNJUDGED} (2 visible rows)", cell.detail["errors"])
 
 
 class MainTest(unittest.TestCase):
