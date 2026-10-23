@@ -17,7 +17,7 @@
 #
 # Default rules: the gitleaks v8.30.1 default rules are copied into this file (not `[extend] useDefault = true`, which
 # also loads gitleaks' global path allowlist: it skipped text files such as .svg, node_modules/, bootstrap*.js, go.sum
-# or *.dist-info/ in every rule). The global allowlists below keep only binary formats and placeholder values.
+# or *.dist-info/ in every rule). The global allowlists below keep only placeholder values: no path is skipped.
 #
 # Known false positives: prefer a narrow allowlist entry here (path or exact placeholder regex) for
 # a class of values; use .gitleaksignore (one fingerprint per line) for a single finding.
@@ -28,16 +28,10 @@ title = "AA-CIS-Infra gitleaks config"
 # Global allowlists (every rule). gitleaks v8.30.1's own global allowlist, trimmed (AA-981 review): its path list
 # skipped TEXT files too (.svg, .bin, node_modules/, bootstrap*.js / jquery*.js, go.sum, Pipfile.lock / poetry.lock,
 # venv/lib/, lib/python3.x/, *.dist-info/, .gem, any path containing "gitleaks.toml", ...), so a secret in a file
-# renamed to one of those passed. Kept: binary formats only, every regex anchored at the end. The PR check needs the
-# label `secret-scan-baseline-reviewed` when a file with one of these extensions is text to git (no NUL byte), and the
-# lock files are in the shared block at the end.
-[[allowlists]]
-description = "Binary file formats: images other than svg, fonts, Office documents, pdf, exe, dll"
-paths = [
-  '''(?i)\.(?:bmp|gif|ico|jpe?g|png|tiff?|webp|avif|heic)$''',
-  '''(?i)\.(?:eot|[ot]tf|woff2?)$''',
-  '''(?i)\.(?:docx?|xlsx?|pptx?|pdf|exe|dll)$''',
-]
+# renamed to one of those passed. No path allowlist is kept (AA-981 round 5): a file name says nothing about the
+# content (a text file named .png, or a lock file with a registry credential in a URL, passed). Images, fonts,
+# documents and lock files add no findings in today's history of the six repos. A false positive later: a narrow
+# entry keyed on the rule and the value or line, never on a file name alone.
 
 # gitleaks v8.30.1's global value allowlist, unchanged except the first regex: upstream `(?i)^true|false|null$` is
 # an unanchored alternation that allowlists any value merely containing "false"; here it is anchored.
@@ -3308,14 +3302,6 @@ description = "AWS network resource IDs"
 regexTarget = "secret"
 regexes = ['''^(?:sg|vpce|vpc|subnet|rtb|igw|nat|eni|acl|pl|tgw)-[0-9a-f]{8,17}$''']
 
-# Global allowlist: Terraform provider lock files and package lock files (hashes, not secrets).
-[[allowlists]]
-description = "Lock files"
-paths = [
-  '''(?:^|/)\.terraform\.lock\.hcl$''',
-  '''(?:^|/)(?:package-lock\.json|pnpm-lock\.yaml|yarn\.lock)$''',
-]
-
 # The copied default rules hold one regex that is a literal token prefix, so this file matches itself under that rule.
 [[allowlists]]
 description = "This file's own copy of the short-lived Bedrock API key rule (its regex is a literal)"
@@ -3330,8 +3316,3 @@ paths = ['''^\.gitleaks\.toml$''']
 description = "X1 S12 runner tests: fake DSNs (hosts db.example / h / host) that exercise DSN parsing and redaction"
 targetRules = ["uri-embedded-credentials"]
 paths = ['''^db/tests/test_runner_modes\.py$''']
-
-# Built Lambda zips: binary build outputs (hashes and compressed bytes, not secrets).
-[[allowlists]]
-description = "Built Lambda zips"
-paths = ['''(?:^|/)dist/lambdas/[^/]+\.zip$''']

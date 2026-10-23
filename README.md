@@ -99,21 +99,21 @@ password / API key / token in `.tf` / `.tfvars` / `.hcl`; a credential-named key
 `*pwd`, `*secret`, `*api_key`, `*_token` — with a literal value in `*.tfvars`, `*.tfvars.json`,
 `.env*`, `*.json`, `*.yaml`, inline maps included). Values are redacted in the log.
 
-- **gitleaks** (every PR, AA-841): the lines the PR's commits add, plus a squash preview (the PR's final tree as one
-  commit: what the squash merge writes, so a value split across commits is seen whole). A PR that only deletes a
+- **gitleaks** (every PR, AA-841): the lines the PR's commits add, plus a squash preview (the PR merged into the base as
+  one commit: what the squash merge writes, so a value split across commits is seen whole). A PR that only deletes a
   file passes. It runs on `pull_request_target`: GitHub always runs the base branch's copy of the workflow and the
   PR head is only read as data, so a PR cannot change the check that judges it (a change to the workflow takes
   effect after its merge). It fails when another workflow has a job named `gitleaks` (the required check is
   matched by name).
   The rules and the baseline are read from the PR's **base** commit, so a PR cannot add a secret and its
   ignore line together. A PR that changes `.gitleaks.toml`, `.gitleaksignore`, either secret scan workflow,
-  `.github/CODEOWNERS` or any `.gitattributes`, changes a workflow that grants checks or statuses write, adds a
-  text file under a binary-format name (`.png`, `.pdf`, ...: not scanned) or adds an inline `gitleaks:allow`
+  `.github/CODEOWNERS` or any `.gitattributes`, changes a workflow that grants checks or statuses write (or
+  one yq cannot read) or adds an inline `gitleaks:allow`
   comment, fails until a reviewer adds the label `secret-scan-baseline-reviewed`
   after the last push (then the PR's own copies are used); any later push, reopen or label change removes
   the label. The files are in CODEOWNERS. Merge commits are read as remerge diffs (what the merge adds
-  beyond git's automatic merge), renamed files whole and every file as text (NUL bytes included; a UTF-16 file
-  still escapes); an octopus merge or a git error
+  beyond git's automatic merge), renamed files whole and every file as text (NUL bytes included; UTF-16 files
+  are transcoded to UTF-8; no path allowlist); an octopus merge or a git error
   fails the check. For a false positive prefer a narrow allowlist in `.gitleaks.toml`: a commit
   fingerprint does not survive the squash merge (header of `.gitleaksignore`).
 - **gitleaks full history** (`secret-scan-history.yml`: nightly, every push to `main`, on demand; AA-981): every commit of every
