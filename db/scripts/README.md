@@ -215,3 +215,11 @@ verdict (`db/README.md`, "Tour liveness gate"). Prints counts, ids and keys only
 id-shaped printed as `masked`); a failed layer logs its exception class and SQLSTATE, with the server message only for
 class 42. The `expect` values follow ADR 0015 (Q4: sold Booking items kept and flagged; Q9: `lifecycle_stage` is
 context): one constant each to change.
+
+`s249_drill_*.py` (AA-829, S249 restore drill + single-schema restore rehearsal, docs/ops/runbooks/restore-rds-pitr.md
+and restore-schema.md): `s249_drill_rehearsal_setup.py` (WRITE, synthetic) creates the throw-away schema `drill_s249`
+with 100 rows, waits 2 minutes and deletes 40 (prints T1/T2 for the PITR restore point); `s249_drill_compare.py`
+(read-only) compares the PITR copy `aa-cis-dev-db-drill-20261023` with live per schema; `s249_drill_schema_restore.py`
+(WRITE) copies the 40 missing rows back from the copy in one transaction and refuses any other count;
+`s249_drill_cleanup.py` (WRITE) drops `drill_s249`. The copy's host is derived from `db.dev.internal` in the task,
+so no endpoint is written here. One-off: delete these four files once the drill record is in `docs/ops/drills/`.
