@@ -141,10 +141,16 @@ BEGIN
        OR (OLD.destroyed_at IS NOT NULL AND NEW.destroyed_at IS DISTINCT FROM OLD.destroyed_at) THEN
         RAISE EXCEPTION 'crm.tenant_key: retire and destroy are one-way' USING ERRCODE = 'check_violation';
     END IF;
-    -- The wrapped DEK changes only by a rewrap (rewrapped_at moves) or a destroy (it becomes NULL).
-    IF NEW.wrapped_dek IS DISTINCT FROM OLD.wrapped_dek AND NEW.wrapped_dek IS NOT NULL
+    -- A destroyed key stays destroyed: its wrapped DEK never comes back.
+    IF OLD.destroyed_at IS NOT NULL AND NEW.wrapped_dek IS NOT NULL THEN
+        RAISE EXCEPTION 'crm.tenant_key: a destroyed key cannot be re-wrapped' USING ERRCODE = 'check_violation';
+    END IF;
+    -- The wrapping (wrapped_dek, kek_provider, kek_id) changes only by a rewrap (rewrapped_at moves) or a destroy
+    -- (wrapped_dek becomes NULL).
+    IF ((NEW.wrapped_dek IS DISTINCT FROM OLD.wrapped_dek AND NEW.wrapped_dek IS NOT NULL)
+        OR NEW.kek_provider IS DISTINCT FROM OLD.kek_provider OR NEW.kek_id IS DISTINCT FROM OLD.kek_id)
        AND NEW.rewrapped_at IS NOT DISTINCT FROM OLD.rewrapped_at THEN
-        RAISE EXCEPTION 'crm.tenant_key: wrapped_dek changes only with rewrapped_at' USING ERRCODE = 'check_violation';
+        RAISE EXCEPTION 'crm.tenant_key: the wrapping changes only with rewrapped_at' USING ERRCODE = 'check_violation';
     END IF;
     RETURN NEW;
 END;
