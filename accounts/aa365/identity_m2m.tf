@@ -15,8 +15,8 @@
 #   - user pool aa-m2m-<env>: Essentials tier like the other pools (no users, so no MAU), deletion protection ACTIVE,
 #     admin-create only, no self sign-up, MFA off (nobody signs in), account recovery admin_only.
 #   - resource server "booking.b2b" with the four contract scopes read / quote / hold / book (contract
-#     booking.b2b.v1 securitySchemes.m2m). Later receivers (cis.catalog, cis.tenant: AA-976, AA-978) add their own
-#     resource server here.
+#     booking.b2b.v1 securitySchemes.m2m). Later receivers add their own resource server here: AA-976 adds
+#     "cis.catalog" (scope read, contract catalog.http.v1, served by AA-CIS-App /catalog/v1); cis.tenant is AA-978.
 #   - app client aa-m2m-<env>-crm: confidential (generated secret), client_credentials ONLY, all four booking.b2b
 #     scopes (hold/book routes arrive with AA-973; Booking checks a scope per route, so an extra scope grants nothing
 #     until its route exists), access tokens 6 h (ADR 0006b: cached in process), token revocation on.
@@ -68,6 +68,14 @@ locals {
     hold  = "Place, extend and release holds"
     book  = "Confirm and cancel bookings"
   }
+
+  # AA-976 (CRM-B4): contract catalog.http.v1 securitySchemes.m2m. AA-CIS-App pins the CRM client and this scope
+  # (api/core/m2m_auth.py; the issuer and client id are code constants there with an env override, so the CIS task
+  # definition needs no new variable).
+  idm2m_catalog_identifier = "cis.catalog"
+  idm2m_catalog_scopes = {
+    read = "Published tours, destinations and AA-authored content (CIS /catalog/v1)"
+  }
 }
 
 resource "aws_cognito_user_pool" "m2m" {
@@ -106,6 +114,20 @@ resource "aws_cognito_resource_server" "booking_b2b" {
   }
 }
 
+resource "aws_cognito_resource_server" "cis_catalog" {
+  identifier   = local.idm2m_catalog_identifier
+  name         = "AA-CIS-App catalog API catalog.http.v1"
+  user_pool_id = aws_cognito_user_pool.m2m.id
+
+  dynamic "scope" {
+    for_each = local.idm2m_catalog_scopes
+    content {
+      scope_name        = scope.key
+      scope_description = scope.value
+    }
+  }
+}
+
 resource "aws_cognito_user_pool_client" "m2m_crm" {
   name         = "${local.idm2m_name}-crm"
   user_pool_id = aws_cognito_user_pool.m2m.id
@@ -113,7 +135,12 @@ resource "aws_cognito_user_pool_client" "m2m_crm" {
   generate_secret                      = true
   allowed_oauth_flows                  = ["client_credentials"]
   allowed_oauth_flows_user_pool_client = true
-  allowed_oauth_scopes                 = [for s in aws_cognito_resource_server.booking_b2b.scope_identifiers : s]
+  # AA-976: + cis.catalog/read. Each receiver checks its own scope per route, so a scope of another API grants nothing
+  # there. Updating the scopes of an existing client is in place (no new client id, the secret is kept).
+  allowed_oauth_scopes = concat(
+    [for s in aws_cognito_resource_server.booking_b2b.scope_identifiers : s],
+    [for s in aws_cognito_resource_server.cis_catalog.scope_identifiers : s],
+  )
   # Cognito always allows refresh-token auth; nothing else (no SRP, no password, no USER_AUTH: there are no users).
   explicit_auth_flows = ["ALLOW_REFRESH_TOKEN_AUTH"]
 
@@ -165,6 +192,10 @@ output "identity_m2m_client_ids" {
 
 output "identity_m2m_booking_scopes" {
   value = sort(aws_cognito_resource_server.booking_b2b.scope_identifiers)
+}
+
+output "identity_m2m_catalog_scopes" {
+  value = sort(aws_cognito_resource_server.cis_catalog.scope_identifiers)
 }
 
 output "identity_m2m_crm_secret_arn" {

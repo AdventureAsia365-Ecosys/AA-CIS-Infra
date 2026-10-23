@@ -248,6 +248,47 @@ resource "aws_api_gateway_integration" "content" {
   }
 }
 
+# /catalog/{catalog_proxy+} — AA-976: catalog.http.v1 for the partner CRM (service-to-service). NONE at the gateway
+# like every other route: FastAPI verifies the aa-m2m client-credentials token (CRM client + scope cis.catalog/read,
+# api/core/m2m_auth.py) and answers 401 / 403 itself.
+resource "aws_api_gateway_resource" "catalog" {
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  parent_id   = aws_api_gateway_rest_api.this.root_resource_id
+  path_part   = "catalog"
+}
+
+resource "aws_api_gateway_resource" "catalog_proxy" {
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  parent_id   = aws_api_gateway_resource.catalog.id
+  path_part   = "{catalog_proxy+}"
+}
+
+resource "aws_api_gateway_method" "catalog_any" {
+  rest_api_id   = aws_api_gateway_rest_api.this.id
+  resource_id   = aws_api_gateway_resource.catalog_proxy.id
+  http_method   = "ANY"
+  authorization = "NONE"
+
+  request_parameters = {
+    "method.request.path.catalog_proxy" = true
+  }
+}
+
+resource "aws_api_gateway_integration" "catalog" {
+  rest_api_id             = aws_api_gateway_rest_api.this.id
+  resource_id             = aws_api_gateway_resource.catalog_proxy.id
+  http_method             = aws_api_gateway_method.catalog_any.http_method
+  type                    = "HTTP_PROXY"
+  integration_http_method = "ANY"
+  connection_type         = "VPC_LINK"
+  connection_id           = var.vpc_link_id
+  uri                     = "http://${var.nlb_dns_name}/catalog/{catalog_proxy}"
+
+  request_parameters = {
+    "integration.request.path.catalog_proxy" = "method.request.path.catalog_proxy"
+  }
+}
+
 # /docs — FastAPI Swagger UI (no auth)
 resource "aws_api_gateway_resource" "docs" {
   rest_api_id = aws_api_gateway_rest_api.this.id
@@ -448,6 +489,7 @@ resource "aws_api_gateway_deployment" "this" {
     aws_api_gateway_method.login,      # AA-876
     aws_api_gateway_integration.admin,
     aws_api_gateway_integration.content,
+    aws_api_gateway_integration.catalog, # AA-976
     aws_api_gateway_integration.docs,
     aws_api_gateway_integration.openapi,
     aws_api_gateway_integration.redoc,
@@ -462,6 +504,7 @@ resource "aws_api_gateway_deployment" "this" {
       aws_api_gateway_integration.auth.uri,
       aws_api_gateway_integration.admin.uri,
       aws_api_gateway_integration.content.uri,
+      aws_api_gateway_integration.catalog.uri, # AA-976: new resource must redeploy the stage (AA-432/AA-583 trap)
       aws_api_gateway_integration.docs.uri,
       aws_api_gateway_integration.openapi.uri,
       # AA-583: added when /redoc + /docs/oauth2-redirect resources were created — same
@@ -480,6 +523,7 @@ resource "aws_api_gateway_deployment" "this" {
       aws_api_gateway_method.admin_any.authorization,
       aws_api_gateway_method.auth_any.authorization,
       aws_api_gateway_method.content_any.authorization,
+      aws_api_gateway_method.catalog_any.authorization, # AA-976
       # AA-876: the two explicit login resources — without these the stage keeps the old snapshot and the
       # login throttle overrides point at methods the live deployment does not have (AA-432/AA-465/AA-583 trap).
       join(",", [for k in sort(tolist(local.login_paths)) : aws_api_gateway_integration.login[k].uri]),
