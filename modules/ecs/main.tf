@@ -32,6 +32,15 @@ locals {
     { name = "PLACE_SHAPES_ENABLED", value = var.place_shapes_enabled ? "on" : "off" },
   ]
 
+  # AA-839: the data_erasure job's apply switch and the tenant retention window (AA-CIS-App
+  # services/jobs/erasure_job.py). The api checks the flag before it enqueues an apply (403) and the job
+  # re-checks both on the worker, so api and worker carry the same values. Apply is on only for the
+  # string "true"; "false" behaves like unset. Retention 30 = the code default.
+  erasure_env = [
+    { name = "ERASURE_APPLY_ENABLED", value = var.erasure_apply_enabled ? "true" : "false" },
+    { name = "ERASURE_TENANT_RETENTION_DAYS", value = tostring(var.erasure_tenant_retention_days) },
+  ]
+
   # AA-779 (CIS ADR 0011): the T9 blog FAQ question filter's mode (AA-CIS-App services/acp_content_writing/faq_filter.py).
   # The T9 write runs as a job on the worker, so only the worker task definition carries it.
   t9_faq_filter_env = [
@@ -494,6 +503,7 @@ resource "aws_ecs_task_definition" "api" {
       local.ops_alert_mail_env,
       local.bedrock_satellite_env,
       local.place_shapes_env,
+      local.erasure_env,
       var.redis_host != null ? [{ name = "REDIS_HOST", value = var.redis_host }] : []
     )
     secrets = [
@@ -698,6 +708,7 @@ resource "aws_ecs_task_definition" "worker" {
       local.ops_alert_mail_env,
       local.bedrock_satellite_env,
       local.place_shapes_env,
+      local.erasure_env,
       local.t9_faq_filter_env,
       var.redis_host != null ? [{ name = "REDIS_HOST", value = var.redis_host }] : []
     )

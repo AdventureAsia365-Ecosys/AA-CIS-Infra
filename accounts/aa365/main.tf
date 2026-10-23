@@ -55,6 +55,13 @@ locals {
   ecs_cluster_arn      = "arn:aws:ecs:${var.aws_region}:${var.account_id}:cluster/${local.name_prefix}-cluster"
   ecs_api_task_def_arn = "arn:aws:ecs:${var.aws_region}:${var.account_id}:task-definition/${local.name_prefix}-api"
   sfn_pipeline_arn     = "arn:aws:states:${var.aws_region}:${var.account_id}:stateMachine:${local.name_prefix}-pipeline"
+
+  # AA-839: the Dev erasure drill switch, the ONLY line a drill PR changes. false = DRY RUN only
+  # (ERASURE_APPLY_ENABLED=false, retention = the code default 30 days). true = apply on and retention 0
+  # days, for the approved drill on a synthetic tenant only (root docs/legal/dsar-erasure-runbook.md
+  # section 5). A change reaches the tasks only after Terraform Apply AND a CIS Deploy Dev dispatch
+  # (the services ignore task_definition; the deploy copies the latest revision and swaps the image).
+  erasure_drill = false
 }
 
 module "vpc" {
@@ -196,6 +203,9 @@ module "ecs" {
   place_shapes_enabled = true
   # AA-779: on since S247 (shadow verdicts read on real blogs first; ADR 0011 in AA-CIS-App). Rollback: "shadow".
   t9_faq_llm_filter = "on"
+  # AA-839: data_erasure apply switch + tenant retention window, driven by local.erasure_drill above.
+  erasure_apply_enabled         = local.erasure_drill
+  erasure_tenant_retention_days = local.erasure_drill ? 0 : null # null = module default (30)
 
   task_cpu              = var.task_cpu
   task_memory           = var.task_memory
