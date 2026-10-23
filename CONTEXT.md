@@ -88,7 +88,7 @@ accounts/
                                    AA-878: no secret value in the Lambda env; the edge key is read by
                                    name tripplanner/<ENVIRONMENT>/api-key (grant ReadApiKeySecret);
                                    the Mapbox secret is forgotten via a removed block, not deleted.
-                                   AA-847: PLACES_SOURCE on both Lambdas from var.tripplanner_places_source.
+                                   AA-712 X4: no PLACES_SOURCE any more (TripPlanner reads only the catalog views).
                                    AA-871: secret shell tripplanner/<env>/sentry-dsn (no version), read by
                                    name at cold start, grant ReadSentryDsnSecret; no DSN in the Lambda env)
     booking.tf                    (AA-Booking ECS service, ECR, ALB rule /booking/*, REST API on the
