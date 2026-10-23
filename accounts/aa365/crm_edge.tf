@@ -1,34 +1,31 @@
 # =============================================================================
-# AA-931 (CRM-03) — CloudFront VPC-origin spike for AA-Partner (design-v3 §6.3, v2.1 T1, v2.2 V3).
+# AA-931 (CRM-03) — AA-Partner CloudFront edge (design-v3 §6.3, v2.1 T1, v2.2 V3). Proven by the AA-931 spike;
+# the spike's hello service was removed in AA-933 (S248, Nghiệp decision d16).
 #
 #   viewer -> CloudFront partner-dev.lumiguides.it.com  (+ X-AA-Origin: <secret>)
 #          -> VPC origin -> internal NLB aa-cis-dev-nlb (the existing API Gateway VPC-link NLB)
-#          -> ALB :80 rule crm_spike_partner (Host + secret)  -> hello task (Fargate ARM64, Spot)
-#             ALB :80 rule crm_origin_deny  (any X-AA-Origin) -> 403, never CIS or Booking
+#          -> ALB :80 rule crm_api             (Host + secret + /crm, /crm/*) -> AA-Partner API (crm_app.tf)
+#             ALB :80 rule crm_partner_default (Host + secret, any other path) -> fixed 404 JSON
+#             ALB :80 rule crm_origin_deny     (any X-AA-Origin)              -> 403, never CIS or Booking
 #
-# What it proves before CRM-04 builds on it: CloudFront can reach the private NLB through a VPC origin;
-# a non-partner Host (or the raw *.cloudfront.net name) gets 403; a streamed 30 s SSR response is not
-# cut; a viewer outside the shared WAF's country list still loads the page.
+# crm_partner_default holds the partner host's other paths until the CRM web (AA-935) exists; AA-935 turns it into
+# a forward to the web target group. It also lets the edge be checked at $0 with no task running
+# (tools/terraform/crm_edge_live_check.py: partner / -> this 404, raw *.cloudfront.net -> the deny 403).
 #
 # Pieces outside this file: alb_rules.tf (priorities), modules/alb (NLB prefix-list ingress + the
 # second ALB group, gated by cloudfront_vpc_origin_enabled), modules/waf (CloudFrontOriginAllow,
 # gated by origin_verify_header), cicd_crm.tf (the apply-role grants this needs: VPC origin, origin
-# request policy lookup, SetSecurityGroups). Reasons for each choice: docs/implementation-notes/AA-931.md.
-#
-# The hello task needs no image build: the public python:3.12-slim image runs
-# assets/crm_spike/server.py through `python3 -c`. No task role, no ECS exec, read-only root file
-# system, user nobody. The service is created at desired_count 0 and scaled by hand for the live check.
+# request policy lookup, SetSecurityGroups). Reasons for each choice: docs/implementation-notes/AA-931.md
+# (edge) and AA-933.md (spike removal, default rule).
 #
 # Cost (est., us-west-1, D-19): the NLB is the existing one, so no new NLB hours (a dedicated NLB would
-# be ~$18/month + LCU); spike traffic adds well under one NLB/ALB LCU (< $0.10/month). CloudFront:
-# VPC origins have no extra charge, traffic sits inside the always-free tier (1 TB, 10M requests;
-# PAYG worst case for a spike < $0.10). ACM, Route 53 alias queries: $0. Hello task 0.25 vCPU / 0.5 GB
-# ARM64: $0 at desired 0; ~$2.5-3/month on Spot if left at 1 around the clock (~$8.3 on-demand).
-# Logs: cents.
+# be ~$18/month + LCU); Dev traffic adds well under one NLB/ALB LCU (< $0.10/month). CloudFront:
+# VPC origins have no extra charge, traffic sits inside the always-free tier (1 TB, 10M requests).
+# ACM, Route 53 alias queries: $0. Fixed-response ALB rules: $0 (inside the ALB's LCU rule allowance).
 # =============================================================================
 
 variable "crm_edge_enabled" {
-  description = "AA-931: create the AA-Partner CloudFront edge (VPC origin on the NLB, distribution, partner host + deny ALB rules, WAF allow rule) and the hello spike service. Also needs custom_domains_enabled (certificate validation)."
+  description = "AA-931: create the AA-Partner CloudFront edge (VPC origin on the NLB, distribution, partner host default + deny ALB rules, WAF allow rule). Also needs custom_domains_enabled (certificate validation)."
   type        = bool
   default     = true
 }
@@ -37,12 +34,6 @@ variable "crm_partner_subdomain" {
   description = "AA-931: label under dns_zone_name for the AA-Partner Dev host (design-v3 §2.1: partner-dev.)."
   type        = string
   default     = "partner-dev"
-}
-
-variable "crm_spike_image" {
-  description = "AA-931: image of the hello spike task. Public multi-arch Python image; the server code is passed as `python3 -c` (assets/crm_spike/server.py), so nothing is built or pushed."
-  type        = string
-  default     = "public.ecr.aws/docker/library/python:3.12-slim"
 }
 
 variable "crm_cdn_price_class" {
@@ -59,9 +50,7 @@ variable "crm_cdn_price_class" {
 locals {
   crm_edge_on      = var.crm_edge_enabled && var.custom_domains_enabled ? 1 : 0
   crm_partner_host = "${var.crm_partner_subdomain}.${var.dns_zone_name}"
-  crm_spike_name   = "${local.crm_name_prefix}-spike"
-  crm_spike_port   = 8080
-  crm_spike_tags   = merge(local.crm_tags, { Issue = "AA-931" })
+  crm_edge_tags    = merge(local.crm_tags, { Issue = "AA-931" })
   crm_origin_id    = "crm-vpc-origin"
 }
 
@@ -87,7 +76,7 @@ resource "aws_acm_certificate" "crm_partner" {
   validation_method = "DNS"
   key_algorithm     = "RSA_2048"
 
-  tags = merge(local.crm_spike_tags, { Name = "${local.crm_name_prefix}-partner-cdn" })
+  tags = merge(local.crm_edge_tags, { Name = "${local.crm_name_prefix}-partner-cdn" })
 
   lifecycle {
     create_before_destroy = true
@@ -131,7 +120,7 @@ resource "aws_cloudfront_vpc_origin" "crm" {
     }
   }
 
-  tags = merge(local.crm_spike_tags, { Name = "${local.crm_name_prefix}-nlb-origin" })
+  tags = merge(local.crm_edge_tags, { Name = "${local.crm_name_prefix}-nlb-origin" })
 
   # The NLB group's CloudFront prefix-list rule and the second ALB group (module.alb) come first.
   depends_on = [module.alb, time_sleep.wait_for_iam_propagation]
@@ -201,7 +190,7 @@ resource "aws_cloudfront_distribution" "crm_partner" {
     minimum_protocol_version = "TLSv1.2_2021"
   }
 
-  tags = merge(local.crm_spike_tags, { Name = "${local.crm_name_prefix}-partner-cdn" })
+  tags = merge(local.crm_edge_tags, { Name = "${local.crm_name_prefix}-partner-cdn" })
 }
 
 resource "aws_route53_record" "crm_partner" {
@@ -219,42 +208,33 @@ resource "aws_route53_record" "crm_partner" {
 }
 
 # -----------------------------------------------------------------------------
-# ALB: hello target group + the two CloudFront-path rules (priorities: alb_rules.tf)
+# ALB: the two CloudFront-path rules owned here (priorities: alb_rules.tf). The partner host's /crm/* rule is
+# crm_app.tf (crm_api).
 # -----------------------------------------------------------------------------
-resource "aws_lb_target_group" "crm_spike" {
-  count = local.crm_edge_on
 
-  name                 = "${local.crm_spike_name}-tg"
-  port                 = local.crm_spike_port
-  protocol             = "HTTP"
-  vpc_id               = module.vpc.vpc_id
-  target_type          = "ip" # Fargate
-  deregistration_delay = 30
-
-  health_check {
-    enabled             = true
-    path                = "/health"
-    port                = "traffic-port"
-    protocol            = "HTTP"
-    healthy_threshold   = 2
-    unhealthy_threshold = 3
-    timeout             = 5
-    interval            = 30
-    matcher             = "200"
-  }
-
-  tags = local.crm_spike_tags
+# AA-933 (d16): the hello spike rule became the partner host's default. Same address history: the rule is
+# modified in place (ModifyRule, same priority and ARN), never deleted and re-created at a used priority.
+moved {
+  from = aws_lb_listener_rule.crm_spike_partner
+  to   = aws_lb_listener_rule.crm_partner_default
 }
 
-resource "aws_lb_listener_rule" "crm_spike_partner" {
+resource "aws_lb_listener_rule" "crm_partner_default" {
   count = local.crm_edge_on
 
   listener_arn = module.alb.http_listener_arn
-  priority     = local.alb_http_rule_priorities.crm_spike_partner
+  priority     = local.alb_http_rule_priorities.crm_partner_default
 
+  # Until the CRM web (AA-935): every partner-host path that is not /crm or /crm/* (crm_api, above) gets a JSON
+  # 404 in the shape FastAPI uses. AA-935 changes this action to a forward to the web target group.
   action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.crm_spike[0].arn
+    type = "fixed-response"
+
+    fixed_response {
+      content_type = "application/json"
+      message_body = jsonencode({ detail = "Not Found" })
+      status_code  = "404"
+    }
   }
 
   condition {
@@ -270,7 +250,7 @@ resource "aws_lb_listener_rule" "crm_spike_partner" {
     }
   }
 
-  tags = local.crm_spike_tags
+  tags = local.crm_edge_tags
 }
 
 resource "aws_lb_listener_rule" "crm_origin_deny" {
@@ -296,164 +276,15 @@ resource "aws_lb_listener_rule" "crm_origin_deny" {
     }
   }
 
-  tags = local.crm_spike_tags
+  tags = local.crm_edge_tags
 }
 
-# -----------------------------------------------------------------------------
-# Hello task: logs, execution role (logs only), security group, task definition, service
-# -----------------------------------------------------------------------------
-resource "aws_cloudwatch_log_group" "crm_spike" {
-  count = local.crm_edge_on
-
-  name              = "/ecs/${local.crm_spike_name}"
-  retention_in_days = 30 # AA-872 (S241 D-09): application logs 30 days
-  tags              = local.crm_spike_tags
-}
-
-resource "aws_iam_role" "crm_spike_ecs_execution" {
-  count = local.crm_edge_on
-
-  name                 = "${local.crm_spike_name}-ecs-execution-role"
-  permissions_boundary = aws_iam_policy.workload_boundary.arn
-  assume_role_policy   = data.aws_iam_policy_document.booking_ecs_tasks_assume.json # ecs-tasks, this account only
-  tags                 = local.crm_spike_tags
-
-  depends_on = [time_sleep.wait_for_iam_propagation]
-}
-
-# The image is public (no ECR pull grant needed) and there is no secret: only the log stream writes.
-resource "aws_iam_role_policy" "crm_spike_ecs_execution" {
-  count = local.crm_edge_on
-
-  name = "${local.crm_spike_name}-ecs-execution"
-  role = aws_iam_role.crm_spike_ecs_execution[0].id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Sid      = "WriteSpikeLogs"
-      Effect   = "Allow"
-      Action   = ["logs:CreateLogStream", "logs:PutLogEvents"]
-      Resource = "${aws_cloudwatch_log_group.crm_spike[0].arn}:log-stream:*"
-    }]
-  })
-}
-
-resource "aws_security_group" "crm_spike" {
-  count = local.crm_edge_on
-
-  name        = "${local.crm_spike_name}-sg"
-  description = "AA-931 AA-Partner hello spike (ADR 0004b: own group)"
-  vpc_id      = module.vpc.vpc_id
-
-  ingress {
-    description     = "App port from the ALB"
-    from_port       = local.crm_spike_port
-    to_port         = local.crm_spike_port
-    protocol        = "tcp"
-    security_groups = [module.vpc.sg_alb_id]
-  }
-
-  egress {
-    description = "All outbound (NAT: image pull from ECR Public, CloudWatch Logs)"
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = merge(local.crm_spike_tags, { Name = "${local.crm_spike_name}-sg" })
-}
-
-resource "aws_ecs_task_definition" "crm_spike" {
-  count = local.crm_edge_on
-
-  family                   = local.crm_spike_name
-  requires_compatibilities = ["FARGATE"]
-  network_mode             = "awsvpc"
-  cpu                      = "256"
-  memory                   = "512"
-  execution_role_arn       = aws_iam_role.crm_spike_ecs_execution[0].arn
-
-  runtime_platform {
-    operating_system_family = "LINUX"
-    cpu_architecture        = "ARM64"
-  }
-
-  container_definitions = jsonencode([{
-    name                   = "web"
-    image                  = var.crm_spike_image
-    essential              = true
-    command                = ["python3", "-c", file("${path.module}/assets/crm_spike/server.py")]
-    user                   = "65534" # nobody; port 8080 needs no privilege
-    readonlyRootFilesystem = true
-    portMappings           = [{ containerPort = local.crm_spike_port, protocol = "tcp" }]
-    environment            = [{ name = "PORT", value = tostring(local.crm_spike_port) }]
-    logConfiguration = {
-      logDriver = "awslogs"
-      options = {
-        "awslogs-group"         = aws_cloudwatch_log_group.crm_spike[0].name
-        "awslogs-region"        = var.aws_region
-        "awslogs-stream-prefix" = "web"
-      }
-    }
-    stopTimeout = 10
-  }])
-
-  tags = local.crm_spike_tags
-}
-
-resource "aws_ecs_service" "crm_spike" {
-  count = local.crm_edge_on
-
-  name            = local.crm_spike_name
-  cluster         = module.ecs.cluster_arn
-  task_definition = aws_ecs_task_definition.crm_spike[0].arn
-  desired_count   = 0 # scaled to 1 by hand for the live check, back to 0 after
-
-  # Fargate Spot on ARM64 (supported since 09/2024). An interruption only means re-running the check.
-  capacity_provider_strategy {
-    capacity_provider = "FARGATE_SPOT"
-    weight            = 1
-    base              = 0
-  }
-
-  deployment_minimum_healthy_percent = 0
-  deployment_maximum_percent         = 100
-  health_check_grace_period_seconds  = 30
-
-  network_configuration {
-    subnets          = module.vpc.private_subnet_ids
-    security_groups  = [aws_security_group.crm_spike[0].id]
-    assign_public_ip = false
-  }
-
-  load_balancer {
-    target_group_arn = aws_lb_target_group.crm_spike[0].arn
-    container_name   = "web"
-    container_port   = local.crm_spike_port
-  }
-
-  enable_execute_command = false
-  propagate_tags         = "SERVICE" # App = crm on the tasks (cost allocation)
-
-  lifecycle {
-    ignore_changes = [desired_count]
-  }
-
-  tags = local.crm_spike_tags
-
-  # ECS rejects a service whose target group is not attached to a load balancer yet.
-  depends_on = [aws_lb_listener_rule.crm_spike_partner, aws_iam_role_policy.crm_spike_ecs_execution]
-}
-
-output "crm_edge_spike" {
-  description = "AA-931: partner host, CloudFront domain and the spike service (no secret values)."
+output "crm_edge" {
+  description = "AA-931: partner host, CloudFront domain and VPC origin (no secret values)."
   value = local.crm_edge_on == 1 ? {
     partner_host        = local.crm_partner_host
     distribution_id     = aws_cloudfront_distribution.crm_partner[0].id
     distribution_domain = aws_cloudfront_distribution.crm_partner[0].domain_name
     vpc_origin_id       = aws_cloudfront_vpc_origin.crm[0].id
-    ecs_service         = aws_ecs_service.crm_spike[0].name
   } : null
 }

@@ -8,8 +8,9 @@ evaluated by priority and the first match wins, so the order is the security con
 
   R1  priorities are unique;
   R2  at most one deny rule: only an origin-header condition with value "*", action fixed-response 403;
-  R3  every rule with an exact origin-header condition forwards, also has a host-header condition and
-      sits BELOW (lower number than) the deny rule;
+  R3  every rule with an exact origin-header condition forwards or answers a fixed response (AA-933: the
+      partner host's default until the CRM web exists), also has a host-header condition and sits BELOW
+      (lower number than) the deny rule;
   R4  every rule without an origin-header condition sits ABOVE the deny rule (CloudFront traffic that
       matched no host rule must hit the 403 before any CIS / Booking rule or the default action);
   R5  an exact origin-header rule without a deny rule is an error (CloudFront traffic for other hosts
@@ -39,6 +40,8 @@ DEFAULT_ORIGIN_HEADER = "x-aa-origin"
 PRIORITY_MAP_LOCAL = "alb_http_rule_priorities"
 HEADER_NAME_LOCAL = "alb_origin_header_name"
 HTTP_LISTENER_REF = "module.alb.http_listener_arn"
+# R3: a redirect (or anything else) behind the origin secret could send a viewer off-site; a fixed response cannot.
+EXACT_RULE_ACTIONS = frozenset({"forward", "fixed-response"})
 
 
 class InputError(Exception):
@@ -114,8 +117,8 @@ def check_rules(rules: list[Rule]) -> list[str]:
         )
 
     for r in exact:
-        if r.action != "forward":
-            errors.append(f"R3 {r.name}: an exact origin-header rule must forward")
+        if r.action not in EXACT_RULE_ACTIONS:
+            errors.append(f"R3 {r.name}: an exact origin-header rule must forward or answer a fixed response")
         if not r.has_host:
             errors.append(f"R3 {r.name}: an exact origin-header rule must also match a host header")
         if deny is not None and not r.sort_key < deny.sort_key:
