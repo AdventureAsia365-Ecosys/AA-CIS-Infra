@@ -96,10 +96,11 @@ password / API key / token in `.tf` / `.tfvars` / `.hcl`; a credential-named key
 
 - **gitleaks** (every PR, AA-841): the lines the PR's commits add. A PR that only deletes a file passes.
   The rules and the baseline are read from the PR's **base** commit, so a PR cannot add a secret and its
-  ignore line together. A PR that changes `.gitleaks.toml` or `.gitleaksignore`, or adds an inline
-  `gitleaks:allow` comment, fails until a reviewer adds the label `secret-scan-baseline-reviewed` (then the
-  PR's own copies are used); a later push that touches them again, a force push or a reopen removes the label.
-  Both files are in CODEOWNERS. For a false positive prefer a narrow allowlist in `.gitleaks.toml`: a commit
+  ignore line together. A PR that changes `.gitleaks.toml`, `.gitleaksignore` or `secret-scan.yml`, or adds
+  an inline `gitleaks:allow` comment, fails until a reviewer adds the label `secret-scan-baseline-reviewed`
+  after the last push (then the PR's own copies are used); any later push, reopen or label change removes
+  the label. The files are in CODEOWNERS. Merge commits are read as remerge diffs (what the merge adds
+  beyond git's automatic merge). For a false positive prefer a narrow allowlist in `.gitleaks.toml`: a commit
   fingerprint does not survive the squash merge (header of `.gitleaksignore`).
 - **gitleaks full history** (nightly, every push to `main`, on demand; AA-981): every commit of every
   branch and tag, plus the head of every pull request (`refs/pull/*/head`, closed PRs included: GitHub
@@ -117,10 +118,10 @@ the terminal):
 ```bash
 IMG=ghcr.io/gitleaks/gitleaks:v8.28.0
 # The commits on this branch that main does not have (what the PR check sees)
-docker run --rm -u "$(id -u):$(id -g)" -v "$PWD:/repo" -w /repo $IMG git /repo --log-opts="origin/main..HEAD" -c /repo/.gitleaks.toml -i /repo/.gitleaksignore --redact --verbose --no-banner
+docker run --rm -u "$(id -u):$(id -g)" -v "$PWD:/repo" -w /repo $IMG git /repo --log-opts="--diff-merges=remerge origin/main..HEAD" -c /repo/.gitleaks.toml -i /repo/.gitleaksignore --redact --verbose --no-banner
 # The full history of every local branch (the nightly job also scans every PR head: use a
 # `git clone --mirror` of the repo to include them)
-docker run --rm -u "$(id -u):$(id -g)" -v "$PWD:/repo" -w /repo $IMG git /repo -c /repo/.gitleaks.toml -i /repo/.gitleaksignore --redact --verbose --no-banner
+docker run --rm -u "$(id -u):$(id -g)" -v "$PWD:/repo" -w /repo $IMG git /repo --log-opts="--all --full-history --diff-filter=tuxdb --diff-merges=remerge" -c /repo/.gitleaks.toml -i /repo/.gitleaksignore --redact --verbose --no-banner
 # The whole working tree, untracked files included
 docker run --rm -u "$(id -u):$(id -g)" -v "$PWD:/repo" -w /repo $IMG dir . -c /repo/.gitleaks.toml -i /repo/.gitleaksignore --redact --verbose --no-banner
 ```
