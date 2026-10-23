@@ -11,6 +11,9 @@ Output (counts, names of tables / roles, timestamps; no row values):
   SCRIPT stats_reset database=<ts|->                       (pg_stat counters count from here)
   SCRIPT statements table=<t> statements=<n> calls=<n> roles=<r,…>   (pg_stat_statements, when installed)
   SCRIPT dependent object=<name> on=<t> kind=<view|fk>     (what would block tp-018's DROP … RESTRICT)
+  SCRIPT will_lock table=<schema.name> fks=<n> from=<t,…>  (tables the frozen ones reference: tp-018's DROP removes
+         the RI triggers there and takes ACCESS EXCLUSIVE on them, e.g. CIS's shared.destinations, for the length of
+         the DROP; every reader of that table waits behind it, so apply while the job tables are idle)
   SCRIPT grant table=<t> grantee=<role> privileges=<…>     (who can touch the frozen tables)
   SCRIPT id_map rows=<n> trip_events_with_old_ids=<n> drafts_with_old_ids=<n>
   SCRIPT cis_grant object=<schema.name | schema> privilege=<p> grantor=<role> by_owner=<t|f>   (CIS 270 preview)
@@ -53,6 +56,17 @@ SELECT c.conrelid::regclass::text || ' (' || c.conname || ')', c.confrelid::regc
   FROM pg_constraint c CROSS JOIN f
  WHERE c.contype = 'f' AND c.confrelid = ANY(f.oids) AND NOT c.conrelid = ANY(f.oids)
  ORDER BY 1
+"""
+
+# Tables outside the eight that the frozen tables reference by foreign key: dropping the eight drops those FKs and
+# their RI triggers on the referenced table, which takes ACCESS EXCLUSIVE on it (reviewed on PG16, S248).
+WILL_LOCK_SQL = """
+WITH f AS (SELECT array_agg(x::regclass) AS oids FROM unnest($1::text[]) x)
+SELECT c.confrelid::regclass::text AS target, count(*) AS fks,
+       string_agg(DISTINCT c.conrelid::regclass::text, ',' ORDER BY c.conrelid::regclass::text) AS from_tables
+  FROM pg_constraint c CROSS JOIN f
+ WHERE c.contype = 'f' AND c.conrelid = ANY(f.oids) AND NOT c.confrelid = ANY(f.oids)
+ GROUP BY 1 ORDER BY 1
 """
 
 GRANTS_SQL = """
@@ -153,6 +167,8 @@ async def main(conn):
         for d in await conn.fetch(DEPENDENTS_SQL, present):
             print(f"SCRIPT dependent object={d['dep']} on={d['dep_on']} kind={d['kind']}")
             reasons.append(f"dependent:{d['dep']}")
+        for w in await conn.fetch(WILL_LOCK_SQL, present):
+            print(f"SCRIPT will_lock table={w['target']} fks={w['fks']} from={w['from_tables']}")
 
     if await _exists(conn, "tripplanner.component_id_map"):
         m = await conn.fetchrow(ID_MAP_SQL)

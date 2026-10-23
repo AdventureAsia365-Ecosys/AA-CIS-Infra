@@ -73,6 +73,9 @@ class FakeConn:
             return [{"grantee": "tripplanner", "privileges": "DELETE,INSERT,SELECT,UPDATE"}]
         if "pg_rewrite" in sql:
             return [{"dep": d, "dep_on": "tripplanner.tour_stop", "kind": "view"} for d in self.dependents]
+        if "c.conrelid = ANY(f.oids)" in sql:
+            return [{"target": "shared.destinations", "fks": 11,
+                     "from_tables": "tripplanner.itinerary_components,tripplanner.tour_day,tripplanner.tour_stop"}]
         if "nspacl" in sql:
             return [{"object": "gold_aa_internal", "privilege": "USAGE", "grantor": "cis_owner", "by_owner": True}]
         if "'tripplanner'::regrole" in sql:
@@ -125,6 +128,12 @@ class Verdict(unittest.TestCase):
         _, lines = _run(FakeConn(missing={"tripplanner.tour_leg"}))
         self.assertIn("SCRIPT table name=tour_leg exists=f", lines)
         self.assertEqual(sum(1 for ln in lines if ln.startswith("SCRIPT table ") and "exists=t" in ln), 7)
+
+    def test_the_referenced_cis_table_is_reported_as_locked_by_the_drop(self):
+        _, lines = _run(FakeConn())
+        self.assertIn("SCRIPT will_lock table=shared.destinations fks=11 from=tripplanner.itinerary_components,"
+                      "tripplanner.tour_day,tripplanner.tour_stop", lines)
+        self.assertEqual(lines[-1], "SCRIPT verdict drop_ready=true revoke_ready=true reasons=-")  # reported only
 
     def test_output_has_no_row_values(self):
         _, lines = _run(FakeConn())
