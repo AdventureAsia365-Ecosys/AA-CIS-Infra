@@ -42,7 +42,7 @@ import json
 import uuid
 from datetime import timedelta
 
-READ_ONLY = True
+READ_ONLY = False
 
 SCRIPT_NAME = "aa974_b2b_verify_seed"
 ACTOR = f"script:{SCRIPT_NAME}"
