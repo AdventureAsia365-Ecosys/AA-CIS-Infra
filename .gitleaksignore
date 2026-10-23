@@ -18,3 +18,8 @@
 38690ddd9149e6e9272bacda19704ed58cd09942:envs/dev/terraform.tfvars:terraform-plaintext-secret:40
 38690ddd9149e6e9272bacda19704ed58cd09942:envs/dev/terraform.tfvars:uri-embedded-credentials:36
 10ff474952c8ee45417c40eeda1f06db4abe256d:envs/dev/terraform.tfvars:uri-embedded-credentials:36
+
+# AA-981 canary (test/aa981-canary, closed unmerged): a FAKE random value committed on purpose to prove
+# the scan goes red. Its PR head stays fetchable, so it is pinned by commit.
+63135ec4b4ac0546ab9e092d1e12a39a8a40bebe:canary/aa981-canary.tfvars:credential-key-literal:2
+63135ec4b4ac0546ab9e092d1e12a39a8a40bebe:canary/aa981-canary.tfvars:terraform-plaintext-secret:2
