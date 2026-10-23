@@ -19,6 +19,11 @@ Safety: the state and plan JSON hold secret values in clear text (secret version
 the RDS password). This script reads an explicit list of attributes per resource type, never prints
 the input, and renders an output only when Terraform does not mark it sensitive.
 
+Public repos (AA-981, S248 d15): every page goes through tools/docs/aws_mask.py before it is written
+(account ids -> `{acc2}` labels from env AWS_ACCOUNT_ALIASES, ARNs -> `arn:{partition}:...` without
+the account, Secrets Manager suffixes dropped, EC2/VPC ids -> `<prefix>-{masked}`), and `page()`
+refuses to return a page in which aws_mask.find_leaks still finds one.
+
 Runbook links: every alarm description (and SNS-notifying rule description) ends with
 " Runbook: <url>" (accounts/aa365/alarm_runbooks.tf). The URL must point into the root repo's docs/
 (blob/master); the page renders it as a relative link, which the root docs lint (lychee +
@@ -48,7 +53,10 @@ import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Optional
+from typing import Any, Iterable, Iterator, Mapping, Optional
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # aws_mask sits next to this file
+import aws_mask  # noqa: E402
 
 ROOT_REPO_BLOB_PREFIX = "https://github.com/AdventureAsia365-Ecosys/AA-Ecosys/blob/master/"
 GENERATED_DIR = "docs/generated"  # in the root repo
@@ -881,7 +889,15 @@ def fingerprint(body: str) -> str:
     return hashlib.sha256(body.encode("utf-8")).hexdigest()
 
 
-def page(spec: PageSpec, body: str, *, date: str, sha: str, source: str, blurb: Optional[tuple[str, ...]] = None) -> str:
+def page(spec: PageSpec, body: str, *, date: str, sha: str, source: str, blurb: Optional[tuple[str, ...]] = None,
+         aliases: Optional[Mapping[str, str]] = None) -> str:
+    """The published page: front matter, marker, blurb, masked body (AA-981).
+
+    The fingerprint covers the masked body, so `changed` compares what is published. `aliases` defaults
+    to env AWS_ACCOUNT_ALIASES (aws_mask.load_aliases)."""
+    if aliases is None:
+        aliases = aws_mask.load_aliases()
+    body = aws_mask.mask_text(body, aliases)
     fm = [
         "---",
         f"id: {spec.id}",
@@ -915,7 +931,9 @@ def page(spec: PageSpec, body: str, *, date: str, sha: str, source: str, blurb: 
         *blurb,
         "",
     ]
-    return "\n".join(fm + head) + "\n" + body
+    text = aws_mask.mask_text("\n".join(fm + head), aliases) + "\n" + body
+    aws_mask.assert_clean(text, spec.filename)
+    return text
 
 
 def render_all(doc: TfDoc, root_dir: Optional[Path]) -> tuple[dict[str, str], Problems]:
@@ -1052,13 +1070,16 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.cmd == "render":
         try:
             doc = load_tf_json(args.tf_json)
-        except InputError as exc:
+            aliases = aws_mask.load_aliases()
+        except (InputError, aws_mask.AliasError) as exc:
             print(f"::error::{exc}", file=sys.stderr)
             return 2
         bodies, problems = render_all(doc, args.root_dir)
         args.out_dir.mkdir(parents=True, exist_ok=True)
         for name, body in bodies.items():
-            (args.out_dir / name).write_text(page(SPECS[name], body, date=args.date, sha=args.sha, source=args.source), encoding="utf-8")
+            (args.out_dir / name).write_text(
+                page(SPECS[name], body, date=args.date, sha=args.sha, source=args.source, aliases=aliases), encoding="utf-8"
+            )
         print(f"rendered {len(bodies)} pages from the {doc.kind} JSON ({len(doc.resources)} resources) into {args.out_dir}")
         for p in problems.items:
             print(f"::error title=alarm runbook::{p}")

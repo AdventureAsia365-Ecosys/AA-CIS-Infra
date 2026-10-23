@@ -26,6 +26,12 @@ name: Docs Gen (generated infra docs)
 #    VERCEL_TOKEN is set (team: repo variable VERCEL_TEAM_ID), otherwise from the checked-in snapshot
 #    tools/docs/env_config_vercel.json (refresh: gen_env_config.py vercel-snapshot --cli). A failure there
 #    does not hold back the Terraform pages: the run turns red at the end instead.
+# Public repos (AA-981, S248 d15): every page goes through tools/docs/aws_mask.py (gen_docs.page): account ids become
+#    labels ({acc2}), ARNs lose partition + account (and the Secrets Manager suffix), EC2/VPC ids become <prefix>-{masked};
+#    a page that still holds one is refused. The label table is env AWS_ACCOUNT_ALIASES ("acc1=<id>,acc2=<id>,..."):
+#    the optional repo SECRET AWS_ACCOUNT_ALIASES (a secret, not a variable: a variable is printed in this public
+#    repo's logs) plus acc2 read from sts at run time, both ::add-mask::ed. Without the secret only acc2 is
+#    named; any other id renders as {aws-account}.
 # Triggers: nightly, manual, and Terraform Apply (its separate docs-gen-dispatch job, the only job there
 # with `actions: write`) after every apply that changed something.
 # Root repo access (AA-901, root ADR 0011): short-lived installation tokens of the GitHub App aa-ecosys-ci-bot,
@@ -131,6 +137,22 @@ jobs:
             *:assumed-role/aa-cis-infra-tf-plan/*) echo "role: aa-cis-infra-tf-plan" ;;
             *) echo "::error::docs-gen must run with the read-only role aa-cis-infra-tf-plan (got another role)"; exit 1 ;;
           esac
+
+      # AA-981: label table for aws_mask (never echoed: every id is masked in the log before it is used).
+      - name: Account alias table for masking
+        env:
+          ALIASES: ${{ secrets.AWS_ACCOUNT_ALIASES }}
+        run: |
+          ACC=$(aws sts get-caller-identity --query Account --output text)
+          echo "::add-mask::$ACC"
+          ALIASES=$(printf '%s' "$ALIASES" | tr -s '[:space:],' ',' | sed 's/^,//; s/,$//')
+          for entry in ${ALIASES//,/ }; do echo "::add-mask::${entry#*=}"; done
+          case ",$ALIASES," in
+            *"=$ACC,"*) ;;
+            *) ALIASES="${ALIASES:+$ALIASES,}acc2=$ACC" ;;
+          esac
+          echo "::add-mask::$ALIASES"
+          echo "AWS_ACCOUNT_ALIASES=$ALIASES" >> "$GITHUB_ENV"
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v4
