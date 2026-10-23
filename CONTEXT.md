@@ -196,6 +196,11 @@ accounts/
                                    (AA-935; was a fixed 404 JSON); rule "any X-AA-Origin -> 403"; ACM us-east-1 + alias records.
                                    The AA-931 hello spike service aa-crm-dev-spike was removed in AA-933 (S248
                                    d16); live check tools/terraform/crm_edge_live_check.py)
+    crm_client_edge.tf            (AA-936 CRM-08, the AA-Partner CLIENT host go-dev.lumiguides.it.com: its own
+                                   CloudFront distribution + ACM us-east-1 + alias records on the same VPC origin
+                                   and X-AA-Origin secret; ALB rules crm_client_public (Host + secret +
+                                   /crm/public/*) -> the CRM API (public inquiry form) and crm_client_default
+                                   (Host + secret) -> the CRM web; feeds WEB_CLIENT_HOSTS and INTAKE_PAGE_ORIGINS)
     crm_data.tf                   (AA-932 CRM-04, data side of AA-Partner: secret shell crm/<env>/database-url (crm_app
                                    DSN, Console + DB Migrate set-password); KMS keys alias/crm-<env>/{data,ingest,seal}
                                    (data, ingest symmetric with rotation; seal RSA_3072 SIGN_VERIFY), App=crm. Key policy:
@@ -336,7 +341,8 @@ so the NLB group admits the `com.amazonaws.global.cloudfront.origin-facing` pref
 (`aa-cis-dev-sg-alb-from-nlb`) admits the NLB group; the ALB group itself stays VPC-only (the ALB is still
 internet-facing). WAF rule `CloudFrontOriginAllow` (priority 3, exact secret) lets these requests past rate + geo,
 which would otherwise judge the CloudFront edge instead of the viewer; `x-aa-origin` is redacted in the WAF log.
-ALB rules (`alb_rules.tf`): partner host + secret → partner target group; any `X-AA-Origin` → 403, before the
+ALB rules (`alb_rules.tf`): partner host + secret → partner target group; client host `go-dev.` + secret →
+`/crm/public/*` to the CRM API, everything else to the CRM web (AA-936, its own distribution); any `X-AA-Origin` → 403, before the
 Booking rule and the CIS default. CloudFront bypasses API Gateway throttling: the AA-Partner app rate-limits on
 `CloudFront-Viewer-Address` (AA-933); the CloudFront WAF comes at Go-real (W8).
 

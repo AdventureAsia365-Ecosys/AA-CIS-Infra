@@ -254,7 +254,11 @@ resource "aws_iam_role" "e2e_mail_reader" {
         # `e2e` environment context, and the ref claim pins it to main (AA-866).
         StringEquals = {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
-          "token.actions.githubusercontent.com:sub" = [local.e2e_mail_reader_sub]
+          # AA-936: plus AA-Partner's `e2e` environment (workflow E2E Dev reads the synthetic agency users' codes).
+          "token.actions.githubusercontent.com:sub" = [
+            local.e2e_mail_reader_sub,
+            "repo:AdventureAsia365-Ecosys@276539096/AA-Partner@${local.crm_oidc_repo_id}:environment:e2e",
+          ]
           "token.actions.githubusercontent.com:ref" = "refs/heads/main"
         }
       }
