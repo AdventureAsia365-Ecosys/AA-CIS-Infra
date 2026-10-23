@@ -18,6 +18,11 @@ Data standards DM-6.1 (AA-877): each column's `pii:<class>` / `conf:<class>` tag
 comment the dump carries) is rendered after the column and collected in *Personal and confidential data tags (DM-6.1)*, with the untagged
 candidates of the Booking and TripPlanner schemas (PII_CANDIDATE_*). The fingerprint covers the tags and the candidate
 outcome, never the free text of a comment, so editing an untagged comment opens no PR.
+
+Public repos (AA-981, S248 d15): the page names the account by its label only (acc2), and the rendered text goes
+through AA-CIS-Infra tools/docs/aws_mask.py (account ids -> `{acc2}`-style labels, ARNs without partition and
+account, EC2/VPC ids masked) with a no-leak assertion, so a catalog comment or policy that quotes an ARN or an
+account id cannot publish it. UUIDs (the AA master tenant id) are not touched.
 """
 from __future__ import annotations
 
@@ -33,6 +38,9 @@ from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # the rules module sits next to this file
 import rls_catalogue_rules as rls  # noqa: E402
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools", "docs"))
+import aws_mask  # noqa: E402   AA-981: tools/docs/aws_mask.py (stdlib only)
 
 FINGERPRINT_RE = re.compile(r"<!-- schema-fingerprint: ([0-9a-f]{64}) -->")
 INDEX_RE = re.compile(r"^CREATE (UNIQUE )?INDEX \S+ ON (?:ONLY )?\S+ USING (.*)$")
@@ -370,7 +378,7 @@ def render(d: dict, source: Optional[str] = None) -> str:
     w(f"<!-- schema-fingerprint: {fingerprint(d)} -->")
     w("")
     w(f"**Verified:** {stamp(d['generated_at'])} UTC — live catalog dump of the shared RDS (`aa-cis-dev-db`, "
-      f"`aa-cis/dev/rds`, acc2 `005097885195`, us-west-1, PostgreSQL {db.get('server_version', '?')}). "
+      f"`aa-cis/dev/rds`, acc2, us-west-1, PostgreSQL {db.get('server_version', '?')}). "
       f"Latest migration per owner: CIS **{latest.get('cis')}**, TripPlanner **{latest.get('tripplanner')}**, "
       f"Booking **{latest.get('booking')}** ({len(d.get('migrations', []))} versions registered).")
     w("")
@@ -595,7 +603,9 @@ def render(d: dict, source: Optional[str] = None) -> str:
     for m in d.get("migrations", [])[:LATEST_MIGRATIONS]:
         w(f"| {cell(m['version'])} | {cell(m['applied_at'])} | {cell(m['description'])} |")
     w("")
-    return "\n".join(L)
+    text = aws_mask.mask_text("\n".join(L))
+    aws_mask.assert_clean(text, "db-schema-reference.md")
+    return text
 
 
 def main(argv: Optional[list[str]] = None) -> int:

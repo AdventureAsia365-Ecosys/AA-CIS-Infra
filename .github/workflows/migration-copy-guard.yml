@@ -37,6 +37,7 @@ on:
       - "db/rls_catalogue_rules.py"
       - "db/gen_schema_reference.py"
       - "db/gen_erd.py"
+      - "tools/docs/aws_mask.py"   # imported by db/gen_schema_reference.py (AA-981)
       - "db/check_erd_drift.py"
       - "db/schema_dump.py"
       - "db/check_migration_files.py"
