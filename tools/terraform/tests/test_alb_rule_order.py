@@ -97,7 +97,10 @@ def test_repo_source_passes():
     assert report.ok, report.errors
     kinds = {r.name.split(":")[1]: r.origin_kind for r in report.rules}
     assert kinds["crm_origin_deny"] == "wildcard"
-    assert kinds["crm_spike_partner"] == "exact"
+    assert kinds["crm_partner_default"] == "exact"
+    assert kinds["crm_api"] == "exact"
+    actions = {r.name.split(":")[1]: (r.action, r.status_code) for r in report.rules}
+    assert actions["crm_partner_default"] == ("fixed-response", "404")
     assert kinds["booking"] == "none"
 
 
@@ -115,6 +118,23 @@ def test_partner_after_deny_fails(tmp_path):
     prio = PRIORITIES.replace("partner = 10", "partner = 30")
     errs = _errors(tmp_path, a=prio, b=PARTNER + DENY, c=BOOKING)
     assert any(e.startswith("R3 ") and "below the deny rule" in e for e in errs)
+
+
+def test_partner_fixed_response_passes(tmp_path):
+    """AA-933: the partner host's default may answer a fixed 404 instead of forwarding (until the CRM web)."""
+    fixed = PARTNER.replace(
+        '    type             = "forward"\n    target_group_arn = aws_lb_target_group.x.arn\n',
+        '    type = "fixed-response"\n    fixed_response {\n      content_type = "application/json"\n'
+        '      status_code  = "404"\n    }\n',
+    )
+    assert 'type = "fixed-response"' in fixed
+    assert _errors(tmp_path, a=PRIORITIES, b=fixed + DENY, c=BOOKING) == []
+
+
+def test_partner_redirect_fails(tmp_path):
+    redirect = PARTNER.replace('type             = "forward"', 'type             = "redirect"')
+    errs = _errors(tmp_path, a=PRIORITIES, b=redirect + DENY, c=BOOKING)
+    assert any(e.startswith("R3 ") and "must forward or answer a fixed response" in e for e in errs)
 
 
 def test_header_rule_without_deny_fails(tmp_path):
@@ -173,6 +193,8 @@ ANY = {"Field": "http-header", "HttpHeaderConfig": {"HttpHeaderName": "x-aa-orig
 PATH = {"Field": "path-pattern", "PathPatternConfig": {"Values": ["/booking/*"]}}
 FWD = {"Type": "forward", "TargetGroupArn": "tg"}
 F403 = {"Type": "fixed-response", "FixedResponseConfig": {"StatusCode": "403"}}
+F404 = {"Type": "fixed-response", "FixedResponseConfig": {"StatusCode": "404", "ContentType": "application/json"}}
+PATH_CRM = {"Field": "path-pattern", "PathPatternConfig": {"Values": ["/crm", "/crm/*"]}}
 
 
 def test_live_good(tmp_path, capsys):
@@ -182,6 +204,16 @@ def test_live_good(tmp_path, capsys):
     assert aro.main(["--live", str(f)]) == 0
     out = capsys.readouterr()
     assert "s3cr3tvalue" not in out.out + out.err  # never print header values
+
+
+def test_live_partner_default_404(tmp_path, capsys):
+    """AA-933 shape: crm_api (5) forwards /crm/*, crm_partner_default (10) answers 404, deny (20), Booking (100)."""
+    f = tmp_path / "rules.json"
+    f.write_text(json.dumps(_live(_r(5, [HOST, SECRET, PATH_CRM], FWD), _r(10, [HOST, SECRET], F404),
+                                  _r(20, [ANY], F403), _r(100, [PATH], FWD), _r("default", [], FWD))))
+    assert aro.main(["--live", str(f)]) == 0
+    out = capsys.readouterr()
+    assert "s3cr3tvalue" not in out.out + out.err
 
 
 def test_live_bad_order(tmp_path, capsys):

@@ -17,13 +17,13 @@
 #     - task definition aa-crm-dev-api (Fargate ARM64, 0.25 vCPU / 0.5 GB, placeholder tag `bootstrap`)
 #     - ALB target group aa-crm-dev-api-tg (health /crm/health) + ONE listener rule on the HTTP listener:
 #       Host = the partner host AND X-AA-Origin = the CloudFront secret AND path /crm or /crm/*  (alb_rules.tf crm_api,
-#       above the AA-931 spike rule, so /crm/* reaches the API and every other path of the host still reaches the
-#       spike until the CRM web (AA-935) takes the host's default)
+#       above crm_partner_default, so /crm/* reaches the API and every other path of the host gets the fixed 404 JSON
+#       of crm_edge.tf until the CRM web (AA-935) takes the host's default)
 #     - ECS service aa-crm-dev-api on aa-cis-dev-cluster, desired_count 0 at create
 #     - GitHub OIDC deploy role aa-crm-dev-app-deploy, trusted only by AA-Partner (immutable subject with the repo id)
 #     - alarms: target group no healthy / unhealthy target, CPU (job backlog alarms: observability_ecosys.tf)
 #
-# Routing: viewer -> CloudFront partner-dev. -> VPC origin -> internal NLB -> ALB :80 (crm_edge_spike.tf). The API is
+# Routing: viewer -> CloudFront partner-dev. -> VPC origin -> internal NLB -> ALB :80 (crm_edge.tf). The API is
 # reachable ONLY through CloudFront: the rule needs the secret origin header, and the API Gateway path (no header) has
 # no /crm rule, so /crm/* from API Gateway falls to the CIS default action, which has no /crm route (404). Every route
 # except /crm/health* and the deploy gate authenticates in the app (route classes, ADR 0006b decision 6).
@@ -31,7 +31,7 @@
 # Order of applies: AA-931 (cicd_crm.tf grants, edge) and AA-932 (crm_data.tf: DSN secret, keys) first. This file
 # reads aws_secretsmanager_secret.crm_db and local.crm_task_role_name from crm_data.tf. The apply role already has every
 # verb needed (cicd_crm.tf CrmEcrRepoManage; IAMRoleManage on aa-*-<env>-* roles; ELB / ECS / logs / EC2 SG grants
-# used by booking.tf and crm_edge_spike.tf), so no bootstrap MFA apply is needed.
+# used by booking.tf and crm_edge.tf), so no bootstrap MFA apply is needed.
 #
 # Cost (us-west-1, est., D-19): $0 at desired 0 (ECR storage < 1 GB of images ~ $0.05/month, log group cents,
 # Sentry secret shell $0.40/month, 3 alarms here + 3 job alarms x $0.10 = $0.60/month). At desired 1: Fargate ARM64

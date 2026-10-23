@@ -68,7 +68,7 @@ data "aws_iam_policy_document" "tf_apply_crm" {
     resources = ["*"]
   }
 
-  # Read-only lookups the spike's data sources need at plan time (S247: the first CI apply failed on all
+  # Read-only lookups the edge's data sources (crm_edge.tf) need at plan time (S247: the first CI apply failed on all
   # three). The wildcards above do not cover them: "*OriginRequestPolicy*" / "*CachePolicy*" never match the
   # plural List*Policies verbs. The prefix list is CloudFront's origin-facing list for the NLB security group.
   statement {

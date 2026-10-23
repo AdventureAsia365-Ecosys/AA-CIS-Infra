@@ -163,7 +163,7 @@ module "alb" {
   access_logs_bucket  = aws_s3_bucket.diag_alb_logs.id # AA-272 diagnostic only
   tags                = local.shared_app_tags          # AA-828: CIS + Booking (/booking/* rule) behind it
 
-  # AA-931 (crm_edge_spike.tf): CloudFront VPC origin on the NLB -> prefix-list ingress on the NLB
+  # AA-931 (crm_edge.tf): CloudFront VPC origin on the NLB -> prefix-list ingress on the NLB
   # group + a second ALB group admitting the NLB group. Plain bool from variables (no resource ref).
   cloudfront_vpc_origin_enabled = local.crm_edge_on == 1
 
