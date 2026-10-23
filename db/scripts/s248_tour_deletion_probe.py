@@ -7,12 +7,14 @@ cases) and `tripplanner.trip_drafts`. The CIS and tenant layers (Master, atoms, 
 Slate, T8, T9 pieces, T11 posts, warnings) are in the CIS half (ECS exec as cis_app; root repo audit
 docs/audits/2026-10-23-S248-tour-deletion-propagation).
 
-Dispatch: DB Migrate, mode=run-script, script=db/scripts/s248_tour_deletion_probe.py (READ_ONLY: the session is
-read-only and the idle check only reports). The file must be merged to AA-CIS-Infra main first (db/scripts/README.md,
-Flow 1-3). Local test: `python3 <this file> <DSN>`. Always returns 0: it is evidence, not a gate (a nightly gate that
-fails on `violations > 0` is a later slice of AA-986).
+Runs nightly as the AA-986 L7b gate (ADR 0015 decision 6): workflow DB Tour Liveness Gate
+(.github/workflows/db-tour-liveness-gate.yml) runs this file through the DB Migrate run-script mechanism (one-off ECS
+task, master login, READ_ONLY) and db/tour_liveness_gate.py fails the run when the verdict line has violations > 0 or
+errors > 0. Also dispatchable by hand: DB Migrate, mode=run-script, script=db/scripts/s248_tour_deletion_probe.py
+(READ_ONLY: the session is read-only and the idle check only reports). Local test: `python3 <this file> <DSN>`.
+main() always returns 0; the gate reads the verdict line.
 
-Layer expectations (`expect`) follow the S248 memo's proposed answers, pending Nghiep's decision: Q4 (sold Booking
+Layer expectations (`expect`) follow root ADR 0015 (Accepted S248; Nghiep decided Q1-Q10): Q4 (sold Booking
 departures / confirmed holds are kept and flagged, new holds / quotes blocked) and Q9 (`lifecycle_stage` is not a
 deletion signal: the two lifecycle buckets are context only, every layer there reports `expect=info`). Under Q4 an
 upcoming departure is split by whether a confirmed hold sold it: `bk_departures_upcoming_unsold` (zero) and
@@ -39,8 +41,29 @@ Output (ids, keys, statuses and counts only; no row text, no money, no personal 
   SCRIPT bucket name=<b> keys=<n> tour_ids=<n> sample=<ids>
   SCRIPT layer bucket=<b> layer=<l> expect=<zero|keep_warn|info> n=<n> refs=<n> sample=<ids>
   SCRIPT global name=<g> n=<n> sample=<ids>
-  SCRIPT verdict violations=<n> errors=<n> list=<bucket.layer,...>   (errors = layers that failed to run)
-  SCRIPT json {...}                                         (everything above as one JSON object)
+  SCRIPT check name=<c> slice=<L2|L3|L4|L5> expect=<zero|keep_warn|info|pending> n=<n|-> sample=<ids>
+  SCRIPT visibility versions=<n> groups=<n> active_masters=<n> catalog_rows=<n> catalog_keys=<n> liveness_keys=<n>
+                    liveness_served=<n>                     (the visibility floor's inputs)
+  SCRIPT verdict violations=<n> errors=<n> list=<bucket.layer|check.name,...> pending=<n>
+                                                            (errors = layers or checks that failed to run)
+  SCRIPT json[<i>/<n>] <part>|                              (everything above as one JSON object, cut into parts of
+                                                            at most JSON_CHUNK characters: a container log line over
+                                                            ~16 KB is split into several CloudWatch events)
+
+Checks (ADR 0015 decision 6, the served-state invariants; CHECKS below). A check whose objects are not in the
+database yet reports expect=pending and never counts, so the gate stays green until the slice lands. LANDED names the
+slices live on Dev: a missing object of a landed slice is an error (red), never pending, so a later migration that
+drops or renames gold_aa_internal.v_tour_liveness / tour_lifecycle_event cannot turn the night green by itself. When
+L4 is live, a one-line PR adds "L4" to LANDED (catalog.v_tour_retired is then strict and must stay). A check that a
+later slice makes enforceable by refusing new work on a non-served key (L3 tenant T2 rewrite, L5 B2B quote / hold)
+stays keep_warn until ENFORCED_SINCE names the date the slice went live on Dev (a one-line PR after its deploy); only
+rows created after both that date and the key's last served-state change count then.
+Visibility floor: raw_tours and published_tours are FORCE RLS, and the master login sees AA rows only through its
+cis_owner / cis_app membership; without it every read returns 0 rows and no error. So the run records an error when
+the login sees no AA source version, no active Master while the catalog lists tours, fewer source groups than
+v_tour_liveness (an owner-rights view) has keys, or fewer served keys than catalog.v_tour lists.
+Not covered here: the CIS and tenant layers of the memo probe (atoms, ranking / routes, T2 copies, Slate, T8, T9,
+T11, warnings); they need a cis_app session and are a follow-up slice under AA-986.
 The job log is public (Actions): an error entry carries the exception class and SQLSTATE only; the server message is
 kept only for SQLSTATE class 42 (undefined / syntax / privilege: names objects, never row values).
 """
@@ -56,8 +79,28 @@ AA_MASTER = "00000000-0000-0000-0000-000000000001"
 SAMPLE = 5
 CATALOG_ROLES = ("booking", "tripplanner")
 SAFE_ID_RE = re.compile(r"^[A-Za-z0-9:_-]{1,64}$")
-# Q9 (proposed, pending Nghiep): lifecycle_stage is not a deletion signal, so these buckets never count as violations.
+# Q9 (ADR 0015): lifecycle_stage is not a deletion signal, so these buckets never count as violations.
 CONTEXT_BUCKETS = frozenset({"lifecycle_retired", "lifecycle_phasing_out"})
+
+# ADR 0015 decision 6 checks. ENFORCED_SINCE: the UTC date (YYYY-MM-DD) slice L3 / L5 went live on Dev; None = not
+# yet (its "nothing new after the key stopped being served" check is keep_warn).
+ENFORCED_SINCE = {"L3": None, "L5": None}
+# Slices live on Dev: their objects must exist (a missing one is an error, never `pending`). L2 = CIS 272 + the
+# lifecycle service (23/10/2026). Add "L4" in a one-line PR once catalog.v_tour_retired is live.
+LANDED = frozenset({"L2"})
+LIVENESS_VIEW = "gold_aa_internal.v_tour_liveness"       # CIS 272 (L2)
+LIFECYCLE_RECORD = "gold_aa_internal.tour_lifecycle_event"  # CIS 272 (L2)
+TOMBSTONE_VIEW = "catalog.v_tour_retired"                  # L4 (ADR working name), read as the catalog role
+OBJECT_SLICE = {LIVENESS_VIEW: "L2", LIFECYCLE_RECORD: "L2", TOMBSTONE_VIEW: "L4"}
+JSON_CHUNK = 8000  # characters per `SCRIPT json[i/n]` part (ASCII JSON: bytes = characters), well under 16 KB
+TOMBSTONE_COLUMNS = ("source_id", "state")
+# Latest lifecycle event of a key -> the derived state it must agree with (L2 service: a supersede leaves the key
+# paused / superseded_pending until `publish` writes `restored`).
+EVENT_STATE = {"retired": "retired", "paused": "paused", "superseded": "paused", "restored": "served"}
+# CIS 274 catalog.v_tour_retired states: retired | paused | restored ("restored" = served again after a
+# retire/pause; the row stays in the view). superseded_* kept for older shapes.
+TOMBSTONE_STATE = {"retired": "retired", "paused": "paused", "restored": "served",
+                   "superseded_pending": "paused", "superseded": "paused"}
 
 VERSIONS_SQL = """
 SELECT rt.tour_id::text AS tour_id, rt.source_key, rt.source_status::text AS source_status,
@@ -81,7 +124,7 @@ LAYERS = [
      """SELECT c.id::text AS id, p.source_id AS ref FROM booking.trip_plan_components c
           JOIN booking.trip_plans p ON p.id = c.trip_plan_id
          WHERE p.source_system = 'cis' AND p.source_id = ANY($1::text[])"""),
-    # Q4 (proposed, pending Nghiep): an upcoming departure with a confirmed hold is sold, kept and flagged
+    # Q4 (ADR 0015): an upcoming departure with a confirmed hold is sold, kept and flagged
     # (keep_warn); one with no confirmed hold must be closed (zero). "Sold" matches bk_b2b_holds_confirmed_upcoming.
     ("bk_departures_upcoming_unsold", "zero",
      "booking.departures start_date >= today, status <> 'cancelled', no confirmed b2b hold on it",
@@ -188,6 +231,108 @@ SELECT l.trip_case_id::text AS id, l.source_id, l.source_tour_id, tc.status, tc.
 """
 
 
+# ── ADR 0015 decision 6 checks ──
+# Which of the checks' objects exist, with their columns: pg_catalog only (to_regclass would need USAGE on the schema).
+OBJECTS_SQL = """
+SELECT n.nspname || '.' || c.relname AS name,
+       array_agg(a.attname::text ORDER BY a.attnum) FILTER (WHERE a.attnum > 0 AND NOT a.attisdropped) AS columns
+  FROM pg_catalog.pg_class c
+  JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+  LEFT JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid
+ WHERE n.nspname || '.' || c.relname = ANY($1::text[])
+ GROUP BY 1
+"""
+LIVENESS_SQL = """SELECT source_id, tour_id::text AS tour_id, state, reason, changed_at
+  FROM gold_aa_internal.v_tour_liveness"""
+LATEST_EVENT_SQL = """
+SELECT DISTINCT ON (e.source_id) e.source_id, e.event
+  FROM gold_aa_internal.tour_lifecycle_event e
+ ORDER BY e.source_id, e.occurred_at DESC, e.id DESC
+"""
+TOMBSTONE_SQL = "SELECT source_id::text AS source_id, state::text AS state FROM catalog.v_tour_retired"
+# $1 = AA master tenant. Never two active Masters in one group (decision 1); no active Master over a dead source.
+MASTERS_PER_GROUP_SQL = """
+SELECT rt.source_key AS id
+  FROM gold_aa_internal.published_tours pt
+  JOIN silver_aa_internal.raw_tours rt ON rt.tour_id = pt.tour_id
+ WHERE pt.tenant_id = $1::uuid AND pt.master_status = 'active' AND pt.deleted_at IS NULL
+ GROUP BY rt.source_key
+HAVING count(*) > 1
+"""
+# Visibility floor: active AA Masters as the login sees them (FORCE RLS; 0 while the catalog has rows = rows hidden).
+ACTIVE_MASTERS_SQL = """
+SELECT count(*)::bigint
+  FROM gold_aa_internal.published_tours pt
+ WHERE pt.tenant_id = $1::uuid AND pt.master_status = 'active' AND pt.deleted_at IS NULL
+"""
+MASTER_OVER_DEAD_SQL = """
+SELECT pt.tour_id::text AS id
+  FROM gold_aa_internal.published_tours pt
+  JOIN silver_aa_internal.raw_tours rt ON rt.tour_id = pt.tour_id
+ WHERE pt.tenant_id = $1::uuid AND pt.master_status = 'active' AND pt.deleted_at IS NULL
+   AND NOT (rt.source_status = 'active' AND rt.deleted_at IS NULL)
+"""
+# $1 = keys not served (text[]), $2 = per key: created after this moment counts (timestamptz[]).
+_NOT_SERVED = "WITH k AS (SELECT * FROM unnest($1::text[], $2::timestamptz[]) AS k(source_id, since))"
+T2_REWRITE_AFTER_SQL = _NOT_SERVED + """
+SELECT DISTINCT j.id::text AS id
+  FROM shared.job j
+  JOIN gold_aa_internal.published_tours pt ON pt.id::text = j.payload ->> 'published_tour_id'
+  JOIN silver_aa_internal.raw_tours rt ON rt.tour_id = pt.tour_id
+  JOIN k ON k.source_id = rt.source_key
+ WHERE j.kind = 't2_rewrite' AND j.created_at > k.since
+"""
+B2B_QUOTES_AFTER_SQL = _NOT_SERVED + """
+SELECT DISTINCT q.id::text AS id
+  FROM booking.b2b_quotes q
+  JOIN booking.b2b_quote_lines l ON l.quote_id = q.id
+  LEFT JOIN booking.departures d ON d.id = l.departure_id
+  JOIN booking.trip_plans p
+    ON (l.component_kind = 'trip_plan' AND l.component_id = 'tp:' || p.id::text) OR p.id = d.trip_plan_id
+  JOIN k ON k.source_id = p.source_id
+ WHERE p.source_system = 'cis' AND q.created_at > k.since
+"""
+B2B_HOLDS_AFTER_SQL = _NOT_SERVED + """
+SELECT DISTINCT h.id::text AS id
+  FROM booking.b2b_holds h
+  JOIN booking.trip_plans p ON p.source_system = 'cis'
+  JOIN k ON k.source_id = p.source_id
+ WHERE h.created_at > k.since
+   AND (EXISTS (SELECT 1 FROM booking.b2b_hold_lines hl JOIN booking.departures d ON d.id = hl.departure_id
+                 WHERE hl.hold_id = h.id AND d.trip_plan_id = p.id)
+        OR EXISTS (SELECT 1 FROM booking.b2b_quote_lines ql
+                    WHERE ql.quote_id = h.quote_id AND ql.component_kind = 'trip_plan'
+                      AND ql.component_id = 'tp:' || p.id::text))
+"""
+
+# name -> (slice, expect, objects it needs, what). expect "after:<slice>" = keep_warn until ENFORCED_SINCE[slice].
+CHECKS = {
+    "masters_active_in_one_group": ("L2", "zero", (), "source groups with more than one active Master"),
+    "master_active_over_dead_source": ("L2", "zero", (), "active Master whose source version is not live"),
+    "catalog_key_not_served": ("L2", "zero", (LIVENESS_VIEW,),
+                               "catalog.v_tour keys whose v_tour_liveness state is not served (split brain)"),
+    "served_key_not_in_catalog": ("L2", "info", (LIVENESS_VIEW,), "served keys catalog.v_tour does not list"),
+    "lifecycle_record_contradicts_state": ("L2", "zero", (LIVENESS_VIEW, LIFECYCLE_RECORD),
+                                           "keys whose latest lifecycle event disagrees with the derived state"),
+    "superseded_orphan_without_retired": ("L2", "zero", (LIVENESS_VIEW, LIFECYCLE_RECORD),
+                                          "all-superseded groups that had a Master (retired, superseded_orphan) with "
+                                          "no lifecycle event"),
+    "not_served_without_record": ("L2", "keep_warn", (LIVENESS_VIEW, LIFECYCLE_RECORD),
+                                  "other keys not served with no lifecycle event (changed before L2 or outside the "
+                                  "service)"),
+    "tombstone_disagrees_with_state": ("L4", "zero", (LIVENESS_VIEW, LIFECYCLE_RECORD, TOMBSTONE_VIEW),
+                                       "catalog.v_tour_retired vs the derived state, for keys with a lifecycle event"),
+    "t2_rewrite_after_not_served": ("L3", "after:L3", (LIVENESS_VIEW,),
+                                    "shared.job t2_rewrite created after the key stopped being served"),
+    "b2b_quotes_after_not_served": ("L5", "after:L5", (LIVENESS_VIEW,),
+                                    "booking.b2b_quotes created after the key stopped being served"),
+    "b2b_holds_after_not_served": ("L5", "after:L5", (LIVENESS_VIEW,),
+                                   "booking.b2b_holds created after the key stopped being served"),
+}
+AFTER_SQL = {"t2_rewrite_after_not_served": T2_REWRITE_AFTER_SQL, "b2b_quotes_after_not_served": B2B_QUOTES_AFTER_SQL,
+             "b2b_holds_after_not_served": B2B_HOLDS_AFTER_SQL}
+
+
 def out(kind, **kw):
     print("SCRIPT " + kind + " " + " ".join(f"{k}={v}" for k, v in kw.items()), flush=True)
 
@@ -234,6 +379,33 @@ def sample(ids):
     return [safe_id(v) for v in sorted(ids)[:SAMPLE]]
 
 
+def emit_json(res):
+    """Print the result as `SCRIPT json[i/n] <part>|` lines, parts of at most JSON_CHUNK characters cut anywhere. The
+    closing `|` keeps a part's trailing space from being trimmed and shows a part that was cut short; the gate checks
+    it, drops it and joins the parts in order."""
+    s = json.dumps(res, default=str, separators=(",", ":"))
+    parts = [s[i:i + JSON_CHUNK] for i in range(0, len(s), JSON_CHUNK)] or [""]
+    for n, part in enumerate(parts, 1):
+        print(f"SCRIPT json[{n}/{len(parts)}] {part}|", flush=True)
+
+
+def visibility_floor(vis, errors):
+    """Every `zero` result trusts that the login sees the AA rows (module docstring): an error when it does not."""
+    def hidden(what):
+        errors.append({"layer": "check.visibility", "error": "RowsHidden", "sqlstate": None, "detail": what})
+
+    if not vis["versions"]:
+        hidden("raw_tours shows 0 AA source versions to the login (FORCE RLS: is it still a member of cis_owner / "
+               "cis_app?)")
+    if vis["catalog_rows"] and not vis["active_masters"]:
+        hidden("published_tours shows 0 active AA Masters to the login while catalog.v_tour lists tours")
+    if vis["liveness_keys"] is not None and vis["liveness_keys"] > vis["groups"]:
+        hidden(f"{LIVENESS_VIEW} has more keys than the login sees source groups in raw_tours")
+    if vis["liveness_served"] is not None and vis["catalog_keys"] is not None \
+            and vis["liveness_served"] < vis["catalog_keys"]:
+        hidden(f"{LIVENESS_VIEW} has fewer served keys than catalog.v_tour lists")
+
+
 def error_entry(name, e):
     """A failed layer, safe for the public job log: a data error message can quote a row value, so the server
     message is kept only for SQLSTATE class 42 (undefined column / table, syntax, privilege)."""
@@ -267,9 +439,145 @@ async def layer(conn, inner, keys, refs, errors, name):
         return {"n": None, "refs": None, "sample": [], "error": type(e).__name__}
 
 
+def enforced_since(slice_name):
+    """ENFORCED_SINCE[slice] as an aware UTC datetime, or None while the slice is not live."""
+    d = ENFORCED_SINCE.get(slice_name)
+    return None if d is None else datetime.fromisoformat(f"{d}T00:00:00+00:00")
+
+
+async def read_objects(conn):
+    """{name: [columns]} of the checks' objects that exist (catalog read, no privilege needed)."""
+    async with conn.transaction(isolation="repeatable_read", readonly=True):
+        rows = await conn.fetch(OBJECTS_SQL, [LIVENESS_VIEW, LIFECYCLE_RECORD, TOMBSTONE_VIEW])
+    return {r["name"]: list(r["columns"] or []) for r in rows}
+
+
+async def read_tombstone(conn, role, objects, errors):
+    """The L4 tombstone as {source_id: state}, read as the role that read the catalog (the master has no grant on
+    catalog views). None when the view is not there yet; an error entry when it cannot be read as the gate needs."""
+    if TOMBSTONE_VIEW not in objects:
+        return None
+    missing = [c for c in TOMBSTONE_COLUMNS if c not in objects[TOMBSTONE_VIEW]]
+    if missing or role is None:
+        errors.append({"layer": "check.tombstone_disagrees_with_state", "error": "TombstoneUnreadable",
+                       "sqlstate": None,
+                       "detail": (f"{TOMBSTONE_VIEW} lacks column(s) {', '.join(missing)}: update TOMBSTONE_SQL"
+                                  if missing else "no catalog role could read the catalog")})
+        return None
+    try:
+        async with conn.transaction(isolation="repeatable_read", readonly=True):
+            await conn.execute(f"SET LOCAL ROLE {role}")
+            rows = await conn.fetch(TOMBSTONE_SQL)
+        return {r["source_id"]: r["state"] for r in rows}
+    except Exception as e:  # noqa: BLE001
+        errors.append(error_entry("check.tombstone_disagrees_with_state", e))
+        return None
+
+
+async def run_checks(conn, objects, cat_keys, tombstone, errors, seen=None):
+    """ADR 0015 decision 6. Runs inside the probe's read-only snapshot; returns {name: result}. `seen` (a dict) gets
+    the liveness view's key counts for the visibility floor."""
+    res = {}
+    seen = {} if seen is None else seen
+    gone = sorted(o for o in OBJECT_SLICE if OBJECT_SLICE[o] in LANDED and o not in objects)
+    for o in gone:  # a landed slice lost its object: red, never pending
+        errors.append({"layer": "check.objects", "error": "ObjectMissing", "sqlstate": None,
+                       "detail": f"{o} is missing although slice {OBJECT_SLICE[o]} is landed (LANDED)"})
+
+    def put(name, ids=None, *, pending=None, error=None):
+        slice_name, exp, _needs, _what = CHECKS[name]
+        if exp.startswith("after:"):
+            exp = "zero" if enforced_since(exp.split(":", 1)[1]) else "keep_warn"
+        r = {"slice": slice_name, "expect": exp}
+        if pending:
+            r.update({"expect": "pending", "n": None, "sample": [], "requires": pending})
+        elif error:
+            r.update({"n": None, "sample": [], "error": error})
+        else:
+            r.update({"n": len(ids), "sample": sample(ids)})
+        res[name] = r
+
+    async def ids_of(name, sql, *args):
+        try:
+            async with conn.transaction():  # savepoint
+                return {r["id"] for r in await conn.fetch(sql, *args)}
+        except Exception as e:  # noqa: BLE001
+            errors.append(error_entry(f"check.{name}", e))
+            return None
+
+    for name, sql in (("masters_active_in_one_group", MASTERS_PER_GROUP_SQL),
+                      ("master_active_over_dead_source", MASTER_OVER_DEAD_SQL)):
+        ids = await ids_of(name, sql, AA_MASTER)
+        put(name, ids, error=None if ids is not None else "failed")
+
+    live = None
+    if LIVENESS_VIEW in objects:
+        try:
+            async with conn.transaction():
+                live = {r["source_id"]: dict(r) for r in await conn.fetch(LIVENESS_SQL)}
+            seen.update(liveness_keys=len(live),
+                        liveness_served=sum(1 for v in live.values() if v["state"] == "served"))
+        except Exception as e:  # noqa: BLE001
+            errors.append(error_entry("check.liveness_view", e))
+    latest = None
+    if live is not None and LIFECYCLE_RECORD in objects:
+        try:
+            async with conn.transaction():
+                latest = {r["source_id"]: r["event"] for r in await conn.fetch(LATEST_EVENT_SQL)}
+        except Exception as e:  # noqa: BLE001
+            errors.append(error_entry("check.lifecycle_record", e))
+
+    for name in CHECKS:
+        if name in res:
+            continue
+        needs = [o for o in CHECKS[name][2] if o not in objects]
+        if any(o in gone for o in needs):
+            put(name, error="object missing: " + ",".join(o for o in needs if o in gone))
+            continue
+        if needs:
+            put(name, pending=",".join(needs))
+            continue
+        if live is None or (LIFECYCLE_RECORD in CHECKS[name][2] and latest is None):
+            put(name, error="input unreadable")
+            continue
+        not_served = {k: v for k, v in live.items() if v["state"] != "served"}
+        if name in ("catalog_key_not_served", "served_key_not_in_catalog") and cat_keys is None:
+            errors.append({"layer": f"check.{name}", "error": "CatalogUnreadable", "sqlstate": None})
+            put(name, error="catalog unreadable")
+        elif name == "catalog_key_not_served":
+            put(name, {k for k in cat_keys if live.get(k, {}).get("state") != "served"})
+        elif name == "served_key_not_in_catalog":
+            put(name, {k for k, v in live.items() if v["state"] == "served" and k not in cat_keys})
+        elif name == "lifecycle_record_contradicts_state":
+            put(name, {k for k, ev in latest.items() if EVENT_STATE.get(ev) != live.get(k, {}).get("state")})
+        elif name == "superseded_orphan_without_retired":
+            # ADR 0015 decision 6: an all-superseded group that had a Master must carry a `retired` record. A wrong
+            # latest event is lifecycle_record_contradicts_state; no event at all is this check (strict: Dev had no
+            # such group with a Master before L2, ADR 0015 decision 1).
+            put(name, {k for k, v in not_served.items() if v["reason"] == "superseded_orphan" and k not in latest})
+        elif name == "not_served_without_record":
+            put(name, {k for k, v in not_served.items() if k not in latest and v["reason"] != "superseded_orphan"})
+        elif name == "tombstone_disagrees_with_state":
+            if tombstone is None:
+                put(name, error="tombstone unreadable")
+            else:
+                # The tombstone is built from the record: keys with an event (or a tombstone row) must show their
+                # derived state there (no row = served). Keys with no event at all are not_served_without_record.
+                put(name, {k for k in set(latest) | set(tombstone)
+                           if (TOMBSTONE_STATE.get(tombstone[k], "?") if k in tombstone else "served")
+                           != live.get(k, {}).get("state")})
+        elif name in AFTER_SQL:
+            floor = enforced_since(CHECKS[name][0])
+            pairs = sorted((k, max(filter(None, (v["changed_at"], floor))))
+                           for k, v in not_served.items() if v["changed_at"] or floor)
+            ids = await ids_of(name, AFTER_SQL[name], [k for k, _ in pairs], [t for _, t in pairs]) if pairs else set()
+            put(name, ids, error=None if ids is not None else "failed")
+    return res
+
+
 async def probe(conn):
     res = {"probe": "tour_deletion_master", "as_of": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-           "schema_ref": "db-schema-reference.md Verified 2026-10-23 06:35 UTC (CIS 270, tp-018, bk-021)",
+           "schema_ref": "db-schema-reference.md Verified 2026-10-23 06:35 UTC (CIS 270, tp-018, bk-021) + CIS 272",
            "errors": []}
     errors = res["errors"]
 
@@ -278,6 +586,12 @@ async def probe(conn):
     out("catalog", role=role or "-", rows=res["catalog"]["rows"], refused=",".join(refused) or "-")
     cat_keys = None if catalog is None else {r["source_id"] for r in catalog}
     cat_tour_ids = None if catalog is None else {r["tour_id"] for r in catalog}
+    try:
+        objects = await read_objects(conn)
+    except Exception as e:  # noqa: BLE001 — every check then reports an error, never a silent pass
+        errors.append(error_entry("check.objects", e))
+        objects = None
+    tombstone = None if objects is None else await read_tombstone(conn, role, objects, errors)
 
     async with conn.transaction(isolation="repeatable_read", readonly=True):
         await conn.execute("SET LOCAL statement_timeout = '120s'")
@@ -336,11 +650,34 @@ async def probe(conn):
                           "tp_draft_refs": len(drafts), "bk_case_legs": len(legs)}
         res["global"] = glob
 
+        seen = {"liveness_keys": None, "liveness_served": None}
+        active_masters = await conn.fetchval(ACTIVE_MASTERS_SQL, AA_MASTER)
+        if objects is None:
+            res["checks"] = {n: {"slice": c[0], "expect": c[1], "n": None, "sample": [], "error": "objects unreadable"}
+                             for n, c in CHECKS.items()}
+        else:
+            res["checks"] = await run_checks(conn, objects, cat_keys, tombstone, errors, seen)
+        for cname, r in res["checks"].items():
+            extra = {"requires": r["requires"]} if "requires" in r else {}
+            out("check", name=cname, slice=r["slice"], expect=r["expect"], n="-" if r["n"] is None else r["n"],
+                sample=",".join(r["sample"]) or "-", **extra)
+            if r["expect"] == "zero" and r["n"]:
+                violations.append(f"check.{cname}")
+        res["visibility"] = {"versions": totals["versions"], "groups": totals["groups"],
+                             "active_masters": active_masters,
+                             "catalog_rows": None if catalog is None else len(catalog),
+                             "catalog_keys": None if cat_keys is None else len(cat_keys), **seen}
+        visibility_floor(res["visibility"], errors)
+        out("visibility", **{k: "-" if v is None else v for k, v in res["visibility"].items()})
+
     res["violations"] = violations
-    res["layer_definitions"] = {n: {"expect": e, "what": d} for n, e, d, _ in LAYERS}
-    res["layer_definitions"]["catalog_v_tour"] = {"expect": "zero", "what": "catalog.v_tour rows on the key or tour_id"}
-    out("verdict", violations=len(violations), errors=len(errors), list=",".join(violations) or "-")
-    print("SCRIPT json " + json.dumps(res, default=str, separators=(",", ":")), flush=True)
+    res["pending"] = sorted(n for n, r in res["checks"].items() if r["expect"] == "pending")
+    # Layer and check definitions (what each one reads) live in LAYERS / CHECKS of this file, not in the JSON.
+    res["landed"] = sorted(LANDED)
+    res["enforced_since"] = ENFORCED_SINCE
+    out("verdict", violations=len(violations), errors=len(errors), list=",".join(violations) or "-",
+        pending=len(res["pending"]))
+    emit_json(res)
 
 
 async def main(conn):

@@ -530,7 +530,17 @@ makes CI Terraform Plan fail with 403.
   (AA-860); the RDS master is break-glass plus three automated uses (`roles/` files, `set-password`,
   `run-script`), whose DSN the runner reads in the task (`db/README.md`, `db/owners.yaml` `master_secret`).
   Every owner file runs as the live owner of its dir's anchor schema (`cis_owner`, `bk_owner`, `tp_owner`); the
-  nightly DB Isolation Probe cell `sessions.master_break_glass_only` flags any other master session. The CIS
+  nightly DB Isolation Probe cell `sessions.master_break_glass_only` flags any other master session.
+  **DB Tour Liveness Gate** (`db-tour-liveness-gate.yml`, AA-986 L7b, root ADR 0015 decision 6; nightly 04:43 UTC and
+  manual) runs `db/scripts/s248_tour_deletion_probe.py` through the same run-script path (migrator task, master login,
+  READ_ONLY) and `db/tour_liveness_gate.py` fails the run on any violation (a derivative of a tour that is no longer
+  served still live in the catalog, AA-Booking or TripPlanner; two active Masters in a group; an active Master over a
+  dead source; the lifecycle record or, from L4, the tombstone disagreeing with the derived served state) or any layer
+  that failed to run; an all-superseded group that had a Master but carries no `retired` record; or a visibility
+  floor error, when the login sees no AA rows through FORCE RLS). Checks of later slices report `pending` until their
+  object exists (L4) or `ENFORCED_SINCE` in the script names the date the slice went live (L3, L5); a slice in
+  `LANDED` (L2 today) whose object goes missing is red, never pending. The CIS and tenant layers of the S248 memo
+  probe are not in the gate yet (follow-up slice under AA-986). The CIS
   migration freeze and the `catalog.*` view freeze (XD9) ended with CIS 246 (S22, 19/10/2026).
 - **Docs Gen** (`docs-gen.yml`, AA-893) reads the `accounts/aa365` state with the read-only plan role
   (`terraform show -json`, no plan, no lock) nightly and after every Terraform Apply that changed
