@@ -62,6 +62,7 @@ SCHEMA_OWNERS = {
                           "silver_aa_internal")},
     "booking": "booking",
     "tripplanner": "tripplanner",
+    "crm": "crm",                                    # partner CRM, AA-Partner (AA-932, ADR 0008a)
     "public": "platform",
 }
 # The app roles of each owner (owner role, runtime roles, view owner). Platform roles (the RDS master,
@@ -70,6 +71,10 @@ ROLE_OWNERS = {
     "cis_owner": "cis", "cis_app": "cis", "aa_app_user": "cis", "catalog_owner": "cis",
     "bk_owner": "booking", "booking": "booking",
     "tp_owner": "tripplanner", "tripplanner": "tripplanner",
+    # AA-932: partner CRM owner, runtime and the NOLOGIN roles crm_app reaches by SET LOCAL ROLE (owners.yaml
+    # nologin_roles). No CIS object may be granted to any of them (ADR 0008a decision 1).
+    "crm_owner": "crm", "crm_app": "crm", "crm_ai_reader": "crm", "crm_eraser": "crm", "crm_insights": "crm",
+    "crm_support_reader": "crm",
 }
 CIS_PARITY_ROLES = {"cis_app": "_cis_app_all", "cis_owner": "_cis_owner_all"}   # rule t, CIS 244 / 245
 BASE_TABLE_KINDS = ("table", "partitioned table")

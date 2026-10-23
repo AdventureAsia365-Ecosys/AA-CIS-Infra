@@ -7,7 +7,7 @@ status: active
 owner: nghiep
 audience: [engineer, devops, agent]
 applies_to: [aa-cis-infra, ecosystem]
-last_reviewed: 2026-10-22
+last_reviewed: 2026-10-23
 review_every_days: 90
 related: [ARCH-01, ARCH-05, ARCH-08, docs/adr/README.md]
 ---
@@ -31,7 +31,7 @@ Secrets, Lambda plumbing, OIDC deploy roles, cross-account Bedrock trust — is 
 - **Multi-account.** It manages three AWS accounts, each with its own root config and (where it
   has state) its own state file, so a change in one account cannot corrupt another.
 - **Boundary with the app repos**: this repo does NOT contain application logic, does NOT run the
-  content pipeline, and does NOT own application DB schemas (`acp_*`, `tripplanner.*`,
+  content pipeline, and does NOT own application DB schemas (`acp_*`, `tripplanner.*`, `booking.*`, `crm.*`,
   `*_aa_internal`) — those live in the app repos' migrations. It owns the RDS instance the
   schemas live *in*, not the schemas themselves.
 
@@ -172,6 +172,17 @@ accounts/
                                    internal NLB -> ALB rule (Host + secret X-AA-Origin) -> hello task
                                    aa-crm-dev-spike (public python image, ARM64 Spot, desired 0, scaled by
                                    hand); rule "any X-AA-Origin -> 403"; ACM us-east-1 + alias records)
+    crm_data.tf                   (AA-932 CRM-04, data side of AA-Partner: secret shell crm/<env>/database-url (crm_app
+                                   DSN, Console + DB Migrate set-password); KMS keys alias/crm-<env>/{data,ingest,seal}
+                                   (data, ingest symmetric with rotation; seal RSA_3072 SIGN_VERIFY), App=crm. Key policy:
+                                   account root for administrative verbs only (IAM decides: CI apply via cicd_crm.tf,
+                                   PutKeyPolicy only by the MFA admin), crypto only by aa-crm-<env>-ecs-task-role
+                                   (data: context {tenant_id, purpose}; S3 SSE-KMS on aa-crm-<env>-* buckets; ingest also
+                                   SES receipt rules aa-crm-<env>-*; seal Sign/Verify), explicit Deny of crypto to every
+                                   other non-service principal (break-glass aa-crm-<env>-breakglass excepted), CreateGrant
+                                   only for AWS resources. Alarms aa-crm-<env>-kms-key-admin (policy/grant/deletion/
+                                   disable/alias) and -kms-foreign-use (crypto by anyone but the task role / AWS
+                                   services) -> SNS alerts; live check tools/terraform/crm_kms_alarm_check.py)
     variables.tf / tripplanner_variables.tf / booking_variables.tf
   acc1-bedrock/   ← acc1 Bedrock invoker role (fallback) + Cost Explorer reader
   acc3-bedrock/   ← acc3 Bedrock invoker role (primary) + Bedrock Batch (batch.tf)
@@ -237,7 +248,7 @@ a wider CI-role grant). ECS runs the CIS API service
 (`aa-cis-dev-api` on cluster `aa-cis-dev-cluster`) with `stopTimeout = 90` so in-flight requests
 drain on deploy (AA-310, `modules/ecs/main.tf`). The CIS api and worker `DATABASE_URL` is the DSN of
 the runtime role `cis_app` (`secret_rds_arn` → `aws_secretsmanager_secret.rds_cis_app`, X1 S18), and the CIS task
-role has an explicit Deny on `GetSecretValue` for the master, `db-migrator`, `booking/*` and `tripplanner/*` secrets
+role has an explicit Deny on `GetSecretValue` for the master, `db-migrator`, `booking/*`, `tripplanner/*` and `crm/*` (AA-932) secrets
 (`DenyMasterAndOtherAppSecrets`, X1 S19), so ECS-exec scripts run as `cis_app` too. A Terraform Apply that touches
 `aws_ecs_service`, `aws_ecs_task_definition` or `aws_lambda_function` rolls services and has no job guard: run the
 manual idle gate first (root `skill/aa-ship`, X1 plan standing rules). Env on the CIS task definitions comes only

@@ -29,7 +29,8 @@
     "aa_app_user": 15,
     "tripplanner": 30,
     "booking": 15,
-    "db_migrator": 5
+    "db_migrator": 5,
+    "crm_app": 6
   },
   "pools": [
     {
@@ -76,6 +77,12 @@
       "processes": {"tf_file": "accounts/aa365/booking.tf", "tf_regex": "resource \"aws_ecs_service\" \"booking\" \\{.*?deployment_maximum_percent\\s*=\\s*(\\d+)", "scale": 0.01, "note": "1 task (Dev, no autoscaling) x deployment overlap 200 %"}
     },
     {
+      "name": "crm-api",
+      "role": "crm_app",
+      "max_size": 3,
+      "processes": {"fixed": 2, "note": "AA-932: AA-Partner api + in-process crm.job worker, 1 task (desired 0 until AA-933) x deployment overlap 200 %. When AA-933 adds the ECS service, replace this with its tf_file / deployment_maximum_percent regex and add the pool source (AA-Partner api/app/db.py)"}
+    },
+    {
       "name": "db-migrate / schema dump / isolation probe",
       "role": "db_migrator",
       "max_size": 1,
@@ -95,9 +102,9 @@
     },
     {
       "check": "total",
-      "accept_up_to": 162,
+      "accept_up_to": 168,
       "until": "2026-12-15",
-      "reason": "Same cause as role:cis_app: with the cis-api main pool at its C2.2 target of 5 the total is 127, under the 135 ceiling."
+      "reason": "Same cause as role:cis_app: with the cis-api main pool at its C2.2 target of 5 the total is 133 (127 + crm-api 3 x 2 = 6, AA-932), under the 135 ceiling. AA-932 raised this from 162 by exactly the crm-api row (C2.2 crm_app limit 6 / pool 3, data standards v1.3); the CIS pool stays 10 after the S247 burst (AA-859), so this overage needs a decision before 2026-12-15: the measured Dev peak is far below (DatabaseConnections daily max 28), the worst case assumes 7 api + 3 worker tasks."
     }
   ]
 }

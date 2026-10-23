@@ -535,6 +535,91 @@ class BuildCellsTest(unittest.TestCase):
         self.assertEqual(p.summarize(p.build_cells(f, keys), keys)["exit"], 1)
 
 
+def crm_live_facts():
+    """today_facts() after the AA-932 train: rl-003, rl-004, CIS 269, crm-001 applied and crm_app's password set."""
+    f = today_facts()
+    f["catalog"]["registered"] = ["rl-003", "rl-004", "269", "crm-001"]
+    f["catalog"]["anchor_owner"]["crm"] = "crm_owner"
+    marker = f"{p.PASSWORD_MARKER} 2026-10-23T08:00:00Z by DB Migrate set-password"
+    f["roles"]["crm_app"] = role("crm_app", connlimit=6, inherit=False, comment=marker,
+                                 chain=list(p.CRM_NOLOGIN_ROLES))
+    f["roles"]["crm_owner"] = owner_role("crm_owner")
+    for r in p.CRM_NOLOGIN_ROLES:
+        f["roles"][r] = {**owner_role(r), "owned": [], "chain": [], "members": ["crm_app"]}
+    f["owner_grants"]["crm_owner"] = {"usage_shared": True, "select_registry": True, "insert_registry": True}
+    f["ownership"]["crm"] = {"offenders": []}
+    f["runtime_grants"]["crm"] = {"crm_app": {"missing": []}}
+    crm_defacl = {"r": ["DELETE", "INSERT", "SELECT", "UPDATE"], "S": ["SELECT", "USAGE"]}
+    f["default_acl"]["crm"] = {"crm_app": {"rows": defacl("crm", "crm_owner", crm_defacl)}}
+    f["logins"]["crm_app"] = {"secret": "crm/dev/database-url", "secret_user": "crm_app", "current_user": "crm_app",
+                              "cross": {t: denied(t) for t in ("booking.customers", "tripplanner.sessions",
+                                                               "shared.tenants")}}
+    for r in ("booking", "tripplanner", "aa_app_user", "cis_runtime"):
+        f["logins"][r].setdefault("cross", {})["crm.job"] = denied("crm")
+    return f
+
+
+class CrmOwnerCellsTest(unittest.TestCase):
+    """AA-932: the partner CRM owner's cells (rl-003 / rl-004 / CIS 269 / crm-001, crm_app set-password)."""
+
+    def test_before_the_train_every_crm_cell_waits(self):
+        st, keys = statuses(today_facts())
+        self.assertFalse(keys["crm_transferred"])
+        for cid in ("role.crm_app.attributes", "role.crm_app.noinherit", "owner_role.crm_owner",
+                    "nologin.crm_ai_reader", "registry.crm_owner", "cross.booking.crm.job",
+                    "cross.crm_app.booking.customers", "default_acl.crm"):
+            self.assertIn(st[cid], ("pending", "ready"), cid)
+
+    def test_after_the_train_every_crm_cell_passes(self):
+        st, keys = statuses(crm_live_facts())
+        # cis_app / CIS runtime -> crm.job also wait for their own X1 keys, which today_facts() leaves false.
+        crm = {k: v for k, v in st.items() if "crm" in k and not k.startswith(("cross.cis_app.", "cross.cis_runtime."))}
+        self.assertTrue(keys["crm_transferred"] and keys["crm_app_password_set"])
+        self.assertEqual({k: v for k, v in crm.items() if v != "pass"}, {})
+        for cid in ("role.crm_app.noinherit", "nologin.crm_eraser", "registry.crm_owner", "login.crm_app",
+                    "cross.crm_app.shared.tenants", "cross.aa_app_user.crm.job", "runtime_grants.crm",
+                    "default_acl.crm", "ownership.crm"):
+            self.assertEqual(st[cid], "pass", cid)
+
+    def test_crm_app_inheriting_its_readers_fails(self):
+        f = crm_live_facts()
+        f["roles"]["crm_app"]["inherit"] = True
+        st, _ = statuses(f)
+        self.assertEqual(st["role.crm_app.noinherit"], "FAIL")
+
+    def test_reader_granted_to_another_role_fails(self):
+        f = crm_live_facts()
+        f["roles"]["crm_support_reader"]["members"] = ["cis_app", "crm_app"]
+        st, _ = statuses(f)
+        self.assertEqual(st["nologin.crm_support_reader"], "FAIL")
+        f = crm_live_facts()
+        f["roles"]["crm_ai_reader"]["members"] = ["aa_cis_admin", "crm_app"]     # PostgreSQL 16+ ADMIN row
+        st, _ = statuses(f)
+        self.assertEqual(st["nologin.crm_ai_reader"], "pass")
+
+    def test_aa_app_reading_crm_fails(self):
+        f = crm_live_facts()
+        f["logins"]["booking"]["cross"]["crm.job"] = {"readable": True, "sqlstate": None}
+        st, _ = statuses(f)
+        self.assertEqual(st["cross.booking.crm.job"], "FAIL")
+
+    def test_crm_app_login_waits_for_its_own_set_password(self):
+        f = crm_live_facts()
+        f["roles"]["crm_app"]["comment"] = None
+        f["logins"]["crm_app"] = {"secret": "crm/dev/database-url", "secret_user": "crm_app",
+                                  "error": "login failed: 28P01 InvalidPasswordError: password authentication failed"}
+        keys = p.state_keys(f)
+        cells = {c.id: c for c in p.build_cells(f, keys)}
+        self.assertEqual(cells["login.crm_app"].status(keys), "pending")
+        self.assertTrue(cells["login.crm_app"].as_json(keys)["warn"])
+        self.assertEqual(cells["cross.crm_app.booking.customers"].status(keys), "pending")
+
+    def test_crm_app_needs_no_schema_wide_execute(self):
+        rp = p.OWNERS["crm"].runtime_privileges[0]
+        self.assertEqual(dict(rp.objects)["function"], ())
+        self.assertNotIn("functions", dict(rp.default_acl))
+
+
 class _Savepoint:
     """conn.transaction() of _savepoint: set_config(…, true) is undone when the savepoint rolls back."""
 
