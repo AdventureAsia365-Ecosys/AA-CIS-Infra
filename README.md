@@ -23,10 +23,13 @@ modules/          vpc, rds, ecs, alb, api_gateway, s3, secrets, waf, eventbridge
 db/               run_migration.py + migrations/<owner>/ copies applied by DB Migrate,
                   check_migration_copies.py + check_migration_files.py (+ tests/) for the guards,
                   schema_dump.py + gen_schema_reference.py for the schema reference, gen_erd.py for the ERD,
-                  check_erd_drift.py for design-vs-live ERD drift
+                  check_erd_drift.py for design-vs-live ERD drift,
+                  tour_liveness_gate.py for the nightly tour liveness gate (AA-986)
 .github/workflows terraform-plan.yml (PR), terraform-apply.yml (manual), db-migrate.yml (manual),
                   migration-copy-guard.yml (PR on db/migrations/**, nightly),
                   db-schema-dump.yml (nightly, manual, after each DB Migrate apply),
+                  db-isolation-probe.yml (nightly, manual, after each DB Migrate apply),
+                  db-tour-liveness-gate.yml (nightly 04:43 UTC, manual; AA-986 tour liveness gate),
                   secret-scan.yml (PR; gitleaks with .gitleaks.toml + .gitleaksignore),
                   secret-scan-history.yml (nightly, push to main, manual; full history + working tree),
                   docs-lint.yml (PR on Markdown, weekly freshness report; tools/docs/README.md)
