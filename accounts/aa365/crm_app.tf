@@ -69,9 +69,12 @@ locals {
 
   # GitHub OIDC subjects (same model as booking.tf): AA-Partner turns on GitHub's immutable subject at repo level
   #   repo:AdventureAsia365-Ecosys@276539096/AA-Partner@<repo_id>:<context>
-  # Contexts: ONLY environment:dev (the deploy jobs run with `environment: dev`) and ref:refs/heads/main. No
-  # pull_request, no other branch. The AA-Partner `dev` environment must have a deployment-branch policy of main only.
-  crm_oidc_contexts = ["environment:dev", "ref:refs/heads/main"]
+  # Context: ONLY environment:dev. Every deploy-dev.yml job runs with `environment: dev`, so no ref subject is needed;
+  # trusting ref:refs/heads/main as well (as booking.tf does) would let any future job on main with id-token: write
+  # but no environment assume this role past the environment's protection rules (AA-933 review round). The
+  # AA-Partner `dev` environment must exist with a deployment-branch policy of main only BEFORE this role is applied:
+  # otherwise a branch job naming `environment: dev` auto-creates an unprotected environment with this subject.
+  crm_oidc_contexts = ["environment:dev"]
   crm_oidc_repo_id  = var.crm_github_repo_id != "" ? var.crm_github_repo_id : "*"
   crm_oidc_subjects = concat(
     [for c in local.crm_oidc_contexts : "repo:AdventureAsia365-Ecosys@276539096/AA-Partner@${local.crm_oidc_repo_id}:${c}"],
