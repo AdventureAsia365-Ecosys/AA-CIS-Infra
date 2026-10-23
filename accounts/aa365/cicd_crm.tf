@@ -19,7 +19,11 @@
 #     boundary required); EventBridge rules aa-crm-*;
 #   - KMS keys tagged App = "crm" with aliases alias/crm-<env>/{data,ingest,seal};
 #   - audit buckets aa-crm-<env>-audit-<mode>-<account> (cicd_split.tf boundary statement
-#     DenyCrmAuditObjectTampering).
+#     DenyCrmAuditObjectTampering); every CRM bucket is aa-crm-<env>-* (the data / ingest key policies allow SSE-KMS
+#     only for that prefix, with or without S3 Bucket Keys: aws:s3:arn may be the object or the bucket ARN);
+#   - break-glass role aa-crm-<env>-breakglass (CRM-13b): trust only the MFA admin role, with
+#     aws:MultiFactorAuthPresent, MaxSessionDuration 3600 and a required session tag tenant_id (sts:TagSession). The
+#     data key policy (crm_data.tf CrmBreakGlassOneAgency) lets it Decrypt only that agency's envelope keys.
 #
 # What CI may NOT do on CRM keys (boundary DenyCrmKeyUseAndPolicyEdits): any crypto use (Decrypt,
 # Encrypt, GenerateDataKey*, ReEncrypt*, Sign), CreateGrant, PutKeyPolicy, ScheduleKeyDeletion,

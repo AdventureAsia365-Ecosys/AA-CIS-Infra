@@ -5,7 +5,7 @@ RDS is VPC-private, so migrations are applied by the **DB Migrate** workflow
 definition** `aa-cis-dev-db-migrate` (X1 S12; `accounts/aa365/db_migrator.tf`), which downloads
 `run_migration.py` and the SQL via presigned S3 URLs and runs it with the task's own `DATABASE_URL`:
 **`db_migrator`** since X1 S22 (`aa-cis/dev/db-migrator`; the master DSN before). `db_migrator` runs every
-owner-dir file as the live owner of its anchor schema (`cis_owner`, `bk_owner`, `tp_owner`). The RDS master
+owner-dir file as the live owner of its anchor schema (`cis_owner`, `bk_owner`, `tp_owner`, `crm_owner`). The RDS master
 is kept for three things only, and the runner reads its DSN itself, in the task, from `aa-cis/dev/rds`
 (`owners.yaml` `master_secret`; the migrator **task** role may read it, the execution role no longer injects
 it): `roles/` files (role bootstrap, extensions, undo files), `mode=set-password` (`ALTER ROLE … PASSWORD`
@@ -24,12 +24,12 @@ task reads the secret itself, sends only a SCRAM-SHA-256 verifier, test-connects
 `db/scripts/<name>.py` as the master after the apply idle check: `db/scripts/README.md`.
 
 ```
-db/migrations/<owner>/<NNN>_<name>.sql   # owner = cis | tripplanner | booking | roles
+db/migrations/<owner>/<NNN>_<name>.sql   # owner = cis | tripplanner | booking | crm | roles
 db/owners.yaml                           # owner registry (X1, DM-1.2)
 ```
 
 Version key registered in `shared.schema_versions`: `cis` → `NNN`, `tripplanner` → `tp-NNN`,
-`booking` → `bk-NNN`, `roles` → `rl-NNN` (ownership rules: `AA-Ecosys/docs/database/schema-ownership.md`).
+`booking` → `bk-NNN`, `crm` → `crm-NNN` (partner CRM, AA-Partner, AA-932), `roles` → `rl-NNN` (ownership rules: `AA-Ecosys/docs/database/schema-ownership.md`).
 
 ## Owner registry (`owners.yaml`, X1 plan S1)
 One entry per migration dir: repo, path, key prefix, anchor schema, schemas, owner role (target and
@@ -70,6 +70,18 @@ mirror below; with the mirrors they are green. In order:
    Without it the runner finds no anchor schema and runs that file as the DB Migrate login, which would then own
    the objects it creates. Apply it (DB Migrate `apply roles/NNN_…`) before the owner's first file.
 4. Nghiệp writes the runtime role's DSN secret by hand, then DB Migrate `mode=set-password`.
+
+### Owner `crm` (partner CRM, AA-932)
+The first owner added through the playbook above. AA-Partner owns `crm` (ADR 0010, root ADR 0008a): owner role
+`crm_owner` (NOLOGIN), runtime `crm_app` (LOGIN, CONNECTION LIMIT 6, NOINHERIT; pool 3 in `connection_budget.json`),
+four NOLOGIN roles `crm_app` reaches only by `SET LOCAL ROLE` (`crm_ai_reader`, `crm_insights`, `crm_support_reader`,
+`crm_eraser`; `owners.yaml` `nologin_roles`), key `crm-NNN`, job table `crm.job`, kinds `crm_*`. Born under its owner
+role, so there is no ownership transfer: `owner_transfer_key` is `crm-001`. Apply order on Dev:
+`roles/003_crm_roles.sql` (rl-003) → `roles/004_crm_nologin_roles.sql` (rl-004) → CIS 269 (crm_owner may register
+`crm-` keys) → `crm/001_crm_schema_job.sql` (crm-001, copy of AA-Partner `api/migrations/001_crm_schema_job.sql`,
+which must be on AA-Partner `main` first) → Nghiệp writes the `crm_app` DSN in `crm/dev/database-url` → DB Migrate
+`mode=set-password` role `crm_app`. No cross-schema grant in either direction (ADR 0008a decision 1): the isolation
+probe asserts 42501 for `crm_app` on `booking.*`, `tripplanner.*`, `shared.*` and for every AA app role on `crm.job`.
 
 ## Flow
 0. The owner repo merges a **migration-file-only** PR to its `main` first (S237 D8). Code that
@@ -126,7 +138,7 @@ line (a directive after the first statement is an error):
   without no-transaction, destructive statements without the
   header and transaction control in a no-transaction file are errors; `DELETE` without the header
   is a warning. Local: `python3 db/run_migration.py --inspect db/migrations/cis/241_x.sql`.
-- **Role lint** (X1, owner files numbered at or above `role_lint_from`: CIS 243, bk-014, tp-013;
+- **Role lint** (X1, owner files numbered at or above `role_lint_from`: CIS 243, bk-014, tp-013, crm-001;
   applied files never re-run and 225/229/235/237/239/241 use the pre-X1 patterns): no `RESET ROLE`
   (it returns to the login role, which after X1 S22 is `db_migrator`), no `SET ROLE` / `SET SESSION
   ROLE` / `ALTER FUNCTION … SET role` (only `SET LOCAL ROLE`; `"role"` quoted counts), no SESSION
@@ -136,7 +148,7 @@ line (a directive after the first statement is an error):
   like `'RESET ' || 'ROLE'` are refused), no `CREATE/ALTER/DROP EXTENSION` or `ROLE` and no role
   membership `GRANT r TO x` / `REVOKE r FROM x` (all → `roles/`). `SET LOCAL ROLE` only to the dir's
   `set_local_roles`: `cis/` `catalog_owner`, `cis_owner` (the way back), `cis_app` (guard blocks);
-  `booking/`, `tripplanner/` none. Checked in DO blocks and function bodies too; comments and ordinary
+  `booking/`, `tripplanner/`, `crm/` none. Checked in DO blocks and function bodies too; comments and ordinary
   string literals are ignored. No `DEFERRABLE` / `INITIALLY DEFERRED` constraint trigger and no
   `SET CONSTRAINTS … DEFERRED` (they postpone work to COMMIT, after the post-check); these two are
   also looked for inside string literals (`'…'` function and DO bodies, dynamic SQL). Deliberately
@@ -169,7 +181,7 @@ line (a directive after the first statement is an error):
 
 ## Role per file (X1 plan S1, XD8)
 Before each file (check and apply) the task reads the **live owner of the dir's anchor schema**
-(`cis/` → `shared`, `booking/` → `booking`, `tripplanner/` → `tripplanner`) and logs
+(`cis/` → `shared`, `booking/` → `booking`, `tripplanner/` → `tripplanner`, `crm/` → `crm`) and logs
 `MIGRATE ran as: <role> — <why>` (also in the job summary).
 
 - Owner = login role (today, for every dir): no switch, the file is sent exactly as before.
@@ -233,6 +245,8 @@ MIGRATE ERROR: refusing apply — busy: booking.job (queued=1). Wait until every
 - **Busy** = any queued row (any `run_after`; `due` counts the ones already claimable) or running
   row of a kind that is not exempt, or an open wave. Same meaning as the deploy gate.
 - **Exempt kinds** (`IDLE_EXEMPT_KINDS` in `run_migration.py`, per owner): `booking.job`
+  `crm.job` `crm_heartbeat` (AA-932: the AA-Partner worker's always-queued liveness kind, so no CRM job blocks a
+  CIS / Booking / TripPlanner apply; AA-933 registers it under this name);
   `bk_inquiry_pull` (always queued at +60 s, Booking `intake.RECURRING` in
   `backend/app/inquiry/intake.py`; a Booking `DEPLOY_GATE_EXEMPT` registry arrives with B4). It runs
   short transactions, so a running one is safe too; `shared.job` has none since AA-751 (S240): the

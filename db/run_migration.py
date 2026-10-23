@@ -177,6 +177,7 @@ DELETE_RE = re.compile(r"^(WITH\b.*\b)?DELETE FROM\b")
 IDLE_EXEMPT_KINDS = {
     "shared": frozenset(),
     "booking": frozenset({"bk_inquiry_pull"}),            # always queued at +60 s (bk-002 intake)
+    "crm": frozenset({"crm_heartbeat"}),                  # AA-932: AA-Partner worker liveness kind (AA-933)
 }
 IDLE_WAITS = 3          # apply re-checks this many times before it refuses …
 IDLE_WAIT_S = 20        # … this many seconds apart
@@ -204,7 +205,8 @@ MASTER_ROLE = "aa_cis_admin"      # RDS master: runs roles/ files, set-password,
 MASTER_SECRET = "aa-cis/dev/rds"
 ROLES_DIR = "roles"               # Infra-native files, key rl-NNN
 # owners.yaml password_roles: LOGIN roles whose password mode=set-password sets from their DSN secret (XD2).
-PASSWORD_ROLES = {"cis_app": "aa-cis/dev/rds-cis-app", "db_migrator": "aa-cis/dev/db-migrator"}
+PASSWORD_ROLES = {"cis_app": "aa-cis/dev/rds-cis-app", "crm_app": "crm/dev/database-url",
+                  "db_migrator": "aa-cis/dev/db-migrator"}
 
 
 @dataclass(frozen=True)
@@ -224,6 +226,7 @@ OWNER_DIRS = {
                     frozenset({"catalog_owner", "cis_owner", "cis_app"}), 243, frozenset({"catalog_owner"})),
     "booking": OwnerDir("booking", ("booking",), frozenset(), 14),
     "tripplanner": OwnerDir("tripplanner", ("tripplanner",), frozenset(), 13),
+    "crm": OwnerDir("crm", ("crm",), frozenset(), 1),     # AA-932: born under crm_owner (rl-003), lint from crm-001
 }
 OWNER_SCHEMAS = tuple(sorted({s for o in OWNER_DIRS.values() for s in o.schemas}))
 MIGRATION_PATH_RE = re.compile(r"(?:^|/)([a-z]+)/([0-9]{3})_[^/]*\.sql$")
@@ -1467,7 +1470,8 @@ async def run_set_password(env, role: str, connect, get_secret) -> int:
         log(f"master login: {login} ({master.how})")
         can_login = await conn.fetchval(ROLE_LOGIN_SQL, role)
         if can_login is None:
-            log(f"ERROR: role {role} does not exist (rl-001 creates cis_app, rl-002 db_migrator): nothing changed")
+            log(f"ERROR: role {role} does not exist (rl-001 creates cis_app, rl-002 db_migrator, rl-003 crm_app): "
+                f"nothing changed")
             return 11
         if not can_login:
             log(f"ERROR: role {role} is NOLOGIN: nothing changed")

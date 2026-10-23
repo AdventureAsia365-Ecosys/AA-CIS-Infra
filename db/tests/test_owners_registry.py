@@ -40,7 +40,7 @@ OWNER_KEYS = {"repo", "path", "key_prefix", "anchor_schema", "schemas", "owner_r
               "runtime_privileges", "job_table", "job_kind_prefix", "idle_exempt_kinds", "set_local_roles",
               "role_lint_from", "consumer_grants"}
 OPTIONAL_KEYS = {"view_owner_roles", "rls_enable_only_allowlist", "runtime_privileges_from", "owner_grants",
-                 "rls_parity_tables"}
+                 "rls_parity_tables", "nologin_roles"}
 
 
 def validate_step():
@@ -96,6 +96,13 @@ class RegistryShapeTest(unittest.TestCase):
                     self.assertLessEqual(set(rp["default_acl"]), set(probe.DEFACL_OBJTYPE), role)
                 if "runtime_privileges_from" in o:
                     self.assertIn(str(o["runtime_privileges_from"]), probe.VERSION_KEYS)
+                # NOLOGIN roles a runtime role reaches by SET LOCAL ROLE (AA-932 crm): sorted, distinct from the
+                # owner and runtime roles, and named like the owner's roles.
+                nl = o.get("nologin_roles", [])
+                self.assertEqual(nl, sorted(set(nl)))
+                self.assertFalse(set(nl) & {o["owner_role"], *o["runtime_roles"]})
+                for r in nl:
+                    self.assertRegex(r, ROLE_RE)
 
     def test_schemas_belong_to_one_owner(self):
         seen = {}
@@ -243,6 +250,15 @@ class MirrorsAgreeTest(unittest.TestCase):
         regex = re.search(r'=~ \^\(([a-z_|]+)\)\$', run).group(1)
         self.assertEqual(set(regex.split("|")), set(roles))
 
+    def test_crm_probe_constants(self):
+        """AA-932: the probe's CRM role names are the registry's."""
+        crm = OWNERS["crm"]
+        self.assertEqual(list(probe.CRM_NOLOGIN_ROLES), crm["nologin_roles"])
+        self.assertEqual(probe.CRM_OWNER, crm["owner_role"])
+        self.assertEqual([probe.CRM_APP], crm["runtime_roles"])
+        self.assertEqual(REGISTRY["password_roles"][probe.CRM_APP], crm["runtime_secrets"][probe.CRM_APP])
+        self.assertIn(crm["owner_role"], REGISTRY["migrator_member_of"])
+
     def test_idle_exempt_kinds(self):
         expected = {o["job_table"].split(".")[0]: frozenset(o["idle_exempt_kinds"])
                     for o in SCHEMA_OWNERS.values() if o["job_table"]}
@@ -265,11 +281,28 @@ class MirrorsAgreeTest(unittest.TestCase):
         self.assertEqual({s for s, o in rls.SCHEMA_OWNERS.items() if o == "platform"}, {"public"})
         roles = {}
         for name, o in SCHEMA_OWNERS.items():
-            for r in [o["owner_role"], *o["runtime_roles"], *o.get("view_owner_roles", [])]:
+            for r in [o["owner_role"], *o["runtime_roles"], *o.get("view_owner_roles", []),
+                      *o.get("nologin_roles", [])]:
                 roles[r] = name
         self.assertEqual(rls.ROLE_OWNERS, roles)
         self.assertNotIn(REGISTRY["master_role"], rls.ROLE_OWNERS)
         self.assertNotIn(REGISTRY["migrator_role"], rls.ROLE_OWNERS)
+
+    def test_owner_grants_allowlisted_for_rule_g(self):
+        """AA-932 review: every owner_grants row to another owner's role has a rule g allowlist entry, or the
+        CIS X2 guard (test_rls_catalogue_guard) and the nightly schema reference flag the grant as a violation."""
+        for name, o in SCHEMA_OWNERS.items():
+            for g in o.get("owner_grants", []):
+                if rls.ROLE_OWNERS.get(g["grantee"], name) == name:
+                    continue
+                obj = re.sub(r"\s*\(schema\)$", "", str(g["object"]).strip())
+                schema = obj.split(".")[0]
+                dump = {"schemas": [{"schema": obj, "grants": [{"grantee": g["grantee"], "privileges": g["privilege"]}]}]} \
+                    if obj == schema else \
+                    {"relations": {schema: {obj.split(".", 1)[1]: {"kind": "r", "grants": [
+                        {"grantee": g["grantee"], "privileges": g["privilege"]}]}}}}
+                with self.subTest(owner=name, grant=f"{obj}:{g['grantee']}"):
+                    self.assertEqual(rls.check(dump).violations, [])
 
     def test_db_migrate_workflow(self):
         on, run = validate_step()

@@ -215,6 +215,25 @@ data "aws_iam_policy_document" "alerts_topic" {
     }
   }
 
+  # AA-932: the CRM KMS key alarms (crm_data.tf, rules aa-crm-<env>-kms-*).
+  statement {
+    sid       = "AllowCrmEventBridgeRules"
+    effect    = "Allow"
+    actions   = ["SNS:Publish"]
+    resources = [aws_sns_topic.alerts.arn]
+
+    principals {
+      type        = "Service"
+      identifiers = ["events.amazonaws.com"]
+    }
+
+    condition {
+      test     = "ArnLike"
+      variable = "aws:SourceArn"
+      values   = ["arn:aws:events:${var.aws_region}:${var.account_id}:rule/${local.crm_name_prefix}-*"]
+    }
+  }
+
   # AA-896 (S243): AWS Cost Anomaly Detection publishes IMMEDIATE alerts here (cost_anomaly.tf).
   # Statement from the AWS guide "Creating an Amazon SNS topic for anomaly notifications", limited to
   # subscriptions owned by this account.
