@@ -153,3 +153,15 @@ day, destination); `SCRIPT match` / `match_total` per country with `not_live` (o
 `SCRIPT unmatched` (capped). The apply is a one-line follow-up PR (`READ_ONLY = False`, dispatched in the flip window,
 after the last place build): pass 3 inserts as `tripplanner`, `ON CONFLICT (old_id) DO NOTHING`
 (`SCRIPT apply inserted=<n>`). Exit 1 when the switch is refused or tp-017 is not applied.
+
+`aa712_frozen_tables_dry_run.py` (AA-712 X4, read-only): the DRY RUN (skill `aa-cis-schema`
+`references/destructive-ops.md`, step 1) before TripPlanner tp-018 drops its eight frozen place tables
+(`itinerary_components`, `tour_day`, `tour_stop`, `tour_graph_*`, `tour_leg`, `tour_junction`) and before CIS 270
+revokes the remaining `tripplanner` grants on CIS objects. Per table: exact rows, size, the last write time where the
+table has one (against tp-018's cutoff 2026-10-16 00:00 UTC), the pg_stat read / write counters and who holds grants;
+`pg_stat_statements` statements naming each table (count, calls, roles); every view / foreign key outside the eight
+that depends on them; how many trip events and drafts still carry pre-flip ids (`component_id_map`); the
+`tripplanner` grants 270 revokes with their grantor (`by_owner=t` = cis_owner's REVOKE removes them). Ends with
+`SCRIPT verdict drop_ready=… revoke_ready=… reasons=…`. Counts, names and timestamps only. Dispatch it twice some
+minutes apart to see whether a read counter moves. Notes: AA-CIS-App / AA-TripPlanner-Web
+`docs/implementation-notes/AA-712-x4.md`.
