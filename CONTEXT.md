@@ -7,7 +7,7 @@ status: active
 owner: nghiep
 audience: [engineer, devops, agent]
 applies_to: [aa-cis-infra, ecosystem]
-last_reviewed: 2026-10-22
+last_reviewed: 2026-10-23
 review_every_days: 90
 related: [ARCH-01, ARCH-05, ARCH-08, docs/adr/README.md]
 ---
@@ -117,6 +117,11 @@ accounts/
                                    lambda_src/identity_triggers + tests; SES (ses.tf identity) on,
                                    EXTERNAL native sign-up, WAF and custom domains gated by
                                    variables, default off — AA-854)
+    identity_m2m.tf               (AA-972, root ADR 0006b d7: M2M pool aa-m2m-dev, resource server
+                                   booking.b2b (read/quote/hold/book), client-credentials client
+                                   aa-m2m-dev-crm (AA-Partner -> Booking B2B), prefix domain for the token
+                                   endpoint, secret container aa-crm/dev/m2m-booking-client (no value);
+                                   booking.tf passes COGNITO_M2M_ISSUER / COGNITO_M2M_CRM_CLIENT_ID)
     identity_iam.tf               (AA-816: CIS task role (api + worker) allow-list on the WORKFORCE pool
                                    only — create/group/disable/enable/global sign-out + ListUsers*;
                                    no AdminGetUser / AdminSetUserPassword / attribute writes, ADR 0006)
