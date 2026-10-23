@@ -14,8 +14,10 @@ fails on `violations > 0` is a later slice of AA-986).
 
 Layer expectations (`expect`) follow the S248 memo's proposed answers, pending Nghiep's decision: Q4 (sold Booking
 departures / confirmed holds are kept and flagged, new holds / quotes blocked) and Q9 (`lifecycle_stage` is not a
-deletion signal: the two lifecycle buckets are context only, every layer there reports `expect=info`). Changing an
-answer = changing one `expect` value in LAYERS, or the CONTEXT_BUCKETS set.
+deletion signal: the two lifecycle buckets are context only, every layer there reports `expect=info`). Under Q4 an
+upcoming departure is split by whether a confirmed hold sold it: `bk_departures_upcoming_unsold` (zero) and
+`bk_departures_upcoming_sold` (keep_warn). Changing an answer = changing one `expect` value in LAYERS, or the
+CONTEXT_BUCKETS set.
 
 Keys: the catalog key is `source_id` = `raw_tours.source_key` = coalesce(source_group_id, tour_id)::text (CIS 258);
 `booking.trip_plans.source_id` and `booking.trip_case_legs.source_id` hold it. `trip_case_legs.source_tour_id`,
@@ -79,11 +81,24 @@ LAYERS = [
      """SELECT c.id::text AS id, p.source_id AS ref FROM booking.trip_plan_components c
           JOIN booking.trip_plans p ON p.id = c.trip_plan_id
          WHERE p.source_system = 'cis' AND p.source_id = ANY($1::text[])"""),
-    ("bk_departures_upcoming", "zero", "booking.departures start_date >= today and status <> 'cancelled'",
+    # Q4 (proposed, pending Nghiep): an upcoming departure with a confirmed hold is sold, kept and flagged
+    # (keep_warn); one with no confirmed hold must be closed (zero). "Sold" matches bk_b2b_holds_confirmed_upcoming.
+    ("bk_departures_upcoming_unsold", "zero",
+     "booking.departures start_date >= today, status <> 'cancelled', no confirmed b2b hold on it",
      """SELECT d.id::text AS id, p.source_id AS ref FROM booking.departures d
           JOIN booking.trip_plans p ON p.id = d.trip_plan_id
          WHERE p.source_system = 'cis' AND p.source_id = ANY($1::text[])
-           AND d.start_date >= current_date AND d.status <> 'cancelled'"""),
+           AND d.start_date >= current_date AND d.status <> 'cancelled'
+           AND NOT EXISTS (SELECT 1 FROM booking.b2b_hold_lines hl JOIN booking.b2b_holds h ON h.id = hl.hold_id
+                            WHERE hl.departure_id = d.id AND h.status = 'confirmed')"""),
+    ("bk_departures_upcoming_sold", "keep_warn",
+     "booking.departures start_date >= today, status <> 'cancelled', with a confirmed b2b hold (sold: ops must handle)",
+     """SELECT d.id::text AS id, p.source_id AS ref FROM booking.departures d
+          JOIN booking.trip_plans p ON p.id = d.trip_plan_id
+         WHERE p.source_system = 'cis' AND p.source_id = ANY($1::text[])
+           AND d.start_date >= current_date AND d.status <> 'cancelled'
+           AND EXISTS (SELECT 1 FROM booking.b2b_hold_lines hl JOIN booking.b2b_holds h ON h.id = hl.hold_id
+                        WHERE hl.departure_id = d.id AND h.status = 'confirmed')"""),
     ("bk_b2b_quotes_open", "zero",
      "booking.b2b_quotes valid_until > now() with a trip_plan line (tp:<plan id>) or a line on one of its departures",
      """SELECT DISTINCT q.id::text AS id, p.source_id AS ref

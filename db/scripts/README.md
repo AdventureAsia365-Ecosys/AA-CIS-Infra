@@ -203,8 +203,8 @@ go with the AA-973 seed cleanup. Notes: `docs/implementation-notes/AA-974.md`.
 `superseded_versions`, `lifecycle_retired` / `lifecycle_phasing_out` (context only) and `live_source_not_in_catalog`.
 For each bucket it counts what still references the tour: the real `catalog.v_tour` (read as `booking`, else
 `tripplanner`; `SCRIPT catalog role=-` when neither can, and the catalog layer and `global` lines are skipped),
-`booking.trip_plans` (sellable), components, upcoming departures, open B2B quotes, active and confirmed holds, open and
-closed trip cases, and `tripplanner.trip_drafts` (draft / sent). Each layer carries `expect=zero|keep_warn|info`;
+`booking.trip_plans` (sellable), components, upcoming departures (unsold, and sold = with a confirmed hold), open B2B
+quotes, active and confirmed holds, open and closed trip cases, and `tripplanner.trip_drafts` (draft / sent). Each layer carries `expect=zero|keep_warn|info`;
 `SCRIPT verdict violations=<n> errors=<n> list=…` lists the `zero` layers with hits, and `SCRIPT json {...}` holds
 everything. Always returns 0 (evidence, not a gate). Prints counts, ids and keys only (at most 5 per line, anything not
 id-shaped printed as `masked`); a failed layer logs its exception class and SQLSTATE, with the server message only for

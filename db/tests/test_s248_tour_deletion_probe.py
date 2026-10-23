@@ -212,6 +212,33 @@ class RunTest(unittest.TestCase):
         self.assertIn("SCRIPT layer bucket=group_dead layer=bk_trip_plans_sellable expect=zero n=1 refs=1 sample=p1",
                       lines)
 
+    def test_sold_departure_is_kept_and_only_the_unsold_one_is_a_violation(self):
+        # Q4: a dead tour with one sold (confirmed hold) and one unsold upcoming departure.
+        conn = FakeConn(layer_hits={
+            "bk_departures_upcoming_unsold": {"k-dead": ["dep-unsold"]},
+            "bk_departures_upcoming_sold": {"k-dead": ["dep-sold"]},
+            "bk_b2b_holds_confirmed_upcoming": {"k-dead": ["h1"]},
+        })
+        _, lines = run(conn)
+        res = result(lines)
+        self.assertEqual(res["violations"], ["group_dead.bk_departures_upcoming_unsold"])
+        layers = res["buckets"]["group_dead"]["layers"]
+        self.assertEqual(layers["bk_departures_upcoming_unsold"],
+                         {"n": 1, "refs": 1, "sample": ["dep-unsold"], "expect": "zero"})
+        self.assertEqual(layers["bk_departures_upcoming_sold"],
+                         {"n": 1, "refs": 1, "sample": ["dep-sold"], "expect": "keep_warn"})
+        self.assertIn("SCRIPT verdict violations=1 errors=0 list=group_dead.bk_departures_upcoming_unsold", lines)
+
+    def test_sold_and_unsold_departures_split_on_the_same_confirmed_hold_test(self):
+        sql = {n: " ".join(inner.split()) for n, _e, _d, inner in script.LAYERS}
+        sold_test = ("EXISTS (SELECT 1 FROM booking.b2b_hold_lines hl JOIN booking.b2b_holds h ON h.id = hl.hold_id "
+                     "WHERE hl.departure_id = d.id AND h.status = 'confirmed')")
+        self.assertTrue(sql["bk_departures_upcoming_sold"].endswith("AND " + sold_test))
+        self.assertTrue(sql["bk_departures_upcoming_unsold"].endswith("AND NOT " + sold_test))
+        self.assertEqual(sql["bk_departures_upcoming_sold"].removesuffix(" AND " + sold_test),
+                         sql["bk_departures_upcoming_unsold"].removesuffix(" AND NOT " + sold_test))
+        self.assertNotIn("bk_departures_upcoming", sql)
+
     def test_catalog_falls_back_to_tripplanner(self):
         rc, lines = run(FakeConn(refuse_roles={"booking"}))
         self.assertEqual(rc, 0)
