@@ -32,9 +32,10 @@ jobs:
     name: Terraform Apply (prod)
     runs-on: ubuntu-latest
     environment: prod
-    # AA-866: main only. This repo is private on GitHub Free, so the `prod` environment cannot carry a
-    # deployment-branch rule or a required reviewer; this guard (plus the IAM trust condition on the
-    # apply role, once trialled) is what keeps the near-admin apply role to main.
+    # AA-866: main only. Written when this repo was private on GitHub Free, where the `prod` environment
+    # cannot carry a deployment-branch rule or a required reviewer. The repo is public now, so the
+    # environment could carry those rules (follow-up, not set yet); until then this guard (plus the IAM
+    # trust condition on the apply role, once trialled) is what keeps the near-admin apply role to main.
     if: github.ref == 'refs/heads/main'
 
     # AA-893: true only after a real apply that changed something (read by docs-gen-dispatch below).

@@ -180,11 +180,13 @@ accounts/
                                    only for keys tagged App=crm (no PutKeyPolicy, ScheduleKeyDeletion,
                                    DisableKey, CreateGrant or crypto use), EventBridge rules aa-crm-*, SES
                                    contact lists; plus the CRM naming contract)
-    crm_edge_spike.tf             (AA-931 CRM-03 spike, gated by var.crm_edge_enabled && custom_domains_enabled:
-                                   CloudFront partner-dev.lumiguides.it.com -> VPC origin on the existing
-                                   internal NLB -> ALB rule (Host + secret X-AA-Origin) -> hello task
-                                   aa-crm-dev-spike (public python image, ARM64 Spot, desired 0, scaled by
-                                   hand); rule "any X-AA-Origin -> 403"; ACM us-east-1 + alias records)
+    crm_edge.tf                   (AA-931 CRM-03 AA-Partner edge, gated by var.crm_edge_enabled &&
+                                   custom_domains_enabled: CloudFront partner-dev.lumiguides.it.com -> VPC origin
+                                   on the existing internal NLB -> ALB :80; rule crm_partner_default (Host +
+                                   secret X-AA-Origin, any path crm_api does not take) -> fixed 404 JSON until the
+                                   CRM web (AA-935); rule "any X-AA-Origin -> 403"; ACM us-east-1 + alias records.
+                                   The AA-931 hello spike service aa-crm-dev-spike was removed in AA-933 (S248
+                                   d16); live check tools/terraform/crm_edge_live_check.py)
     crm_data.tf                   (AA-932 CRM-04, data side of AA-Partner: secret shell crm/<env>/database-url (crm_app
                                    DSN, Console + DB Migrate set-password); KMS keys alias/crm-<env>/{data,ingest,seal}
                                    (data, ingest symmetric with rotation; seal RSA_3072 SIGN_VERIFY), App=crm. Key policy:
@@ -202,7 +204,7 @@ accounts/
                                    aa-crm-<env>-ecs-task-role (the name the crm_data.tf key policies trust; ECS Exec +
                                    PutMetricData AA/Jobs/Crm only), task definition Fargate ARM64 with the route-class
                                    identity env, target group aa-crm-<env>-api-tg (/crm/health), ALB rule crm_api
-                                   (partner host + X-AA-Origin + /crm, /crm/*; above the spike rule), service
+                                   (partner host + X-AA-Origin + /crm, /crm/*; above crm_partner_default), service
                                    aa-crm-<env>-api (desired 0, ignore_changes count + task definition), GitHub OIDC
                                    deploy role aa-crm-<env>-app-deploy (immutable subject, var.crm_github_repo_id),
                                    target-group / CPU alarms; security group sg-crm-api in app_security_groups.tf,
