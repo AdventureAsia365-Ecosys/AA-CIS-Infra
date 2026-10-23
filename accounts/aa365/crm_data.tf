@@ -21,13 +21,18 @@
 #   3. DenyCryptoOutsideCrmRuntime — explicit deny of every crypto verb to every principal that is not the task role
 #      or the CRM break-glass role (aa-crm-<env>-breakglass, CRM-13b), AWS services excepted (SES encrypts raw mail as
 #      ses.amazonaws.com; S3 SSE-KMS calls carry the caller's principal). The admin roles cannot decrypt either.
+#      Not being denied is not an allow: break-glass gets exactly one Allow, CrmBreakGlassOneAgency on the data key
+#      (Decrypt of the envelope keys whose context tenant_id equals its session tag; design v3 §5.5 L3). On ingest
+#      and seal it has no Allow, so it is refused there (implicit deny; the root statement delegates no crypto verb).
 #   4. DenyGrantsExceptAwsResources — kms:CreateGrant only for an AWS-integrated resource (none today).
 # Any later change of a key policy is a local MFA apply (the CI apply role cannot PutKeyPolicy) and fires the
 # key-admin alarm below by design.
 #
 # Alarms (design §4.1), EventBridge on CloudTrail management events -> SNS alerts topic (e-mail):
 #   aa-crm-<env>-kms-key-admin   PutKeyPolicy, CreateGrant, ScheduleKeyDeletion, DisableKey and the other verbs that
-#                                weaken a key (rotation off, alias move, key material) on any of the three keys;
+#                                weaken a key (rotation off, alias move, key material) on any of the three keys, and
+#                                TagResource / UntagResource: the CI boundary deny on CRM keys keys on App = crm
+#                                (cicd_crm.tf), so removing or overwriting that tag must never be silent;
 #   aa-crm-<env>-kms-foreign-use a crypto call (incl. denied attempts) on any of the three keys by a principal that is
 #                                not the CRM task role or an AWS service. Read-only events, so the rule is in state
 #                                ENABLED_WITH_ALL_CLOUDTRAIL_MANAGEMENT_EVENTS (as identity_alerts.tf). Break-glass use
@@ -45,9 +50,11 @@ locals {
   crm_task_role_name      = "${local.crm_name_prefix}-ecs-task-role" # AA-933 creates it (workload boundary)
   crm_task_role_arn       = "arn:aws:iam::${var.account_id}:role/${local.crm_task_role_name}"
   crm_breakglass_role_arn = "arn:aws:iam::${var.account_id}:role/${local.crm_name_prefix}-breakglass"
-  crm_bucket_object_arns  = "arn:aws:s3:::${local.crm_name_prefix}-*/*"
-  crm_dek_purposes        = ["vault", "docs", "integration", "scrub", "ops_release", "export", "mail"] # design §4.1
-  crm_kms_crypto_actions  = ["kms:Decrypt", "kms:Encrypt", "kms:GenerateDataKey*", "kms:ReEncrypt*", "kms:Sign"]
+  # S3 SSE-KMS encryption context aws:s3:arn: the object ARN, or the BUCKET ARN when the bucket uses S3 Bucket Keys
+  # (BucketKeyEnabled, the usual cost setting). Both forms are allowed so CRM-12 / AA-933 may pick either.
+  crm_bucket_s3_arns     = ["arn:aws:s3:::${local.crm_name_prefix}-*", "arn:aws:s3:::${local.crm_name_prefix}-*/*"]
+  crm_dek_purposes       = ["vault", "docs", "integration", "scrub", "ops_release", "export", "mail"] # design §4.1
+  crm_kms_crypto_actions = ["kms:Decrypt", "kms:Encrypt", "kms:GenerateDataKey*", "kms:ReEncrypt*", "kms:Sign"]
   crm_kms_admin_actions = [
     "kms:DescribeKey", "kms:GetKeyPolicy", "kms:GetKeyRotationStatus", "kms:GetPublicKey", "kms:ListKeyPolicies",
     "kms:ListResourceTags", "kms:ListGrants", "kms:ListKeyRotations",
@@ -183,7 +190,52 @@ data "aws_iam_policy_document" "crm_kms_data" {
     condition {
       test     = "ArnLike"
       variable = "kms:EncryptionContext:aws:s3:arn"
-      values   = [local.crm_bucket_object_arns]
+      values   = local.crm_bucket_s3_arns
+    }
+  }
+
+  # L3 break-glass (design v3 §5.5, CRM-13b): Decrypt of ONE agency's envelope keys per session. The role carries the
+  # session tag tenant_id (its trust policy requires sts:TagSession, MFA admin role only, <= 1 hour); the context
+  # tenant_id must equal it. MFA: BoolIfExists, so a session that reports no MFA is refused while a chained session
+  # (assumed from the MFA admin role) still works; the trust policy is where MFA is enforced. Every use fires the
+  # foreign-use alarm (not the task role). No Encrypt / GenerateDataKey: break-glass reads, it never writes.
+  statement {
+    sid       = "CrmBreakGlassOneAgency"
+    actions   = ["kms:Decrypt"]
+    resources = ["*"]
+    principals {
+      type        = "AWS"
+      identifiers = ["arn:aws:iam::${var.account_id}:root"]
+    }
+    condition {
+      test     = "ArnEquals"
+      variable = "aws:PrincipalArn"
+      values   = [local.crm_breakglass_role_arn]
+    }
+    condition {
+      test     = "BoolIfExists"
+      variable = "aws:MultiFactorAuthPresent"
+      values   = ["true"]
+    }
+    condition {
+      test     = "Null"
+      variable = "aws:PrincipalTag/tenant_id"
+      values   = ["false"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "kms:EncryptionContext:tenant_id"
+      values   = ["$${aws:PrincipalTag/tenant_id}"]
+    }
+    condition {
+      test     = "ForAllValues:StringEquals"
+      variable = "kms:EncryptionContextKeys"
+      values   = ["tenant_id", "purpose"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "kms:EncryptionContext:purpose"
+      values   = local.crm_dek_purposes
     }
   }
 }
@@ -214,7 +266,7 @@ data "aws_iam_policy_document" "crm_kms_ingest" {
     condition {
       test     = "ArnLike"
       variable = "kms:EncryptionContext:aws:s3:arn"
-      values   = [local.crm_bucket_object_arns]
+      values   = local.crm_bucket_s3_arns
     }
   }
 
@@ -354,7 +406,7 @@ resource "aws_cloudwatch_event_rule" "crm_kms_key_admin" {
       eventName = [
         "PutKeyPolicy", "CreateGrant", "ScheduleKeyDeletion", "DisableKey", "DisableKeyRotation",
         "UpdateAlias", "DeleteAlias", "ImportKeyMaterial", "DeleteImportedKeyMaterial", "ReplicateKey",
-        "UpdatePrimaryRegion", "CancelKeyDeletion", "EnableKey",
+        "UpdatePrimaryRegion", "CancelKeyDeletion", "EnableKey", "TagResource", "UntagResource",
       ]
       "$or" = [
         { resources = { ARN = local.crm_kms_key_arns_list } },

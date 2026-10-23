@@ -20,7 +20,8 @@ import json
 import subprocess
 import sys
 
-ADMIN_EVENTS = ("PutKeyPolicy", "CreateGrant", "ScheduleKeyDeletion", "DisableKey")
+# TagResource / UntagResource (AA-932 review): the CI boundary deny on CRM keys keys on the tag App = crm.
+ADMIN_EVENTS = ("PutKeyPolicy", "CreateGrant", "ScheduleKeyDeletion", "DisableKey", "TagResource", "UntagResource")
 CRYPTO_EVENT = {"data": "Decrypt", "ingest": "GenerateDataKey", "seal": "Sign"}
 
 
@@ -49,6 +50,7 @@ def cases(account: str, region: str, env: str, keys: dict) -> list:
     admin_rule, foreign_rule = f"aa-crm-{env}-kms-key-admin", f"aa-crm-{env}-kms-foreign-use"
     admin = role_identity(account, "nghiep-admin-8h-session")
     task = role_identity(account, f"aa-crm-{env}-ecs-task-role")
+    breakglass = role_identity(account, f"aa-crm-{env}-breakglass")
     out = []
     for name, (key_id, arn) in sorted(keys.items()):
         for ev in ADMIN_EVENTS:
@@ -57,6 +59,8 @@ def cases(account: str, region: str, env: str, keys: dict) -> list:
         crypto = CRYPTO_EVENT[name]
         out.append((f"foreign.{name}.admin-role-crypto", foreign_rule,
                     cloudtrail_event(account, region, crypto, arn, key_id, admin), True))
+        out.append((f"foreign.{name}.breakglass-crypto", foreign_rule,
+                    cloudtrail_event(account, region, crypto, arn, key_id, breakglass), True))
         out.append((f"foreign.{name}.task-role-crypto", foreign_rule,
                     cloudtrail_event(account, region, crypto, arn, key_id, task), False))
         out.append((f"foreign.{name}.aws-service", foreign_rule,

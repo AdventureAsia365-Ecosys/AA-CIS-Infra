@@ -115,6 +115,33 @@ class AlarmPatternTest(unittest.TestCase):
         for verb in ("Decrypt", "Encrypt", "GenerateDataKey", "ReEncrypt", "Sign\"", "CreateGrant"):
             self.assertNotIn(verb, admin)
 
+    def test_tag_changes_alarm(self):
+        # AA-932 review: the CI boundary deny on CRM keys keys on App = crm, so a tag change is never silent.
+        self.assertLessEqual({"TagResource", "UntagResource"}, set(_rule_event_names("crm_kms_key_admin")))
+
+    def test_s3_context_allows_bucket_keys(self):
+        # AA-932 review: with S3 Bucket Keys the SSE-KMS context aws:s3:arn is the bucket ARN, not the object ARN.
+        arns = re.search(r"crm_bucket_s3_arns\s*= \[(.*?)\]", TF).group(1)
+        self.assertIn('"arn:aws:s3:::${local.crm_name_prefix}-*"', arns)
+        self.assertIn('"arn:aws:s3:::${local.crm_name_prefix}-*/*"', arns)
+        self.assertEqual(TF.count("values   = local.crm_bucket_s3_arns"), 2)   # data + ingest CrmRuntimeS3Objects
+
+    def test_breakglass_decrypts_one_agency_on_the_data_key_only(self):
+        # AA-932 review: the deny exception alone gave break-glass nothing; design v3 §5.5 L3 = Decrypt of one
+        # agency's envelope keys (context tenant_id = the session tag).
+        self.assertEqual(TF.count('sid       = "CrmBreakGlassOneAgency"'), 1)
+        data = TF.split('data "aws_iam_policy_document" "crm_kms_data"', 1)[1].split('\ndata "', 1)[0]
+        stmt = data.split('sid       = "CrmBreakGlassOneAgency"', 1)[1].split("\n  statement {", 1)[0]
+        self.assertIn('actions   = ["kms:Decrypt"]', stmt)
+        self.assertIn("values   = [local.crm_breakglass_role_arn]", stmt)
+        self.assertIn('values   = ["$${aws:PrincipalTag/tenant_id}"]', stmt)
+        self.assertIn('variable = "kms:EncryptionContext:tenant_id"', stmt)
+        self.assertIn('variable = "aws:MultiFactorAuthPresent"', stmt)
+        for other in ("crm_kms_ingest", "crm_kms_seal"):
+            block = TF.split(f'data "aws_iam_policy_document" "{other}"', 1)[1].split('\n# ── Keys', 1)[0] \
+                .split('\ndata "', 1)[0]
+            self.assertNotIn("crm_breakglass_role_arn", block)
+
 
 if __name__ == "__main__":
     unittest.main()
