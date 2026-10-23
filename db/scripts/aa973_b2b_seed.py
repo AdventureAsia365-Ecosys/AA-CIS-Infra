@@ -57,7 +57,7 @@ import json
 import uuid
 from datetime import timedelta
 
-READ_ONLY = True
+READ_ONLY = False
 ACTION = "seed"  # "seed" or "cleanup"
 
 SCRIPT_NAME = "aa973_b2b_seed"
