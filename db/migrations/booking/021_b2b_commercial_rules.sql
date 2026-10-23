@@ -25,6 +25,7 @@
 --   * booking.b2b_holds: extended_at, extend_reason, extend_idempotency_key (extend once, POST /holds/{id}/extend;
 --     extended_count is bk-020's), cancellation_policy_id (the policy locked when the hold was confirmed), and an
 --     index for the re-hold count per (partner, proposal_ref) and day.
+--   * Backfill: B2B holds confirmed before bk-021 get the seeded default policy locked (the only policy then).
 --   * booking.settings rows b2b_hold_extend_hours = 72 and b2b_rehold_limit_per_day = 3 (policy data).
 --
 -- Locks: policy_approvals and b2b_holds take ACCESS EXCLUSIVE for the column adds and CHECK adds (small tables, a
@@ -202,11 +203,17 @@ COMMENT ON COLUMN booking.b2b_holds.extend_idempotency_key IS
 COMMENT ON COLUMN booking.b2b_holds.cancellation_policy_id IS
     'bk-021: the cancellation policy in force when the hold was confirmed; a later cancel charges by it.';
 
+-- Backfill: a B2B hold confirmed before this migration (AA-973 code) has no locked policy. The seeded default is
+-- the only policy that exists when this runs, so it is the one those bookings were made under; locking it now keeps
+-- a policy approved later (even with a backdated valid_from) from changing their fee. Re-runnable (IS NULL only).
+UPDATE booking.b2b_holds SET cancellation_policy_id = '00000000-0000-4000-8000-0000000bc021'
+WHERE status = 'confirmed' AND cancellation_policy_id IS NULL;
+
 -- ── Settings ─────────────────────────────────────────────────────────────────
 
 INSERT INTO booking.settings (key, value, description) VALUES
     ('b2b_hold_extend_hours', '72'::jsonb, 'Hours a B2B hold gains on its one extension (POST /holds/{id}/extend), capped by the departure start (AA-974; policy data, proposed +72 h).'),
-    ('b2b_rehold_limit_per_day', '3'::jsonb, 'Re-holds a partner may place per proposal ref per UTC day before 429 rehold_limit (AA-974, Fix A3; policy data).')
+    ('b2b_rehold_limit_per_day', '3'::jsonb, 'Re-holds a partner may place per UTC day before 429 rehold_limit, counted per proposal ref and per departure (AA-974, Fix A3; policy data).')
 ON CONFLICT (key) DO NOTHING;
 
 -- ── Grants (per table) ───────────────────────────────────────────────────────
