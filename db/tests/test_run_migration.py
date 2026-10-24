@@ -464,6 +464,19 @@ class IdleCheckTest(unittest.TestCase):
         self.assertIn("MIGRATE idle: booking.job running=0 queued=0 (exempt: bk_inquiry_pull)", log)
         self.assertIn("MIGRATE idle: shared.job running=0 queued=0 (exempt: x_test_recurring)", log)
 
+    def test_crm_recurring_kinds_are_exempt_and_other_crm_kinds_block(self):
+        # AA-978: crm_membership_pull is re-queued every 20 s like crm_heartbeat, so neither may block an apply;
+        # any other crm.job kind still does.
+        state = ({"booking": [], "shared": [],
+                  "crm": [job("crm_heartbeat"), job("crm_membership_pull"), job("crm_membership_pull", "running")]}, 0)
+        code, conn, _, log = self.run_task(PLAIN, conn=FakeConn(states=[state]))
+        self.assertEqual((code, conn.executed, self.sleeps), (0, [PLAIN], []))
+        self.assertIn("MIGRATE idle: crm.job running=0 queued=0 (exempt: crm_heartbeat, crm_membership_pull)", log)
+        state = ({"booking": [], "shared": [], "crm": [job("crm_membership_pull"), job("crm_intake_process")]}, 0)
+        code, conn, _, log = self.run_task(PLAIN, conn=FakeConn(states=[state]))
+        self.assertEqual((code, conn.executed), (7, []))
+        self.assertIn(REFUSAL.format("crm.job (queued=1)"), log)
+
     def test_removed_ops_rds_role_connections_kind_is_busy(self):
         # AA-751: the kind is gone from the CIS registry, so a leftover queued row is not exempt.
         state = ({"booking": [], "shared": [job("ops_rds_role_connections")]}, 0)

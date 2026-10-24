@@ -246,7 +246,9 @@ owners:
     job_kind_prefix: crm_
     # crm_heartbeat: the always-queued liveness kind of the AA-Partner worker (AA-933 registers it under this name),
     # so a CIS / Booking / TripPlanner DB Migrate apply is never blocked by the CRM (card CRM-04 E check).
-    idle_exempt_kinds: [crm_heartbeat]
+    # crm_membership_pull (AA-978): the CIS membership feed pull, re-queued every 20 s with a key per slot (AA-Partner
+    # app/jobs/kinds.py DEPLOY_GATE_EXEMPT), short transactions only, like Booking's bk_inquiry_pull.
+    idle_exempt_kinds: [crm_heartbeat, crm_membership_pull]
     set_local_roles: []
     role_lint_from: 1
     consumer_grants: []
