@@ -126,8 +126,8 @@ accounts/
                                    APIs, AA-911 D-1), groups, trigger Lambdas in
                                    lambda_src/identity_triggers + tests; SES (ses.tf identity) on,
                                    EXTERNAL native sign-up, WAF and custom domains gated by
-                                   variables, default off — AA-854; Dev tfvars turn WAF + traveller
-                                   native sign-up on (AA-908): one web ACL on the WORKFORCE, EXTERNAL
+                                   variables, default off — AA-854; Dev tfvars turn the WAF on (AA-908;
+                                   traveller native sign-up still off): one web ACL on the WORKFORCE, EXTERNAL
                                    and PARTNER pools, per-IP limits on the sign-up/sign-in API calls and
                                    on managed-login form posts (not /oauth2/*), alarm
                                    aa-identity-dev-waf-blocked; managed login branding: one style

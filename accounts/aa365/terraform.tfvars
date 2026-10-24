@@ -75,9 +75,9 @@ booking_sentry_enabled = true
 # AA-828 (S238): CIS spend budget alert e-mails (job ops_alert_email, SES) go to this inbox on Dev.
 cis_ops_alert_email = "nghieppham@adventure.asia"
 
-# AA-908 (S250): traveller sign-up on the EXTERNAL pool (TripPlanner). WAF first: the shared Cognito web ACL
-# with the per-IP rate rules on the WORKFORCE, EXTERNAL and PARTNER pools (about $8/month: $5 ACL + 3 rules;
-# Nghiep's go in the S250 pre-approval), then native email sign-up on the traveller clients (the EXTERNAL pool
-# preconditions need both this and identity_ses_enabled).
-identity_waf_enabled                    = true
-identity_external_native_signup_enabled = true
+# AA-908 (S250): the shared Cognito web ACL with the per-IP rate rules on the WORKFORCE, EXTERNAL and PARTNER
+# pools (about $8/month: $5 ACL + 3 rules; Nghiep's go in the S250 pre-approval). Traveller native sign-up
+# (identity_external_native_signup_enabled) stays off here: managed-login /signup asks for a password, which
+# ADR 0006 decision 4 does not offer to travellers. The TripPlanner sign-in slice turns it on once that
+# choice is settled (docs/implementation-notes/AA-908.md, "Should know").
+identity_waf_enabled = true

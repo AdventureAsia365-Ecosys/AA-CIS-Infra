@@ -916,7 +916,8 @@ resource "aws_cognito_managed_login_branding" "external" {
 # OFF by default (S241 D-19: every new AWS spend is quoted and approved first). Cost when on, us-west-1
 # list prices: $5/web ACL + $1/rule x 3 + $0.60 per million requests = about $8/month for this one
 # shared ACL (AA-908 added the third rule; it was $7 with two); the ADR's $12-15/month figure assumes two
-# separate ACLs. Turn on before identity_external_native_signup_enabled. ON since AA-908 (S250, tfvars).
+# separate ACLs. Turn on before identity_external_native_signup_enabled. ON since AA-908 (S250, tfvars; native
+# sign-up itself is still off, see terraform.tfvars).
 #
 # AA-908: what the rate rules see. Two scoped rules share identity_waf_signup_rate_limit:
 #   - SignUpAndCodeRatePerIp: the public user-pool API (cognito-idp.<region>.amazonaws.com, header
@@ -929,6 +930,12 @@ resource "aws_cognito_managed_login_branding" "external" {
 #   /oauth2/token (code exchange, refresh, client credentials) and /oauth2/revoke are left to the global
 #   cap: they are called server-side by the app BFFs from shared egress addresses (Vercel), need a code,
 #   a refresh token or a client secret, and send no mail.
+#   ManagedLoginPostRatePerIp also matches every public-API call (POST /), so it overlaps the first rule;
+#   the first rule is kept because it names the API actions in its own metric.
+#   WARNING for future flows: any server-side call to the Cognito public API from shared egress (for
+#   example a BFF-driven SignUp or InitiateAuth from Vercel) is counted per egress IP by BOTH scoped rules,
+#   so every traveller behind that address shares one counter. Change the aggregation (for example a
+#   forwarded-IP key with the per-IP rule as fallback) before shipping such a flow.
 # CI sign-ins (AA-CIS-App e2e-cognito.yml / ui-smoke.yml smoke-staff, AA-Partner e2e-dev.yml) are browser
 # sign-ins through managed login on GitHub-hosted runners: about 3-4 scoped POSTs and fewer than 10
 # requests on the pool domain per sign-in (the page assets come from Cognito's CloudFront hosts, which
