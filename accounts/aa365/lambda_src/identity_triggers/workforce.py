@@ -12,17 +12,27 @@ Configuration (Lambda environment, set by accounts/aa365/identity.tf):
   STAFF_GROUPS             groups kept in tokens; any other group is stripped
   BREAKGLASS_EMAIL         break-glass address; every token issue for it logs an alarm line
 
-TEMPORARY exception (AA-816, S243 decision "option B", root ADR 0006a): exactly one address outside the
-staff domain, E2E_TEST_STAFF_EMAIL (the SES inbound test mailbox the Cognito email-code E2E test reads
-its code from), may be admin-created and may get a token, and only while its staff groups are exactly
-E2E_TEST_STAFF_GROUPS (CIS reviewer, no Booking group). A code constant on purpose: no configuration can
-widen it. The CIS directory (migration 250, staff_directory.E2E_TEST_STAFF_EMAIL) holds the same rule.
-Removed when the E2E work is finished.
+TEMPORARY exception (AA-816, S243 decision "option B", root ADR 0006a A10, A10a; second address AA-910, S250): a
+fixed allow-map E2E_TEST_STAFF {address: exact staff groups} of addresses outside the staff domain, each a
+mailbox of the SES inbound test domain the email-code E2E tests read their codes from. An address in the map
+may be admin-created and may get a token, and only while its staff groups are exactly the tuple it maps to;
+any other group set DENIES the token (logged), it is never stripped. Two entries:
+  - E2E_TEST_STAFF_EMAIL (CIS E2E, cis-reviewer only, no Booking group). The CIS directory (migration 250,
+    staff_directory.E2E_TEST_STAFF_EMAIL) holds the same rule.
+  - E2E_BOOKING_TEST_STAFF_EMAIL (Booking staff admin E2E, booking-admin only, no CIS group). Not in the CIS
+    directory (its CHECK refuses the address): created by an admin with AdminCreateUser + SUPPRESS, no password.
+    CIS refuses its tokens (no cis-* group -> 403 no_cis_group).
+Lookup is exact and ASCII-only: an address whose RAW attribute holds any non-ASCII character never matches, so a
+Unicode case-fold (U+212A KELVIN SIGN lower-cases to ASCII 'k') cannot alias an entry. The check runs on the raw value,
+before lower-casing (after it the folded address is already ASCII), and stays here, not in common.normalise_email
+(the EXTERNAL pool shares that helper).
+A code constant on purpose: no configuration can widen it. Removed when the E2E work is finished.
 """
 
 from __future__ import annotations
 
 import os
+from types import MappingProxyType
 from typing import Any
 
 from common import (
@@ -36,9 +46,19 @@ from common import (
     normalise_email,
 )
 
-# TEMPORARY (AA-816): see the module docstring. Exact match after lower-casing; nothing else matches.
+# TEMPORARY (AA-816, AA-910): see the module docstring. Exact match after lower-casing, ASCII input only (_e2e_groups);
+# nothing else matches.
 E2E_TEST_STAFF_EMAIL = "e2e@e2e-mail.lumiguides.it.com"
 E2E_TEST_STAFF_GROUPS = ("cis-reviewer",)
+# AA-910 (S250, Nghiep): Booking staff admin signed-in checks. booking-admin is the least-privileged Booking group
+# that reads every staff page, /staff and /audit-log included (AA-Booking backend/app/auth/staff.py PERMISSIONS).
+E2E_BOOKING_TEST_STAFF_EMAIL = "e2e-booking@e2e-mail.lumiguides.it.com"
+E2E_BOOKING_TEST_STAFF_GROUPS = ("booking-admin",)
+# Read-only view: nothing at run time can add an address or widen a group set.
+E2E_TEST_STAFF = MappingProxyType({
+    E2E_TEST_STAFF_EMAIL: E2E_TEST_STAFF_GROUPS,
+    E2E_BOOKING_TEST_STAFF_EMAIL: E2E_BOOKING_TEST_STAFF_GROUPS,
+})
 
 DEFAULT_STAFF_GROUPS = (
     "cis-admin,cis-reviewer,cis-content,"
@@ -46,6 +66,19 @@ DEFAULT_STAFF_GROUPS = (
     # AA-939 / root ADR 0006b decision 6: AA-Partner staff groups.
     "crm-platform-admin,crm-ops,crm-support"
 )
+
+
+def _e2e_groups(raw_email: Any, email: str) -> tuple[str, ...] | None:
+    """The exact staff groups of an E2E test address, or None.
+
+    `raw_email` is the email attribute as Cognito sent it, `email` its normalise_email() form. A raw value with any
+    non-ASCII character never matches: str.lower() folds some non-ASCII letters to ASCII (U+212A KELVIN SIGN -> 'k'),
+    so checking the lower-cased form would be too late and a different Cognito user (another username, another sub)
+    could pass as the E2E account.
+    """
+    if not isinstance(raw_email, str) or not raw_email.isascii():
+        return None
+    return E2E_TEST_STAFF.get(email)
 
 
 def _allowed_domain() -> str:
@@ -79,10 +112,10 @@ def _pre_sign_up(event: dict) -> dict:
         # (PreSignUp_ExternalProvider), but refuse anything that is not the directory anyway.
         raise Deny(f"trigger source not allowed: {source}")
 
-    # The staff directory creating a user. Defence in depth: only staff-domain addresses (and the one
-    # temporary E2E test address).
+    # The staff directory creating a user. Defence in depth: only staff-domain addresses (and the temporary
+    # E2E test addresses of E2E_TEST_STAFF).
     email = normalise_email(attrs.get("email"))
-    if email == E2E_TEST_STAFF_EMAIL:
+    if _e2e_groups(attrs.get("email"), email) is not None:
         log("workforce_e2e_test_create_allowed", email=email)
         return ensure_no_auto_flags(event)
     if not email_in_domain(email, domain):
@@ -110,7 +143,8 @@ def _pre_token_generation(event: dict) -> dict:
     attrs = request.get("userAttributes") or {}
 
     email = normalise_email(attrs.get("email"))
-    e2e_test = email == E2E_TEST_STAFF_EMAIL
+    e2e_groups = _e2e_groups(attrs.get("email"), email)
+    e2e_test = e2e_groups is not None
     if not e2e_test and not email_in_domain(email, domain):
         raise Deny("email outside the staff domain")
     if not is_true(attrs.get("email_verified")):
@@ -123,10 +157,10 @@ def _pre_token_generation(event: dict) -> dict:
         raise Deny("user is in no staff group")
     if e2e_test:
         # Refuse, do not strip: a wider group on this account means the directory rule was bypassed.
-        if kept != sorted(E2E_TEST_STAFF_GROUPS):
+        if kept != sorted(e2e_groups):
             raise Deny("E2E test account outside its allowed groups")
         log("workforce_e2e_test_token_issued", trigger=event.get("triggerSource"),
-            client_id=(event.get("callerContext") or {}).get("clientId"))
+            client_id=(event.get("callerContext") or {}).get("clientId"), email=email)
 
     breakglass = os.environ.get("BREAKGLASS_EMAIL", "").strip().lower()
     if breakglass and email == breakglass:

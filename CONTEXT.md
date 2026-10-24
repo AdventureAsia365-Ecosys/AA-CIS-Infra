@@ -176,8 +176,9 @@ accounts/
     ses.tf                        (SES domain identity, DKIM/MAIL FROM/DMARC records, configuration sets,
                                    ses:SendEmail grants for the app roles, reputation alarms — AA-811)
     e2e_mailbox.tf                (AA-816 I5: SES inbound for the Cognito E2E: MX e2e-mail.lumiguides.it.com,
-                                   the region's single ACTIVE receipt rule set aa-cis-dev-e2e (rule e2e-cognito:
-                                   the staff E2E address, the CRM e2e users, AA-908's two e2e travellers) -> S3 aa-cis-dev-e2e-mail-<acct>/inbound/ (1-day expiry), and
+                                   the region's single ACTIVE receipt rule set aa-cis-dev-e2e (rule e2e-cognito,
+                                   fixed recipients: the CIS staff E2E e2e@, the Booking staff E2E e2e-booking@
+                                   (AA-910), the CRM e2e users and AA-908's two e2e travellers) -> S3 aa-cis-dev-e2e-mail-<acct>/inbound/ (1-day expiry), and
                                    the read-only GitHub OIDC role aa-cis-dev-e2e-mail-reader (AA-CIS-App, env e2e,
                                    main). Any future SES receiving in us-west-1 adds rules to this set)
     custom_domains.tf             (AA-818: ACM certs api-booking./api-tripplanner. (us-west-1) and auth./staff-auth.
