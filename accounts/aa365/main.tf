@@ -192,10 +192,9 @@ module "ecs" {
 
   target_group_arn = module.alb.target_group_arn
 
-  # AA-874 S5: the TLS + AUTH replication group (modules/elasticache). Needs AA-CIS-App #983 deployed (it is);
-  # the apply only registers template revisions (services ignore task_definition), so run CIS deploy-dev in the
-  # same idle gap, right after the S4 key copy. Rollback: point redis_host back at redis_endpoint, drop the
-  # three lines below, apply + deploy (the old node stays until S6).
+  # AA-874 S5: the TLS + AUTH replication group (modules/elasticache), the only CIS cache since S6 removed the
+  # old plain node. A task-definition change here ships with the next CIS deploy-dev (services ignore
+  # task_definition).
   redis_host            = module.elasticache.tls_primary_endpoint
   redis_tls             = true
   redis_auth_secret_arn = module.elasticache.auth_secret_arn

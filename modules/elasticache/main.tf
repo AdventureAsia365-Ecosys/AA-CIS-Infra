@@ -38,30 +38,14 @@ resource "aws_security_group" "redis" {
   })
 }
 
-resource "aws_elasticache_cluster" "main" {
-  cluster_id           = "${local.name_prefix}-redis"
-  engine               = "redis"
-  node_type            = var.node_type
-  num_cache_nodes      = 1
-  parameter_group_name = "default.redis7"
-  engine_version       = "7.1"
-  port                 = 6379
-  subnet_group_name    = aws_elasticache_subnet_group.main.name
-  security_group_ids   = [aws_security_group.redis.id]
-
-  tags = merge(var.tags, {
-    Name = "${local.name_prefix}-redis"
-  })
-}
-
 # ============================================================
-# AA-874 — encrypted replication group (blue/green next to aws_elasticache_cluster.main)
+# AA-874 — encrypted replication group (the only CIS cache since S6)
 #
-# The standalone cluster above cannot get in-transit encryption in place (ForceNew) and standalone
-# clusters do not offer at-rest encryption at all, so a replace would mean ~10-15 min with no node and
-# every key lost (SEO cache, any tenant-pool rollback flag set to "false"). Instead a new group is built
-# next to it with TLS (required), an AUTH token and at-rest encryption; keys are copied over, the CIS
-# api + worker task definitions are switched in a later PR, then the old cluster is removed.
+# It replaced the standalone aws_elasticache_cluster aa-cis-dev-redis (Redis 7.1, no AUTH / TLS / at-rest
+# encryption), which could not get in-transit encryption in place (ForceNew) and, as a standalone cluster, no
+# at-rest encryption at all. Blue/green: the group was built next to it with TLS (required), an AUTH token and
+# at-rest encryption (S2), keys were copied (S4), the CIS api + worker moved to it (S5), and the old cluster was
+# removed (S6). docs/implementation-notes/AA-874.md.
 #
 # The AUTH token is never in state: an ephemeral random_password feeds two write-only arguments in the
 # same apply (the group's auth_token_wo and the secret version's secret_string_wo). Rotation: set
