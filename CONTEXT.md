@@ -96,6 +96,9 @@ accounts/
                                    existing VPC link, OIDC deploy role — AA-678; AA-871: secret shell
                                    booking/<env>/sentry-dsn (no version, execution-role read) mapped to
                                    SENTRY_DSN + SENTRY_REQUIRED only when var.booking_sentry_enabled)
+    booking_media.tf              (AA-835: bucket aa-booking-<env>-supply-media-<account> for supplier photos,
+                                   SSE-S3, versioned (noncurrent 30 d), TLS only, CIS task role denied writes;
+                                   Booking task role Put/Get on supply-media/*; env SUPPLY_MEDIA_BUCKET)
     bedrock_satellite_assume.tf   (cross-account Bedrock assume-role trust)
     cost_explorer_satellite_assume.tf (acc2 → acc1/acc3 Cost Explorer read roles, AA-623)
     dfs_balance.tf                (ops-probe Lambda: 06:15 UTC schedule POSTs the admin probes, AA-627/720/727,
@@ -369,7 +372,9 @@ Booking rule and the CIS default. CloudFront bypasses API Gateway throttling: th
 **AA-Booking** (`booking.tf`, AA-678, root ADR 0004) is a separate app on the same cluster, VPC,
 ALB and RDS: ECS service `aa-booking-dev-api` (created at `desired_count = 0`, scaled by hand,
 `ignore_changes` on count and task definition), ECR `aa-booking-dev-api` (immutable git-SHA tags),
-own execution/task roles, secret `booking/dev/database-url` (container only, value set out-of-band).
+own execution/task roles, secret `booking/dev/database-url` (container only, value set out-of-band),
+supplier-photo bucket `aa-booking-dev-supply-media-<account>` (`booking_media.tf`, AA-835; CIS reads it to copy
+rights-cleared photos, never writes).
 Routing: its own REST API `aa-booking-dev-api` on the existing VPC link → NLB → ALB HTTP listener
 rule `/booking`, `/booking/*` (priority 100) → target group `aa-booking-dev-api-tg` (health
 `/booking/health`). That listener rule is the only object attached to a CIS resource. Dev uses
