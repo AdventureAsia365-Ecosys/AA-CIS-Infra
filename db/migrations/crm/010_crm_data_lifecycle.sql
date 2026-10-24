@@ -20,7 +20,8 @@
 --      by a platform actor is released only by one (crm.guard_legal_hold); crm_app never deletes a hold and never
 --      trashes one (state moves only: the trash columns stay NULL, legal_hold_never_trashed_chk + the guard).
 --      crm.legal_hold_blocks(scope, subject): a trip is also held by a hold on any traveller on it (or named on its
---      notes / documents), a traveller by a hold on any trip they are on, a relation by a hold on either end.
+--      notes / documents, or addressed by its queued messages), a traveller by a hold on any trip they are on, a
+--      relation by a hold on either end.
 --   5. crm.trip_commitment (base template): the ledger the delete block reads (design §3.5): AA lines, invoices,
 --      payments, signatures, commissions of a trip with their current line_status, written by the cards that own those
 --      records (CRM-16/19/23/25/27) and by the Booking re-check of a restore. line_status mirrors the source system,
@@ -39,12 +40,17 @@
 --      crm.reject_append_only_change(), unchanged: no path here deletes an audit row.
 --  10. crm.erase_subject(scope, subject, profile_token, dry_run): SECURITY DEFINER, EXECUTE for crm_eraser only. Scopes
 --      trip, traveler, task, note, document, relation, tenant. Refuses under a legal hold (SQLSTATE CRM10; for the
---      tenant scope any active hold of the agency, of whatever scope), a blocked trip
---      (CRM11), a traveller on a live trip (CRM12), an unknown subject (CRM13), a tenant that is not offboarding
+--      tenant scope any active hold of the agency, of whatever scope; for a traveller also a trip hold on any trip one
+--      of their notes / documents / submissions / queued messages belongs to, and a hold on the other end of any of
+--      their relations: the erase deletes those rows wherever they sit), a blocked trip (CRM11), a traveller on a live trip (CRM12), an unknown subject (CRM13), a tenant that is not offboarding
 --      (CRM14), a profile token that does not belong to the traveller (CRM15); after a tenant erase, any row left in a
 --      tenant table outside the keep list fails the whole run (CRM16). Returns {scope, dry_run, counts}.
 --  11. crm.lifecycle_purge_expired(dry_run): SECURITY DEFINER, EXECUTE for crm_eraser only: llm_call rows older than
---      180 days (design §3.6; crm.llm_usage_daily keeps the rollup), skipped under an agency hold.
+--      180 days (design §3.6; crm.llm_usage_daily keeps the rollup), skipped under an agency hold. The crm-009
+--      placeholder maps of those calls (24 h maps the hourly purge missed) go first, so placeholder_map_call_fk never
+--      stops the purge; when crm-009 is not applied yet the step is skipped.
+--  Every function here pins search_path = pg_catalog, pg_temp (pg_temp last: a temporary object never shadows a
+--  catalogue name inside the definer functions) and names crm objects schema-qualified.
 --   No NOLOGIN reader gets anything on the new tables; crm_eraser gets EXECUTE on the two deletion functions only.
 --
 -- Order: needs crm-007 (AA-940) only; it does not touch any object of crm-008 / crm-009, so DB Migrate may apply it
@@ -158,7 +164,7 @@ REVOKE DELETE, TRUNCATE ON crm.legal_hold FROM crm_app;
 
 CREATE OR REPLACE FUNCTION crm.guard_legal_hold() RETURNS trigger
     LANGUAGE plpgsql
-    SET search_path = pg_catalog
+    SET search_path = pg_catalog, pg_temp
 AS $$
 DECLARE
     actor text := COALESCE(NULLIF(current_setting('app.actor', true), ''), '');
@@ -186,38 +192,6 @@ CREATE OR REPLACE TRIGGER legal_hold_guard
     FOR EACH ROW EXECUTE FUNCTION crm.guard_legal_hold();
 COMMENT ON TABLE crm.legal_hold IS 'AA-942 (crm-010): a legal hold of the agency (scope tenant), a trip or a traveller: while active, no deletion reaches the subject (trash purge, redaction, LLM-call purge, erasure; crm.legal_hold_blocks, crm.erase_subject), and any active hold suspends the agency offboarding. A trip hold also holds its travellers, a traveller hold the trips they are on. A hold placed by platform:* is released only by platform:* (crm.guard_legal_hold). Ids and codes only. crm_app never deletes or trashes a hold (legal_hold_never_trashed_chk).';
 
--- A hold that reaches (scope, subject). Invoker rights: RLS limits it to the agency of app.tenant_id.
---   ('tenant', any)       : ANY active hold of the agency (offboarding erases every subject, so every hold stops it).
---   ('trip', trip)        : the agency hold, the trip's own, a hold on any traveller on the trip or named on one of
---                           its notes / documents (a trip erase deletes their party rows, notes and documents).
---   ('traveler', traveler): the agency hold, the traveller's own, a hold on any trip they are on (live or trashed).
---   (other scope, NULL) or (trip / traveler, NULL): the agency hold only (data with no held subject, e.g. llm_call).
-CREATE OR REPLACE FUNCTION crm.legal_hold_blocks(p_scope text, p_subject uuid) RETURNS boolean
-    LANGUAGE sql
-    STABLE
-    SET search_path = pg_catalog
-AS $$
-    SELECT EXISTS (
-        SELECT 1 FROM crm.legal_hold h
-         WHERE h.status = 'active'
-           AND (h.scope = 'tenant'
-                OR p_scope = 'tenant'
-                OR (p_subject IS NOT NULL AND h.scope = p_scope AND h.subject_id = p_subject)
-                OR (p_subject IS NOT NULL AND p_scope = 'traveler' AND h.scope = 'trip'
-                    AND h.subject_id IN (SELECT tt.trip_id FROM crm.trip_traveler tt WHERE tt.traveler_id = p_subject))
-                OR (p_subject IS NOT NULL AND p_scope = 'trip' AND h.scope = 'traveler'
-                    AND h.subject_id IN (SELECT tt.traveler_id FROM crm.trip_traveler tt WHERE tt.trip_id = p_subject
-                                         UNION ALL
-                                         SELECT n.traveler_id FROM crm.note n
-                                          WHERE n.trip_id = p_subject AND n.traveler_id IS NOT NULL
-                                         UNION ALL
-                                         SELECT d.traveler_id FROM crm.document d
-                                          WHERE d.trip_id = p_subject AND d.traveler_id IS NOT NULL)))
-    );
-$$;
-REVOKE ALL ON FUNCTION crm.legal_hold_blocks(text, uuid) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION crm.legal_hold_blocks(text, uuid) TO crm_app;
-COMMENT ON FUNCTION crm.legal_hold_blocks(text, uuid) IS 'AA-942 (crm-010): true when an active legal hold reaches (scope, subject). Scope tenant (offboarding): any active hold of the agency. Trip: the agency hold, its own, or a hold on a traveller on it (trip_traveler, its notes and documents). Traveller: the agency hold, its own, or a hold on a trip they are on. Any other scope, or a NULL subject: the agency hold only. Invoker rights (RLS: one agency).';
 
 -- ── 5. crm.trip_commitment (the delete-block ledger) ─────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS crm.trip_commitment (
@@ -257,7 +231,7 @@ COMMENT ON COLUMN crm.trip_commitment.source_ref IS 'the source id (Booking b2b 
 CREATE OR REPLACE FUNCTION crm.trip_delete_blockers(p_trip uuid) RETURNS text[]
     LANGUAGE sql
     STABLE
-    SET search_path = pg_catalog
+    SET search_path = pg_catalog, pg_temp
 AS $$
     SELECT coalesce(array_agg(DISTINCT x.code ORDER BY x.code), '{}'::text[])
       FROM (
@@ -330,6 +304,47 @@ INSERT INTO crm.status_transition (table_name, from_status, to_status) VALUES
     ('dispatch_queue', 'held', 'cancelled')
 ON CONFLICT DO NOTHING;
 COMMENT ON TABLE crm.dispatch_queue IS 'AA-942 (crm-010, lane §2.8, design §3.5): every outbound message to a traveller passes here; the crm_dispatch job gates the row at send time: archived traveller -> dropped/archived (R23), trashed traveller or trip -> dropped/traveler_trashed or trip_trashed, marketing without a current marketing consent -> dropped/no_consent, no sender configured -> held/no_sender (CRM-17 re-queues). not_before = now + 10 s for a user action (Undo, Fix B8). Ids and codes only; the message itself lives with CRM-17 (message_ref).';
+
+-- ── 6b. crm.legal_hold_blocks ────────────────────────────────────────────────────────────────────
+-- Defined after crm.dispatch_queue: a SQL function body is checked when it is created.
+-- A hold that reaches (scope, subject). Invoker rights: RLS limits it to the agency of app.tenant_id.
+--   ('tenant', any)       : ANY active hold of the agency (offboarding erases every subject, so every hold stops it).
+--   ('trip', trip)        : the agency hold, the trip's own, a hold on any traveller on the trip, named on one of its
+--                           notes / documents or addressed by one of its queued messages (a trip erase deletes their
+--                           party rows, notes, documents and dispatch rows).
+--   ('traveler', traveler): the agency hold, the traveller's own, a hold on any trip they are on (live or trashed).
+--                           crm.erase_subject('traveler') checks more (every trip its deletions reach, the other end of
+--                           every relation); this function stays the trash / archive / redaction pre-check.
+--   (other scope, NULL) or (trip / traveler, NULL): the agency hold only (data with no held subject, e.g. llm_call).
+CREATE OR REPLACE FUNCTION crm.legal_hold_blocks(p_scope text, p_subject uuid) RETURNS boolean
+    LANGUAGE sql
+    STABLE
+    SET search_path = pg_catalog, pg_temp
+AS $$
+    SELECT EXISTS (
+        SELECT 1 FROM crm.legal_hold h
+         WHERE h.status = 'active'
+           AND (h.scope = 'tenant'
+                OR p_scope = 'tenant'
+                OR (p_subject IS NOT NULL AND h.scope = p_scope AND h.subject_id = p_subject)
+                OR (p_subject IS NOT NULL AND p_scope = 'traveler' AND h.scope = 'trip'
+                    AND h.subject_id IN (SELECT tt.trip_id FROM crm.trip_traveler tt WHERE tt.traveler_id = p_subject))
+                OR (p_subject IS NOT NULL AND p_scope = 'trip' AND h.scope = 'traveler'
+                    AND h.subject_id IN (SELECT tt.traveler_id FROM crm.trip_traveler tt WHERE tt.trip_id = p_subject
+                                         UNION ALL
+                                         SELECT n.traveler_id FROM crm.note n
+                                          WHERE n.trip_id = p_subject AND n.traveler_id IS NOT NULL
+                                         UNION ALL
+                                         SELECT d.traveler_id FROM crm.document d
+                                          WHERE d.trip_id = p_subject AND d.traveler_id IS NOT NULL
+                                         UNION ALL
+                                         SELECT q.traveler_id FROM crm.dispatch_queue q
+                                          WHERE q.trip_id = p_subject)))
+    );
+$$;
+REVOKE ALL ON FUNCTION crm.legal_hold_blocks(text, uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION crm.legal_hold_blocks(text, uuid) TO crm_app;
+COMMENT ON FUNCTION crm.legal_hold_blocks(text, uuid) IS 'AA-942 (crm-010): true when an active legal hold reaches (scope, subject). Scope tenant (offboarding): any active hold of the agency. Trip: the agency hold, its own, or a hold on a traveller on it (trip_traveler, its notes, documents and dispatch rows). Traveller: the agency hold, its own, or a hold on a trip they are on. Any other scope, or a NULL subject: the agency hold only. Invoker rights (RLS: one agency).';
 
 -- ── 7. crm.erasure_request ───────────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS crm.erasure_request (
@@ -428,7 +443,7 @@ COMMENT ON TABLE crm.lifecycle_run IS 'AA-942 (crm-010): one row per agency per 
 -- ── 9. The erasable append-only trigger ──────────────────────────────────────────────────────────
 CREATE OR REPLACE FUNCTION crm.erasable_append_only() RETURNS trigger
     LANGUAGE plpgsql
-    SET search_path = pg_catalog
+    SET search_path = pg_catalog, pg_temp
 AS $$
 BEGIN
     -- Only DELETE, only inside crm.erase_subject / crm.lifecycle_purge_expired (they run as crm_owner and set
@@ -463,7 +478,7 @@ END $$;
 CREATE OR REPLACE FUNCTION crm.erase_rows(p_table text, p_where text, p_subject uuid, p_token uuid,
                                           p_dry_run boolean, p_set text DEFAULT NULL) RETURNS bigint
     LANGUAGE plpgsql
-    SET search_path = pg_catalog
+    SET search_path = pg_catalog, pg_temp
 AS $$
 DECLARE
     n bigint;
@@ -486,7 +501,7 @@ CREATE OR REPLACE FUNCTION crm.erase_subject(p_scope text, p_subject uuid, p_pro
                                              p_dry_run boolean DEFAULT true) RETURNS jsonb
     LANGUAGE plpgsql
     SECURITY DEFINER
-    SET search_path = pg_catalog
+    SET search_path = pg_catalog, pg_temp
 AS $$
 DECLARE
     v_tenant uuid := NULLIF(current_setting('app.tenant_id', true), '')::uuid;
@@ -550,6 +565,36 @@ BEGIN
        OR (v_traveler IS NOT NULL AND crm.legal_hold_blocks('traveler', v_traveler))
        OR (v_traveler2 IS NOT NULL AND crm.legal_hold_blocks('traveler', v_traveler2)) THEN
         RAISE EXCEPTION 'crm: legal_hold (an active legal hold reaches % %)', p_scope, p_subject
+            USING ERRCODE = 'CRM10';
+    END IF;
+    -- A traveller erase deletes the traveller's notes, documents, submissions and queued messages whatever trip they
+    -- belong to, and every relation from or to them: a hold on any of those trips, or on the other end of any of
+    -- those relations, reaches it too (review S249 B1). Kept here, not in crm.legal_hold_blocks, which stays the
+    -- trash / archive pre-check of the traveller itself.
+    IF p_scope = 'traveler' AND (
+        EXISTS (SELECT 1 FROM crm.legal_hold h
+                 WHERE h.status = 'active' AND h.scope = 'trip'
+                   AND h.subject_id IN (SELECT tt.trip_id FROM crm.trip_traveler tt WHERE tt.traveler_id = p_subject
+                                        UNION ALL
+                                        SELECT n.trip_id FROM crm.note n
+                                         WHERE n.traveler_id = p_subject AND n.trip_id IS NOT NULL
+                                        UNION ALL
+                                        SELECT d.trip_id FROM crm.document d
+                                         WHERE d.traveler_id = p_subject AND d.trip_id IS NOT NULL
+                                        UNION ALL
+                                        SELECT f.trip_id FROM crm.form_submission f
+                                         WHERE f.traveler_id = p_subject AND f.trip_id IS NOT NULL
+                                        UNION ALL
+                                        SELECT q.trip_id FROM crm.dispatch_queue q
+                                         WHERE q.traveler_id = p_subject AND q.trip_id IS NOT NULL))
+        OR EXISTS (SELECT 1 FROM crm.legal_hold h
+                    WHERE h.status = 'active' AND h.scope = 'traveler'
+                      AND h.subject_id IN (SELECT CASE WHEN rel.from_traveler_id = p_subject THEN rel.to_traveler_id
+                                                       ELSE rel.from_traveler_id END
+                                             FROM crm.traveler_relation rel
+                                            WHERE rel.from_traveler_id = p_subject OR rel.to_traveler_id = p_subject))
+    ) THEN
+        RAISE EXCEPTION 'crm: legal_hold (an active legal hold reaches a trip or a relation of traveler %)', p_subject
             USING ERRCODE = 'CRM10';
     END IF;
 
@@ -686,38 +731,47 @@ END;
 $$;
 REVOKE ALL ON FUNCTION crm.erase_subject(text, uuid, uuid, boolean) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION crm.erase_subject(text, uuid, uuid, boolean) TO crm_eraser;
-COMMENT ON FUNCTION crm.erase_subject(text, uuid, uuid, boolean) IS 'AA-942 (crm-010, design §4.10, Fix B16): the only hard-delete path of agency data. Scopes trip, traveler (needs the decrypted F2 profile token), task, note, document, relation, tenant (status offboarding, except a dry run; every tenant table except the keep list). Used by the trash purge and by erasure / offboarding (which skip the trash). Refuses: CRM10 legal_hold, CRM11 delete_blocked, CRM12 traveler_on_trip, CRM13 subject_not_found, CRM14 tenant_not_offboarding, CRM15 profile token, CRM16 erase_incomplete. Never touches audit_event. EXECUTE: crm_eraser only (SET LOCAL ROLE inside the lifecycle context).';
+COMMENT ON FUNCTION crm.erase_subject(text, uuid, uuid, boolean) IS 'AA-942 (crm-010, design §4.10, Fix B16): the only hard-delete path of agency data. Scopes trip, traveler (needs the decrypted F2 profile token), task, note, document, relation, tenant (status offboarding, except a dry run; every tenant table except the keep list). Used by the trash purge and by erasure / offboarding (which skip the trash). Refuses: CRM10 legal_hold (a traveller: also a hold on any trip their deleted rows belong to, or on the other end of any of their relations), CRM11 delete_blocked, CRM12 traveler_on_trip, CRM13 subject_not_found, CRM14 tenant_not_offboarding, CRM15 profile token, CRM16 erase_incomplete. Never touches audit_event. EXECUTE: crm_eraser only (SET LOCAL ROLE inside the lifecycle context).';
 
 -- ── 11. crm.lifecycle_purge_expired ──────────────────────────────────────────────────────────────
 CREATE OR REPLACE FUNCTION crm.lifecycle_purge_expired(p_dry_run boolean DEFAULT true) RETURNS jsonb
     LANGUAGE plpgsql
     SECURITY DEFINER
-    SET search_path = pg_catalog
+    SET search_path = pg_catalog, pg_temp
 AS $$
 DECLARE
     v_tenant uuid := NULLIF(current_setting('app.tenant_id', true), '')::uuid;
     n bigint;
+    m bigint := 0;
 BEGIN
     IF v_tenant IS NULL OR p_dry_run IS NULL THEN
         RAISE EXCEPTION 'crm: lifecycle_purge_expired needs app.tenant_id and dry_run'
             USING ERRCODE = 'invalid_parameter_value';
     END IF;
     IF crm.legal_hold_blocks('llm_call', NULL) THEN  -- llm_call names no subject: the agency hold only
-        RETURN jsonb_build_object('llm_call', 0, 'held', 1);
+        RETURN jsonb_build_object('llm_call', 0, 'placeholder_map', 0, 'held', 1);
     END IF;
     IF NOT p_dry_run THEN
         PERFORM set_config('app.erasing', 'on', true);
+    END IF;
+    -- crm-009 placeholder_map_call_fk: a map of a call this purge deletes goes first (a 24 h map the hourly
+    -- crm_placeholder_purge has not removed yet). Skipped while crm-009 is not applied (crm-010 may land first).
+    IF to_regclass('crm.placeholder_map') IS NOT NULL THEN
+        m := crm.erase_rows('placeholder_map',
+                            'llm_call_id IN (SELECT l.llm_call_id FROM crm.llm_call l '
+                            'WHERE l.at < now() - interval ''180 days'')',
+                            NULL, NULL, p_dry_run);
     END IF;
     n := crm.erase_rows('llm_call', 'at < now() - interval ''180 days''', NULL, NULL, p_dry_run);
     IF NOT p_dry_run THEN
         PERFORM set_config('app.erasing', '', true);
     END IF;
-    RETURN jsonb_build_object('llm_call', n, 'held', 0);
+    RETURN jsonb_build_object('llm_call', n, 'placeholder_map', m, 'held', 0);
 END;
 $$;
 REVOKE ALL ON FUNCTION crm.lifecycle_purge_expired(boolean) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION crm.lifecycle_purge_expired(boolean) TO crm_eraser;
-COMMENT ON FUNCTION crm.lifecycle_purge_expired(boolean) IS 'AA-942 (crm-010, design §3.6): deletes the agency''s crm.llm_call rows older than 180 days (crm.llm_usage_daily keeps the rollup); nothing under an agency legal hold. Dry run counts only. EXECUTE: crm_eraser only.';
+COMMENT ON FUNCTION crm.lifecycle_purge_expired(boolean) IS 'AA-942 (crm-010, design §3.6): deletes the agency''s crm.llm_call rows older than 180 days (crm.llm_usage_daily keeps the rollup), and first the crm-009 placeholder maps of those calls; nothing under an agency legal hold. Dry run counts only. EXECUTE: crm_eraser only.';
 
 -- ── RLS + triggers on the new tenant tables ──────────────────────────────────────────────────────
 DO $$
