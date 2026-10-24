@@ -465,7 +465,7 @@ output "crm_bucket_names" {
 }
 
 # =============================================================================
-# AA-940 (CRM-12) — the audit export: the CRM task role writes and reads the hourly objects, and two alarms.
+# AA-940 (CRM-12) — the audit export: the CRM task role writes and reads the hourly objects, and three alarms.
 #
 # Design v3 §4.9 ("hourly to both Object Lock buckets, with a chained SHA-256 manifest"); AA-Partner
 # api/app/audit_export (export.py writes audit/v1/tenants/<tenant>/<yyyy>/<mm>/<dd>/<hh>00Z-<seq>.jsonl to both tiers,
@@ -484,11 +484,15 @@ output "crm_bucket_names" {
 #                        covers a dead sampler).
 #   audit-partitions     AuditPartitionMonthsAhead < 1: next month has no audit partition, so every request that
 #                        writes an audit event would fail from the 1st. The hourly export keeps three months ahead.
+#   audit-verify-lag     AuditVerifyLagHours >= 50 (healthy is under ~26: one daily verification). One agency whose
+#                        verification keeps failing stops partition drops for EVERY agency (a drop needs all of them
+#                        verified), and the job only logs audit_verify_failed, so this is the signal (review round).
+#                        Expected to fire for up to a day after the first deploy while the backlog is exported.
 #
 # Cost (us-west-1, est.): PUTs 24 x 2 per agency per day = ~1,440 per agency per month x $0.005 / 1,000 = ~$0.007 per
 # agency (3 synthetic agencies ~ $0.02); GETs of the daily verification about the same at $0.0004 / 1,000 ~ $0;
 # storage a few KB per object, ~$0 (S3 Standard $0.023/GB-month); KMS requests stay in the free tier (S3 Bucket Keys);
-# 2 alarms x $0.10 + 2 custom metrics x $0.30 = $0.80/month. Total ~ $0.85/month on Dev (100 agencies at prod:
+# 3 alarms x $0.10 + 3 custom metrics x $0.30 = $1.20/month. Total ~ $1.25/month on Dev (100 agencies at prod:
 # ~$0.75 of PUTs more).
 # =============================================================================
 resource "aws_iam_role_policy" "crm_ecs_task_audit_export" {
@@ -554,6 +558,23 @@ resource "aws_cloudwatch_metric_alarm" "crm_audit_partitions" {
   evaluation_periods  = 1
   comparison_operator = "LessThanThreshold"
   threshold           = 1
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
+
+  tags = merge(local.crm_tags, { Issue = "AA-940" })
+}
+
+resource "aws_cloudwatch_metric_alarm" "crm_audit_verify_lag" {
+  alarm_name          = "${local.crm_name_prefix}-audit-verify-lag"
+  alarm_description   = "AA-Partner: an agency's exported audit has not been verified for 50 hours or more (AA/Jobs/Crm AuditVerifyLagHours). While any agency is behind, no expired audit partition can be dropped for any agency. Read the crm_audit_retention job rows (problem_count) and the audit_verify_failed log lines (codes) in /ecs/${local.crm_name_prefix}, then run python -m app.audit_export.verify --tenant <id> in the API container.${local.runbook_suffix.incident}"
+  namespace           = "AA/Jobs/Crm"
+  metric_name         = "AuditVerifyLagHours"
+  statistic           = "Maximum"
+  period              = 300
+  evaluation_periods  = 2
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  threshold           = 50
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
   ok_actions          = [aws_sns_topic.alerts.arn]
