@@ -26,8 +26,8 @@
 # Every bucket: block public access (all four), BucketOwnerEnforced (no ACLs), TLS only, and a PutObject that names
 # another KMS key or another SSE algorithm is denied (no header = the bucket default, the normal path).
 # Object access for the CRM task role is NOT granted here: the cards that write each bucket add their own grant
-# (CRM-09 documents: crm_app.tf CrmDocumentsObjects / CrmDocumentsSseKms, AA-937; CRM-12 audit export, CRM-17 SES
-# ingest; the key policies already allow the role). The SES write
+# (CRM-09 documents: crm_app.tf CrmDocumentsObjects / CrmDocumentsSseKms, AA-937; CRM-12 audit export:
+# crm_ecs_task_audit_export below, AA-940; CRM-17 SES ingest; the key policies already allow the role). The SES write
 # statement on the ingest bucket is here because it is a bucket-policy statement of this bucket.
 # Object Lock tamper guards that already exist: the CI apply boundary denies BypassGovernanceRetention,
 # PutObjectRetention, PutObjectLegalHold, DeleteObject(Version) on aa-crm-<env>-audit-*/* (cicd_split.tf
@@ -462,4 +462,101 @@ resource "aws_cloudwatch_metric_alarm" "crm_kms_decrypt_anomaly" {
 output "crm_bucket_names" {
   description = "AA-932: the AA-Partner buckets (audit-c, audit-g, documents, ingest)."
   value       = { for k, b in aws_s3_bucket.crm : k => b.bucket }
+}
+
+# =============================================================================
+# AA-940 (CRM-12) — the audit export: the CRM task role writes and reads the hourly objects, and two alarms.
+#
+# Design v3 §4.9 ("hourly to both Object Lock buckets, with a chained SHA-256 manifest"); AA-Partner
+# api/app/audit_export (export.py writes audit/v1/tenants/<tenant>/<yyyy>/<mm>/<dd>/<hh>00Z-<seq>.jsonl to both tiers,
+# verify.py reads them back; the daily retention verifies before any partition drop).
+#
+# Grant: PutObject + GetObject under audit/v1/tenants/* in each audit bucket, nothing else: no List (a missing key
+# then answers 403, the app treats it as missing), no DeleteObject / DeleteObjectVersion, no PutObjectRetention /
+# PutObjectLegalHold / BypassGovernanceRetention, no bucket-level action. Every version the app writes is locked by the
+# bucket default retention (GOVERNANCE 365 days on audit-c on Dev, 7 years on audit-g). SSE-KMS under the ingest key
+# through S3 only and bound to the two audit buckets (the key policy's CrmRuntimeS3Objects allows the same for this
+# role; both must allow). A separate policy resource, so the AA-937 documents grant in crm_app.tf does not collide.
+#
+# Alarms (namespace AA/Jobs/Crm, published by the API's job metrics sampler every 5 minutes, no IAM change):
+#   audit-export-lag     AuditExportLagMinutes >= 180 (healthy is under ~75: the hour, the 15-minute lag, the hourly
+#                        schedule). Missing data = not breaching (worker off / scaled to 0; jobs-sampling-stopped
+#                        covers a dead sampler).
+#   audit-partitions     AuditPartitionMonthsAhead < 1: next month has no audit partition, so every request that
+#                        writes an audit event would fail from the 1st. The hourly export keeps three months ahead.
+#
+# Cost (us-west-1, est.): PUTs 24 x 2 per agency per day = ~1,440 per agency per month x $0.005 / 1,000 = ~$0.007 per
+# agency (3 synthetic agencies ~ $0.02); GETs of the daily verification about the same at $0.0004 / 1,000 ~ $0;
+# storage a few KB per object, ~$0 (S3 Standard $0.023/GB-month); KMS requests stay in the free tier (S3 Bucket Keys);
+# 2 alarms x $0.10 + 2 custom metrics x $0.30 = $0.80/month. Total ~ $0.85/month on Dev (100 agencies at prod:
+# ~$0.75 of PUTs more).
+# =============================================================================
+resource "aws_iam_role_policy" "crm_ecs_task_audit_export" {
+  name = "${local.crm_service}-audit-export"
+  role = aws_iam_role.crm_ecs_task.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "CrmAuditExportObjects"
+        Effect = "Allow"
+        Action = ["s3:PutObject", "s3:GetObject"]
+        Resource = [
+          "${aws_s3_bucket.crm["audit-c"].arn}/audit/v1/tenants/*",
+          "${aws_s3_bucket.crm["audit-g"].arn}/audit/v1/tenants/*",
+        ]
+      },
+      {
+        Sid      = "CrmAuditExportSseKms"
+        Effect   = "Allow"
+        Action   = ["kms:GenerateDataKey", "kms:Decrypt"]
+        Resource = aws_kms_key.crm_ingest.arn
+        Condition = {
+          "StringEquals" = { "kms:ViaService" = local.crm_s3_via_service }
+          "ArnLike" = {
+            "kms:EncryptionContext:aws:s3:arn" = [
+              aws_s3_bucket.crm["audit-c"].arn,
+              "${aws_s3_bucket.crm["audit-c"].arn}/*",
+              aws_s3_bucket.crm["audit-g"].arn,
+              "${aws_s3_bucket.crm["audit-g"].arn}/*",
+            ]
+          }
+        }
+      },
+    ]
+  })
+}
+
+resource "aws_cloudwatch_metric_alarm" "crm_audit_export_lag" {
+  alarm_name          = "${local.crm_name_prefix}-audit-export-lag"
+  alarm_description   = "AA-Partner: the hourly agency audit export is 3 hours or more behind (AA/Jobs/Crm AuditExportLagMinutes, design v3 §4.9). Check the crm_audit_export job rows (failed_count, error class) and the audit_export_failed log lines in /ecs/${local.crm_name_prefix}; a partition cannot be dropped while an agency is behind.${local.runbook_suffix.incident}"
+  namespace           = "AA/Jobs/Crm"
+  metric_name         = "AuditExportLagMinutes"
+  statistic           = "Maximum"
+  period              = 300
+  evaluation_periods  = 2
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  threshold           = 180
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
+
+  tags = merge(local.crm_tags, { Issue = "AA-940" })
+}
+
+resource "aws_cloudwatch_metric_alarm" "crm_audit_partitions" {
+  alarm_name          = "${local.crm_name_prefix}-audit-partitions"
+  alarm_description   = "AA-Partner: next month has no crm.audit_event partition (AA/Jobs/Crm AuditPartitionMonthsAhead < 1). From the 1st every audit write, and so the request that writes it, fails. Run SELECT crm.audit_ensure_partitions() as crm_app (ECS exec) or let the hourly crm_audit_export job run, then check the job rows.${local.runbook_suffix.incident}"
+  namespace           = "AA/Jobs/Crm"
+  metric_name         = "AuditPartitionMonthsAhead"
+  statistic           = "Minimum"
+  period              = 300
+  evaluation_periods  = 1
+  comparison_operator = "LessThanThreshold"
+  threshold           = 1
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
+
+  tags = merge(local.crm_tags, { Issue = "AA-940" })
 }
