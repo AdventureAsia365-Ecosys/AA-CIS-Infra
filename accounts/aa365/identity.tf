@@ -40,8 +40,8 @@
 #     live 17/10/2026); off = COGNITO_DEFAULT and no EMAIL_OTP. EXTERNAL native self sign-up stays
 #     refused until identity_external_native_signup_enabled = true, which a precondition on the
 #     EXTERNAL pool only accepts together with identity_waf_enabled and identity_ses_enabled (D-19)
-#   - optional REGIONAL WAF web ACL with per-IP rate rules on both pools, OFF by default
-#     (identity_waf_enabled; billable, needs a quote and Nghiep's go per S241 D-19)
+#   - optional REGIONAL WAF web ACL with per-IP rate rules on the pools, OFF by default
+#     (identity_waf_enabled; billable, needs a quote and Nghiep's go per S241 D-19; on since AA-908)
 #   - Secrets Manager container aa-identity/<env>/breakglass (no value; decision 11)
 #
 # SIGN-IN UNTIL SES IS ON: EMAIL_OTP needs the DEVELOPER (SES) email configuration, so with
@@ -909,17 +909,40 @@ resource "aws_cognito_managed_login_branding" "external" {
 }
 
 # =============================================================================
-# WAF on both pools (ADR 0006 decision 1): per-IP rate limits on sign-up / sign-in / code resend
-# (MAU + SES abuse) and a global per-IP cap. One shared web ACL (same rules for both pools).
+# WAF on the pools (ADR 0006 decision 1): per-IP rate limits on sign-up / sign-in / code resend
+# (MAU + SES abuse) and a global per-IP cap. One shared web ACL (same rules for the WORKFORCE, EXTERNAL
+# and PARTNER pools; the partner association is in identity_partner.tf). The M2M pool has no managed
+# login and no public sign-up, and is not associated.
 # OFF by default (S241 D-19: every new AWS spend is quoted and approved first). Cost when on, us-west-1
-# list prices: $5/web ACL + $1/rule x 2 + $0.60 per million requests = about $7/month for this one
-# shared ACL; the ADR's $12-15/month figure assumes two separate ACLs. Turn on before
-# identity_external_native_signup_enabled.
+# list prices: $5/web ACL + $1/rule x 3 + $0.60 per million requests = about $8/month for this one
+# shared ACL (AA-908 added the third rule; it was $7 with two); the ADR's $12-15/month figure assumes two
+# separate ACLs. Turn on before identity_external_native_signup_enabled. ON since AA-908 (S250, tfvars).
+#
+# AA-908: what the rate rules see. Two scoped rules share identity_waf_signup_rate_limit:
+#   - SignUpAndCodeRatePerIp: the public user-pool API (cognito-idp.<region>.amazonaws.com, header
+#     x-amz-target) for SignUp, InitiateAuth and ResendConfirmationCode;
+#   - ManagedLoginPostRatePerIp: every POST to managed login except /oauth2/* (sign-in /login, /login/continue, /verifyCode,
+#     /verifyPassword, sign-up /signup and /signup/confirm/resend-code, /forgotPassword, the email-MFA
+#     resend). Managed login v2 is a server-rendered app on the pool's domain: its forms post to those
+#     paths and never send x-amz-target, so an API-only scope would leave the browser sign-up path (the
+#     one travellers use, and the one that sends SES mail) under the global cap only.
+#   /oauth2/token (code exchange, refresh, client credentials) and /oauth2/revoke are left to the global
+#   cap: they are called server-side by the app BFFs from shared egress addresses (Vercel), need a code,
+#   a refresh token or a client secret, and send no mail.
+# CI sign-ins (AA-CIS-App e2e-cognito.yml / ui-smoke.yml smoke-staff, AA-Partner e2e-dev.yml) are browser
+# sign-ins through managed login on GitHub-hosted runners: about 3-4 scoped POSTs and fewer than 10
+# requests on the pool domain per sign-in (the page assets come from Cognito's CloudFront hosts, which
+# the web ACL never sees; checked 24/10/2026 on auth.lumiguides.it.com), 1-2 sign-ins per run, one run at
+# a time per concurrency group, each job on its own runner address. That is under 10 % of either limit,
+# so there is no CI allow-list: GitHub-hosted runners have no fixed addresses to list, and a shared-secret
+# bypass header would be one more secret that skips the abuse limits. If a limit ever bites, the alarm
+# identity_waf_blocked below mails the alert topic and the fix is one tfvars line
+# (identity_waf_signup_rate_limit / identity_waf_global_rate_limit).
 # =============================================================================
 resource "aws_wafv2_web_acl" "identity" {
   count       = var.identity_waf_enabled ? 1 : 0
   name        = "${local.id_prefix}-pools"
-  description = "Rate limits for the WORKFORCE and EXTERNAL Cognito pools (AA-703)"
+  description = "Rate limits for the WORKFORCE, EXTERNAL and PARTNER Cognito pools (AA-703, AA-908)"
   scope       = "REGIONAL"
 
   default_action {
@@ -971,9 +994,68 @@ resource "aws_wafv2_web_acl" "identity" {
     }
   }
 
+  # AA-908: managed login form posts (sign-in, sign-up, code verify and resend), see the header. A rule of
+  # its own because the provider does not accept a NOT inside an AND inside the OR scope-down above.
+  rule {
+    name     = "ManagedLoginPostRatePerIp"
+    priority = 1
+
+    action {
+      block {}
+    }
+
+    statement {
+      rate_based_statement {
+        limit              = var.identity_waf_signup_rate_limit
+        aggregate_key_type = "IP"
+
+        scope_down_statement {
+          and_statement {
+            statement {
+              byte_match_statement {
+                search_string         = "POST"
+                positional_constraint = "EXACTLY"
+                field_to_match {
+                  method {}
+                }
+                text_transformation {
+                  priority = 0
+                  type     = "NONE"
+                }
+              }
+            }
+            statement {
+              not_statement {
+                statement {
+                  byte_match_statement {
+                    search_string         = "/oauth2/"
+                    positional_constraint = "STARTS_WITH"
+                    field_to_match {
+                      uri_path {}
+                    }
+                    text_transformation {
+                      priority = 0
+                      type     = "LOWERCASE"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${local.id_prefix}-managed-login-post-rate"
+      sampled_requests_enabled   = true
+    }
+  }
+
   rule {
     name     = "GlobalRatePerIp"
-    priority = 1
+    priority = 2
 
     action {
       block {}
@@ -1006,6 +1088,26 @@ resource "aws_wafv2_web_acl_association" "identity" {
   for_each     = var.identity_waf_enabled ? local.id_pool_arns : {}
   resource_arn = each.value
   web_acl_arn  = aws_wafv2_web_acl.identity[0].arn
+}
+
+# AA-908: any block by either rate rule (all three pools share the ACL) mails the alert topic, so a
+# throttled CI sign-in or a real attack is seen at once. Raise the limit in tfvars if it is legitimate.
+resource "aws_cloudwatch_metric_alarm" "identity_waf_blocked" {
+  count               = var.identity_waf_enabled ? 1 : 0
+  alarm_name          = "${local.id_prefix}-waf-blocked"
+  alarm_description   = "The Cognito web ACL ${local.id_prefix}-pools blocked requests (per-IP rate rules: sign-up/sign-in/code abuse, or a legitimate burst such as CI sign-ins). AA-908.${local.runbook_suffix.cognito_login}"
+  namespace           = "AWS/WAFV2"
+  metric_name         = "BlockedRequests"
+  dimensions          = { WebACL = aws_wafv2_web_acl.identity[0].name, Region = var.aws_region, Rule = "ALL" }
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
+  tags                = local.id_tags
 }
 
 # =============================================================================
