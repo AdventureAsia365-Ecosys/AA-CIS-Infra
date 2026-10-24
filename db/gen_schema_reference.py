@@ -86,6 +86,10 @@ PII_ALLOWLIST = {
     "booking.trip_case_version_itinerary.title": "itinerary item title (tour, hotel or service name)",
     "booking.job.payload": "job payloads carry ids only (DM-6.3; the intake enqueues {inbox_event_id}, staff_email "
                            "the notification id)",
+    "booking.v_supply_hotels.name": "a hotel (business) name (bk-023 contract view of hotels.name)",
+    "booking.v_supply_hotels.address": "a hotel (business) address (bk-023 contract view of hotels.address)",
+    "booking.v_supply_services.working_title": "internal working title of a supplier service (bk-023 contract view "
+                                               "of services.title), no customer data",
     "tripplanner.narration_cache.itinerary_hash": "hash of a catalog itinerary (cache key), no identity",
 }
 
