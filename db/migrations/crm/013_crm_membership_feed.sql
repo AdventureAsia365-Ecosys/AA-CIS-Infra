@@ -27,9 +27,10 @@
 --   2. crm.membership_feed_state: platform singleton (no tenant column, no personal data): the feed cursor (opaque,
 --      from CIS), the last successful pull, the last error class and its time, and the consecutive failure count the
 --      job backs off on. One row, inserted here; crm_app reads and updates it, never inserts or deletes.
---   3. crm.membership_inbox: one row per CIS event received (event_id = the CIS event id, PRIMARY KEY: an event is
---      applied at most once, a replayed page is a no-op), the agency (tenant_id = the CIS tenant id, which is the CRM
---      agency id; no foreign key: CIS also reports tenants that have no CRM agency, recorded as ignored), the event
+--   3. crm.membership_inbox: one row per CIS event received for an agency the CRM holds, active or locked (event_id =
+--      the CIS event id, PRIMARY KEY: an event is applied at most once, a replayed page is a no-op), the agency
+--      (tenant_id = the CIS tenant id, which is the CRM agency id; no foreign key: the consumer writes no row for a CIS
+--      tenant without a CRM agency or for an offboarding agency, so no row outlives its agency's erase), the event
 --      type (NULL only for a rejected event whose type is not one of the contract's eight), the outcome (applied |
 --      ignored | rejected) and a reason code. Ids and codes only: no identity, no role, no payload. Append-only tenant
 --      table (the crm-003 template: tenant_id / created_at (= received) / created_by, ENABLE + FORCE RLS, one
@@ -193,8 +194,8 @@ CREATE OR REPLACE TRIGGER membership_inbox_no_truncate
     BEFORE TRUNCATE ON crm.membership_inbox
     FOR EACH STATEMENT EXECUTE FUNCTION crm.membership_inbox_append_only();
 REVOKE UPDATE, DELETE, TRUNCATE ON crm.membership_inbox FROM crm_app;
-COMMENT ON TABLE crm.membership_inbox IS 'AA-978 (crm-013): one row per tenant.membership.v1 event the CRM received (event_id = the CIS event id: applied at most once, a replayed page is a no-op), with the agency (= the CIS tenant id; no foreign key, CIS also reports tenants without a CRM agency), the type (NULL only when a rejected event names none of the eight), the outcome applied | ignored | rejected and a reason code. Ids and codes only. created_at = received. Append-only; erased with the agency (crm.erase_subject tenant scope); 90-day window proposed (DM-7).';
-COMMENT ON COLUMN crm.membership_inbox.reason_code IS 'AA-978: why the event had its outcome (app.cis.membership_feed REASONS: member_disabled, agency_locked, agency_unlocked, no_crm_member, unknown_agency, informational, contract_violation, ...)';
+COMMENT ON TABLE crm.membership_inbox IS 'AA-978 (crm-013): one row per tenant.membership.v1 event the CRM received for an agency it holds, active or locked (event_id = the CIS event id: applied at most once, a replayed page is a no-op), with the agency (= the CIS tenant id; no foreign key; events of CIS tenants without a CRM agency and of offboarding agencies get no row), the type (NULL only when a rejected event names none of the eight), the outcome applied | ignored | rejected and a reason code. Ids and codes only. created_at = received. Append-only; erased with the agency (crm.erase_subject tenant scope); 90-day window proposed (DM-7).';
+COMMENT ON COLUMN crm.membership_inbox.reason_code IS 'AA-978: why the event had its outcome (app.cis.membership_feed REASONS, e.g. member_disabled, agency_locked, agency_unlocked, no_crm_member, informational, apply_refused, or a contract reason of app.cis.contract such as crm_role_present)';
 
 -- ── 4. crm.erase_subject with the inbox ──────────────────────────────────────────────────────────
 -- The crm-012 text with one change: the agency erase deletes the agency's membership_inbox rows (file header item 4).
