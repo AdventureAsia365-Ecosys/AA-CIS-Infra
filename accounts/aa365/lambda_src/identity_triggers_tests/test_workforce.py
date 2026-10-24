@@ -245,10 +245,38 @@ def test_booking_e2e_address_may_be_admin_created(email, capsys):
     "booking@e2e-mail.lumiguides.it.com",
     "e2e-booking-admin@e2e-mail.lumiguides.it.com",
     "e2e-test-crm-atlas-owner@e2e-mail.lumiguides.it.com",  # CRM e2e users are EXTERNAL/partner-pool only
+    # Non-ASCII look-alikes. U+212A KELVIN SIGN lower-cases to ASCII 'k' (the fold that would alias the entry);
+    # zero-width space and fullwidth 'k' do not fold but must not match either.
+    "e2e-boo\u212aing@e2e-mail.lumiguides.it.com",
+    "E2E-BOO\u212aING@E2E-MAIL.LUMIGUIDES.IT.COM",
+    "e2e-boo\u200bking@e2e-mail.lumiguides.it.com",
+    "e2e-boo\uff4bing@e2e-mail.lumiguides.it.com",
 ])
-def test_other_addresses_near_the_booking_e2e_one_are_still_denied(email):
+def test_other_addresses_near_the_booking_e2e_one_are_still_denied(email, capsys):
     denied(workforce.pre_sign_up, admin_create(email))
     denied(workforce.pre_token_generation, token_event({"email": email, "email_verified": "true"}, ["booking-admin"]))
+    events = {json.loads(line)["event"] for line in capsys.readouterr().out.splitlines()}
+    assert "workforce_e2e_test_create_allowed" not in events
+    assert "workforce_e2e_test_token_issued" not in events
+
+
+def test_kelvin_sign_really_folds_to_the_booking_address():
+    # Keeps the look-alike case above honest: without the ASCII-only lookup this address would match the map.
+    kelvin = "e2e-boo\u212aing@e2e-mail.lumiguides.it.com"
+    assert kelvin.lower() == BOOKING_E2E  # the fold happens, so the ASCII check must see the raw value
+    assert workforce._e2e_groups(kelvin, kelvin.lower()) is None
+    assert workforce._e2e_groups(None, BOOKING_E2E) is None
+    assert workforce._e2e_groups(BOOKING_E2E, BOOKING_E2E) == ("booking-admin",)
+
+
+def test_booking_e2e_denied_when_staff_groups_override_drops_booking_admin(monkeypatch, capsys):
+    # A STAFF_GROUPS override without booking-admin strips the only group, so the token is refused (never issued
+    # with an empty or different group set).
+    monkeypatch.setenv("STAFF_GROUPS", "cis-admin,cis-reviewer,booking-sales")
+    denied(workforce.pre_token_generation, token_event(BOOKING_E2E_ATTRS, ["booking-admin"]))
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert any(line["event"] == "workforce_pre_token_denied" for line in lines)
+    assert not any(line["event"] == "workforce_e2e_test_token_issued" for line in lines)
 
 
 def test_booking_e2e_self_sign_up_is_still_denied():

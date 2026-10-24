@@ -6,9 +6,9 @@
 # D2 option a) forwards to e2e@e2e-mail.lumiguides.it.com. This file makes that address real:
 #
 #   MX e2e-mail.lumiguides.it.com -> inbound-smtp.us-west-1.amazonaws.com
-#     -> active receipt rule set aa-cis-dev-e2e, rule e2e-cognito (only that recipient)
+#     -> active receipt rule set aa-cis-dev-e2e, rule e2e-cognito (only the listed recipients)
 #     -> S3 aa-cis-dev-e2e-mail-<account>/inbound/<message id>   (objects expire after 1 day)
-#     <- read-only role aa-cis-dev-e2e-mail-reader, assumed by AA-CIS-App GitHub Actions
+#     <- read-only role aa-cis-dev-e2e-mail-reader, assumed by AA-CIS-App and AA-Partner GitHub Actions
 #        (environment `e2e`, ref main) to pull the code out of the newest message.
 #
 # Facts checked 19/10/2026 (read-only):
@@ -26,7 +26,7 @@
 # Security:
 #   - The rule accepts mail for a fixed list of recipients only: the CIS staff E2E address, since AA-910
 #     (S250) the Booking staff E2E address e2e-booking@ (WORKFORCE user in booking-admin only; the trigger
-#     allow-map lambda_src/identity_triggers/workforce.py E2E_TEST_STAFF, root ADR 0006a A10) and, since
+#     allow-map lambda_src/identity_triggers/workforce.py E2E_TEST_STAFF, root ADR 0006a A10, A10a) and, since
 #     AA-935, the e2e test users of the synthetic AA-Partner agencies (tools/identity/crm_e2e_users.json,
 #     e2e-test-crm-<agency>-<role>@; EXTERNAL-pool users, email-code sign-in to the CRM web on Dev).
 #     Anything else to the sub-domain is bounced by SES (no matching rule). Their codes land under the
@@ -38,7 +38,9 @@
 #     1-day expiry, BPA, SSE-S3, TLS-only access, object reads denied to every principal except the reader role and the MFA
 #     admin role. SES may only PutObject from this account's rule (aws:SourceAccount + SourceArn).
 #   - The reader role cannot write or delete (read-only by design, S243); the 1-day lifecycle
-#     cleans up. Its trust is the immutable AA-CIS-App subject + `environment:e2e` + ref main.
+#     cleans up. Its trust is the immutable AA-CIS-App and AA-Partner (AA-936) subjects + `environment:e2e` + ref main.
+#   - Exposure (AA-910, root ADR 0006a A10a): a booking-admin code gives full Booking write admin on the production
+#     client; AA-Booking refuses that user's writes (403 e2e_read_only), so a leaked code yields admin reads only.
 #
 # CI: the apply role needs ses:*ReceiptRule* (cicd_split.tf, Sid SESReceiptRuleManage). That is a
 # bootstrap grant: local MFA targeted apply of aws_iam_role_policy.tf_apply first, then Terraform
