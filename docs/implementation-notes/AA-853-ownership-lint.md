@@ -25,11 +25,33 @@ schemas (driven by owners.yaml)". Part 1, the nightly drift diff against a repla
 - **Every file, no "from" number**: every copy on `main` (116 files) already passes, so there is no grandfather
   threshold to maintain.
 
+- **Review round (S250)**: an independent review found the search_path hole and statements the first version let
+  through; all are fixed in a second commit:
+  - *search_path*: PostgreSQL puts a CREATE in the first schema of the path but resolves any other name to the first
+    schema of the path that holds it. A non-CREATE unqualified name is now a finding when the active path names a
+    schema outside the owner's, unless the file created that name earlier (tracked per name). `RESET search_path`
+    / `RESET ALL` / `SET search_path TO DEFAULT` clear the path. Quoted values (`SET search_path = 'booking'`,
+    `'booking, catalog'`) are read from the statement text (top-level literals are blanked in the code view).
+  - *new touches*: top-level `SELECT … INTO <table>` (a DO-body `SELECT … INTO` is a PL/pgSQL variable and is
+    skipped), `ATTACH`/`DETACH PARTITION`, `CREATE EXTENSION … SCHEMA s`.
+  - *no-boundary statements*: global `ALTER DEFAULT PRIVILEGES` (no `IN SCHEMA`) and `REASSIGN OWNED BY` pass only
+    when every role named is the dir's own owner role (`OWNER_ROLES`, a mirror of owners.yaml `owner_role` +
+    `view_owner_roles`, tested against `isolation_probe.OWNERS`); a missing `FOR ROLE` fails (it would be the
+    running role, the master on a legacy file). `DROP OWNED BY` always fails: it also revokes what other owners
+    granted to the role. crm-001's `ALTER DEFAULT PRIVILEGES FOR ROLE crm_owner REVOKE EXECUTE ON FUNCTIONS FROM
+    PUBLIC` is the one current copy of this shape and passes.
+  - *false positives fixed*: `CREATE SCHEMA AUTHORIZATION r` (schema named r), `ALTER TABLE / MATERIALIZED VIEW ALL
+    IN TABLESPACE`.
+  - `CREATE EXTENSION` without `SCHEMA` is not a finding: CIS 226 / 234 install `vector` / `pg_stat_statements` that
+    way (into the default schema); extensions move to `roles/` by convention, not by this lint.
+
 ## Changed
 
 - `db/check_migration_ownership.py` (new), `db/check_migration_files.py` (calls it, errors only).
 - `db/tests/test_check_migration_ownership.py` (new): clean cases, one failing case per kind of touch, every copy in
-  the repo passes, and the wiring through `check_migration_files.run`.
+  the repo passes, the wiring through `check_migration_files.run`; review round: the search_path cases (a path
+  naming another owner's schema, a name the file created, quoted values, RESET / DEFAULT), the new statements, and
+  `OWNER_ROLES` against `isolation_probe.OWNERS`.
 - `db/tests/test_run_migration.py`: `test_clean_repo_passes_and_lint_errors_fail` placed the CIS-shaped `NO_TX`
   fixture (it touches `shared.*`) under `tripplanner/`; moved to `cis/241_b.sql`. The new lint rightly failed it.
 - `.github/workflows/migration-copy-guard.yml`: header comment + `db/check_migration_ownership.py` in the PR paths
@@ -43,6 +65,11 @@ schemas (driven by owners.yaml)". Part 1, the nightly drift diff against a repla
   nightly drift report are the backstops; the lint is the cheap PR-time gate.
 
 ## Should know
+
+- **Scope of the enforcement**: a static lint at copy time. It does not read function bodies or dynamic SQL, so
+  MIG-6 is "linted at copy time", not proven; the X1 owner-role switch of DB Migrate (a file runs as the owner role,
+  which holds no rights on other owners' objects) is the runtime boundary, and the drift report the after-the-fact
+  check.
 
 - Run over the owners' full histories (local check, not in CI) it finds exactly the known cross-owner files:
   TripPlanner `002_shared_destinations.sql` + `005_destinations_located_by.sql` (`shared.destinations`), CIS

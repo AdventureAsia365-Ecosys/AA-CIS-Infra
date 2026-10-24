@@ -580,7 +580,8 @@ makes CI Terraform Plan fail with 403.
   repo's `main` on every PR and nightly, so the owner's migration-only PR merges first; a second
   job lints every copy and checks numbers are unique per owner; its ownership lint (AA-853,
   `db/check_migration_ownership.py`) fails an owner-dir copy that creates, alters, grants on or writes to an object
-  outside its owner's schemas (`db/owners.yaml`). The runner applies safe session
+  outside its owner's schemas (`db/owners.yaml`); it is static (function bodies and dynamic SQL unread), the X1
+  owner-role switch stays the runtime boundary. The runner applies safe session
   defaults and `-- migrate:` header directives (no-transaction, destructive → RDS snapshot first;
   the snapshot carries `aa:retain-until` = +30 d and is expired by `rds_snapshot_expiry.tf`, AA-869),
   and `apply` refuses (exit 7) while any owner job table is busy or a rerun wave is open (AA-751,

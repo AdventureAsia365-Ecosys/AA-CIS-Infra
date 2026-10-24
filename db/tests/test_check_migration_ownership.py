@@ -76,6 +76,39 @@ class OwnSchemaIsClean(unittest.TestCase):
         """)
         self.assertEqual(errors(sql), [])
 
+    def test_search_path_names_the_file_created_earlier_resolve_to_it(self):
+        sql = wrap("""
+            SET search_path = booking, catalog;
+            CREATE TABLE products (id int);
+            INSERT INTO products VALUES (1);
+            ALTER TABLE products ADD COLUMN x int;
+        """)
+        self.assertEqual(errors(sql), [])
+
+    def test_quoted_search_path(self):
+        self.assertEqual(errors(wrap("SET search_path = 'booking';\nCREATE TABLE thing (id int);")), [])
+        self.assertEqual(errors(wrap("SET LOCAL search_path TO \"booking\";\nCREATE TABLE thing (id int);")), [])
+
+    def test_own_statements_review_round(self):
+        sql = wrap("""
+            CREATE SCHEMA AUTHORIZATION booking;
+            ALTER TABLE ALL IN TABLESPACE pg_default SET TABLESPACE pg_default;
+            SELECT 1 AS a INTO booking.snapshot;
+            SELECT 1 AS a INTO TEMP snap2;
+            INSERT INTO snap2 SELECT 2;
+            ALTER TABLE booking.parent ATTACH PARTITION booking.p2026 FOR VALUES FROM (1) TO (2);
+            CREATE EXTENSION IF NOT EXISTS citext SCHEMA booking;
+            ALTER DEFAULT PRIVILEGES FOR ROLE bk_owner REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
+            REASSIGN OWNED BY bk_owner TO bk_owner;
+            DO $$ DECLARE n int; BEGIN SELECT count(*) INTO n FROM catalog.v_tour; END $$;
+        """)
+        self.assertEqual(errors(sql), [])
+
+    def test_owner_roles_mirror_the_registry(self):
+        import isolation_probe as probe
+        self.assertEqual(own.OWNER_ROLES, {k: frozenset({o.owner_role}) | o.view_owner_roles
+                                           for k, o in probe.OWNERS.items()})
+
     def test_roles_dir_is_not_checked(self):
         self.assertEqual(errors("GRANT USAGE ON SCHEMA shared TO bk_owner;", "db/migrations/roles/009_x.sql"), [])
 
@@ -114,6 +147,19 @@ class OtherOwnersFail(unittest.TestCase):
         "DO $$ BEGIN IF NOT EXISTS (SELECT 1) THEN ALTER TABLE shared.job ADD COLUMN y int; END IF; END $$;":
             "ALTER TABLE shared.job",
         'CREATE TABLE "shared"."Quoted" (id int);': "CREATE TABLE shared.quoted",
+        # review round (S250): statements the first version let through
+        "SELECT 1 AS a INTO catalog.newt;": "SELECT INTO catalog.newt",
+        "WITH s AS (SELECT 1 AS a) SELECT a INTO UNLOGGED TABLE shared.s2 FROM s;": "SELECT INTO shared.s2",
+        "ALTER TABLE booking.t ATTACH PARTITION catalog.p FOR VALUES IN (1);": "ATTACH PARTITION catalog.p",
+        "ALTER TABLE booking.t DETACH PARTITION shared.p CONCURRENTLY;": "DETACH PARTITION shared.p",
+        "CREATE EXTENSION IF NOT EXISTS citext SCHEMA catalog;": "CREATE EXTENSION catalog.citext",
+        "ALTER DEFAULT PRIVILEGES FOR ROLE catalog_owner GRANT SELECT ON TABLES TO booking;":
+            "ALTER DEFAULT PRIVILEGES without IN SCHEMA (role catalog_owner)",
+        "ALTER DEFAULT PRIVILEGES GRANT SELECT ON TABLES TO booking;":
+            "ALTER DEFAULT PRIVILEGES without IN SCHEMA (the role running the file)",
+        "REASSIGN OWNED BY catalog_owner TO bk_owner;": "REASSIGN OWNED BY (role catalog_owner)",
+        "DROP OWNED BY bk_owner;": "DROP OWNED BY (role bk_owner)",
+        "CREATE SCHEMA AUTHORIZATION crm;": "CREATE SCHEMA crm",
     }
 
     def test_each_touch_of_another_schema_fails(self):
@@ -128,6 +174,25 @@ class OtherOwnersFail(unittest.TestCase):
         errs = errors(wrap("CREATE TABLE loose (id int);"))
         self.assertEqual(len(errs), 1)
         self.assertIn("unqualified", errs[0])
+
+    def test_search_path_with_another_owners_schema(self):
+        # PostgreSQL resolves a non-CREATE name to the first schema of the path that holds it: catalog.products here.
+        for stmt in ("INSERT INTO products VALUES (1);", "ALTER TABLE products ADD COLUMN x int;",
+                     "DROP TABLE products;", "GRANT SELECT ON products TO booking;",
+                     "CREATE INDEX p_idx ON products (id);"):
+            with self.subTest(stmt=stmt):
+                errs = errors(wrap("SET search_path = booking, catalog;\n" + stmt))
+                self.assertEqual(len(errs), 1, errs)
+                self.assertIn("may be catalog", errs[0])
+        errs = errors(wrap("SET search_path = 'booking, catalog';\nUPDATE products SET id = 2;"))
+        self.assertIn("may be catalog", errs[0])
+
+    def test_reset_search_path_clears_it(self):
+        for reset in ("RESET search_path;", "SET search_path TO DEFAULT;", "SET LOCAL search_path = DEFAULT;"):
+            with self.subTest(reset=reset):
+                errs = errors(wrap(f"SET search_path = booking;\n{reset}\nCREATE TABLE loose (id int);"))
+                self.assertEqual(len(errs), 1, errs)
+                self.assertIn("unqualified", errs[0])
 
     def test_owner_named_in_message(self):
         errs = errors(wrap("CREATE TABLE crm.x (id int);"))

@@ -12,18 +12,28 @@ and procedure bodies run later, as their caller, and are not read):
     text search object, operator, foreign table; ALTER … SET SCHEMA (the new schema too); CREATE TABLE … AS.
   * COMMENT ON the same kinds (a column: its table; a constraint / trigger / policy / rule: its table).
   * GRANT / REVOKE … ON <object | SCHEMA s | ALL … IN SCHEMA s>, and ALTER DEFAULT PRIVILEGES … IN SCHEMA s.
-  * Writes: INSERT INTO, UPDATE, DELETE FROM, MERGE INTO, TRUNCATE, COPY … FROM, REFRESH MATERIALIZED VIEW.
+  * Writes: INSERT INTO, UPDATE, DELETE FROM, MERGE INTO, TRUNCATE, COPY … FROM, REFRESH MATERIALIZED VIEW,
+    top-level SELECT … INTO <table> (it creates the table), ALTER TABLE … ATTACH / DETACH PARTITION <table>.
+  * CREATE EXTENSION … SCHEMA s (without SCHEMA the extension lands in the default schema, as CIS 226 / 234 do;
+    extensions belong in roles/ from now on, but that is not this lint's rule).
+  * Statements with no schema boundary, reaching whatever the named roles own or were granted in every schema:
+    ALTER DEFAULT PRIVILEGES without IN SCHEMA and REASSIGN OWNED BY pass only when every role they name is the
+    dir's own owner role (OWNER_ROLES, mirrors owners.yaml owner_role + view_owner_roles); DROP OWNED BY (it also
+    revokes what other owners granted to the role) always fails. They belong in roles/.
 Reading another owner's objects (a view over catalog.*, a foreign key REFERENCES, a function call) is not a
 finding: cross-owner reads go through grants, which the isolation probe checks.
 
 Allowed outside the owner's schemas: the version registration every file ends with (INSERT INTO
 shared.schema_versions, the registry DB Migrate reads), and temporary objects (pg_temp, CREATE TEMP …).
 
-Unqualified names resolve through the file's own `SET [LOCAL] search_path` when it sets one; without it they
-resolve through the session's default search_path, which is the master's public schema on Dev: such a
-CREATE is a finding too, so new files qualify every name (MIG-2). Dynamic SQL (EXECUTE '…' in a DO block)
-is out of reach and is reported as a warning; the drift report of DB Schema Dump (db/schema_drift.py) is the
-backstop for anything this lint cannot see.
+Unqualified names resolve through the file's own `SET [LOCAL] search_path` (`RESET search_path` and
+`… TO DEFAULT` clear it); without one they resolve through the session's default search_path, which is the
+master's public schema on Dev, so such a name is a finding too and new files qualify every name (MIG-2). As in
+PostgreSQL, a CREATE lands in the first schema of the path, but any other statement finds the first schema of
+the path that holds the object: an unqualified non-CREATE name is therefore a finding as soon as the path names
+a schema outside the owner's, unless the file itself created that name earlier (then it is that object). Dynamic
+SQL (EXECUTE '…' in a DO block) is out of reach and is reported as a warning; the drift report of DB Schema Dump
+(db/schema_drift.py) is the backstop for anything this lint cannot see.
 
 Standard library only; imported by check_migration_files.py (Migration Copy Guard, "Migration lint and unique
 numbers" job), so a PR that copies such a file fails before DB Migrate ever sees it.
@@ -42,6 +52,10 @@ import run_migration  # noqa: E402  (split_statements, _role_view, OWNER_DIRS, m
 # Writes every owner dir makes outside its schemas on purpose: the self-registration of each file.
 REGISTRY_WRITES = frozenset({("shared", "schema_versions")})
 TEMP_SCHEMAS = ("pg_temp",)
+# owners.yaml owner_role + view_owner_roles per dir (isolation_probe.OWNERS; the unit test keeps them equal): the
+# roles whose global default privileges / REASSIGN OWNED stay inside the dir's schemas.
+OWNER_ROLES = {"cis": frozenset({"cis_owner", "catalog_owner"}), "booking": frozenset({"bk_owner"}),
+               "tripplanner": frozenset({"tp_owner"}), "crm": frozenset({"crm_owner"})}
 
 _IDENT = r'(?:"(?:[^"]|"")+"|[A-Z_][A-Z0-9_$]*)'
 QNAME = rf"{_IDENT}(?:\s*\.\s*{_IDENT}){{0,2}}"
@@ -58,7 +72,9 @@ _CREATE_RE = re.compile(
     rf"|PROCEDURAL)\s+)*)(?P<kind>MATERIALIZED\s+VIEW|FOREIGN\s+TABLE|TEXT\s+SEARCH\s+\w+|OPERATOR\s+(?:CLASS|FAMILY)"
     rf"|TABLE|VIEW|SEQUENCE|FUNCTION|PROCEDURE|AGGREGATE|TYPE|DOMAIN|STATISTICS|COLLATION|CONVERSION|OPERATOR)"
     rf"\s+{_IFX}(?P<name>{QNAME})")
-_CREATE_SCHEMA_RE = re.compile(rf"{_LEAD}CREATE\s+SCHEMA\s+{_IFX}(?P<name>{_IDENT})?(?:\s+AUTHORIZATION\b)?")
+# CREATE SCHEMA [IF NOT EXISTS] name [AUTHORIZATION r] | CREATE SCHEMA AUTHORIZATION r (the schema is named r)
+_CREATE_SCHEMA_RE = re.compile(rf"{_LEAD}CREATE\s+SCHEMA\s+{_IFX}(?:AUTHORIZATION\s+(?P<role>{_IDENT})"
+                               rf"|(?P<name>{_IDENT}))")
 _CREATE_INDEX_RE = re.compile(
     rf"{_LEAD}CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:CONCURRENTLY\s+)?(?:{_IFX}{_IDENT}\s+)?ON\s+(?:ONLY\s+)?"
     rf"(?P<name>{QNAME})")
@@ -91,6 +107,20 @@ _WRITE_RES = (
 )
 _SEARCH_PATH_RE = re.compile(r"(?:^|\b(?:BEGIN|THEN|ELSE)\s+)SET\s+(?:LOCAL\s+|SESSION\s+)?SEARCH_PATH\s*(?:TO|=)\s*"
                              r"(?P<value>.+)$")
+_RESET_PATH_RE = re.compile(r"(?:^|\b(?:BEGIN|THEN|ELSE)\s+)RESET\s+(?:SEARCH_PATH|ALL)$")
+# Top-level SELECT … INTO <table> (in a DO body SELECT … INTO is a PL/pgSQL variable, so DO views skip it).
+_SELECT_INTO_RE = re.compile(rf"^(?:WITH\b.*?)?\bSELECT\b.*?(?<!INSERT )\bINTO\s+(?P<mods>(?:(?:GLOBAL|LOCAL|TEMP"
+                             rf"|TEMPORARY|UNLOGGED)\s+)*)(?:TABLE\s+)?(?P<name>{QNAME})")
+_PARTITION_RE = re.compile(rf"\b(?P<verb>ATTACH|DETACH)\s+PARTITION\s+(?P<name>{QNAME})")
+_EXTENSION_RE = re.compile(rf"{_LEAD}CREATE\s+EXTENSION\s+{_IFX}(?P<ext>{_IDENT})(?P<rest>.*)$")
+_EXT_SCHEMA_RE = re.compile(rf"\bSCHEMA\s+(?P<name>{_IDENT})")
+_GLOBAL_DEFAULT_PRIVS_RE = re.compile(rf"{_LEAD}ALTER\s+DEFAULT\s+PRIVILEGES\b(?!.*\bIN\s+SCHEMA\b)"
+                                      rf"(?:\s+FOR\s+(?:ROLE|USER)\s+(?P<roles>.+?))?\s+(?:GRANT|REVOKE)\b")
+_OWNED_BY_RE = re.compile(rf"{_LEAD}(?P<verb>REASSIGN|DROP)\s+OWNED\s+BY\s+(?P<roles>.+?)"
+                          rf"(?:\s+(?:TO|CASCADE|RESTRICT)\b.*)?$")
+# Marks a touch whose reach is every schema (no schema boundary): allowed only for the dir's own owner role.
+EVERY_SCHEMA = "*"
+_PATH_SKIP = ("$user", "pg_catalog", "pg_temp", "")
 _SET_CONFIG_PATH_RE = re.compile(r"\bSET_CONFIG\s*\(\s*'#(?P<key>[0-9]+)'\s*,\s*'#(?P<value>[0-9]+)'")
 _DYNAMIC_RE = re.compile(r"\bEXECUTE\b(?!\s+(?:ON|FUNCTION|PROCEDURE)\b)")
 # GRANT … ON <kind> where the object is no schema object (database, language, role parameter, …): ignored.
@@ -105,8 +135,9 @@ _GRANT_KIND_RE = re.compile(r"^(?:TABLE|SEQUENCE|FUNCTION|PROCEDURE|ROUTINE|TYPE
 class Touch:
     line: int          # line of the top-level statement
     action: str        # e.g. "CREATE TABLE", "GRANT ON", "INSERT INTO"
-    schema: str        # '' when the name is unqualified and the file sets no search_path
+    schema: str        # '' when the name is unqualified and the file sets no search_path; EVERY_SCHEMA: no boundary
     name: str          # object (or schema) name as written, lower case
+    candidates: tuple = ()   # unqualified non-CREATE name: every schema of the active search_path it may resolve to
 
 
 def _ident(raw: str) -> str:
@@ -143,28 +174,43 @@ def _strip_args(qname: str) -> str:
 
 def _code_views(stmt) -> list:
     """The code views of one top-level statement: itself, or for a DO block the statements of its body (lexed as
-    code, string literals as '#<n>'). Returns [(code, strings)]."""
+    code, string literals as '#<n>'). Returns [(code, strings, top_level)]."""
     if not re.match(r"^DO\b", stmt.code):
-        return [(stmt.code, [])]
-    strings: list = []
+        if _SEARCH_PATH_RE.search(stmt.code) and "'" in stmt.code:
+            # A top-level literal is blanked in stmt.code (SET search_path = 'booking'): read it from the text.
+            strings: list = []
+            return [(run_migration._role_view(stmt.text, strings).strip().rstrip(";").strip(), strings, True)]
+        return [(stmt.code, [], True)]
+    strings = []
     view = run_migration._role_view(stmt.text, strings)
     view = re.sub(r"^DO\s+(?:LANGUAGE\s+\S+\s+)?", "", view)
-    return [(part.strip(), strings) for part in view.split(";") if part.strip()]
+    return [(part.strip(), strings, False) for part in view.split(";") if part.strip()]
+
+
+def _path_names(value: str, strings: list) -> list:
+    """Schema names of a search_path value: bare or quoted identifiers and '#<n>' literals ('a, b' or 'a')."""
+    names: list = []
+    for item in _split_top(value):
+        lit = re.fullmatch(r"'#([0-9]+)'", item.strip())
+        if lit:
+            names += [n.strip().strip('"').lower() for n in strings[int(lit.group(1))].split(",")]
+        else:
+            names += [_ident(p) for p in re.findall(_IDENT, item)]
+    return [n for n in names if n not in _PATH_SKIP]
 
 
 def _search_path(code: str, strings: list) -> list | None:
+    """The search_path a statement sets ([] once it is reset to the default), or None when it sets none."""
+    if _RESET_PATH_RE.search(code):
+        return []
     m = _SEARCH_PATH_RE.search(code)
     if m:
-        value = m.group("value")
-        names = [_ident(p) for p in re.findall(_IDENT, value)] if "'#" not in value else []
-        if "'#" in value:
-            names = [n.strip().strip('"').lower() for k in re.findall(r"'#([0-9]+)'", value)
-                     for n in strings[int(k)].split(",")]
-        return [n for n in names if n and n not in ("$user", "pg_catalog", "pg_temp")]
+        value = m.group("value").strip()
+        return [] if value == "DEFAULT" else _path_names(value, strings)
     m = _SET_CONFIG_PATH_RE.search(code)
     if m and strings and strings[int(m.group("key"))].strip().lower() == "search_path":
         return [n.strip().strip('"').lower() for n in strings[int(m.group("value"))].split(",")
-                if n.strip().strip('"').lower() not in ("$user", "pg_catalog", "pg_temp", "")]
+                if n.strip().strip('"').lower() not in _PATH_SKIP]
     return None
 
 
@@ -175,8 +221,9 @@ def touches(sql: str) -> tuple:
     warnings: list = []
     path: list = []                     # the file's own search_path, in file order
     temp: set = set()                   # names of the temporary objects the file creates (unqualified later)
+    created: dict = {}                  # unqualified name the file created -> the schema it landed in
 
-    def add(line: int, action: str, qname: str, relation_parts: int = 2) -> None:
+    def add(line: int, action: str, qname: str, relation_parts: int = 2, creates: bool = False) -> None:
         parts = _parts(_strip_args(qname))
         if not parts:
             return
@@ -188,18 +235,26 @@ def touches(sql: str) -> tuple:
             schema, name = parts[-2], parts[-1]
         else:
             schema, name = "", parts[0]
+        candidates: tuple = ()
         if not schema and name in temp:
             schema = "pg_temp"
+        elif not schema and creates:
+            schema = path[0] if path else ""        # CREATE lands in the first schema of the path
+            if schema:
+                created[name] = schema
+        elif not schema and name in created:
+            schema = created[name]                  # the object this file created earlier
         elif not schema and path:
-            schema = path[0]
-        found.append(Touch(line, action, schema, name))
+            # Any other statement finds the first schema of the path that holds the name: each one may be it.
+            schema, candidates = path[0], tuple(path)
+        found.append(Touch(line, action, schema, name, candidates))
 
     def add_schema(line: int, action: str, name: str) -> None:
         found.append(Touch(line, action, _ident(name), _ident(name)))
 
     for stmt in run_migration.split_statements(sql):
         line = stmt.line
-        for code, strings in _code_views(stmt):
+        for code, strings, top_level in _code_views(stmt):
             sp = _search_path(code, strings)
             if sp is not None:
                 path[:] = sp
@@ -208,14 +263,33 @@ def touches(sql: str) -> tuple:
                 warnings.append(f"line {line}: dynamic SQL (EXECUTE) in a DO block: the ownership lint cannot see "
                                 f"which objects it touches (the DB Schema Dump drift report is the backstop)")
             m = _CREATE_SCHEMA_RE.search(code)
-            if m and m.group("name"):
-                add_schema(line, "CREATE SCHEMA", m.group("name"))
+            if m:
+                add_schema(line, "CREATE SCHEMA", m.group("name") or m.group("role"))
             m = _CREATE_RE.search(code)
             if m and re.search(r"\b(?:TEMP|TEMPORARY)\b", m.group("mods") or ""):
                 temp.add(_parts(_strip_args(m.group("name")))[-1])
             elif m:
                 kind = " ".join(m.group("kind").split())
-                add(line, f"CREATE {kind}", m.group("name"))
+                add(line, f"CREATE {kind}", m.group("name"), creates=True)
+            m = _SELECT_INTO_RE.search(code) if top_level else None
+            if m and re.search(r"\b(?:TEMP|TEMPORARY)\b", m.group("mods") or ""):
+                temp.add(_parts(m.group("name"))[-1])
+            elif m:
+                add(line, "SELECT INTO", m.group("name"), creates=True)
+            m = _EXTENSION_RE.search(code)
+            s = _EXT_SCHEMA_RE.search(m.group("rest")) if m else None
+            if s:
+                found.append(Touch(line, "CREATE EXTENSION", _ident(s.group("name")), _ident(m.group("ext"))))
+            for p in _PARTITION_RE.finditer(code):
+                add(line, f"{p.group('verb')} PARTITION", p.group("name"))
+            m = _GLOBAL_DEFAULT_PRIVS_RE.search(code)
+            if m:
+                roles = ", ".join(_ident(r) for r in _split_top(m.group("roles") or ""))
+                found.append(Touch(line, "ALTER DEFAULT PRIVILEGES without IN SCHEMA", EVERY_SCHEMA, roles))
+            m = _OWNED_BY_RE.search(code)
+            if m:
+                found.append(Touch(line, f"{m.group('verb')} OWNED BY", EVERY_SCHEMA,
+                                   ", ".join(_ident(r) for r in _split_top(m.group("roles")))))
             m = _CREATE_INDEX_RE.search(code)
             if m:
                 add(line, "CREATE INDEX ON", m.group("name"))
@@ -228,8 +302,8 @@ def touches(sql: str) -> tuple:
             m = _ALTER_RE.search(code)
             if m:
                 kind = " ".join(m.group("kind").split())
-                if kind == "INDEX" and re.match(r"ALL\b", m.group("name").upper()):
-                    pass                                     # ALTER INDEX ALL IN TABLESPACE
+                if kind in ("INDEX", "TABLE", "MATERIALIZED VIEW") and re.match(r"ALL\b", m.group("name").upper()):
+                    pass                                     # ALTER TABLE / INDEX / … ALL IN TABLESPACE
                 else:
                     add(line, f"ALTER {kind}", m.group("name"))
                 s = _SET_SCHEMA_RE.search(code, m.end())
@@ -305,17 +379,34 @@ def lint(sql: str, rel_path: str) -> tuple:
             continue
         if t.action == "INSERT INTO" and (t.schema, t.name) in REGISTRY_WRITES:
             continue
-        if t.schema in mine:
+        foreign_path = [s for s in t.candidates if s not in mine]
+        if t.schema in mine and not foreign_path:
             continue
         key = (t.line, t.action, t.schema, t.name)
         if key in seen:
             continue
         seen.add(key)
+        qualify = f"qualify it ({', '.join(sorted(mine))}) (AA-853)"
+        if t.schema == EVERY_SCHEMA:
+            roles = {r.strip() for r in t.name.split(",") if r.strip()}
+            own_roles = OWNER_ROLES.get(owner_dir, frozenset())
+            if t.action != "DROP OWNED BY" and roles and roles <= own_roles:
+                continue                                # only the dir's own owner role: stays in its schemas
+            who = f"role {t.name}" if roles else "the role running the file"
+            errors.append(f"line {t.line}: {t.action} ({who}): reaches every schema, not only {owner_dir}/'s "
+                          f"({', '.join(sorted(mine))}); only {', '.join(sorted(own_roles))} may be named here, and "
+                          f"DROP OWNED never; it belongs in roles/ (AA-853)")
+            continue
+        if foreign_path:
+            errors.append(f"line {t.line}: {t.action} {t.name}: unqualified name under search_path "
+                          f"{', '.join(t.candidates)}; PostgreSQL resolves it to the first of those schemas that holds "
+                          f"it, which may be {', '.join(foreign_path)}, outside {owner_dir}/'s schemas; {qualify}")
+            continue
         what = t.schema if t.action.endswith("SCHEMA") else f"{t.schema}.{t.name}" if t.schema else t.name
         if not t.schema:
-            errors.append(f"line {t.line}: {t.action} {what}: unqualified name and no `SET search_path` in the file, "
-                          f"so it resolves to the session's default schema (public), outside {owner_dir}/'s schemas; "
-                          f"qualify it ({', '.join(sorted(mine))}) (AA-853)")
+            errors.append(f"line {t.line}: {t.action} {what}: unqualified name and no owner schema on the file's "
+                          f"`SET search_path`, so it resolves to the session's default schema (public), outside "
+                          f"{owner_dir}/'s schemas; {qualify}")
             continue
         other = next((o for o, d in run_migration.OWNER_DIRS.items() if t.schema in d.schemas), None)
         whose = f"owner {other}" if other else "no owner in db/owners.yaml"

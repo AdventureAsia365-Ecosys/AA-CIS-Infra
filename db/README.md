@@ -173,10 +173,16 @@ line (a directive after the first statement is an error):
   owner's schemas (`owners.yaml` `schemas`, mirrored by `run_migration.OWNER_DIRS`). Read per statement and inside
   DO blocks: CREATE/ALTER/DROP of schemas, relations, functions, types, indexes / triggers / policies / rules (their
   table), `SET SCHEMA`, `COMMENT ON`, `GRANT`/`REVOKE … ON`, `ALTER DEFAULT PRIVILEGES … IN SCHEMA`, and the writes
-  `INSERT`/`UPDATE`/`DELETE`/`MERGE`/`TRUNCATE`/`COPY … FROM`/`REFRESH MATERIALIZED VIEW`. Allowed: the file's own
+  `INSERT`/`UPDATE`/`DELETE`/`MERGE`/`TRUNCATE`/`COPY … FROM`/`REFRESH MATERIALIZED VIEW`, top-level
+  `SELECT … INTO <table>`, `ATTACH`/`DETACH PARTITION` and `CREATE EXTENSION … SCHEMA`. Global
+  `ALTER DEFAULT PRIVILEGES` (no `IN SCHEMA`) and `REASSIGN OWNED BY` pass only for the dir's own owner role;
+  `DROP OWNED BY` always fails (all three belong in `roles/`). Allowed: the file's own
   `INSERT INTO shared.schema_versions`, temporary objects, and every read (views over another owner, `REFERENCES`,
-  function calls). An unqualified name resolves through the file's own `SET [LOCAL] search_path`, else it is a
-  finding (it would land in `public`). Function bodies and dynamic SQL (`EXECUTE`) are not read; the CLI
+  function calls). An unqualified name resolves through the file's own `SET [LOCAL] search_path` (`RESET` clears
+  it), else it is a finding (it would land in `public`). As in PostgreSQL only a CREATE lands in the first schema of
+  the path; any other unqualified name is a finding when the path also names another owner's schema, unless the file
+  created that name itself. This is a static lint at copy time: function bodies and dynamic SQL (`EXECUTE`) are
+  not read, and the X1 owner-role switch of DB Migrate stays the runtime boundary; the CLI
   (`python3 db/check_migration_ownership.py FILE`) prints a note for each DO block with dynamic SQL. `roles/` is not
   checked. Every copy on `main` passes; on the owners' full history it finds the known cases (TripPlanner
   `002_shared_destinations.sql` / `005`, CIS `122`'s `public.*` drops, CIS `001`–`007` before the owner split).
