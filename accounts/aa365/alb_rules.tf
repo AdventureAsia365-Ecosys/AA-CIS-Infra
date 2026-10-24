@@ -26,7 +26,9 @@ locals {
 
   alb_http_rule_priorities = {
     crm_api             = 5   # crm_app.tf: partner-dev. host + /crm, /crm/* -> AA-Partner API (AA-933)
+    crm_client_public   = 6   # crm_client_edge.tf: go-dev. host + /crm/public/* -> AA-Partner API (AA-936)
     crm_partner_default = 10  # crm_edge.tf: partner-dev. host, any other path -> AA-Partner web (AA-935; was a fixed 404, AA-933)
+    crm_client_default  = 11  # crm_client_edge.tf: go-dev. host, any other path -> AA-Partner web (AA-936)
     crm_origin_deny     = 20  # crm_edge.tf: any X-AA-Origin -> 403 (AA-931)
     booking             = 100 # booking.tf: /booking, /booking/* (AA-678)
   }

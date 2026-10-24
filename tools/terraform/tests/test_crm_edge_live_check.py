@@ -82,3 +82,24 @@ def test_only_filter_runs_selected(monkeypatch, capsys):
     assert chk.main(["--cf-domain", "x.cloudfront.net", "--only", "partner-root,partner-path"]) == 0
     assert calls == ["/", "/crmx"]
     assert "PASS  partner-root" in capsys.readouterr().out
+
+
+def test_client_host_checks():
+    html = b"<!doctype html><title>404</title>"
+    assert chk.eval_client_web_404(404, html, "text/html")[0]
+    assert chk.eval_client_web_404(503, b"<html>503</html>", "text/html")[0]
+    assert not chk.eval_client_web_404(200, b'{"status": "ok"}', "application/json")[0]  # the API on /crm/health: fail
+    assert not chk.eval_client_web_404(404, BODY, "application/json")[0]
+    detail = json.dumps({"detail": [{"loc": ["path", "public_key"]}]}).encode()
+    assert chk.eval_client_public(422, detail, "application/json")[0]
+    assert chk.eval_client_public(503, b"<html>503</html>", "text/html")[0]
+    assert not chk.eval_client_public(404, html, "text/html")[0]  # the web answered: the /crm/public/* rule is lost
+
+
+def test_client_checks_hit_the_client_host(monkeypatch, capsys):
+    seen = []
+    monkeypatch.setattr(
+        chk, "get", lambda host, path, headers=None: (seen.append((host, path)), (404, b"<html/>", "text/html", ""))[1]
+    )
+    assert chk.main(["--cf-domain", "x.cloudfront.net", "--only", "client-root,client-no-api"]) == 0
+    assert seen == [("go-dev.lumiguides.it.com", "/"), ("go-dev.lumiguides.it.com", "/crm/health")]
