@@ -137,6 +137,16 @@ accounts/
                                    COGNITO_M2M_ISSUER / COGNITO_M2M_CRM_CLIENT_ID. CIS needs no env var: it
                                    keeps the Dev issuer and CRM client id as code constants with an env
                                    override, api/core/m2m_auth.py)
+    identity_partner.tf           (AA-939, root ADR 0006b d1/d5/d6: PARTNER pool aa-partner-dev — agency
+                                   people, admin-create only, MFA required (TOTP; passkeys when the provider
+                                   supports the factor configuration), client partner-web + managed login style,
+                                   prefix domain + custom domain partner-auth. on its own us-east-1 cert; the CRM
+                                   task role's pool allow-list (AdminCreateUser, ListUsers, AdminDisableUser,
+                                   AdminUserGlobalSignOut) + ses_send; alerts: pool config change outside
+                                   Terraform, admin calls outside the invitation model. crm_web.tf
+                                   crm_partner_signin_enabled switches the CRM web from cis-portal to partner-web.
+                                   identity.tf adds the crm-platform-admin / crm-ops / crm-support groups and the
+                                   crm-staff WORKFORCE client)
     identity_iam.tf               (AA-816: CIS task role (api + worker) allow-list on the WORKFORCE pool
                                    only — create/group/disable/enable/global sign-out + ListUsers*;
                                    no AdminGetUser / AdminSetUserPassword / attribute writes, ADR 0006)

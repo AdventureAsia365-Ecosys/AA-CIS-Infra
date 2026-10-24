@@ -27,13 +27,15 @@ class FakeIdp:
     def list_user_pools(self, **kw):
         if "NextToken" not in kw:
             return {"UserPools": [{"Name": "aa-workforce-dev", "Id": "w"}], "NextToken": "p2"}
-        return {"UserPools": [{"Name": "aa-external-dev", "Id": "pool-ext"}]}
+        return {"UserPools": [{"Name": "aa-external-dev", "Id": "pool-ext"}, {"Name": "aa-partner-dev", "Id": "pool-par"}]}
 
     def list_user_pool_clients(self, **kw):
+        if kw["UserPoolId"] == "pool-par":
+            return {"UserPoolClients": [{"ClientName": "aa-partner-dev-partner-web", "ClientId": "pcid"}]}
         return {"UserPoolClients": [{"ClientName": "aa-external-dev-cis-portal", "ClientId": "cid"}]}
 
     def describe_user_pool_client(self, **kw):
-        assert kw == {"UserPoolId": "pool-ext", "ClientId": "cid"}
+        assert kw in ({"UserPoolId": "pool-ext", "ClientId": "cid"}, {"UserPoolId": "pool-par", "ClientId": "pcid"})
         return {"UserPoolClient": {"ClientSecret": CLIENT_SECRET}}
 
     def list_users(self, UserPoolId, Filter, Limit):  # noqa: N803 — boto3 names
@@ -46,6 +48,40 @@ class FakeIdp:
         sub = f"sub-{len(self.users) + 1}"
         self.users[kw["Username"]] = sub
         return {"User": {"Attributes": [{"Name": "sub", "Value": sub}]}}
+
+
+class FakePartnerIdp(FakeIdp):
+    """The partner pool's first sign-in: NEW_PASSWORD_REQUIRED, then MFA_SETUP with a TOTP enrolment."""
+
+    TOTP_SECRET = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
+
+    def __init__(self, existing: dict[str, str] | None = None) -> None:
+        super().__init__(existing)
+        self.auth: list[tuple[str, dict]] = []
+        self.deleted: list[str] = []
+
+    def initiate_auth(self, **kw):
+        self.auth.append(("initiate_auth", kw))
+        assert kw["AuthFlow"] == "USER_AUTH" and kw["AuthParameters"]["PREFERRED_CHALLENGE"] == "PASSWORD"
+        return {"ChallengeName": "NEW_PASSWORD_REQUIRED", "Session": "s1"}
+
+    def respond_to_auth_challenge(self, **kw):
+        self.auth.append((kw["ChallengeName"], kw))
+        if kw["ChallengeName"] == "NEW_PASSWORD_REQUIRED":
+            return {"ChallengeName": "MFA_SETUP", "Session": "s2"}
+        return {"AuthenticationResult": {"AccessToken": "x"}}
+
+    def associate_software_token(self, **kw):
+        self.auth.append(("associate_software_token", kw))
+        return {"SecretCode": self.TOTP_SECRET, "Session": "s3"}
+
+    def verify_software_token(self, **kw):
+        self.auth.append(("verify_software_token", kw))
+        assert kw["UserCode"] == tool.totp(self.TOTP_SECRET)
+        return {"Status": "SUCCESS", "Session": "s4"}
+
+    def admin_delete_user(self, **kw):
+        self.deleted.append(kw["Username"])
 
 
 class FakeSm:
@@ -169,3 +205,63 @@ def test_bad_user_file_is_refused(tmp_path):
     dup.write_text(json.dumps({"users": [{"agency": "x", "role": "owner"}, {"agency": "x", "role": "owner"}]}))
     with pytest.raises(tool.ToolError):
         tool.load_users(dup)
+
+
+def test_partner_apply_creates_enrols_and_stores_the_credentials(capsys):
+    idp, sm = FakePartnerIdp(), FakeSm()
+    assert run(["--pool", "partner", "e2e-users", "--apply", "--write-secrets"], idp, sm) == 0
+    rows = lines(capsys)
+    created = [r for r in rows[:-1]]
+    assert {r["action"] for r in created} == {"created_enrolled"}
+    assert all(c["MessageAction"] == "SUPPRESS" and len(c["TemporaryPassword"]) >= 14 for c in idp.created)
+    # The invitee address is never created here.
+    assert not any("harbour-lights-assistant" in c["Username"] for c in idp.created)
+    stored = json.loads(sm.values["crm/dev/e2e-test-crm/sen-vang-owner"])
+    assert stored["pool"] == "partner" and stored["totp_secret"] == FakePartnerIdp.TOTP_SECRET
+    assert len(stored["password"]) >= 14 and stored["password"] != idp.created[0]["TemporaryPassword"]
+    out = capsys.readouterr().out
+    assert stored["password"] not in out and FakePartnerIdp.TOTP_SECRET not in out and CLIENT_SECRET not in out
+    secret_hash = idp.auth[0][1]["AuthParameters"]["SECRET_HASH"]
+    assert secret_hash == tool.secret_hash(stored["email"], "pcid", CLIENT_SECRET)
+    # A re-run keeps the stored credentials of existing users.
+    writes = len(sm.writes)
+    assert run(["--pool", "partner", "e2e-users", "--apply", "--write-secrets"], idp, sm) == 0
+    again = lines(capsys)
+    assert {r["action"] for r in again[:-1]} == {"exists"} and len(sm.writes) == writes
+    assert {r["secret"]["action"] for r in again[:-1]} == {"kept"}
+
+
+def test_partner_apply_without_write_secrets_is_refused(capsys):
+    assert run(["--pool", "partner", "e2e-users", "--apply"], FakePartnerIdp(), FakeSm()) == 1
+    assert "--write-secrets" in capsys.readouterr().err
+
+
+def test_invitee_reset_deletes_only_the_invitee(capsys):
+    zone_email = "e2e-test-crm-harbour-lights-assistant@e2e-mail.lumiguides.it.com"
+    idp = FakePartnerIdp({zone_email: "sub-inv", "e2e-test-crm-sen-vang-owner@e2e-mail.lumiguides.it.com": "sub-o"})
+    assert run(["--pool", "partner", "invitee-reset"], idp) == 0
+    assert lines(capsys) == [{"email": zone_email, "action": "would_delete"}] and idp.deleted == []
+    assert run(["--pool", "partner", "invitee-reset", "--apply"], idp) == 0
+    assert lines(capsys) == [{"email": zone_email, "action": "deleted"}] and idp.deleted == ["sub-inv"]
+    assert run(["invitee-reset"], idp) == 1
+    assert "partner" in capsys.readouterr().err
+
+
+def test_web_secret_for_the_partner_client(capsys):
+    sm = FakeSm({"crm/dev/web": None})
+    assert run(["--pool", "partner", "web-secret", "--apply"], FakePartnerIdp(), sm) == 0
+    assert lines(capsys)[0]["client"] == "aa-partner-dev-partner-web"
+    assert json.loads(sm.values["crm/dev/web"])["cognito_client_secret"] == CLIENT_SECRET
+
+
+def test_totp_matches_rfc_6238():
+    # RFC 6238 appendix B, SHA-1 secret "12345678901234567890", T = 59 s -> 94287082 (last 6 digits).
+    assert tool.totp("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", at=59) == "287082"
+    password = tool.random_password()
+    assert len(password) == 28 and any(c in tool.PASSWORD_SYMBOLS for c in password)
+
+
+def test_invitee_entries_are_mailbox_recipients():
+    users = tool.load_users()
+    invitees = [u for u in users if u.invitee]
+    assert [(u.agency, u.role) for u in invitees] == [("harbour-lights", "assistant")]

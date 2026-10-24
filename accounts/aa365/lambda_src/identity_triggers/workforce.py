@@ -42,7 +42,9 @@ E2E_TEST_STAFF_GROUPS = ("cis-reviewer",)
 
 DEFAULT_STAFF_GROUPS = (
     "cis-admin,cis-reviewer,cis-content,"
-    "booking-admin,booking-sales,booking-contracting,booking-content_creator"
+    "booking-admin,booking-sales,booking-contracting,booking-content_creator,"
+    # AA-939 / root ADR 0006b decision 6: AA-Partner staff groups.
+    "crm-platform-admin,crm-ops,crm-support"
 )
 
 

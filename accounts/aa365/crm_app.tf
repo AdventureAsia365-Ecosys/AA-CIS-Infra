@@ -83,19 +83,27 @@ locals {
   )
 
   # Identity values of the route classes (AA-Partner api/app/settings.py; ADR 0006b decision 6). Public values
-  # (issuer URLs, client ids), never secrets. The repo is public, so they live only here (DM-6.10). Classes whose pool
-  # or client does not exist yet stay empty = the class accepts nothing (fail closed): the PARTNER pool and the
-  # AA-Partner web client (AA-939), the crm-staff WORKFORCE client (CRM-13b). The EXTERNAL cis-portal bridge is the
-  # Dev-only stand-in for partner sign-in until AA-939 (the app refuses it outside dev / test / local).
+  # (issuer URLs, client ids, pool id), never secrets. The repo is public, so they live only here (DM-6.10). AA-939:
+  # the PARTNER pool and its partner-web client (identity_partner.tf) and the crm-staff WORKFORCE client (identity.tf)
+  # are wired. The EXTERNAL cis-portal bridge stays accepted on Dev while the CRM web still signs in with it
+  # (crm_web.tf crm_partner_signin_enabled; the app refuses it outside dev / test / local); it is removed in the P2b
+  # clean-up (AA-979).
+  # AA-939 also passes the team values (app.members): the partner pool id for the invitation claim and member sign-out
+  # (IAM allow-list in identity_partner.tf), the partner host origin (join links), and AA system mail (ses.tf sender +
+  # transactional configuration set, IAM ses_send attached to the task role in identity_partner.tf).
   crm_identity_env = [
     { name = "COGNITO_WORKFORCE_ISSUER", value = "https://${aws_cognito_user_pool.workforce.endpoint}" },
     { name = "COGNITO_CIS_ADMIN_CLIENT_ID", value = aws_cognito_user_pool_client.workforce["cis-admin"].id },
     { name = "COGNITO_BREAKGLASS_CLIENT_ID", value = aws_cognito_user_pool_client.workforce["breakglass"].id },
-    { name = "COGNITO_CRM_STAFF_CLIENT_ID", value = "" },
-    { name = "COGNITO_PARTNER_ISSUER", value = "" },
-    { name = "COGNITO_PARTNER_WEB_CLIENT_ID", value = "" },
+    { name = "COGNITO_CRM_STAFF_CLIENT_ID", value = aws_cognito_user_pool_client.workforce["crm-staff"].id },
+    { name = "COGNITO_PARTNER_ISSUER", value = local.idpartner_issuer },
+    { name = "COGNITO_PARTNER_WEB_CLIENT_ID", value = aws_cognito_user_pool_client.partner["partner-web"].id },
+    { name = "COGNITO_PARTNER_POOL_ID", value = aws_cognito_user_pool.partner.id },
     { name = "COGNITO_EXTERNAL_ISSUER", value = "https://${aws_cognito_user_pool.external.endpoint}" },
     { name = "COGNITO_CIS_PORTAL_CLIENT_ID", value = aws_cognito_user_pool_client.external["cis-portal"].id },
+    { name = "PARTNER_WEB_ORIGIN", value = "https://${local.crm_partner_host}" },
+    { name = "SES_FROM_ADDRESS", value = var.ses_from_address },
+    { name = "SES_CONFIGURATION_SET", value = aws_sesv2_configuration_set.stream["transactional"].configuration_set_name },
   ]
 }
 

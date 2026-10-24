@@ -1,6 +1,15 @@
 #!/usr/bin/env python3
-"""AA-Partner (CRM) Dev identity tool (AA-935, design v3 card CRM-07). Run by an AWS admin with MFA from a workstation.
-Not run by CI, not deployed. Standard library + boto3 only. DRY RUN by default: nothing is written without --apply.
+"""AA-Partner (CRM) Dev identity tool (AA-935, design v3 card CRM-07; AA-939 partner pool). Run by an AWS admin with MFA
+from a workstation. Not run by CI, not deployed. Standard library + boto3 only. DRY RUN by default: nothing is written
+without --apply.
+
+--pool external (default, the AA-935 behaviour) or --pool partner (AA-939, root ADR 0006b: the partner pool with MFA
+required). On the partner pool an e2e user cannot sign in by e-mail code, so e2e-users enrols each new user the way a
+person would: AdminCreateUser (SUPPRESS) with a random temporary password, then the first sign-in through the
+partner-web client (USER_AUTH + PASSWORD, NEW_PASSWORD_REQUIRED with a random permanent password, MFA_SETUP with
+AssociateSoftwareToken / VerifySoftwareToken), and stores {email, sub, agency, role, pool, password, totp_secret} in
+the user's secret (required: --write-secrets; the values exist nowhere else). These admin calls raise the partner
+pool's "admin bypass" alert (identity_partner.tf) by design: expect one mail per run.
 
 Subcommands
   e2e-users  [--apply] [--write-secrets]
@@ -20,16 +29,26 @@ Subcommands
       every CRM web user out). Values are never printed: the output is the secret name, the version id and which
       keys changed.
 
+  invitee-reset [--apply]   (AA-939, --pool partner)
+      Deletes the partner-pool account of each "invitee" entry of crm_e2e_users.json (AdminDeleteUser), so the
+      one-off timed E2E "invite -> active" (AA-Partner e2e/tests/invite.spec.ts) starts from no account.
+
 Account guard: refuses to run unless the credentials are for --expect-account. Pools and clients are found by NAME
-(aa-external-<env>, aa-external-<env>-cis-portal), never by a pasted id.
+(aa-<pool>-<env>; clients aa-external-<env>-cis-portal / aa-partner-<env>-partner-web), never by a pasted id.
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
+import hmac
 import json
 import secrets
+import string
+import struct
 import sys
+import time
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -43,6 +62,9 @@ DEFAULT_ZONE = "lumiguides.it.com"
 USERS_FILE = Path(__file__).resolve().parent / "crm_e2e_users.json"
 ROLES = frozenset({"owner", "agent", "assistant"})
 SESSION_SECRET_BYTES = 48
+POOLS = ("external", "partner")
+WEB_CLIENT = {"external": "cis-portal", "partner": "partner-web"}
+PASSWORD_SYMBOLS = "!#$%&*+-=?@^_"
 
 
 class ToolError(Exception):
@@ -53,6 +75,8 @@ class ToolError(Exception):
 class E2eUser:
     agency: str
     role: str
+    # AA-939: an address only the timed invitation E2E uses (a mailbox recipient, never created by e2e-users).
+    invitee: bool = False
 
     def email(self, zone: str) -> str:
         return f"e2e-test-crm-{self.agency}-{self.role}@e2e-mail.{zone}"
@@ -63,11 +87,11 @@ class E2eUser:
 
 def load_users(path: Path = USERS_FILE) -> list[E2eUser]:
     data = json.loads(path.read_text(encoding="utf-8"))
-    users = [E2eUser(u["agency"], u["role"]) for u in data["users"]]
+    users = [E2eUser(u["agency"], u["role"], bool(u.get("invitee", False))) for u in data["users"]]
     for u in users:
         if u.role not in ROLES or not u.agency.replace("-", "").isalnum() or u.agency != u.agency.lower():
             raise ToolError(f"bad entry in {path.name}: {u}")
-    if len(set(users)) != len(users):
+    if len({(u.agency, u.role) for u in users}) != len(users):
         raise ToolError(f"duplicate entry in {path.name}")
     return users
 
@@ -122,6 +146,83 @@ def find_user(idp: Any, pool_id: str, email: str) -> dict[str, Any] | None:
     return users[0] if users else None
 
 
+# ── partner pool enrolment (AA-939) ──────────────────────────────────────────
+def random_password() -> str:
+    """>= 14 characters with all four classes (the partner pool's policy); 28 here."""
+    classes = (string.ascii_lowercase, string.ascii_uppercase, string.digits, PASSWORD_SYMBOLS)
+    alphabet = "".join(classes)
+    while True:
+        value = "".join(secrets.choice(alphabet) for _ in range(28))
+        if all(any(c in cls for c in value) for cls in classes):
+            return value
+
+
+def totp(secret_b32: str, at: float | None = None, step: int = 30) -> str:
+    """RFC 6238 (SHA-1, 6 digits) for the authenticator enrolment."""
+    key = base64.b32decode(secret_b32.upper() + "=" * (-len(secret_b32) % 8))
+    counter = struct.pack(">Q", int((time.time() if at is None else at) // step))
+    mac = hmac.new(key, counter, hashlib.sha1).digest()
+    offset = mac[-1] & 0x0F
+    return f"{(struct.unpack('>I', mac[offset:offset + 4])[0] & 0x7FFFFFFF) % 1_000_000:06d}"
+
+
+def secret_hash(username: str, client_id: str, client_secret: str) -> str:
+    digest = hmac.new(client_secret.encode(), (username + client_id).encode(), hashlib.sha256).digest()
+    return base64.b64encode(digest).decode()
+
+
+@dataclass(frozen=True)
+class WebClient:
+    client_id: str
+    client_secret: str
+
+
+def web_client(idp: Any, pool_id: str, client_name: str) -> WebClient:
+    client_id = find_client_id(idp, pool_id, client_name)
+    client_secret = idp.describe_user_pool_client(UserPoolId=pool_id, ClientId=client_id)["UserPoolClient"].get(
+        "ClientSecret"
+    )
+    if not client_secret:
+        raise ToolError(f"{client_name} has no client secret (it must be a confidential client)")
+    return WebClient(client_id, client_secret)
+
+
+def enrol_partner_user(idp: Any, client: WebClient, email: str, temporary: str) -> tuple[str, str]:
+    """First sign-in of a new partner-pool user: own password, then the authenticator. Returns (password, totp secret)."""
+    sh = secret_hash(email, client.client_id, client.client_secret)
+    resp = idp.initiate_auth(
+        ClientId=client.client_id,
+        AuthFlow="USER_AUTH",
+        AuthParameters={"USERNAME": email, "PREFERRED_CHALLENGE": "PASSWORD", "PASSWORD": temporary, "SECRET_HASH": sh},
+    )
+    if resp.get("ChallengeName") == "SELECT_CHALLENGE":
+        resp = idp.respond_to_auth_challenge(
+            ClientId=client.client_id, ChallengeName="SELECT_CHALLENGE", Session=resp["Session"],
+            ChallengeResponses={"USERNAME": email, "ANSWER": "PASSWORD", "PASSWORD": temporary, "SECRET_HASH": sh},
+        )
+    if resp.get("ChallengeName") != "NEW_PASSWORD_REQUIRED":
+        raise ToolError(f"{email}: expected NEW_PASSWORD_REQUIRED, got {resp.get('ChallengeName')}")
+    password = random_password()
+    resp = idp.respond_to_auth_challenge(
+        ClientId=client.client_id, ChallengeName="NEW_PASSWORD_REQUIRED", Session=resp["Session"],
+        ChallengeResponses={"USERNAME": email, "NEW_PASSWORD": password, "SECRET_HASH": sh},
+    )
+    if resp.get("ChallengeName") != "MFA_SETUP":
+        raise ToolError(f"{email}: expected MFA_SETUP (the partner pool requires MFA), got {resp.get('ChallengeName')}")
+    assoc = idp.associate_software_token(Session=resp["Session"])
+    totp_secret = assoc["SecretCode"]
+    verified = idp.verify_software_token(Session=assoc["Session"], UserCode=totp(totp_secret), FriendlyDeviceName="e2e")
+    if verified.get("Status") != "SUCCESS":
+        raise ToolError(f"{email}: the authenticator code was not accepted")
+    done = idp.respond_to_auth_challenge(
+        ClientId=client.client_id, ChallengeName="MFA_SETUP", Session=verified["Session"],
+        ChallengeResponses={"USERNAME": email, "SECRET_HASH": sh},
+    )
+    if "AuthenticationResult" not in done:
+        raise ToolError(f"{email}: enrolment did not finish ({done.get('ChallengeName')})")
+    return password, totp_secret
+
+
 # ── e2e-users ────────────────────────────────────────────────────────────────
 def e2e_users(
     idp: Any,
@@ -133,16 +234,27 @@ def e2e_users(
     zone: str,
     apply: bool,
     write_secrets: bool,
+    pool: str = "external",
+    client: WebClient | None = None,
 ) -> list[dict[str, Any]]:
+    if pool == "partner" and apply and not write_secrets:
+        raise ToolError("--pool partner --apply needs --write-secrets: the password and authenticator secret exist nowhere else")
     rows: list[dict[str, Any]] = []
     for u in users:
+        if u.invitee:
+            continue  # the timed invitation E2E creates it through the CRM (invitee-reset deletes it)
         email = u.email(zone)
         found = find_user(idp, pool_id, email)
         action = "exists"
+        credentials: dict[str, str] = {}
         if found is None:
             if not apply:
                 rows.append({"agency": u.agency, "role": u.role, "email": email, "action": "would_create", "sub": None})
                 continue
+            kwargs: dict[str, Any] = {}
+            temporary = random_password() if pool == "partner" else None
+            if temporary:
+                kwargs["TemporaryPassword"] = temporary  # never mailed (SUPPRESS); used once just below
             created = idp.admin_create_user(
                 UserPoolId=pool_id,
                 Username=email,
@@ -153,9 +265,16 @@ def e2e_users(
                 ],
                 # Never mail a temporary password (identity.tf: every AdminCreateUser passes SUPPRESS).
                 MessageAction="SUPPRESS",
+                **kwargs,
             )
             found = created["User"]
             action = "created"
+            if temporary:
+                if client is None:
+                    raise ToolError("the partner-web client is needed to enrol a partner-pool user")
+                password, totp_secret = enrol_partner_user(idp, client, email, temporary)
+                credentials = {"password": password, "totp_secret": totp_secret}
+                action = "created_enrolled"
         sub = _attr(found, "sub")
         if not sub:
             raise ToolError(f"{email}: no sub attribute")
@@ -168,16 +287,42 @@ def e2e_users(
             "member": f"{u.agency}:{u.role}:{sub}",
         }
         if write_secrets:
-            if apply:
+            if apply and pool == "partner" and not credentials:
+                # An existing partner-pool user: its stored credentials stay as they are.
+                row["secret"] = {"name": u.secret_name(env), "action": "kept"}
+            elif apply:
+                description = (
+                    f"AA-939: e2e test user of the synthetic CRM agency {u.agency} ({u.role}) on the partner pool: "
+                    "password + authenticator secret (MFA required)."
+                    if pool == "partner"
+                    else f"AA-935: e2e test user of the synthetic CRM agency {u.agency} ({u.role}). No password: e-mail code sign-in."
+                )
                 row["secret"] = put_json_secret(
                     sm,
                     u.secret_name(env),
-                    {"email": email, "sub": sub, "agency": u.agency, "role": u.role, "pool": "external"},
-                    description=f"AA-935: e2e test user of the synthetic CRM agency {u.agency} ({u.role}). No password: e-mail code sign-in.",
+                    {"email": email, "sub": sub, "agency": u.agency, "role": u.role, "pool": pool, **credentials},
+                    description=description,
                 )
             else:
                 row["secret"] = {"name": u.secret_name(env), "action": "would_write"}
         rows.append(row)
+    return rows
+
+
+def invitee_reset(idp: Any, pool_id: str, users: Iterable[E2eUser], *, zone: str, apply: bool) -> list[dict[str, Any]]:
+    rows = []
+    for u in users:
+        if not u.invitee:
+            continue
+        email = u.email(zone)
+        found = find_user(idp, pool_id, email)
+        if found is None:
+            rows.append({"email": email, "action": "absent"})
+        elif not apply:
+            rows.append({"email": email, "action": "would_delete"})
+        else:
+            idp.admin_delete_user(UserPoolId=pool_id, Username=_attr(found, "sub") or email)
+            rows.append({"email": email, "action": "deleted"})
     return rows
 
 
@@ -259,6 +404,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--expect-account", default=DEFAULT_ACCOUNT, help="refuse to run in any other account")
     p.add_argument("--env", default=DEFAULT_ENV)
     p.add_argument("--zone", default=DEFAULT_ZONE)
+    p.add_argument("--pool", choices=POOLS, default="external", help="AA-939: partner = the partner pool (MFA required)")
     sub = p.add_subparsers(dest="command", required=True)
     e = sub.add_parser("e2e-users", help="create the e2e users of the synthetic CRM agencies")
     e.add_argument("--apply", action="store_true")
@@ -266,6 +412,8 @@ def build_parser() -> argparse.ArgumentParser:
     w = sub.add_parser("web-secret", help="write crm/<env>/web for the CRM web task")
     w.add_argument("--apply", action="store_true")
     w.add_argument("--rotate-session", action="store_true")
+    r = sub.add_parser("invitee-reset", help="delete the invitee account(s) before the timed invitation E2E (--pool partner)")
+    r.add_argument("--apply", action="store_true")
     return p
 
 
@@ -282,9 +430,17 @@ def main(argv: list[str] | None = None, clients: tuple[Any, Any, Any] | None = N
         account = sts.get_caller_identity()["Account"]
         if args.expect_account and account != args.expect_account:
             raise ToolError(f"refused: credentials are for account {account}, expected {args.expect_account}")
-        pool_name = f"aa-external-{args.env}"
+        pool_name = f"aa-{args.pool}-{args.env}"
         pool_id = find_pool_id(idp, pool_name)
+        client_name = f"{pool_name}-{WEB_CLIENT[args.pool]}"
+        if args.command == "invitee-reset":
+            if args.pool != "partner":
+                raise ToolError("invitee-reset works on the partner pool only (--pool partner)")
+            for row in invitee_reset(idp, pool_id, load_users(), zone=args.zone, apply=args.apply):
+                out(row)
+            return 0
         if args.command == "e2e-users":
+            client = web_client(idp, pool_id, client_name) if args.pool == "partner" and args.apply else None
             rows = e2e_users(
                 idp,
                 sm,
@@ -294,14 +450,16 @@ def main(argv: list[str] | None = None, clients: tuple[Any, Any, Any] | None = N
                 zone=args.zone,
                 apply=args.apply,
                 write_secrets=args.write_secrets,
+                pool=args.pool,
+                client=client,
             )
             for row in rows:
                 out(row)
             out({"summary": "apply" if args.apply else "dry_run", "pool": pool_name, "users": len(rows),
-                 "created": sum(r["action"] == "created" for r in rows),
+                 "created": sum(r["action"] in ("created", "created_enrolled") for r in rows),
                  "seeder": seeder_command(rows)})
         else:
-            out(web_secret(idp, sm, pool_id, f"{pool_name}-cis-portal", env=args.env, apply=args.apply,
+            out(web_secret(idp, sm, pool_id, client_name, env=args.env, apply=args.apply,
                            rotate_session=args.rotate_session))
         return 0
     except ToolError as exc:
