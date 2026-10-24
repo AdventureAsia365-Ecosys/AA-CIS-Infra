@@ -23,9 +23,12 @@
 --      crm_placeholder_purge delete expired maps of every agency in one statement, only inside a transaction that set
 --      app.purge_scope = 'placeholder_map' (app.privacy.purge) and only rows whose expires_at has passed. It grants no
 --      SELECT, so the job never reads a map.
---   3. crm.llm_call.scrub_receipt: only the receipt keys app.privacy.scrubber writes (scrubber, detector, entities,
---      counts, passes, known_persons), so a value can never be stored under a new key. The AA-936 stub receipts
---      ({scrubber, entities}) pass. UNIQUE (tenant_id, llm_call_id) for the composite key of 1.
+--   3. crm.llm_call.scrub_receipt: only the receipt app.privacy.scrubber writes, closed at every level: the keys
+--      scrubber, detector, entities, counts, passes, known_persons; versions as short codes; numbers as numbers; the
+--      keys of counts (placeholder kinds, A-Z and _) and passes (known, regex, detector) with numbers only. So a value
+--      can never be stored under a new key or as a value. The AA-936 stub receipts ({scrubber, entities}) and {}
+--      pass; before apply, DB Migrate check confirms no Dev row holds anything else (an ADD CONSTRAINT validates
+--      existing rows). UNIQUE (tenant_id, llm_call_id) for the composite key of 1.
 --
 -- Order: needs crm-006 (AA-937) only; it does not touch any object of crm-007 / crm-008, so DB Migrate may apply it
 -- before or after them. Guard 0 refuses to run before crm-006 is registered.
@@ -59,10 +62,25 @@ BEGIN
     END IF;
 END $$;
 ALTER TABLE crm.llm_call DROP CONSTRAINT IF EXISTS llm_call_receipt_keys_chk;
+-- Every level is closed: the top-level keys, the version strings (short codes), the numbers, and the keys of the two
+-- nested objects (counts: placeholder kinds such as PERSON / EMAIL; passes: known / regex / detector), each with a
+-- number. So neither a key nor a value can carry a name ({"counts": {"Hoa Nguyen": 1}} is refused).
 ALTER TABLE crm.llm_call ADD CONSTRAINT llm_call_receipt_keys_chk CHECK (
     (scrub_receipt - ARRAY['scrubber', 'detector', 'entities', 'counts', 'passes', 'known_persons']) = '{}'::jsonb
+    AND (NOT scrub_receipt ? 'scrubber' OR (jsonb_typeof(scrub_receipt -> 'scrubber') = 'string'
+         AND (scrub_receipt ->> 'scrubber') ~ '^[a-z0-9][a-z0-9.-]{0,19}$'))
+    AND (NOT scrub_receipt ? 'detector' OR (jsonb_typeof(scrub_receipt -> 'detector') = 'string'
+         AND (scrub_receipt ->> 'detector') ~ '^[a-z0-9][a-z0-9_.-]{0,39}$'))
+    AND (NOT scrub_receipt ? 'entities' OR jsonb_typeof(scrub_receipt -> 'entities') = 'number')
+    AND (NOT scrub_receipt ? 'known_persons' OR jsonb_typeof(scrub_receipt -> 'known_persons') = 'number')
+    AND (NOT scrub_receipt ? 'counts' OR (jsonb_typeof(scrub_receipt -> 'counts') = 'object'
+         AND NOT jsonb_path_exists(scrub_receipt -> 'counts',
+             'strict $.keyvalue() ? (!(@.key like_regex "^[A-Z][A-Z_]{1,23}$") || @.value.type() != "number")')))
+    AND (NOT scrub_receipt ? 'passes' OR (jsonb_typeof(scrub_receipt -> 'passes') = 'object'
+         AND ((scrub_receipt -> 'passes') - ARRAY['known', 'regex', 'detector']) = '{}'::jsonb
+         AND NOT jsonb_path_exists(scrub_receipt -> 'passes', 'strict $.keyvalue() ? (@.value.type() != "number")')))
 );
-COMMENT ON CONSTRAINT llm_call_receipt_keys_chk ON crm.llm_call IS 'AA-938 (crm-009): the F3 receipt holds counts and versions only (app.privacy.scrubber); any other key is refused';
+COMMENT ON CONSTRAINT llm_call_receipt_keys_chk ON crm.llm_call IS 'AA-938 (crm-009): the F3 receipt holds counts and versions only (app.privacy.scrubber): known keys at every level, short version codes, numbers; anything else is refused';
 
 -- ── 1. crm.placeholder_map ───────────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS crm.placeholder_map (
