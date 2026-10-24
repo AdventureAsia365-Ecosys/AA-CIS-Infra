@@ -109,6 +109,8 @@ ALLOWLIST: dict[str, dict[str, str]] = {
         "shared.tenant_export_config": f"tenant export settings, admin + pipeline only; {_CIS_ONLY}",
         "shared.tenant_rewrite_usage": f"rewrite quota counter; {_CIS_ONLY}",
         "shared.unmapped_market_requests": f"admin triage list of market requests; {_CIS_ONLY}",
+        "shared.tenant_members": f"CIS membership directory (AA-978, 276), served over HTTP only; {_CIS_ONLY}",
+        "shared.tenant_membership_event": f"tenant.membership.v1 feed (AA-978, 276), HTTP only; {_CIS_ONLY}",
         "acp_contract.route_pick": f"tenant route picks written by the T-pipeline jobs; {_CIS_ONLY}",
         "acp_shared.acp_output_rules": "RLS on with the X1 cis_app parity policy only (CIS 244); no tenant-pool grant",
         "acp_shared.acp_quota_ledger": f"tenant quota ledger; {_CIS_ONLY}",
