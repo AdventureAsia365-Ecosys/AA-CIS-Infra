@@ -26,7 +26,8 @@
 # Every bucket: block public access (all four), BucketOwnerEnforced (no ACLs), TLS only, and a PutObject that names
 # another KMS key or another SSE algorithm is denied (no header = the bucket default, the normal path).
 # Object access for the CRM task role is NOT granted here: the cards that write each bucket add their own grant
-# (CRM-09 documents, CRM-12 audit export, CRM-17 SES ingest; the key policies already allow the role). The SES write
+# (CRM-09 documents: crm_app.tf CrmDocumentsObjects / CrmDocumentsSseKms, AA-937; CRM-12 audit export, CRM-17 SES
+# ingest; the key policies already allow the role). The SES write
 # statement on the ingest bucket is here because it is a bucket-policy statement of this bucket.
 # Object Lock tamper guards that already exist: the CI apply boundary denies BypassGovernanceRetention,
 # PutObjectRetention, PutObjectLegalHold, DeleteObject(Version) on aa-crm-<env>-audit-*/* (cicd_split.tf

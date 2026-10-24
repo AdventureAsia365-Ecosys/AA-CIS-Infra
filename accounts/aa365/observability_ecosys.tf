@@ -709,6 +709,33 @@ resource "aws_cloudwatch_metric_alarm" "jobs_sampling_stopped" {
   tags = merge(local.ecosys_tags, { App = each.value.app })
 }
 
+# -----------------------------------------------------------------------------
+# AA-937 (CRM-09, design v3 §4.4): bulk reveal. Field decryption in AA-Partner is local AES under a cached DEK, so a
+# member opening many records never shows in the KMS Decrypt rate. The API counts what it released instead
+# (api/app/observability/reveal_meter.py: committed field reveals and document downloads per agency and member over a
+# sliding hour) and its JobMetricsSampler publishes the busiest member's count as AA/Jobs/Crm
+# RevealsPerMemberPeakHour every 5 minutes (same PutMetricData call and namespace as the backlog metrics: no IAM
+# change). The app also logs crm_bulk_reveal (agency id, member id, count) at the same threshold: the log says who.
+# Missing data = OK (scaled to 0, worker off, or before the AA-Partner deploy that publishes it).
+# Cost: 1 alarm x $0.10/month + 1 custom metric (~$0.30/month beyond the free 10).
+# -----------------------------------------------------------------------------
+resource "aws_cloudwatch_metric_alarm" "crm_bulk_reveal" {
+  alarm_name          = "${local.crm_name_prefix}-bulk-reveal"
+  alarm_description   = "AA-Partner: one agency member revealed 60 or more traveller fields or documents within an hour (AA/Jobs/Crm RevealsPerMemberPeakHour, design v3 §4.4 bulk reveal). Find the member in /ecs/${local.crm_name_prefix} (crm_bulk_reveal) and the reveal events in crm.audit_event; confirm with the agency that it was expected.${local.runbook_suffix.incident}"
+  namespace           = "AA/Jobs/Crm"
+  metric_name         = "RevealsPerMemberPeakHour"
+  statistic           = "Maximum"
+  period              = 300
+  evaluation_periods  = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  threshold           = 60 # = BULK_REVEAL_THRESHOLD in reveal_meter.py
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
+
+  tags = merge(local.ecosys_tags, { App = "crm" })
+}
+
 # Booking publishes only into its own namespace (one namespace per owner, so IAM keeps each app to
 # its own metrics). PutMetricData has no resource ARN. Pattern of ses.tf booking_ecs_task_ses_send.
 resource "aws_iam_role_policy" "booking_ecs_task_put_metric_jobs" {

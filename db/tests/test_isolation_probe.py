@@ -549,9 +549,11 @@ class BuildCellsTest(unittest.TestCase):
 
 
 def crm_live_facts():
-    """today_facts() after the AA-932 train: rl-003, rl-004, CIS 269, crm-001 applied and crm_app's password set."""
+    """today_facts() after the AA-932 train: rl-003, rl-004, CIS 269, crm-001 applied and crm_app's password set;
+    plus crm-006 (AA-937) with no reader grant on the F1 vault."""
     f = today_facts()
-    f["catalog"]["registered"] = ["rl-003", "rl-004", "269", "crm-001"]
+    f["catalog"]["registered"] = ["rl-003", "rl-004", "269", "crm-001", "crm-006"]
+    f["crm_readers"] = {"checked": sorted(p.CRM_F1_TABLES), "f1": [], "base": []}
     f["catalog"]["anchor_owner"]["crm"] = "crm_owner"
     marker = f"{p.PASSWORD_MARKER} 2026-10-23T08:00:00Z by DB Migrate set-password"
     f["roles"]["crm_app"] = role("crm_app", connlimit=6, inherit=False, comment=marker,
@@ -593,6 +595,31 @@ class CrmOwnerCellsTest(unittest.TestCase):
                     "cross.crm_app.shared.tenants", "cross.aa_app_user.crm.job", "runtime_grants.crm",
                     "default_acl.crm", "ownership.crm"):
             self.assertEqual(st[cid], "pass", cid)
+
+    def test_readers_reaching_trip_traveler_or_a_base_table_fail(self):
+        # AA-937 (design v3 §4.3 Fix A1): one grant on crm.trip_traveler, or a base table for the AI reader, fails.
+        f = crm_live_facts()
+        f["crm_readers"]["f1"] = [{"role": "crm_support_reader", "rel": "crm.trip_traveler"}]
+        f["crm_readers"]["base"] = [{"role": "crm_ai_reader", "rel": "crm.traveler_profile"}]
+        st, _ = statuses(f)
+        self.assertEqual(st["vault.crm_support_reader"], "FAIL")
+        self.assertEqual(st["views_only.crm_ai_reader"], "FAIL")
+        self.assertEqual(st["vault.crm_ai_reader"], "pass")
+        self.assertEqual(st["views_only.crm_insights"], "pass")
+
+    def test_vault_cells_wait_for_crm006_and_trip_traveler(self):
+        st, _ = statuses(today_facts())                    # nothing collected, crm-006 not registered
+        self.assertEqual(st["vault.crm_eraser"], "pending")
+        f = crm_live_facts()
+        f["crm_readers"]["checked"] = ["crm.member", "crm.traveler"]   # crm-005 not applied: no trip_traveler yet
+        st, _ = statuses(f)
+        self.assertEqual(st["vault.crm_ai_reader"], "FAIL")
+        f["catalog"]["registered"].remove("crm-006")
+        st, _ = statuses(f)
+        self.assertEqual(st["vault.crm_ai_reader"], "pending")
+        f["crm_readers"] = {"error": "42501 InsufficientPrivilegeError: x"}
+        st, _ = statuses(f)
+        self.assertEqual(st["views_only.crm_insights"], "pending")
 
     def test_crm_app_inheriting_its_readers_fails(self):
         f = crm_live_facts()

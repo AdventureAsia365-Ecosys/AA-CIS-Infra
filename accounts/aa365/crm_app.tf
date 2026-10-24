@@ -266,6 +266,34 @@ resource "aws_iam_role_policy" "crm_ecs_task" {
           "StringEquals"              = { "kms:EncryptionContext:purpose" = local.crm_dek_purposes }
         }
       },
+      {
+        # AA-937 (CRM-09, design v3 §4.1 Fix A7): agency documents. The app seals every object with the agency's docs
+        # DEK before the PUT (AA-Partner api/app/documents), so the bucket only ever holds ciphertext; keys are
+        # tenants/<tenant>/documents/<document>. Objects under that prefix only: no List, no bucket-level action, no
+        # version or retention action. Delete is the trash purge (CRM-14) and offboarding (CRM-35).
+        Sid      = "CrmDocumentsObjects"
+        Effect   = "Allow"
+        Action   = ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"]
+        Resource = "${aws_s3_bucket.crm["documents"].arn}/tenants/*/documents/*"
+      },
+      {
+        # The bucket's default SSE-KMS (data key, second layer, crm_storage.tf): through S3 only and bound to the
+        # documents bucket (the key policy's CrmRuntimeS3Objects statement allows the same for this role). Bucket Keys
+        # put the bucket ARN in the encryption context.
+        Sid      = "CrmDocumentsSseKms"
+        Effect   = "Allow"
+        Action   = ["kms:GenerateDataKey", "kms:Decrypt"]
+        Resource = aws_kms_key.crm_data.arn
+        Condition = {
+          "StringEquals" = { "kms:ViaService" = local.crm_s3_via_service }
+          "ArnLike" = {
+            "kms:EncryptionContext:aws:s3:arn" = [
+              aws_s3_bucket.crm["documents"].arn,
+              "${aws_s3_bucket.crm["documents"].arn}/*",
+            ]
+          }
+        }
+      },
     ]
   })
 }
@@ -281,7 +309,8 @@ resource "aws_iam_role_policy" "crm_ecs_task" {
 # RATE_LIMIT_XFF_HOPS (2 = CloudFront viewer address appended, then the NLB's; verify on the first live request),
 # SENTRY_DSN / SENTRY_REQUIRED (only with var.crm_sentry_enabled), the identity values (local.crm_identity_env),
 # and the key provider (AA-934): KEY_PROVIDER=kms and KMS_DATA_KEY_ID = the alias of the CRM data key (an alias, not the
-# key ARN, so the public app repo never needs the account id; the app stores the ARN KMS returns per wrapped DEK).
+# key ARN, so the public app repo never needs the account id; the app stores the ARN KMS returns per wrapped DEK);
+# DOCUMENTS_BUCKET (AA-937): the documents bucket name (task role grant CrmDocumentsObjects above).
 # GIT_SHA and APP_VERSION are baked into the image.
 # -----------------------------------------------------------------------------
 resource "aws_ecs_task_definition" "crm_api" {
@@ -318,6 +347,7 @@ resource "aws_ecs_task_definition" "crm_api" {
       { name = "INTAKE_PAGE_ORIGINS", value = local.crm_intake_origin },
       { name = "RATE_LIMIT_INTAKE_PER_MINUTE", value = "5" },
       { name = "RATE_LIMIT_INTAKE_FORM_PER_HOUR", value = "200" },
+      { name = "DOCUMENTS_BUCKET", value = aws_s3_bucket.crm["documents"].bucket },
       ], local.crm_identity_env, var.crm_sentry_enabled ? [
       { name = "SENTRY_REQUIRED", value = "true" },
     ] : [])
