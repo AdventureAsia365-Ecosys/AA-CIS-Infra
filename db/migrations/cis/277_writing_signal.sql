@@ -12,12 +12,14 @@
 --   1. shared.writing_signal: signal_id uuid PK; writer a1 | t2 | t9_blog | t9_social; channel; scope platform |
 --      tenant with tenant_id NULL exactly for platform (the acp_shared.facts facts_scope_tenant_ck pattern, ADR 0010
 --      decision 10); field; locator jsonb (an object: start / end / index / paragraph); before_text / after_text
---      (pii:free_text, DM-6.1) with their sha256 (lower-case hex; required whenever the text is there); gate; reason_code
---      (the 8 codes of ADR 0010 / WM-06); action (field_edit, sentence_cut, sentence_rewrite, sentence_manual,
---      tenant_edit, reject, dismiss, regenerate); actor_type admin | tenant | system and actor_id; fact_status pending |
---      grey | pass | fail (default pending); exemplar_pref use | never (WM-07, added now so the toggles need no second
---      migration); audit_log_id (a one-way link; the audit row names the signal in details.signal_id); source_table /
---      source_id (polymorphic, so no FK: the AA-839 erasure order stays free); created_at.
+--      (pii:free_text, DM-6.1) with their sha256 (lower-case hex; required whenever the text is there); gate; problem
+--      (pii:free_text: the gate's diagnostic, which quotes the flagged text, so it lives here and audit_log keeps only
+--      its sha256; at most 2000 characters); reason_code (the 8 codes of ADR 0010 / WM-06); action (field_edit,
+--      sentence_cut, sentence_rewrite, sentence_manual, tenant_edit, reject, dismiss, regenerate); actor_type admin |
+--      tenant | system and actor_id; fact_status pending | grey | pass | fail (default pending); exemplar_pref use |
+--      never (WM-07, added now so the toggles need no second migration); audit_log_id (a one-way link; the audit row
+--      names the signal in details.signal_id); source_table / source_id (polymorphic, so no FK: the AA-839 erasure
+--      order stays free); created_at.
 --      Indexes: (tenant_id, created_at DESC) WHERE scope = 'tenant' (erasure, per-tenant reads); (writer, created_at
 --      DESC); (source_table, source_id) (the drawer history of one piece / version).
 --   2. RLS ENABLE + FORCE (ADR 0010 decision 10; unlike the 229 template, which keeps the owner exempt):
@@ -61,7 +63,8 @@
 -- Order. Independent of 275 / 276 / 278, applied after 276 (keys in order). Nothing reads or writes the table until
 -- the AA-916 S2 / S3 code PR deploys, and that code needs it: merge this file's PR, copy to Infra, DB Migrate check ->
 -- apply, merge the schema-reference bot PR, then merge and deploy the code PR. The erasure inventory row (AA-839,
--- services/erasure/inventory.py) ships with the code PR, after the apply, so the erasure never names a missing table.
+-- services/erasure/inventory.py) ships with this file's PR: the erasure planner reports a registered table that is
+-- not applied yet as missing and skips it, so the row is safe before the apply.
 --
 -- Undo (a NEW forward migration, after reverting the code that writes it):
 --   REVOKE ALL ON shared.writing_signal FROM aa_app_user;     -- before anything else (241 invariant)
@@ -83,7 +86,7 @@ DECLARE
     cols     text;
     expect   text := 'signal_id uuid, writer text, channel text, scope text, tenant_id uuid, field text, locator jsonb, '
                      'before_text text, after_text text, before_sha256 text, after_sha256 text, gate text, '
-                     'reason_code text, action text, actor_type text, actor_id text, fact_status text, '
+                     'problem text, reason_code text, action text, actor_type text, actor_id text, fact_status text, '
                      'exemplar_pref text, audit_log_id uuid, source_table text, source_id text, '
                      'created_at timestamp with time zone';
 BEGIN
@@ -124,6 +127,7 @@ CREATE TABLE IF NOT EXISTS shared.writing_signal (
     before_sha256 text,
     after_sha256  text,
     gate          text,
+    problem       text,
     reason_code   text,
     action        text NOT NULL,
     actor_type    text NOT NULL,
@@ -157,7 +161,8 @@ CREATE TABLE IF NOT EXISTS shared.writing_signal (
     CONSTRAINT writing_signal_size_check
         CHECK (coalesce(char_length(before_text), 0) <= 200000 AND coalesce(char_length(after_text), 0) <= 200000
                AND coalesce(char_length(field), 0) <= 200 AND coalesce(char_length(channel), 0) <= 64
-               AND coalesce(char_length(gate), 0) <= 128 AND coalesce(char_length(actor_id), 0) <= 128),
+               AND coalesce(char_length(gate), 0) <= 128 AND coalesce(char_length(actor_id), 0) <= 128
+               AND coalesce(char_length(problem), 0) <= 2000),
     CONSTRAINT writing_signal_source_check
         CHECK (char_length(source_table) BETWEEN 1 AND 128 AND char_length(source_id) BETWEEN 1 AND 128)
 );
@@ -189,6 +194,10 @@ COMMENT ON COLUMN shared.writing_signal.before_sha256 IS
     'AA-916 (277): sha256 (lower-case hex) of before_text as UTF-8; the audit_log row carries the same value.';
 COMMENT ON COLUMN shared.writing_signal.after_sha256 IS
     'AA-916 (277): sha256 (lower-case hex) of after_text as UTF-8; the audit_log row carries the same value.';
+COMMENT ON COLUMN shared.writing_signal.problem IS
+    'pii:free_text; AA-916 (277): the gate''s diagnostic for the edited sentence (it quotes the flagged text: a '
+    'fact, a number, a claim) or the admin''s own note. Kept here, deletable with the tenant; the audit_log row '
+    'carries only its sha256 (ADR 0010 decision 11).';
 COMMENT ON COLUMN shared.writing_signal.reason_code IS
     'AA-916 WM-06 (277): why the admin acted (one-click reason chip). fact_not_in_source also sets fact_status fail '
     'and, for A1 / T2 sentences, a Jev truth=false outcome on question a1_claim_supported.';
