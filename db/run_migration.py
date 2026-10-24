@@ -177,7 +177,8 @@ DELETE_RE = re.compile(r"^(WITH\b.*\b)?DELETE FROM\b")
 IDLE_EXEMPT_KINDS = {
     "shared": frozenset(),
     "booking": frozenset({"bk_inquiry_pull"}),            # always queued at +60 s (bk-002 intake)
-    "crm": frozenset({"crm_heartbeat"}),                  # AA-932: AA-Partner worker liveness kind (AA-933)
+    # AA-932: AA-Partner worker liveness kind (AA-933); AA-978: the CIS membership feed pull, every 20 s
+    "crm": frozenset({"crm_heartbeat", "crm_membership_pull"}),
 }
 IDLE_WAITS = 3          # apply re-checks this many times before it refuses …
 IDLE_WAIT_S = 20        # … this many seconds apart
