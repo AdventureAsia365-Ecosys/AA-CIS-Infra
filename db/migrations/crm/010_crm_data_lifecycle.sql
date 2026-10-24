@@ -37,7 +37,24 @@
 --           the agency hold only.
 --        g. crm.erase_subject and crm.lifecycle_purge_expired first take LOCK TABLE crm.legal_hold IN SHARE MODE: a
 --           hold being placed or released (ROW EXCLUSIVE) waits until the erase commits, and an erase waits for a hold
---           being placed and then sees it. Placing and releasing are unchanged.
+--           being placed and then sees it. erase_subject then locks its trip / traveller row FOR UPDATE, so a row
+--           that would reference it (a party row, a note, a relation: FOR KEY SHARE of the foreign key) waits until
+--           the erase ends. Placing and releasing are unchanged.
+--        h. The database refuses to change a held row on EVERY path (crm.guard_held_change, BEFORE DELETE OR UPDATE):
+--           CRM10 when the OLD row is held (4d) and the statement deletes it, moves it to the trash (deleted_at NULL ->
+--           set) or moves a guarded column away from a value. Tables and guarded columns:
+--             trip (delete / trash only: stage, title and the other business fields stay editable on a held trip);
+--             traveler (referrer_traveler_id, profile_token_enc; contact edits and archive stay allowed);
+--             trip_traveler (trip_id, traveler_id; a role change is allowed) and trip_party (trip_id,
+--             traveler_token): removing someone from a held party is refused (the record of who was on the trip);
+--             note (trip_id, traveler_id, body_enc, kind) and document (trip_id, traveler_id, s3_key, sha256,
+--             filename_enc): content is preserved; document flags (visible_to_travelers, write_only) stay editable;
+--             traveler_relation (both ends, kind); form_submission (trip_id, traveler_id, payload_enc: no redaction
+--             of a held submission; status / outcome and a first link from NULL stay allowed); task (trip_id; status
+--             changes allowed); dispatch_queue (trip_id, traveler_id; the dispatcher's status moves stay allowed);
+--             traveler_health (traveler_id).
+--           A restore from the trash and a link set from NULL are never refused. The API maps CRM10 from any route to
+--           409 legal_hold (app.tenancy.tenant_tx).
 --   5. crm.trip_commitment (base template): the ledger the delete block reads (design §3.5): AA lines, invoices,
 --      payments, signatures, commissions of a trip with their current line_status, written by the cards that own those
 --      records (CRM-16/19/23/25/27) and by the Booking re-check of a restore. line_status mirrors the source system,
@@ -467,6 +484,84 @@ COMMENT ON FUNCTION crm.hold_row(uuid, uuid) IS 'AA-942 (crm-010, hold rule 4d):
 COMMENT ON FUNCTION crm.erase_held(text, uuid, uuid) IS 'AA-942 (crm-010, hold rule 4e): true when crm.erase_subject(scope, subject, token) would delete or update a held row (every step''s rows, both rows of a relation, the clients a traveller referred, the submissions a trip unlinks); scope tenant: any active hold of the agency. crm.erase_subject refuses with CRM10 on it, dry run too. Invoker rights.';
 COMMENT ON FUNCTION crm.legal_hold_blocks(text, uuid) IS 'AA-942 (crm-010, hold rule 4f): crm.erase_held(scope, subject, NULL), i.e. crm.erase_subject would refuse with CRM10. The trash / restore pre-check, the offboarding checks (scope tenant: any active hold) and every other caller use it, so they agree with the purge. Subject-less data (llm_call): the agency hold only. Invoker rights (RLS: one agency).';
 
+-- ── 6c. Hold guard triggers (hold rule 4h) ───────────────────────────────────────────────────────
+-- The database refuses to change a held row on every path, not only through crm.erase_subject: a BEFORE DELETE OR
+-- UPDATE trigger on each table the rule reaches raises CRM10 when the OLD row is held (4d) and the statement would
+-- delete it, move it to the trash (deleted_at NULL -> set), or move one of its guarded columns (the trigger
+-- arguments) away from a value. A link set from NULL (the intake linking a submission), a restore from the trash and
+-- every other column change stay allowed. A permitted erase never fires it: crm.erase_subject refuses first when any
+-- row it would change is held (4e), and the agency erase runs only without any hold.
+CREATE OR REPLACE FUNCTION crm.guard_held_change() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path = pg_catalog, pg_temp
+AS $$
+DECLARE
+    o jsonb := to_jsonb(OLD);
+    n jsonb;
+    c text;
+    v_change text;
+    v_held boolean;
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM crm.legal_hold h WHERE h.status = 'active') THEN
+        RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;  -- nothing is held in this agency
+    END IF;
+    IF TG_OP = 'DELETE' THEN
+        v_change := 'delete';
+    ELSE
+        n := to_jsonb(NEW);
+        IF o ? 'deleted_at' AND o->'deleted_at' = 'null'::jsonb AND n->'deleted_at' <> 'null'::jsonb THEN
+            v_change := 'trash';
+        ELSIF TG_NARGS > 0 THEN
+            FOREACH c IN ARRAY TG_ARGV LOOP
+                IF o->c <> 'null'::jsonb AND (n->c) IS DISTINCT FROM (o->c) THEN
+                    v_change := c;
+                    EXIT;
+                END IF;
+            END LOOP;
+        END IF;
+    END IF;
+    IF v_change IS NULL THEN
+        RETURN NEW;
+    END IF;
+    IF TG_TABLE_NAME = 'traveler_relation' THEN
+        v_held := crm.hold_traveler((o->>'from_traveler_id')::uuid) OR crm.hold_traveler((o->>'to_traveler_id')::uuid);
+    ELSE
+        v_held := crm.hold_row((o->>'trip_id')::uuid, (o->>'traveler_id')::uuid);
+    END IF;
+    IF v_held THEN
+        RAISE EXCEPTION 'crm: legal_hold (% of a held % row refused)', v_change, TG_TABLE_NAME USING ERRCODE = 'CRM10';
+    END IF;
+    RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+END;
+$$;
+REVOKE ALL ON FUNCTION crm.guard_held_change() FROM PUBLIC;
+COMMENT ON FUNCTION crm.guard_held_change() IS 'AA-942 (crm-010, hold rule 4h): BEFORE DELETE OR UPDATE trigger: CRM10 when the OLD row is held (crm.hold_row; a relation: either end) and the statement deletes it, trashes it, or moves a guarded column (the trigger arguments) away from a value.';
+
+DO $$
+DECLARE
+    t text[];
+BEGIN
+    -- table, guarded columns (decisions in the file header, 4h)
+    FOREACH t SLICE 1 IN ARRAY ARRAY[
+        ['trip', '', '', '', '', ''],
+        ['traveler', 'referrer_traveler_id', 'profile_token_enc', '', '', ''],
+        ['trip_traveler', 'trip_id', 'traveler_id', '', '', ''],
+        ['trip_party', 'trip_id', 'traveler_token', '', '', ''],
+        ['note', 'trip_id', 'traveler_id', 'body_enc', 'kind', ''],
+        ['document', 'trip_id', 'traveler_id', 's3_key', 'sha256', 'filename_enc'],
+        ['traveler_relation', 'from_traveler_id', 'to_traveler_id', 'kind', '', ''],
+        ['form_submission', 'trip_id', 'traveler_id', 'payload_enc', '', ''],
+        ['task', 'trip_id', '', '', '', ''],
+        ['dispatch_queue', 'trip_id', 'traveler_id', '', '', ''],
+        ['traveler_health', 'traveler_id', '', '', '', '']
+    ] LOOP
+        EXECUTE format('DROP TRIGGER IF EXISTS %I ON crm.%I', t[1] || '_hold_guard', t[1]);
+        EXECUTE format('CREATE TRIGGER %I BEFORE DELETE OR UPDATE ON crm.%I FOR EACH ROW '
+                       'EXECUTE FUNCTION crm.guard_held_change(%s)', t[1] || '_hold_guard', t[1],
+                       coalesce((SELECT string_agg(quote_literal(x), ', ') FROM unnest(t[2:6]) x WHERE x <> ''), ''));
+    END LOOP;
+END $$;
+
 -- ── 7. crm.erasure_request ───────────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS crm.erasure_request (
     request_id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -658,9 +753,13 @@ BEGIN
 
     -- The subject must exist in this agency (FORCE RLS: crm_owner sees app.tenant_id's rows only).
     IF p_scope = 'trip' THEN
-        PERFORM 1 FROM crm.trip WHERE trip_id = p_subject;
+        -- FOR UPDATE: a row that would reference the subject (FOR KEY SHARE of its foreign key) waits until this erase
+        -- ends, so nothing is attached to it between the hold check and the deletes (the hold guard triggers catch
+        -- any other change).
+        PERFORM 1 FROM crm.trip WHERE trip_id = p_subject FOR UPDATE;
     ELSIF p_scope = 'traveler' THEN
-        SELECT profile_token_enc IS NOT NULL INTO v_has_token FROM crm.traveler WHERE traveler_id = p_subject;
+        SELECT profile_token_enc IS NOT NULL INTO v_has_token FROM crm.traveler WHERE traveler_id = p_subject
+           FOR UPDATE;
     ELSIF p_scope = 'task' THEN
         PERFORM 1 FROM crm.task WHERE task_id = p_subject;
     ELSIF p_scope = 'note' THEN
@@ -938,6 +1037,7 @@ BEGIN
         END IF;
     END LOOP;
     FOREACH t IN ARRAY ARRAY['crm.erase_rows(text,text,uuid,uuid,boolean,text)', 'crm.erasable_append_only()',
+                             'crm.guard_held_change()',
                              'crm.guard_legal_hold()', 'crm.legal_hold_blocks(text,uuid)', 'crm.hold_trip(uuid)',
                              'crm.hold_traveler(uuid)', 'crm.hold_row(uuid,uuid)', 'crm.erase_held(text,uuid,uuid)',
                              'crm.trip_delete_blockers(uuid)', 'crm.erase_subject(text,uuid,uuid,boolean)',
