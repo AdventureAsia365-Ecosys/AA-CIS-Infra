@@ -13,7 +13,7 @@
 #        explicitly AFTER e2e-cognito (recipients = the whole crm-in domain, spam/virus scan, TLS required)
 #     -> S3 aa-crm-dev-ingest-<account>/raw/<SES message id>  (crm_storage.tf: SSE-KMS bucket default under the CRM
 #        ingest key, every object expires after 1 day)
-#     <- the AA-Partner task role (crm_ecs_task_mail below): list / read / delete raw/ (crm_mail_ingest_poll +
+#     <- the AA-Partner task role (crm_ecs_task_mail below): list / read / delete raw/ (the MailIngestScan hook +
 #        crm_mail_ingest), write / read / delete imports/ (the mbox / CSV history import, <= 25 MB, deleted after its job)
 #
 # Facts checked 25/10/2026 (read-only): describe-active-receipt-rule-set -> aa-cis-dev-e2e with one rule, e2e-cognito
@@ -33,8 +33,8 @@
 #     policy statement CrmRuntimeReadSesMail (the client-side context) stays, unused and harmless.
 #   - The rule name aa-crm-dev-ingest matches crm_storage.tf crm_ses_rule_arns (bucket policy AllowSesPutFromCrmRules)
 #     and the ingest key policy SesReceiptEncrypt; neither policy changes shape.
-#   - The app polls raw/ once a minute (crm_mail_ingest_poll, queued only when objects exist) instead of an SNS / S3
-#     event: no new topic, queue or Lambda. An unknown or inactive address is deleted with a count-only log line and the
+#   - The app polls raw/ once a minute (its worker hook MailIngestScan queues crm_mail_ingest only when objects exist)
+#     instead of an SNS / S3 event: no new topic, queue or Lambda. An unknown or inactive address is deleted with a count-only log line and the
 #     metric MailIngestDropped in the existing AA/Jobs/Crm namespace (no new PutMetricData grant).
 #   - OAuth client of the agencies' send-as: one secret shell crm/<env>/mail-oauth (JSON {google_client_id,
 #     google_client_secret, ms_client_id, ms_client_secret}; no secret_version here, the values are set out of band).
@@ -53,6 +53,9 @@
 # mails, ~$0.01/month); S3 ListObjectsV2 by the per-minute poll ~43,200 requests x $0.005 / 1,000 = ~$0.22/month (GET
 # and DELETE of each mail ~$0); raw objects live <= 1 day (~$0); KMS requests within the free tier (Bucket Keys);
 # secret crm/dev/mail-oauth $0.40/month; MX record and IAM $0. Total ~ $0.65/month.
+#
+# Runbook (checks after apply, the SSE-KMS fallback, poison objects, the OAuth secret steps):
+# docs/runbooks/crm-mail-ingest.md.
 # =============================================================================
 
 variable "crm_ingest_subdomain" {
@@ -135,7 +138,7 @@ resource "aws_iam_role_policy" "crm_ecs_task_mail" {
     Version = "2012-10-17"
     Statement = [
       {
-        # crm_mail_ingest_poll lists raw/ (and the history import its own imports/<tenant>/<id> key).
+        # The MailIngestScan hook lists raw/ (and the history import its own imports/<tenant>/<id> key).
         Sid      = "CrmIngestList"
         Effect   = "Allow"
         Action   = ["s3:ListBucket"]
