@@ -32,8 +32,10 @@
 --      b. the supplier's kind must match supplier_kind (aa <-> aa, own <-> agency);
 --      c. an agency line becomes confirmed only through crm.booking_line_confirm() (it freezes the money first): a
 --         crm_app statement that confirms one -> CRM26 line_not_editable;
---      d. confirmed_at is set once, when the line first becomes confirmed; a cancelled line is never visible to
---         travellers (R22);
+--      d. confirmed_at is NULL until the line first becomes confirmed, then set once (a client value on a planning
+--         line is dropped, so it always matches the FX basis date of the frozen money); a cancelled line is never
+--         visible to travellers (R22); a confirmed agency line keeps its confirmation_no while the agency's level is
+--         basic or strict (clearing it -> CRM23 line_incomplete:confirmation_no);
 --      e. only a planning line goes to the trash (CRM26);
 --      f. conf_unique_key = the normalised confirmation_no (upper case, letters and digits only: "hp 1001" =
 --         "HP-1001") while the line is a confirmed agency line and the agency is strict or the supplier is
@@ -42,6 +44,8 @@
 --         unique_violation booking_line_conf_uq (the API's 409 duplicate_confirmation_no; race-free, card R). A
 --         cancelled line frees its number. A line confirmed before the agency went strict (no key) still counts:
 --         the trigger also looks for a confirmed un-keyed line with the same normalised number (same unique_violation).
+--         The key and that scan run only when the line becomes confirmed or its number or supplier changes; any other
+--         edit keeps the stored key, so two lines confirmed with one number before strict can still be edited.
 --   4. crm.booking_line_money (append-only variant; lane §2.1 money columns): one chain per (line, kind cost | sell |
 --      commission_expected): amount numeric(14,2) >= 0, currency char(3), and the FX block (base_currency,
 --      amount_base, fx_rate, fx_rate_date, fx_source aa_quote_lock | platform_daily | manual, fx_basis booking_date |
@@ -51,8 +55,9 @@
 --      line and kind, and a chain starts once). Append-only (crm.ledger_append_only: UPDATE and TRUNCATE always
 --      refused, DELETE only as crm_owner inside crm.erase_subject). Margin protection (lane §2.7, S:§3): the
 --      tenant_isolation policy of the template, plus the RESTRICTIVE policy booking_line_money_margin_roles FOR SELECT
---      TO crm_app: app.member_role IN (owner, agent), or no member role and a job: / seed: / platform: actor. The
---      assistant reads 0 rows. crm_app has SELECT only: every write goes through crm.booking_line_money_put() /
+--      TO crm_app: app.member_role IN (owner, agent), or no member role and a job: / seed: actor. A platform: actor
+--      (AA staff, the L1 console) reads none: AA is a supplier in this ledger, and staff reach an agency only through
+--      the consented support reader. The assistant reads 0 rows. crm_app has SELECT only: every write goes through crm.booking_line_money_put() /
 --      crm.booking_line_confirm() (SECURITY DEFINER, which also re-check the role). No reader grant. The view
 --      crm.v_booking_line_money_current (the head of each chain) is security_invoker, so it reads through the
 --      caller's policies, never crm_owner's.
@@ -64,7 +69,7 @@
 --      unfrozen head money row at the line's confirmation date in the agency timezone (fx_basis booking_date), then
 --      moves the line to confirmed. Refusals: CRM23 line_incomplete:<codes>, CRM25 fx_rate_missing:<currency>, CRM26.
 --      crm.booking_line_money_put(line, kind, amount, currency) (SECURITY DEFINER, EXECUTE crm_app): owner / agent
---      (or a job / seed / platform actor) only (42501 otherwise); a new head row for the kind (nothing when the head
+--      (or a job / seed actor) only (42501 otherwise); a new head row for the kind (nothing when the head
 --      already has that amount and currency); on a confirmed line frozen at once, re-using the head's rate when the
 --      currency is unchanged (no drift on a correction), else resolved for the confirmation date. Not on an aa line
 --      (CRM24, the feed's card adds its own path) nor a cancelled or trashed one (CRM26).
@@ -300,7 +305,7 @@ CREATE TABLE IF NOT EXISTS crm.booking_line_money (
 );
 CREATE INDEX IF NOT EXISTS booking_line_money_line_idx ON crm.booking_line_money (tenant_id, booking_line_id, kind);
 REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON crm.booking_line_money FROM crm_app;
-COMMENT ON TABLE crm.booking_line_money IS 'AA-944 (crm-014; design v3 R17, lane §2.1 / §2.7): the money of a booking line, one append-only chain per (line, kind cost | sell | commission_expected); the head (no successor) is current. The FX block is all NULL while the line is planning and frozen (rate, rate date, source, basis booking_date, stale days, base amount) once it is confirmed: a later FX row never changes a stored base amount (card E). A correction is a new row with supersedes_id. Margin protection: crm_app reads it only as owner / agent (or a job / seed / platform actor), booking_line_money_margin_roles; writes only through crm.booking_line_money_put / crm.booking_line_confirm. conf:commercial.';
+COMMENT ON TABLE crm.booking_line_money IS 'AA-944 (crm-014; design v3 R17, lane §2.1 / §2.7): the money of a booking line, one append-only chain per (line, kind cost | sell | commission_expected); the head (no successor) is current. The FX block is all NULL while the line is planning and frozen (rate, rate date, source, basis booking_date, stale days, base amount) once it is confirmed: a later FX row never changes a stored base amount (card E). A correction is a new row with supersedes_id. Margin protection: crm_app reads it only as owner / agent (or a job / seed actor; never a platform: actor), booking_line_money_margin_roles; writes only through crm.booking_line_money_put / crm.booking_line_confirm. conf:commercial.';
 COMMENT ON COLUMN crm.booking_line_money.fx_rate IS 'one unit of currency in base_currency (amount_base = round(amount * fx_rate, 2)); 1 when they are equal';
 COMMENT ON COLUMN crm.booking_line_money.stale_days IS 'days between the basis date and the date of the rate used (0 = the rate of that day; the platform had no rate for it otherwise)';
 
@@ -376,7 +381,7 @@ BEGIN
 END $$;
 
 -- Margin protection (lane §2.7, S:§3). RESTRICTIVE: ANDed with tenant_isolation, so crm_app reads a money row only in
--- its agency AND as owner / agent (or a context without a member: a job, the seeder, AA platform staff).
+-- its agency AND as owner / agent (or a context without a member: a job or the seeder; never AA platform staff).
 DROP POLICY IF EXISTS booking_line_money_margin_roles ON crm.booking_line_money;
 CREATE POLICY booking_line_money_margin_roles ON crm.booking_line_money
     AS RESTRICTIVE
@@ -384,9 +389,9 @@ CREATE POLICY booking_line_money_margin_roles ON crm.booking_line_money
     USING (
         COALESCE(current_setting('app.member_role', true), '') IN ('owner', 'agent')
         OR (COALESCE(current_setting('app.member_role', true), '') = ''
-            AND COALESCE(current_setting('app.actor', true), '') ~ '^(job|seed|platform):')
+            AND COALESCE(current_setting('app.actor', true), '') ~ '^(job|seed):')
     );
-COMMENT ON POLICY booking_line_money_margin_roles ON crm.booking_line_money IS 'AA-944 (crm-014): RESTRICTIVE: crm_app reads money rows only as an owner or agent (app.member_role, set by tenant_tx), or without a member role as a job: / seed: / platform: actor. The assistant reads none.';
+COMMENT ON POLICY booking_line_money_margin_roles ON crm.booking_line_money IS 'AA-944 (crm-014): RESTRICTIVE: crm_app reads money rows only as an owner or agent (app.member_role, set by tenant_tx), or without a member role as a job: / seed: actor. A platform: actor (AA staff) and the assistant read none.';
 
 -- The append-only rule of crm.erasable_append_only() (crm-010) for the two ledger tables: its own function, because
 -- crm-010's Guard 1 allows that one on consent / trip_stage_history / llm_call only (as crm-013 did for the inbox).
@@ -491,6 +496,7 @@ DECLARE
     v_kind text;
     v_unique boolean;
     v_level text;
+    v_rekey boolean;
 BEGIN
     -- a. AA lines are the Booking feed's (CRM-19): read-only for members.
     IF v_app AND NOT v_feed
@@ -515,11 +521,14 @@ BEGIN
             RAISE EXCEPTION 'crm: line_not_editable (confirm an agency line through crm.booking_line_confirm)'
                 USING ERRCODE = 'CRM26';
         END IF;
-        -- d. confirmed_at once.
-        NEW.confirmed_at := COALESCE(NEW.confirmed_at, now());
     END IF;
+    -- d. confirmed_at: NULL until the line is confirmed, then set once.
     IF TG_OP = 'UPDATE' AND OLD.confirmed_at IS NOT NULL THEN
         NEW.confirmed_at := OLD.confirmed_at;
+    ELSIF NEW.status = 'confirmed' THEN
+        NEW.confirmed_at := COALESCE(NEW.confirmed_at, now());
+    ELSE
+        NEW.confirmed_at := NULL;
     END IF;
     IF NEW.status = 'cancelled' THEN
         NEW.visible_to_travelers := false;  -- R22
@@ -529,11 +538,26 @@ BEGIN
         RAISE EXCEPTION 'crm: line_not_editable (only a planning line goes to the trash; cancel a % line)', OLD.status
             USING ERRCODE = 'CRM26';
     END IF;
-    -- f. The strict duplicate key (card R).
     SELECT COALESCE((SELECT ts.booking_validation_level FROM crm.tenant_settings ts WHERE ts.tenant_id = NEW.tenant_id),
                     'basic')
       INTO v_level;
+    -- d'. A confirmed agency line keeps the number its level asked for at confirm (R18 is not undone by an edit).
+    IF TG_OP = 'UPDATE' AND OLD.status = 'confirmed' AND NEW.status = 'confirmed' AND NEW.supplier_kind = 'agency'
+       AND OLD.confirmation_no IS NOT NULL AND NEW.confirmation_no IS NULL AND v_level <> 'off' THEN
+        RAISE EXCEPTION 'crm: line_incomplete:confirmation_no (a confirmed line keeps its confirmation number)'
+            USING ERRCODE = 'CRM23';
+    END IF;
+    -- f. The strict duplicate key (card R). Computed (and the un-keyed lines scanned) only when the line becomes
+    -- confirmed or its number or supplier changes: any other edit keeps the stored key, so lines confirmed with one
+    -- number before the agency went strict stay editable (title, dates, visibility).
+    v_rekey := TG_OP = 'INSERT' OR OLD.status IS DISTINCT FROM NEW.status
+               OR OLD.confirmation_no IS DISTINCT FROM NEW.confirmation_no
+               OR OLD.agency_supplier_id IS DISTINCT FROM NEW.agency_supplier_id
+               OR OLD.supplier_kind IS DISTINCT FROM NEW.supplier_kind;
     IF NEW.supplier_kind = 'agency' AND NEW.status = 'confirmed' AND NEW.confirmation_no IS NOT NULL
+       AND (v_level = 'strict' OR COALESCE(v_unique, false)) AND NOT v_rekey THEN
+        NEW.conf_unique_key := OLD.conf_unique_key;
+    ELSIF NEW.supplier_kind = 'agency' AND NEW.status = 'confirmed' AND NEW.confirmation_no IS NOT NULL
        AND (v_level = 'strict' OR COALESCE(v_unique, false)) THEN
         NEW.conf_unique_key := upper(regexp_replace(NEW.confirmation_no, '[^[:alnum:]]+', '', 'g'));
         -- A line confirmed before the agency went strict (or the supplier became confirmation_unique) has no key; it
@@ -553,7 +577,7 @@ BEGIN
 END;
 $$;
 REVOKE ALL ON FUNCTION crm.guard_booking_line() FROM PUBLIC;
-COMMENT ON FUNCTION crm.guard_booking_line() IS 'AA-944 (crm-014, file header item 3a-3f): aa lines only from a job: / platform: actor (CRM24 aa_line_read_only); the supplier''s kind matches; an agency line is confirmed only through crm.booking_line_confirm (CRM26); confirmed_at set once; a cancelled line is hidden from travellers; only a planning line is trashed (CRM26); conf_unique_key for the strict duplicate check.';
+COMMENT ON FUNCTION crm.guard_booking_line() IS 'AA-944 (crm-014, file header item 3a-3f): aa lines only from a job: / platform: actor (CRM24 aa_line_read_only); the supplier''s kind matches; an agency line is confirmed only through crm.booking_line_confirm (CRM26); confirmed_at NULL until confirmed, then set once; a confirmed agency line keeps its confirmation_no unless the level is off (CRM23); a cancelled line is hidden from travellers; only a planning line is trashed (CRM26); conf_unique_key for the strict duplicate check, recomputed only when the line becomes confirmed or its number or supplier changes.';
 CREATE OR REPLACE TRIGGER booking_line_guard
     BEFORE INSERT OR UPDATE OR DELETE ON crm.booking_line
     FOR EACH ROW EXECUTE FUNCTION crm.guard_booking_line();
@@ -781,7 +805,7 @@ DECLARE
     v_actor text := COALESCE(current_setting('app.actor', true), '');
     v_line record;
 BEGIN
-    IF NOT (v_role IN ('owner', 'agent') OR (v_role = '' AND v_actor ~ '^(job|seed|platform):')) THEN
+    IF NOT (v_role IN ('owner', 'agent') OR (v_role = '' AND v_actor ~ '^(job|seed):')) THEN
         RAISE EXCEPTION 'crm: margin_forbidden (only an owner or an agent writes line money)'
             USING ERRCODE = 'insufficient_privilege';
     END IF;
@@ -809,7 +833,7 @@ END;
 $$;
 REVOKE ALL ON FUNCTION crm.booking_line_money_put(uuid, text, numeric, text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION crm.booking_line_money_put(uuid, text, numeric, text) TO crm_app;
-COMMENT ON FUNCTION crm.booking_line_money_put(uuid, text, numeric, text) IS 'AA-944 (crm-014, R17): writes the cost, sell or commission_expected of an agency line of the agency of app.tenant_id as a new head row (crm.booking_line_money_write). Owner / agent, or a job / seed / platform actor without a member role (42501 margin_forbidden otherwise); not an aa line (CRM24), a cancelled or trashed line (CRM26). Returns the head row id. SECURITY DEFINER; EXECUTE crm_app.';
+COMMENT ON FUNCTION crm.booking_line_money_put(uuid, text, numeric, text) IS 'AA-944 (crm-014, R17): writes the cost, sell or commission_expected of an agency line of the agency of app.tenant_id as a new head row (crm.booking_line_money_write). Owner / agent, or a job / seed actor without a member role (42501 margin_forbidden otherwise; a platform: actor too); not an aa line (CRM24), a cancelled or trashed line (CRM26). Returns the head row id. SECURITY DEFINER; EXECUTE crm_app.';
 
 CREATE OR REPLACE FUNCTION crm.booking_line_confirm(p_line uuid) RETURNS jsonb
     LANGUAGE plpgsql
@@ -1273,6 +1297,14 @@ BEGIN
                     AND polname = 'booking_line_money_margin_roles' AND NOT polpermissive AND polcmd = 'r'
                     AND polroles = ARRAY['crm_app'::regrole::oid]) THEN
         RAISE EXCEPTION 'crm-014: booking_line_money_margin_roles must be RESTRICTIVE FOR SELECT TO crm_app';
+    END IF;
+    -- AA staff (platform: actors, the L1 console) never read or write agency line money.
+    IF (SELECT pg_catalog.pg_get_expr(polqual, polrelid) FROM pg_catalog.pg_policy
+         WHERE polrelid = 'crm.booking_line_money'::regclass AND polname = 'booking_line_money_margin_roles')
+           LIKE '%platform%'
+       OR position('platform' IN (SELECT prosrc FROM pg_catalog.pg_proc
+                                   WHERE oid = 'crm.booking_line_money_put(uuid,text,numeric,text)'::regprocedure)) > 0 THEN
+        RAISE EXCEPTION 'crm-014: a platform: actor must not pass the margin gate (policy or crm.booking_line_money_put)';
     END IF;
     IF NOT COALESCE((SELECT 'security_invoker=true' = ANY (reloptions) FROM pg_catalog.pg_class
                       WHERE oid = 'crm.v_booking_line_money_current'::regclass), false) THEN
