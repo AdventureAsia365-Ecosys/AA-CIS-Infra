@@ -87,9 +87,12 @@ locals {
   # versions are no longer refreshed and their ARNs leave this list (5 -> 2).
   # A new aws_secretsmanager_secret_version (or secret-version data source) must be added here
   # (bootstrap: local apply), or plan fails with AccessDenied on refresh after it is first applied.
+  # AA-874: + the CIS Redis AUTH secret. Its version is write-only (secret_string_wo), but refresh
+  # still reads the version (GetSecretValue), so the plan role needs it like any other version.
   tf_plan_secret_arns = [
     aws_secretsmanager_secret.tripplanner_db.arn,
     aws_secretsmanager_secret.tripplanner_api_key.arn,
+    module.elasticache.auth_secret_arn,
   ]
 
   # CIS app objects the app deploy role may touch.
