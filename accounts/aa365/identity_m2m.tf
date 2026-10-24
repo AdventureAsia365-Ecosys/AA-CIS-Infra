@@ -16,7 +16,8 @@
 #     admin-create only, no self sign-up, MFA off (nobody signs in), account recovery admin_only.
 #   - resource server "booking.b2b" with the four contract scopes read / quote / hold / book (contract
 #     booking.b2b.v1 securitySchemes.m2m). Later receivers add their own resource server here: AA-976 adds
-#     "cis.catalog" (scope read, contract catalog.http.v1, served by AA-CIS-App /catalog/v1); cis.tenant is AA-978.
+#     "cis.catalog" (scope read, contract catalog.http.v1, served by AA-CIS-App /catalog/v1); AA-978 adds
+#     "cis.tenant" (scope read, contract tenant.membership.v1, served by AA-CIS-App /tenant/membership/v1).
 #   - app client aa-m2m-<env>-crm: confidential (generated secret), client_credentials ONLY, all four booking.b2b
 #     scopes (hold/book routes arrive with AA-973; Booking checks a scope per route, so an extra scope grants nothing
 #     until its route exists), access tokens 6 h (ADR 0006b: cached in process), token revocation on.
@@ -36,6 +37,9 @@
 #   1. Store the CRM credentials in the container (orchestrator / Nghiep; reads the generated client secret from Cognito
 #      and writes {client_id, client_secret, token_url, scopes} as JSON) — see the AA-972 handoff for the exact command.
 #   2. A Booking deploy (or Deploy Dev dispatch) copies the latest task definition revision with the two env vars.
+#   3. AA-978: add cis.tenant/read to the "scopes" value of that JSON (same container; client id and secret unchanged).
+#      crm_app.tf injects the whole JSON into the AA-Partner task as the secret env M2M_CLIENT, so the next AA-Partner
+#      deploy (which copies the latest task definition revision) gives the CRM worker its credentials.
 # =============================================================================
 
 variable "identity_m2m_domain_prefix" {
@@ -75,6 +79,14 @@ locals {
   idm2m_catalog_identifier = "cis.catalog"
   idm2m_catalog_scopes = {
     read = "Published tours, destinations and AA-authored content (CIS /catalog/v1)"
+  }
+
+  # AA-978 (CRM-P1): contract tenant.membership.v1 securitySchemes.m2m. The CRM pulls the CIS membership feed with this
+  # scope only (AA-Partner app/cis/m2m.py asks for it alone); CIS pins the CRM client and this scope per route like
+  # catalog.http.v1, so no CIS task definition variable is needed either.
+  idm2m_tenant_identifier = "cis.tenant"
+  idm2m_tenant_scopes = {
+    read = "Agency membership snapshot, identity lookup and event feed (CIS /tenant/membership/v1)"
   }
 }
 
@@ -128,6 +140,20 @@ resource "aws_cognito_resource_server" "cis_catalog" {
   }
 }
 
+resource "aws_cognito_resource_server" "cis_tenant" {
+  identifier   = local.idm2m_tenant_identifier
+  name         = "AA-CIS-App tenant membership API tenant.membership.v1"
+  user_pool_id = aws_cognito_user_pool.m2m.id
+
+  dynamic "scope" {
+    for_each = local.idm2m_tenant_scopes
+    content {
+      scope_name        = scope.key
+      scope_description = scope.value
+    }
+  }
+}
+
 resource "aws_cognito_user_pool_client" "m2m_crm" {
   name         = "${local.idm2m_name}-crm"
   user_pool_id = aws_cognito_user_pool.m2m.id
@@ -137,9 +163,11 @@ resource "aws_cognito_user_pool_client" "m2m_crm" {
   allowed_oauth_flows_user_pool_client = true
   # AA-976: + cis.catalog/read. Each receiver checks its own scope per route, so a scope of another API grants nothing
   # there. Updating the scopes of an existing client is in place (no new client id, the secret is kept).
+  # AA-978: + cis.tenant/read (the CIS membership feed), same in-place update.
   allowed_oauth_scopes = concat(
     [for s in aws_cognito_resource_server.booking_b2b.scope_identifiers : s],
     [for s in aws_cognito_resource_server.cis_catalog.scope_identifiers : s],
+    [for s in aws_cognito_resource_server.cis_tenant.scope_identifiers : s],
   )
   # Cognito always allows refresh-token auth; nothing else (no SRP, no password, no USER_AUTH: there are no users).
   explicit_auth_flows = ["ALLOW_REFRESH_TOKEN_AUTH"]
@@ -196,6 +224,10 @@ output "identity_m2m_booking_scopes" {
 
 output "identity_m2m_catalog_scopes" {
   value = sort(aws_cognito_resource_server.cis_catalog.scope_identifiers)
+}
+
+output "identity_m2m_tenant_scopes" {
+  value = sort(aws_cognito_resource_server.cis_tenant.scope_identifiers)
 }
 
 output "identity_m2m_crm_secret_arn" {

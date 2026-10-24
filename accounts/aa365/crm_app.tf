@@ -11,6 +11,7 @@
 #     - log group /ecs/aa-crm-dev (30 days, AA-872)
 #     - secret shell crm/dev/sentry-dsn (no value; the DSN secret crm/dev/database-url is crm_data.tf, AA-932)
 #     - execution role aa-crm-dev-ecs-execution-role: pull this repo, write this log group, read the two secrets
+#       and (AA-978) the CRM's M2M client credentials aa-crm/dev/m2m-booking-client (identity_m2m.tf)
 #     - task role aa-crm-dev-ecs-task-role (the name the AA-932 KMS key policies already trust): ECS Exec channel,
 #       exec session logs, PutMetricData into AA/Jobs/Crm, and (AA-934, CRM-06 KeyProvider) GenerateDataKey /
 #       Decrypt / Encrypt on the CRM data key with exactly the context {tenant_id, purpose} the key policy allows.
@@ -48,6 +49,17 @@ variable "crm_github_repo_id" {
   validation {
     condition     = var.crm_github_repo_id == "" || can(regex("^[0-9]+$", var.crm_github_repo_id))
     error_message = "crm_github_repo_id must be empty or a numeric GitHub repository id."
+  }
+}
+
+variable "crm_cis_api_url" {
+  description = "AA-978: CIS_API_URL of the AA-Partner task, the base URL the CRM worker pulls the CIS membership feed from (contract tenant.membership.v1, <this>/tenant/membership/v1). The public CIS REST API custom domain (route /tenant/membership/{membership_proxy+}, modules/api_gateway); no trailing slash."
+  type        = string
+  default     = "https://api-cis.lumiguides.it.com"
+
+  validation {
+    condition     = can(regex("^https://[a-z0-9.-]+$", var.crm_cis_api_url))
+    error_message = "crm_cis_api_url must be an https origin without a path or trailing slash."
   }
 }
 
@@ -196,11 +208,16 @@ resource "aws_iam_role_policy" "crm_ecs_execution" {
         Resource = "${aws_cloudwatch_log_group.crm_api.arn}:log-stream:*"
       },
       {
-        # crm_data.tf (AA-932) names this role as the DSN secret's only runtime reader.
-        Sid      = "ReadCrmSecrets"
-        Effect   = "Allow"
-        Action   = ["secretsmanager:GetSecretValue"]
-        Resource = [aws_secretsmanager_secret.crm_db.arn, aws_secretsmanager_secret.crm_sentry_dsn.arn]
+        # crm_data.tf (AA-932) names this role as the DSN secret's only runtime reader. AA-978: + the CRM's M2M client
+        # credentials (identity_m2m.tf), injected as M2M_CLIENT; exactly that one secret, no aa-crm/* wildcard.
+        Sid    = "ReadCrmSecrets"
+        Effect = "Allow"
+        Action = ["secretsmanager:GetSecretValue"]
+        Resource = [
+          aws_secretsmanager_secret.crm_db.arn,
+          aws_secretsmanager_secret.crm_sentry_dsn.arn,
+          aws_secretsmanager_secret.m2m_crm_client.arn,
+        ]
       },
     ]
   })
@@ -328,6 +345,10 @@ resource "aws_iam_role_policy" "crm_ecs_task" {
 # AUDIT_BUCKET_COMPLIANCE / AUDIT_BUCKET_GOVERNANCE / AUDIT_RETENTION_DRY_RUN (AA-940): the two audit tiers and the
 # retention dry run; LIFECYCLE_DRY_RUN (AA-942): every hard delete of agency data (daily crm_lifecycle run, erasure,
 # offboarding erase) only counts while "true"; turning it off is an ops decision (DM-7.2), like JOB_RETENTION_DRY_RUN.
+# AA-978 (CRM-P1 membership feed): CIS_API_URL (var.crm_cis_api_url) and the secret M2M_CLIENT = the whole JSON of
+# aa-crm/<env>/m2m-booking-client {client_id, client_secret, token_url, scopes} (identity_m2m.tf). The worker's
+# crm_membership_pull asks for scope cis.tenant/read with it; while either is empty the job logs not_configured. The
+# secret holds a value on Dev since AA-972 (a task whose valueFrom secret has no value fails to start).
 # GIT_SHA and APP_VERSION are baked into the image.
 # -----------------------------------------------------------------------------
 resource "aws_ecs_task_definition" "crm_api" {
@@ -371,11 +392,14 @@ resource "aws_ecs_task_definition" "crm_api" {
       { name = "AUDIT_BUCKET_COMPLIANCE", value = aws_s3_bucket.crm["audit-c"].bucket },
       { name = "AUDIT_BUCKET_GOVERNANCE", value = aws_s3_bucket.crm["audit-g"].bucket },
       { name = "AUDIT_RETENTION_DRY_RUN", value = "true" },
+      # AA-978: the CIS membership feed (crm_membership_pull); credentials in the secret M2M_CLIENT below.
+      { name = "CIS_API_URL", value = var.crm_cis_api_url },
       ], local.crm_identity_env, local.crm_scrub_env, var.crm_sentry_enabled ? [
       { name = "SENTRY_REQUIRED", value = "true" },
     ] : [])
     secrets = concat([
       { name = "DATABASE_URL", valueFrom = aws_secretsmanager_secret.crm_db.arn },
+      { name = "M2M_CLIENT", valueFrom = aws_secretsmanager_secret.m2m_crm_client.arn }, # AA-978, identity_m2m.tf
       ], var.crm_sentry_enabled ? [
       { name = "SENTRY_DSN", valueFrom = aws_secretsmanager_secret.crm_sentry_dsn.arn },
     ] : [])
