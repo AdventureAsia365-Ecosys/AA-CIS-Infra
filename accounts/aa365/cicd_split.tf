@@ -538,6 +538,14 @@ resource "aws_iam_role_policy" "tf_plan" {
         Action   = ["secretsmanager:GetSecretValue"]
         Resource = local.tf_plan_secret_arns
       },
+      {
+        # Refresh of aws_bedrock_guardrail (crm_scrub.tf, AA-938) reads the guardrail and its tags; ReadOnlyAccess
+        # does not cover these Bedrock actions, so every plan failed with AccessDenied once the guardrail existed (S249).
+        Sid      = "BedrockGuardrailRead"
+        Effect   = "Allow"
+        Action   = ["bedrock:GetGuardrail", "bedrock:ListTagsForResource", "bedrock:ListGuardrails"]
+        Resource = "*"
+      },
     ]
   })
 }
