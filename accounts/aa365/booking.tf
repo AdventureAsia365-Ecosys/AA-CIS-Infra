@@ -234,8 +234,9 @@ resource "aws_iam_role_policy" "booking_ecs_execution" {
 # var.ses_from_address through the transactional configuration set (ses.tf
 # aws_iam_role_policy.booking_ecs_task_ses_send, AA-811), and cloudwatch:PutMetricData into namespace
 # AA/Jobs/Booking only (observability_ecosys.tf aws_iam_role_policy.booking_ecs_task_put_metric_jobs,
-# the job backlog sampler, AA-751). No Bedrock, no S3, no CIS secrets: add them only when a feature
-# needs them.
+# the job backlog sampler, AA-751), and s3:PutObject / s3:GetObject on supply-media/* of the Booking supply-media
+# bucket (booking_media.tf aws_iam_role_policy.booking_ecs_task_supply_media, supplier photos, AA-835). No Bedrock,
+# no other S3, no CIS secrets: add them only when a feature needs them.
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "booking_ecs_task" {
   name                 = "${local.bk_name_prefix}-ecs-task-role"
@@ -296,7 +297,8 @@ resource "aws_iam_role_policy" "booking_ecs_task" {
 # transactional stream of ses.tf), STAFF_ADMIN_URL (links to the staff admin). AA-972: COGNITO_M2M_ISSUER and
 # COGNITO_M2M_CRM_CLIENT_ID (identity_m2m.tf; the B2B API answers 503 without them). GIT_SHA is baked into the
 # image at build time. AA-871: SENTRY_DSN (secret booking/<env>/sentry-dsn) and SENTRY_REQUIRED=true, both only
-# while var.booking_sentry_enabled (booking_variables.tf says why it waits for the secret value).
+# while var.booking_sentry_enabled (booking_variables.tf says why it waits for the secret value). AA-835:
+# SUPPLY_MEDIA_BUCKET (booking_media.tf), where the supplier photo upload writes.
 #
 # A change here registers a new revision that the service ignores (ignore_changes below); the next
 # AA-Booking deploy copies the family's LATEST revision (deploy-dev.yml, AA-811) and carries it to the task.
@@ -326,6 +328,8 @@ resource "aws_ecs_task_definition" "booking" {
       # the AA-Partner (CRM) client only. Public values (issuer, client id); the client secret never reaches Booking.
       { name = "COGNITO_M2M_ISSUER", value = "https://${aws_cognito_user_pool.m2m.endpoint}" },
       { name = "COGNITO_M2M_CRM_CLIENT_ID", value = aws_cognito_user_pool_client.m2m_crm.id },
+      # AA-835: supplier photos (booking_media.tf); the app writes supply-media/<type>/<entity>/<id>.<ext> there.
+      { name = "SUPPLY_MEDIA_BUCKET", value = aws_s3_bucket.booking_supply_media.bucket },
       ], var.booking_sentry_enabled ? [
       { name = "SENTRY_REQUIRED", value = "true" },
     ] : [])
