@@ -328,7 +328,10 @@ SELECT nspname::text AS schema, pg_catalog.pg_get_userbyid(nspowner)::text AS ow
 # Objects of the schemas $2 on which role $1 lacks a baseline privilege ($3 relations, $4 sequences that
 # are not identity sequences — INSERT needs no right on those —, $5 functions that are not trigger
 # functions — a trigger fires without EXECUTE), plus USAGE on each schema (has_table_privilege alone
-# ignores it). Extension members are left out. Catalog facts: nothing runs as $1.
+# ignores it). Extension members are left out. Partitions are left out too: a query through the parent
+# checks the parent's privileges only, and an owner may revoke the runtime role's rights on each
+# partition on purpose (crm-007, AA-940: crm.audit_event's monthly partitions are reached through the
+# parent only, and a new one is made every month). Catalog facts: nothing runs as $1.
 RUNTIME_MISSING_SQL = """
 WITH s AS (SELECT n.oid, n.nspname FROM pg_catalog.pg_namespace n WHERE n.nspname = ANY($2::text[])),
 ext AS (SELECT d.classid, d.objid FROM pg_catalog.pg_depend d WHERE d.deptype = 'e')
@@ -341,7 +344,7 @@ SELECT kind, name, missing FROM (
            (SELECT pg_catalog.string_agg(x, ',') FROM pg_catalog.unnest($3::text[]) AS x
              WHERE NOT pg_catalog.has_table_privilege($1, c.oid, x))
       FROM pg_catalog.pg_class c JOIN s ON s.oid = c.relnamespace
-     WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f')
+     WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f') AND NOT c.relispartition
        AND NOT EXISTS (SELECT 1 FROM ext WHERE ext.classid = 'pg_catalog.pg_class'::regclass AND ext.objid = c.oid)
     UNION ALL
     SELECT 'sequence', s.nspname || '.' || c.relname,
