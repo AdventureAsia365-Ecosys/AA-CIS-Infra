@@ -10,20 +10,38 @@
 #                                OFF (most likely a hand-typed rollback that did not take)
 #   tenant_pool_unavailable      "aa817_tenant_pool_unavailable"  ERROR: no tenant connection (the route
 #                                answers 503 when fail_closed)
+#   tenant_guc_not_applied       "aa817_tenant_guc_not_applied"   ERROR: app.tenant_id did not take on the
+#                                tenant connection (503); the most direct RLS-context failure
 #   tenant_route_admin_pool      JSON { $.used_tenant_pool IS FALSE }: a tenant route ran on the admin pool.
 #                                Every line with used_tenant_pool comes from a route behind a tenant-pool
-#                                flag, so this fires only on a rollback (deliberate or not). It stays in
-#                                ALARM for as long as a route is rolled back on purpose: intended, that
-#                                traffic is not filtered by RLS.
+#                                flag, so this fires only on a rollback (deliberate or not). CloudWatch
+#                                e-mails only on a state change, so a route rolled back on purpose would hold
+#                                the alarm in ALARM and hide a second, unintended rollback: deliberate
+#                                rollbacks are listed in local.tenant_pool_known_rollback_events instead.
 #
 # The api logs JSON lines (AA-CIS-App shared/log_config.py), so the event names match as quoted terms and
 # the boolean needs a JSON pattern. api and worker both log to /ecs/<prefix> (modules/ecs). Same shape as
 # log_write_failed (observability.tf): Sum > 0 over 5 min, missing data = OK, e-mail on ALARM and on OK.
 # Renaming any of these events in the app silently disables its alarm: keep the names in sync.
-# Cost: 4 alarms x $0.10 = $0.40/month; the custom metrics exist only while lines match.
+# Cost: 5 alarms x $0.10 = $0.50/month; the custom metrics exist only while lines match.
 # -----------------------------------------------------------------------------
 
 locals {
+  # Log events (the JSON `event` field) of routes rolled back ON PURPOSE, left out of the admin-pool alarm so it
+  # keeps watching every other route. Keep this list short and dated; remove an entry the moment its flag is
+  # back ON (a deliberate rollback that is not listed here simply holds the alarm in ALARM, which is the safe
+  # side).
+  #   publish_log_listed: GET /v1/publish-log, flag aa544:publish_log_list_pool pinned to "false" in Redis
+  #   before the S241 D-12 merge (AA-CIS-App #792) and never switched back (Logs Insights 22-24/10/2026, AA-874).
+  #   Remove when the flag is ON again (SET aa544:publish_log_list_pool true, or DEL) and Logs Insights shows
+  #   publish_log_listed with used_tenant_pool=true.
+  tenant_pool_known_rollback_events = ["publish_log_listed"]
+
+  tenant_route_admin_pool_pattern = length(local.tenant_pool_known_rollback_events) == 0 ? "{ $.used_tenant_pool IS FALSE }" : format(
+    "{ ($.used_tenant_pool IS FALSE) && %s }",
+    join(" && ", [for e in local.tenant_pool_known_rollback_events : format("($.event != \"%s\")", e)]),
+  )
+
   tenant_pool_alarm_filters = {
     tenant_flag_read_failed = {
       pattern     = "\"aa817_tenant_flag_read_failed\""
@@ -37,9 +55,13 @@ locals {
       pattern     = "\"aa817_tenant_pool_unavailable\""
       description = "A tenant route got no tenant-pool connection (fail-closed routes answer 503). Check the line's reason= and the aa_app_user pool / RDS connections."
     }
+    tenant_guc_not_applied = {
+      pattern     = "\"aa817_tenant_guc_not_applied\""
+      description = "app.tenant_id did not take on a tenant-pool connection; the route answered 503 instead of running without RLS context. Check the line's flag_key and the aa_app_user role / pool setup."
+    }
     tenant_route_admin_pool = {
-      pattern     = "{ $.used_tenant_pool IS FALSE }"
-      description = "A tenant route ran on the admin pool (BYPASSRLS, used_tenant_pool=false): a route flag is rolled back. Expected only during a deliberate rollback; otherwise find who set the flag to false."
+      pattern     = local.tenant_route_admin_pool_pattern
+      description = "A tenant route ran on the admin pool (BYPASSRLS, used_tenant_pool=false): a route flag is rolled back. Routes rolled back on purpose are excluded (tenant_pool_known_rollback_events in tenant_pool_alarms.tf); otherwise find who set the flag to false."
     }
   }
 }

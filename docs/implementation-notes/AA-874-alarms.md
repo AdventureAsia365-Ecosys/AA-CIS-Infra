@@ -9,7 +9,7 @@ can merge and apply at any time, waves included.
 
 ## Decisions
 
-- **Four filters + alarms** in `accounts/aa365/tenant_pool_alarms.tf`, same shape as `log_write_failed`
+- **Five filters + alarms** in `accounts/aa365/tenant_pool_alarms.tf`, same shape as `log_write_failed`
   (`observability.tf`): log group `module.ecs.log_group_name` (`/ecs/aa-cis-dev`, api + worker), namespace
   `aa-cis/ops`, Sum > 0 over 300 s, 1 period, `treat_missing_data = notBreaching`, `alarm_actions` and
   `ok_actions` = `aws_sns_topic.alerts` (e-mail on ALARM and again on OK, D-20).
@@ -19,39 +19,52 @@ can merge and apply at any time, waves included.
   | `aa-cis-dev-tenant-flag-read-failed` | `"aa817_tenant_flag_read_failed"` | Redis error / timeout / no client on a flag read |
   | `aa-cis-dev-tenant-flag-unrecognized` | `"aa817_tenant_flag_unrecognized"` | a flag value neither ON nor OFF (bad hand rollback) |
   | `aa-cis-dev-tenant-pool-unavailable` | `"aa817_tenant_pool_unavailable"` | no tenant connection (503 on fail-closed routes) |
-  | `aa-cis-dev-tenant-route-admin-pool` | `{ $.used_tenant_pool IS FALSE }` | a tenant route ran on the admin pool (rolled back) |
+  | `aa-cis-dev-tenant-guc-not-applied` | `"aa817_tenant_guc_not_applied"` | `app.tenant_id` did not take on the tenant connection (503) |
+  | `aa-cis-dev-tenant-route-admin-pool` | `{ ($.used_tenant_pool IS FALSE) && ($.event != "publish_log_listed") }` | a tenant route ran on the admin pool (rolled back), minus the known pin |
 
 - **The 4th alarm is a JSON pattern.** The api logs JSON (AA-871, `shared/log_config.py`); a Logs Insights
   query on 24/10 confirmed `used_tenant_pool` is a JSON boolean (`"used_tenant_pool": true`). Every line that
   carries the field comes from a route behind a tenant-pool flag (`acquire_scoped_conn`), so `false` always
-  means a rolled-back route. It stays in ALARM for as long as a route is rolled back on purpose: intended,
-  that traffic is not filtered by RLS.
+  means a rolled-back route.
+- **Known deliberate rollbacks are excluded, not tolerated** (review round). CloudWatch e-mails only on a state
+  change, so an alarm held in ALARM by a route rolled back on purpose would stay silent on a second,
+  unintended rollback. `local.tenant_pool_known_rollback_events` lists the `event` names of routes rolled back
+  on purpose; the pattern is built from it (empty list → plain `{ $.used_tenant_pool IS FALSE }`). Today it
+  holds `publish_log_listed` (the S241 pin, below), with its removal condition next to it. A deliberate
+  rollback that is not listed holds the alarm in ALARM: the safe side.
+- **`aa817_tenant_guc_not_applied` added** (review round, +$0.10): the fail-closed 503 when the tenant id did
+  not take on the connection, the most direct RLS-context failure.
 - **Runbook:** `local.runbook_suffix.incident` (no dedicated tenant-pool playbook exists yet), as the
   docs-gen source guard requires.
 - Alarm names start with `aa-cis-dev-tenant-`, so `describe-alarms --alarm-name-prefix aa-cis-dev-tenant`
-  lists exactly these four.
+  lists exactly these five.
 
 ## Changed
 
-- New `accounts/aa365/tenant_pool_alarms.tf` (4 `aws_cloudwatch_log_metric_filter.tenant_pool[...]`,
-  4 `aws_cloudwatch_metric_alarm.tenant_pool[...]`). Nothing else.
+- New `accounts/aa365/tenant_pool_alarms.tf` (5 `aws_cloudwatch_log_metric_filter.tenant_pool[...]`,
+  5 `aws_cloudwatch_metric_alarm.tenant_pool[...]`). Nothing else.
 
 ## Tradeoffs
 
 - One alarm per event instead of one combined metric: each e-mail says which state it is, at $0.10 each.
-- No alarm on `aa817_tenant_context_unavailable` (a tenant route with no valid tenant id): out of the issue's
-  scope; it is a request-level 503, not a pool or Redis state.
+- No alarm on `aa817_tenant_context_unavailable` (a tenant route with no valid tenant id, or no tenant pool at
+  all): it is a request-level 503 driven by the caller's token, so a malformed token from any client would page;
+  a missing tenant pool also shows in `/health/ready`. Add it if it turns out to matter.
+- Excluding the pinned route by event name instead of switching the flag back ON here: whether the S241 pin is
+  still needed is not written down, and flipping a Redis flag is a live write outside this PR. The exclusion
+  keeps the alarm useful for every other route either way.
 
 ## Should know
 
 ### Expected plan
 
-`Plan: 8 to add, 0 to change, 0 to destroy` (4 filters, 4 alarms). Checked with a local read-only targeted
-plan (`-lock=false`) on 24/10. Both pattern kinds were checked with `aws logs test-metric-filter` against
-synthetic JSON lines: the JSON pattern matches only the `"used_tenant_pool": false` line, the quoted term
-matches only the read-failed line.
+`Plan: 10 to add, 0 to change, 0 to destroy` (5 filters, 5 alarms). Checked with a local read-only targeted
+plan (`-lock=false`) on 24/10. Patterns checked with `aws logs test-metric-filter` against synthetic JSON
+lines: the admin-pool pattern matches a `"used_tenant_pool": false` line of any other event and neither
+`publish_log_listed` with `false`, nor any `true` line, nor a plain-text line; each quoted term matches only
+its own event.
 
-### The admin-pool alarm will fire on Dev as soon as it is applied
+### The S241 pin on `/v1/publish-log` (excluded from the admin-pool alarm)
 
 Logs Insights, last 7 days (24/10): 1,645 lines with `used_tenant_pool: true` and **60 with `false`**:
 - `publish_log_listed` (GET `/v1/publish-log`): 30 lines from 22/10 06:31 to 24/10 02:44 UTC, still going.
@@ -63,11 +76,17 @@ Logs Insights, last 7 days (24/10): 1,645 lines with `used_tenant_pool: true` an
   reallocation) and 07:56–08:08 (brand identity, T2 version detail): looks like a temporary rollback / test
   window, not current.
 
-So `aa-cis-dev-tenant-route-admin-pool` goes to ALARM on the first portal call to `/v1/publish-log` after the
-apply. That is the alarm doing its job. Decide whether the S241 pin is still needed (why it was pinned is
-not written down) and, if not, `SET aa544:publish_log_list_pool true` (or `DEL`); the alarm then returns to
-OK by itself. If the pin must stay, expect this alarm to stay in ALARM, and say so in the session log.
-The AA-874 S4 key copy carries the `"false"` value over to the new Redis on purpose.
+Logs Insights, last 48 h (24/10, after the review): the only `used_tenant_pool = false` event is
+`publish_log_listed` (8 lines, last 02:44 UTC), so with the exclusion the alarm starts in OK.
+
+Before the pin, the route's flag was OFF by default (AA-815); D-12 made a missing key mean ON, and the pin
+kept the route where it was. It was never flipped afterwards, so the app `CONTEXT.md` line "All ON on Dev
+since S240" is wrong for this route (the AA-874 CIS PR records the pin there). The route is written for both
+pools (`acquire_scoped_conn(fail_closed=True)`; the AA-986 `annotate_by_request` takes either connection).
+To end the pin: `SET aa544:publish_log_list_pool true` (or `DEL`), confirm `publish_log_listed` with
+`used_tenant_pool=true` in Logs Insights, then remove `publish_log_listed` from
+`local.tenant_pool_known_rollback_events` and the CONTEXT.md note in one follow-up. Until then the AA-874 S4
+key copy carries the `"false"` value over to the new Redis on purpose.
 
 ### Live check after apply
 
@@ -80,5 +99,5 @@ shows ALARM and the e-mail arrives; after a period with no matching data, OK and
 
 ### Cost
 
-4 alarms × $0.10 = **+$0.40/month**. Metric filters are free; the custom metrics exist only while lines
+5 alarms × $0.10 = **+$0.50/month**. Metric filters are free; the custom metrics exist only while lines
 match.
