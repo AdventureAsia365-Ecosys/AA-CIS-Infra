@@ -743,7 +743,8 @@ resource "aws_route53_record" "identity_custom_domain" {
 # to the asset set still forces a replacement: the apply deletes and recreates each style (a few
 # seconds without a style per client). Because the delete runs before the create, a payload Cognito
 # rejects would leave every WORKFORCE client (breakglass included) without a style: pre-validate the
-# exact payload on an EXTERNAL client first (runbook + rollback commands in
+# exact payload on a temporary throwaway client first, never on a live EXTERNAL client (each EXTERNAL client
+# has its own Terraform-managed style since S249; runbook + rollback commands in
 # docs/implementation-notes/AA-816-staff-auth-domain.md). If Cognito rejects buttons.borderRadius
 # 24, use 16.
 # Assets: accounts/aa365/assets/identity/ (form logo = the official CIS frontend logo PNG; header,
@@ -832,6 +833,58 @@ resource "aws_cognito_managed_login_branding" "workforce" {
 
   dynamic "asset" {
     for_each = local.id_branding_assets
+    content {
+      bytes      = filebase64("${local.id_branding_assets_dir}/${asset.value.file}")
+      category   = asset.value.category
+      color_mode = "LIGHT"
+      extension  = asset.value.extension
+    }
+  }
+}
+
+# =============================================================================
+# EXTERNAL managed login branding (AA-935 follow-up, S249). With managed_login_version = 2 a client that has
+# no style gets HTTP 403 "Login pages unavailable" on /login and /oauth2/authorize, on BOTH EXTERNAL domains
+# (prefix and auth.lumiguides.it.com): the style is per client, not per domain. Before this resource no
+# EXTERNAL client had one, so no traveller, tenant or CRM partner user could sign in through managed login.
+#
+# One style per EXTERNAL client, for_each over the client resource itself: a key added to
+# id_external_clients gets its style in the same apply (tools/terraform/managed_login_branding.py fails CI
+# for an interactive client of a v2 pool without one; it covers the AA-939 partner pool too).
+#
+# Same Adventure Asia look as WORKFORCE (local.id_branding_settings_workforce: colours, card, buttons), with
+# one difference: the page header is OFF and its asset is left out. The WORKFORCE header SVG reads "Staff
+# sign-in" (Cognito has no title/heading setting, the text is drawn in the SVG), which is wrong for
+# travellers and partners; the form logo (mark + "Adventure Asia") carries the brand instead. A header SVG
+# without "Staff" can be added later as a new asset (that change replaces each style, see the WORKFORCE note).
+#
+# Create only: no EXTERNAL client has a style today, so a payload Cognito rejects leaves them exactly as now
+# (still 403); nothing is deleted first. S242 pre-validated the WORKFORCE payload on the EXTERNAL tripplanner
+# client (accepted); this one is that payload minus the header. Cost: $0 (branding is part of the Essentials
+# tier the pools already run).
+# =============================================================================
+locals {
+  id_branding_assets_external = [for a in local.id_branding_assets : a if a.category != "PAGE_HEADER_LOGO"]
+
+  id_branding_settings_external = {
+    categories = {
+      global = { colorSchemeMode = "LIGHT", pageHeader = { enabled = false }, pageFooter = { enabled = false } }
+      form   = local.id_branding_settings_workforce.categories.form
+    }
+    componentClasses = local.id_branding_settings_workforce.componentClasses
+    components       = { for k, v in local.id_branding_settings_workforce.components : k => v if k != "pageHeader" }
+  }
+}
+
+resource "aws_cognito_managed_login_branding" "external" {
+  for_each = aws_cognito_user_pool_client.external
+
+  user_pool_id = aws_cognito_user_pool.external.id
+  client_id    = each.value.id
+  settings     = jsonencode(local.id_branding_settings_external)
+
+  dynamic "asset" {
+    for_each = local.id_branding_assets_external
     content {
       bytes      = filebase64("${local.id_branding_assets_dir}/${asset.value.file}")
       category   = asset.value.category
@@ -1111,12 +1164,12 @@ output "identity_external_client_ids" {
   value = { for k, c in aws_cognito_user_pool_client.external : k => c.id }
 }
 
-# EXTERNAL stays on its prefix URL even with custom domains on: its clients have no managed login
-# style yet, so pages on auth.lumiguides.it.com do not render. Switch it when EXTERNAL gets a style.
+# EXTERNAL moves to auth.lumiguides.it.com with custom domains on, now that its clients have a managed login
+# style (aws_cognito_managed_login_branding.external); crm_web.tf already uses the same host.
 output "identity_managed_login_base_urls" {
   value = {
     workforce = local.id_custom_domains ? "https://${var.identity_workforce_custom_domain}" : "https://${aws_cognito_user_pool_domain.workforce_prefix.domain}.auth.${var.aws_region}.amazoncognito.com"
-    external  = "https://${aws_cognito_user_pool_domain.external_prefix.domain}.auth.${var.aws_region}.amazoncognito.com"
+    external  = local.id_custom_domains ? "https://${var.identity_external_custom_domain}" : "https://${aws_cognito_user_pool_domain.external_prefix.domain}.auth.${var.aws_region}.amazoncognito.com"
   }
 }
 
@@ -1139,6 +1192,11 @@ output "identity_custom_domain_cloudfront_targets" {
 output "identity_workforce_branding_ids" {
   description = "Managed login branding id per WORKFORCE client (changes when a style is replaced)."
   value       = { for k, b in aws_cognito_managed_login_branding.workforce : k => b.managed_login_branding_id }
+}
+
+output "identity_external_branding_ids" {
+  description = "Managed login branding id per EXTERNAL client (changes when a style is replaced)."
+  value       = { for k, b in aws_cognito_managed_login_branding.external : k => b.managed_login_branding_id }
 }
 
 output "identity_breakglass_secret_arn" {

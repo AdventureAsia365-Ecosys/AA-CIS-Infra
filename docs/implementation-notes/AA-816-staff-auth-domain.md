@@ -116,17 +116,15 @@ domain and make it look like the Adventure Asia product.
 
 1. Nghiệp: Vercel → `aa-cis-frontend` → Settings → Domains → add `lumiguides.it.com`, redirect to
    `aa-cis.lumiguides.it.com`. (Vercel shows "Invalid configuration" until the A record exists.)
-2. **Pre-validate the branding payload** on the EXTERNAL `tripplanner` client (pool
-   `us-west-1_nKOvHan0W`, client `2fqmuij0lf47qpf1phjfcgseds`; no style, no users). The payload
-   `AA-Ecosys/.tmp-session/s242/aa816-branding-prevalidate.json` was extracted from the saved plan
-   (settings + the 4 assets exactly as apply sends them). Regenerate it whenever the plan is re-run
-   with other settings/assets (`terraform show -json <plan>` ->
-   `aws_cognito_managed_login_branding.workforce["cis-admin"].change.after`).
-   - `aws cognito-idp create-managed-login-branding --cli-input-json file:///home/nghiep/projects/AA-Ecosys/.tmp-session/s242/aa816-branding-prevalidate.json --profile aa365-admin --region us-west-1`
-   - Success: note the `ManagedLoginBrandingId`, optionally open the EXTERNAL prefix domain's
-     `/login?client_id=2fqmuij0lf47qpf1phjfcgseds&response_type=code&redirect_uri=<a registered callback>`
-     to eyeball the look, then delete it (EXTERNAL needs its own non-"Staff" header later):
-     `aws cognito-idp delete-managed-login-branding --user-pool-id us-west-1_nKOvHan0W --managed-login-branding-id <id> --profile aa365-admin --region us-west-1`
+2. **Pre-validate the branding payload** on a THROWAWAY client, never on a live one. Since S249 (AA-CIS-Infra
+   #336) every EXTERNAL client has a Terraform-managed style (`aws_cognito_managed_login_branding.external`); a
+   client holds one style only, so a create on `tripplanner` fails, and deleting its style brings back the 403
+   "Login pages unavailable" and puts state out of sync. Instead: create a temporary app client in the EXTERNAL
+   pool (`aws cognito-idp create-user-pool-client --user-pool-id <external pool id> --client-name prevalidate-tmp --profile aa365-admin --region us-west-1`),
+   run `create-managed-login-branding` with the payload's settings + assets and that client id, eyeball
+   `/login?client_id=<tmp id>...` if wanted, then delete the style AND the temporary client
+   (`delete-managed-login-branding`, `delete-user-pool-client`). The payload is extracted from the saved plan
+   (`terraform show -json <plan>` -> the branding resource's `change.after`).
    - Rejected: fix the setting (radius 24 -> 16; favicon without ICO -> add a FAVICON_ICO asset and
      `["ICO","SVG"]`), re-plan, regenerate the payload, repeat. Do not apply until it passes.
 3. Local MFA apply (bootstrap grant in `cicd_split.tf`; CI cannot change its own policy).
@@ -150,8 +148,9 @@ domain and make it look like the Adventure Asia product.
 ## Follow-ups (not in this PR)
 
 - Remove the 3 import blocks + `id_branding_existing_workforce` after the first apply.
-- EXTERNAL managed login style (own header SVG without "Staff"), then switch
-  `identity_managed_login_base_urls.external` to `auth.`.
+- ~~EXTERNAL managed login style, then switch `identity_managed_login_base_urls.external` to `auth.`~~ — done S249
+  (#336: style per EXTERNAL client, header off; base URL follows the custom domains). An own EXTERNAL header SVG
+  without "Staff" stays optional (it would replace each EXTERNAL style once).
 - Long term: move the admin sign-in under `adventure.asia` (e.g. `admin.adventure.asia`) to remove
   the brand/domain mismatch entirely (business decision).
 
