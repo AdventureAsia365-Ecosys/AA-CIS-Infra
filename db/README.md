@@ -168,6 +168,18 @@ line (a directive after the first statement is an error):
   `travel`, `payment`, `government_id`, `health`, `emergency_contact`; `conf:commercial`, `conf:credential`).
   A comment that names a tag without starting with one is a warning. Not in `run_migration.py` (the
   task gets the runner alone), so DB Migrate itself does not repeat it.
+- **Ownership lint** (data standards DM-1.2 / DM-8.1, AA-853, `db/check_migration_ownership.py`): the same job
+  fails an owner-dir copy that creates, alters, drops, comments on, grants on or writes to an object outside its
+  owner's schemas (`owners.yaml` `schemas`, mirrored by `run_migration.OWNER_DIRS`). Read per statement and inside
+  DO blocks: CREATE/ALTER/DROP of schemas, relations, functions, types, indexes / triggers / policies / rules (their
+  table), `SET SCHEMA`, `COMMENT ON`, `GRANT`/`REVOKE … ON`, `ALTER DEFAULT PRIVILEGES … IN SCHEMA`, and the writes
+  `INSERT`/`UPDATE`/`DELETE`/`MERGE`/`TRUNCATE`/`COPY … FROM`/`REFRESH MATERIALIZED VIEW`. Allowed: the file's own
+  `INSERT INTO shared.schema_versions`, temporary objects, and every read (views over another owner, `REFERENCES`,
+  function calls). An unqualified name resolves through the file's own `SET [LOCAL] search_path`, else it is a
+  finding (it would land in `public`). Function bodies and dynamic SQL (`EXECUTE`) are not read; the CLI
+  (`python3 db/check_migration_ownership.py FILE`) prints a note for each DO block with dynamic SQL. `roles/` is not
+  checked. Every copy on `main` passes; on the owners' full history it finds the known cases (TripPlanner
+  `002_shared_destinations.sql` / `005`, CIS `122`'s `public.*` drops, CIS `001`–`007` before the owner split).
 - **Retention rows** (DM-7.1, AA-929): `db/check_retention_rows.py` (CI job "Retention rows for new-app
   tables") fails when a table created by a copy in a new-app dir (`RETENTION_OWNERS`, today `crm`) has no
   row in the retention table of data standards Part B §7, read from the root repo's `master` with a
