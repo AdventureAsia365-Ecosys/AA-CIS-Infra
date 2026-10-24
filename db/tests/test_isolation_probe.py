@@ -203,6 +203,14 @@ class HelpersTest(unittest.TestCase):
         self.assertIn("AS tenant_col", p.RLS_TABLES_SQL)
         self.assertIn("array_position($2::text[]", p.RLS_TABLES_SQL)
 
+    def test_runtime_grants_leave_partitions_out(self):
+        # AA-940 review: crm-007 revokes crm_app's rights on every crm.audit_event partition (reached through the
+        # parent only) and makes a new partition every month; counting them would keep runtime_grants.crm red.
+        relation = re.search(r"SELECT 'relation'.*?UNION ALL", p.RUNTIME_MISSING_SQL, re.S).group(0)
+        self.assertIn("c.relkind IN ('r', 'p', 'v', 'm', 'f') AND NOT c.relispartition", relation)
+        # The parent itself (relkind 'p', not a partition) is still checked.
+        self.assertNotIn("relkind <> 'p'", p.RUNTIME_MISSING_SQL)
+
     def test_matrix_count_sql(self):
         ttp = p.matrix_count_sql({"fq": TTP, "q": '"acp_deliver"."tenant_tour_pages"', "tenant_col": "tenant_id"})
         self.assertIn("tenant_id::text IS DISTINCT FROM $1", ttp)
