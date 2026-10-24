@@ -316,7 +316,8 @@ resource "aws_iam_role_policy" "crm_ecs_task" {
 # WORKER_ENABLED, JOB_RETENTION_DRY_RUN (DM-7.2: counts only until a human turns it off), RATE_LIMIT_PUBLIC_PER_MINUTE,
 # RATE_LIMIT_XFF_HOPS (2 = CloudFront viewer address appended, then the NLB's; verify on the first live request),
 # SENTRY_DSN / SENTRY_REQUIRED (only with var.crm_sentry_enabled), the identity values (local.crm_identity_env),
-# and the key provider (AA-934): KEY_PROVIDER=kms and KMS_DATA_KEY_ID = the alias of the CRM data key (an alias, not the
+# the F3 scrub guardrail (AA-938, local.crm_scrub_env of crm_scrub.tf: SCRUB_GUARDRAIL_ID / _VERSION / _REGION, only
+# when crm_scrub_guardrail_enabled), and the key provider (AA-934): KEY_PROVIDER=kms and KMS_DATA_KEY_ID = the alias of the CRM data key (an alias, not the
 # key ARN, so the public app repo never needs the account id; the app stores the ARN KMS returns per wrapped DEK);
 # DOCUMENTS_BUCKET (AA-937): the documents bucket name (task role grant CrmDocumentsObjects above);
 # AUDIT_BUCKET_COMPLIANCE / AUDIT_BUCKET_GOVERNANCE / AUDIT_RETENTION_DRY_RUN (AA-940): the two audit tiers and the
@@ -362,7 +363,7 @@ resource "aws_ecs_task_definition" "crm_api" {
       { name = "AUDIT_BUCKET_COMPLIANCE", value = aws_s3_bucket.crm["audit-c"].bucket },
       { name = "AUDIT_BUCKET_GOVERNANCE", value = aws_s3_bucket.crm["audit-g"].bucket },
       { name = "AUDIT_RETENTION_DRY_RUN", value = "true" },
-      ], local.crm_identity_env, var.crm_sentry_enabled ? [
+      ], local.crm_identity_env, local.crm_scrub_env, var.crm_sentry_enabled ? [
       { name = "SENTRY_REQUIRED", value = "true" },
     ] : [])
     secrets = concat([
