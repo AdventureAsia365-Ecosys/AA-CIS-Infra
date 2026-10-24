@@ -404,13 +404,14 @@ class BuildCellsTest(unittest.TestCase):
         # AA-858: cis_app reads booking.v_ops_* (bk-017) and tripplanner.v_ops_traffic_daily (tp-015). Merged into
         # the registry before the DB Migrate apply, the views are absent: pending, never FAIL, and the always-expected
         # cell is unaffected.
-        self.assertEqual(p.CONSUMER_GRANT_KEYS, ("bk-017", "tp-015"))
+        self.assertEqual(p.CONSUMER_GRANT_KEYS, ("bk-017", "bk-023", "tp-015"))  # bk-023: AA-835 supply views
         for k in p.CONSUMER_GRANT_KEYS:
             self.assertIn(k, p.VERSION_KEYS)
             self.assertIn(k, p.KEY_TEXT)
         st, keys = statuses(today_facts())
-        self.assertFalse(keys["bk-017"] or keys["tp-015"])
+        self.assertFalse(keys["bk-017"] or keys["bk-023"] or keys["tp-015"])
         self.assertEqual(st["consumer.contract_grants.bk-017"], "pending")
+        self.assertEqual(st["consumer.contract_grants.bk-023"], "pending")
         self.assertEqual(st["consumer.contract_grants.tp-015"], "pending")
         self.assertEqual(st["consumer.contract_grants"], "pass")
 
@@ -422,8 +423,10 @@ class BuildCellsTest(unittest.TestCase):
                 c["missing"] = []
         st, _ = statuses(f)
         self.assertEqual(st["consumer.contract_grants.bk-017"], "pass")
+        self.assertEqual(st["consumer.contract_grants.bk-023"], "pending")
         self.assertEqual(st["consumer.contract_grants.tp-015"], "pending")
-        f["consumer"]["grants"][-2]["missing"] = ["SELECT"]              # cis_app on booking.v_ops_case_status
+        next(c for c in f["consumer"]["grants"]
+             if c["object"] == "booking.v_ops_case_status")["missing"] = ["SELECT"]
         st, _ = statuses(f)
         self.assertEqual(st["consumer.contract_grants.bk-017"], "FAIL")
         f = today_facts()

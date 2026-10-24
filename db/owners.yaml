@@ -176,6 +176,10 @@ owners:
     consumer_grants:
       - {grantee: cis_app, privilege: "USAGE, SELECT", object: booking.v_ops_funnel_daily, status: contract, source: "bk-017 (AA-858)", expected_from: bk-017}
       - {grantee: cis_app, privilege: "USAGE, SELECT", object: booking.v_ops_case_status,  status: contract, source: "bk-017 (AA-858)", expected_from: bk-017}
+      - {grantee: cis_app, privilege: "USAGE, SELECT", object: booking.v_supply_hotels,    status: contract, source: "bk-023 (AA-835)", expected_from: bk-023}
+      - {grantee: cis_app, privilege: "USAGE, SELECT", object: booking.v_supply_services,  status: contract, source: "bk-023 (AA-835)", expected_from: bk-023}
+      - {grantee: cis_app, privilege: "USAGE, SELECT", object: booking.v_supply_media,     status: contract, source: "bk-023 (AA-835)", expected_from: bk-023}
+      - {grantee: cis_app, privilege: "USAGE, SELECT", object: booking.v_supply_outbox,    status: contract, source: "bk-023 (AA-835)", expected_from: bk-023}
 
   tripplanner:
     repo: AA-TripPlanner-Web
