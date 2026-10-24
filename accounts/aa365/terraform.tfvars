@@ -60,6 +60,10 @@ crm_github_repo_id = "1430388300"
 # partner --apply, then deploy the web.
 crm_partner_signin_enabled = true
 
+# AA-938 (S249): the F3 scrub guardrail (detect only) and its grants (crm_scrub.tf). The apply-role statements
+# CrmBedrockGuardrail* were applied locally with MFA first (bootstrap). ~$0.75/month.
+crm_scrub_guardrail_enabled = true
+
 # AA-811 (S238): AA-Booking sends the staff "new inquiry" e-mail (SES, ses.tf) to this inbox on Dev.
 booking_staff_notify_email = "nghieppham@adventure.asia"
 
