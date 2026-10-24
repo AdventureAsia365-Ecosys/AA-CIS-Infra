@@ -291,7 +291,9 @@ resource "aws_cloudwatch_metric_alarm" "rds_snapshot_expiry_errors" {
 
 # AA-942 (CRM-14, V1): an instance holds a backup copy older than the promise (30 days): a kept manual snapshot made
 # after the CRM existed, or automated retention above 30 days. Erased CRM data would outlive the erasure receipt's
-# backup_purge_by date. Missing data = breaching: a day without the metric means the function did not run.
+# backup_purge_by date. Missing data = breaching: days without the metric mean the function did not run.
+# The metric arrives once a day (~22:00 UTC) and a 1-day window may not hold the latest datapoint at every evaluation,
+# so the alarm needs 2 of 2 daily periods (review S249): no daily ALARM/OK flapping, at most one extra day to fire.
 resource "aws_cloudwatch_metric_alarm" "rds_backup_copy_age" {
   for_each = toset(var.rds_snapshot_expiry_instances)
 
@@ -299,7 +301,8 @@ resource "aws_cloudwatch_metric_alarm" "rds_backup_copy_age" {
   alarm_description   = "AA-942 (CRM-14, V1): ${each.key} holds a backup copy older than ${var.rds_backup_copy_max_age_days} days (a manual snapshot kept by keep-*, aa:retain or the orphan guard, or automated retention above ${var.rds_backup_copy_max_age_days}), or the expiry function did not report. Erased CRM data must leave every copy within ${var.rds_backup_copy_max_age_days} days: delete or re-tag the snapshot, or lower the retention.${local.runbook_suffix.database}"
   comparison_operator = "GreaterThanThreshold"
   threshold           = var.rds_backup_copy_max_age_days
-  evaluation_periods  = 1
+  evaluation_periods  = 2
+  datapoints_to_alarm = 2
   treat_missing_data  = "breaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
   ok_actions          = [aws_sns_topic.alerts.arn]

@@ -357,10 +357,6 @@ class RunTest(unittest.TestCase):
         self.assertEqual(sns.published, [])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class FakeCloudWatch:
     def __init__(self):
         self.calls = []
@@ -414,3 +410,7 @@ class CopyAgeTest(unittest.TestCase):
         rds, sns = FakeRds([]), FakeSns()
         with self.assertRaises(ValueError):
             h.run(rds, sns, env=self._env(COPY_AGE_SINCE="21/10/2026"), now=NOW, cloudwatch=FakeCloudWatch())
+
+
+if __name__ == "__main__":
+    unittest.main()
