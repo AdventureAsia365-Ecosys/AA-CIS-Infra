@@ -5,12 +5,12 @@
 #   viewer -> CloudFront partner-dev.lumiguides.it.com  (+ X-AA-Origin: <secret>)
 #          -> VPC origin -> internal NLB aa-cis-dev-nlb (the existing API Gateway VPC-link NLB)
 #          -> ALB :80 rule crm_api             (Host + secret + /crm, /crm/*) -> AA-Partner API (crm_app.tf)
-#             ALB :80 rule crm_partner_default (Host + secret, any other path) -> fixed 404 JSON
+#             ALB :80 rule crm_partner_default (Host + secret, any other path) -> AA-Partner web (crm_web.tf, AA-935)
 #             ALB :80 rule crm_origin_deny     (any X-AA-Origin)              -> 403, never CIS or Booking
 #
-# crm_partner_default holds the partner host's other paths until the CRM web (AA-935) exists; AA-935 turns it into
-# a forward to the web target group. It also lets the edge be checked at $0 with no task running
-# (tools/terraform/crm_edge_live_check.py: partner / -> this 404, raw *.cloudfront.net -> the deny 403).
+# crm_partner_default held the partner host's other paths as a fixed 404 until the CRM web; since AA-935 it forwards
+# to the web target group. The edge is still checked at $0 with no task running (tools/terraform/crm_edge_live_check.py:
+# partner / -> the web's 503 while no task is healthy, raw *.cloudfront.net -> the deny 403).
 #
 # Pieces outside this file: alb_rules.tf (priorities), modules/alb (NLB prefix-list ingress + the
 # second ALB group, gated by cloudfront_vpc_origin_enabled), modules/waf (CloudFrontOriginAllow,
@@ -225,16 +225,11 @@ resource "aws_lb_listener_rule" "crm_partner_default" {
   listener_arn = module.alb.http_listener_arn
   priority     = local.alb_http_rule_priorities.crm_partner_default
 
-  # Until the CRM web (AA-935): every partner-host path that is not /crm or /crm/* (crm_api, above) gets a JSON
-  # 404 in the shape FastAPI uses. AA-935 changes this action to a forward to the web target group.
+  # AA-935: every partner-host path that is not /crm or /crm/* (crm_api, above) goes to the CRM web (crm_web.tf).
+  # Modified in place (ModifyRule: same priority and ARN). With the web at desired 0 the ALB answers 503.
   action {
-    type = "fixed-response"
-
-    fixed_response {
-      content_type = "application/json"
-      message_body = jsonencode({ detail = "Not Found" })
-      status_code  = "404"
-    }
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.crm_web.arn
   }
 
   condition {

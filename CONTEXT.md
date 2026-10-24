@@ -188,8 +188,8 @@ accounts/
     crm_edge.tf                   (AA-931 CRM-03 AA-Partner edge, gated by var.crm_edge_enabled &&
                                    custom_domains_enabled: CloudFront partner-dev.lumiguides.it.com -> VPC origin
                                    on the existing internal NLB -> ALB :80; rule crm_partner_default (Host +
-                                   secret X-AA-Origin, any path crm_api does not take) -> fixed 404 JSON until the
-                                   CRM web (AA-935); rule "any X-AA-Origin -> 403"; ACM us-east-1 + alias records.
+                                   secret X-AA-Origin, any path crm_api does not take) -> the CRM web target group
+                                   (AA-935; was a fixed 404 JSON); rule "any X-AA-Origin -> 403"; ACM us-east-1 + alias records.
                                    The AA-931 hello spike service aa-crm-dev-spike was removed in AA-933 (S248
                                    d16); live check tools/terraform/crm_edge_live_check.py)
     crm_data.tf                   (AA-932 CRM-04, data side of AA-Partner: secret shell crm/<env>/database-url (crm_app
@@ -227,6 +227,18 @@ accounts/
                                    deploy role aa-crm-<env>-app-deploy (immutable subject, var.crm_github_repo_id),
                                    target-group / CPU alarms; security group sg-crm-api in app_security_groups.tf,
                                    job backlog alarms AA/Jobs/Crm in observability_ecosys.tf)
+    crm_web.tf                    (AA-935 CRM-07, AA-Partner CRM web runtime: ECR aa-crm-<env>-web (IMMUTABLE), secret
+                                   shell crm/<env>/web {cognito_client_secret, session_secret} written by
+                                   tools/identity/crm_dev_identity.py web-secret (never by Terraform), own execution role
+                                   (web repo, CRM log group stream prefix web, that secret only; never the DSN) and task
+                                   role (ECS Exec only), task definition Fargate ARM64 port 3000 (env: public origin,
+                                   partner/client hosts, CRM_API_ORIGIN = the public partner host, the EXTERNAL
+                                   cis-portal client until AA-939, CONTENT_STUDIO_URL), target group aa-crm-<env>-web-tg
+                                   (/healthz) behind crm_partner_default, service aa-crm-<env>-web (desired 0,
+                                   FARGATE_SPOT), two target-group alarms; security group sg-crm-web (ALB -> 3000, not
+                                   admitted by RDS); the API deploy role also deploys it (crm_app.tf). The cis-portal
+                                   client lists the partner host's /auth/callback and /signed-out (identity_variables.tf);
+                                   the e2e mailbox rule takes the CRM e2e users of tools/identity/crm_e2e_users.json)
     variables.tf / tripplanner_variables.tf / booking_variables.tf
   acc1-bedrock/   ← acc1 Bedrock invoker role (fallback) + Cost Explorer reader
   acc3-bedrock/   ← acc3 Bedrock invoker role (primary) + Bedrock Batch (batch.tf)

@@ -130,6 +130,33 @@ resource "aws_security_group" "crm_api" {
   tags = merge(local.crm_app_tags, { Name = "${local.name_prefix}-sg-crm-api" })
 }
 
+# ── AA-Partner web (ECS service aa-crm-dev-web, crm_web.tf, AA-935): Next.js standalone ──
+# Ingress only from the ALB on 3000 (the partner host's default rule). Not in rds_ingress_sg_ids: the web has no
+# database access (it reaches data only through the CRM API, over the public partner host).
+resource "aws_security_group" "crm_web" {
+  name        = "${local.name_prefix}-sg-crm-web"
+  description = "AA-Partner (CRM) web service (ADR 0004b)"
+  vpc_id      = module.vpc.vpc_id
+
+  ingress {
+    description     = "Web port from the ALB (partner host default rule behind CloudFront)"
+    from_port       = local.crm_web_port
+    to_port         = local.crm_web_port
+    protocol        = "tcp"
+    security_groups = [module.vpc.sg_alb_id]
+  }
+
+  egress {
+    description = "All outbound (NAT: Cognito token endpoint, the partner host for the CRM API)"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = merge(local.crm_web_tags, { Name = "${local.name_prefix}-sg-crm-web" })
+}
+
 # ── TripPlanner Lambdas (browse + assembly, tripplanner.tf): no ingress ─────────
 resource "aws_security_group" "tp_lambda" {
   name        = "${local.name_prefix}-sg-tp-lambda"
