@@ -17,9 +17,12 @@
 #   - 8 app clients (decision 2): workforce cis-admin / booking-staff / breakglass (confidential) plus the
 #     Preview-only cis-admin-preview / booking-staff-preview (confidential, capped at viewer by the APIs; AA-911
 #     D-1, root ADR 0006a A11), external cis-portal (confidential), booking-customer / tripplanner (public, PKCE)
-#   - 7 WORKFORCE groups <app>-<role> (decision 3): 3 CIS roles + every Booking staff role
-#     (AA-Booking backend/app/auth/staff.py STAFF_ROLES, incl. content_creator: S241 Q4/Q5, AA-854);
-#     EXTERNAL has none (tenant roles live in CIS DB)
+#   - 10 WORKFORCE groups <app>-<role> (decision 3): 3 CIS roles + every Booking staff role
+#     (AA-Booking backend/app/auth/staff.py STAFF_ROLES, incl. content_creator: S241 Q4/Q5, AA-854)
+#     + the 3 AA-Partner staff groups crm-platform-admin / crm-ops / crm-support (AA-939, root ADR 0006b
+#     decision 6); EXTERNAL has none (tenant roles live in CIS DB)
+#   - AA-939: the WORKFORCE crm-staff client (AA-Partner /crm/staff/v1); the PARTNER pool (agency people, MFA
+#     required) is in identity_partner.tf
 #   - Staff sign in with an EMAIL ONE-TIME CODE ONLY (S236 amendment: adventure.asia mail is on
 #     DreamHost, not Google Workspace, so there is no `hd` claim to restrict Google to staff). The
 #     WORKFORCE pool has NO social identity provider. Google and Facebook exist on EXTERNAL only,
@@ -141,6 +144,11 @@ locals {
     "booking-contracting" = { precedence = 60, description = "Booking contracting" }
     # S241 Q4/Q5 (AA-854): every Booking staff role has a group, content_creator included.
     "booking-content_creator" = { precedence = 70, description = "Booking content creator" }
+    # AA-939 / root ADR 0006b decision 6: AA-Partner staff groups. crm-platform-admin writes on the L1 console
+    # (/crm/ops/v1), crm-ops and crm-support use /crm/staff/v1 (support also needs an active owner grant, CRM-13b).
+    "crm-platform-admin" = { precedence = 80, description = "AA-Partner L1 platform console writes (/crm/ops/v1)" }
+    "crm-ops"            = { precedence = 81, description = "AA-Partner ops release (/crm/staff/v1, spec module 8)" }
+    "crm-support"        = { precedence = 82, description = "AA-Partner owner-granted support sessions (/crm/staff/v1)" }
   }
 
   id_ext_idps_portal    = concat(["COGNITO"], local.id_ext_google ? ["Google"] : [])
@@ -177,6 +185,12 @@ locals {
     }
     "breakglass" = {
       secret = true, access_minutes = 15, refresh_hours = 1
+      idps   = ["COGNITO"], writes = ["name"]
+    }
+    # AA-939 / root ADR 0006b decision 6: the WORKFORCE client of the AA-Partner staff routes (/crm/staff/v1). Its
+    # managed login style is created with it (aws_cognito_managed_login_branding.workforce covers the whole map).
+    "crm-staff" = {
+      secret = true, access_minutes = 15, refresh_hours = 12
       idps   = ["COGNITO"], writes = ["name"]
     }
   }

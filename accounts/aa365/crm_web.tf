@@ -35,6 +35,12 @@
 # through the NAT instance and CloudFront at Dev volume: < $0.10/month. Total ~ $0.65/month idle, ~ $2.9/month running.
 # =============================================================================
 
+variable "crm_partner_signin_enabled" {
+  description = "AA-939 (ADR 0006b): the CRM web signs in with the partner pool (partner-web client, MFA required) instead of the EXTERNAL cis-portal client. Flip only after the e2e users exist on the partner pool; then write the web secret for the partner client (crm_dev_identity.py web-secret --pool partner) and deploy the web."
+  type        = bool
+  default     = false
+}
+
 variable "crm_web_client_hosts" {
   description = "AA-935: extra traveller (client) hosts the CRM web serves /c/* on (WEB_CLIENT_HOSTS). AA-936 adds go-dev. itself (crm_client_edge.tf); list only additional hosts here."
   type        = list(string)
@@ -51,9 +57,13 @@ locals {
   crm_web_service_arn      = "arn:aws:ecs:${var.aws_region}:${var.account_id}:service/${module.ecs.cluster_name}/${local.crm_web_service}"
   crm_web_task_def_pattern = "arn:aws:ecs:${var.aws_region}:${var.account_id}:task-definition/${local.crm_web_service}:*"
 
-  # Managed login of the pool the web signs in with: the EXTERNAL pool until AA-939 (custom domain when on, else
-  # the prefix domain, as identity_managed_login_base_urls).
-  crm_web_cognito_domain = local.id_custom_domains ? "https://${var.identity_external_custom_domain}" : "https://${aws_cognito_user_pool_domain.external_prefix.domain}.auth.${var.aws_region}.amazoncognito.com"
+  # Managed login of the pool the web signs in with (AA-939, safe rollout): the partner pool's partner-web client once
+  # crm_partner_signin_enabled = true, else the EXTERNAL cis-portal client (custom domain when on, else the prefix
+  # domain). The client secret in crm/dev/web must belong to the same client: after flipping the variable and
+  # applying, run tools/identity/crm_dev_identity.py web-secret --pool partner --apply, then deploy the web.
+  crm_web_external_domain = local.id_custom_domains ? "https://${var.identity_external_custom_domain}" : "https://${aws_cognito_user_pool_domain.external_prefix.domain}.auth.${var.aws_region}.amazoncognito.com"
+  crm_web_cognito_domain  = var.crm_partner_signin_enabled ? local.idpartner_login_base : local.crm_web_external_domain
+  crm_web_client_id       = var.crm_partner_signin_enabled ? aws_cognito_user_pool_client.partner["partner-web"].id : aws_cognito_user_pool_client.external["cis-portal"].id
 
   # Env names read by the web (AA-Partner web/lib/config.ts). Public values only; the two secrets come from
   # crm/dev/web.
@@ -65,7 +75,7 @@ locals {
     { name = "WEB_CLIENT_HOSTS", value = join(",", distinct(concat(local.crm_client_hosts, var.crm_web_client_hosts))) },
     { name = "CRM_API_ORIGIN", value = "https://${local.crm_partner_host}" },
     { name = "COGNITO_DOMAIN", value = local.crm_web_cognito_domain },
-    { name = "COGNITO_CLIENT_ID", value = aws_cognito_user_pool_client.external["cis-portal"].id },
+    { name = "COGNITO_CLIENT_ID", value = local.crm_web_client_id },
     # Content studio cross-link (design v3 Fix C10): the tenant portal host (custom_domains_variables.tf `portal`).
     { name = "CONTENT_STUDIO_URL", value = "https://portal.${var.dns_zone_name}" },
   ]
