@@ -126,10 +126,13 @@ accounts/
                                    APIs, AA-911 D-1), groups, trigger Lambdas in
                                    lambda_src/identity_triggers + tests; SES (ses.tf identity) on,
                                    EXTERNAL native sign-up, WAF and custom domains gated by
-                                   variables, default off — AA-854; Dev tfvars turn the WAF on (AA-908;
-                                   traveller native sign-up still off): one web ACL on the WORKFORCE, EXTERNAL
-                                   and PARTNER pools, per-IP limits on the sign-up/sign-in API calls and
-                                   on managed-login form posts (not /oauth2/*), alarm
+                                   variables, default off — AA-854; Dev tfvars turn the WAF and
+                                   traveller native sign-up on (AA-908; the TripPlanner BFF's passwordless
+                                   SignUp): one web ACL on the WORKFORCE, EXTERNAL and PARTNER pools,
+                                   per-IP limits on the sign-up/sign-in API calls and on managed-login form
+                                   posts (not /oauth2/*), the TripPlanner BFF's API calls (header value =
+                                   secret tripplanner/dev/cognito-bff-key) counted per traveller address
+                                   (X-AA-Traveller-IP) instead, alarm
                                    aa-identity-dev-waf-blocked; managed login branding: one style
                                    per WORKFORCE and per EXTERNAL client, for_each over each client
                                    resource — a managed-login-v2 client without a style answers 403
