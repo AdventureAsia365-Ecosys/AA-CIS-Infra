@@ -135,11 +135,28 @@ def test_default_staff_groups_match_terraform_groups():
 # ------------------------------------------------------------------ TEMPORARY E2E test address (AA-816)
 E2E = "e2e@e2e-mail.lumiguides.it.com"
 E2E_ATTRS = {"email": E2E, "email_verified": "true"}
+BOOKING_E2E = "e2e-booking@e2e-mail.lumiguides.it.com"
+BOOKING_E2E_ATTRS = {"email": BOOKING_E2E, "email_verified": "true"}
 
 
 def test_e2e_constant_is_the_one_test_address():
     assert workforce.E2E_TEST_STAFF_EMAIL == E2E
     assert workforce.E2E_TEST_STAFF_GROUPS == ("cis-reviewer",)
+
+
+def test_e2e_allow_map_is_exactly_the_two_test_addresses():
+    # Guard (AA-910): a new entry or a wider group set must be a reviewed change of this test too.
+    assert dict(workforce.E2E_TEST_STAFF) == {
+        E2E: ("cis-reviewer",),
+        BOOKING_E2E: ("booking-admin",),
+    }
+    # Every key is already normalised (the lookup is on the lower-cased address).
+    assert all(k == k.strip().lower() for k in workforce.E2E_TEST_STAFF)
+
+
+def test_e2e_allow_map_is_read_only():
+    with pytest.raises(TypeError):
+        workforce.E2E_TEST_STAFF["x@e2e-mail.lumiguides.it.com"] = ("cis-admin",)  # type: ignore[index]
 
 
 @pytest.mark.parametrize("email", [E2E, "E2E@E2E-Mail.Lumiguides.IT.com"])
@@ -196,3 +213,140 @@ def test_e2e_with_any_other_staff_group_is_denied(groups):
 
 def test_e2e_unverified_email_is_denied():
     denied(workforce.pre_token_generation, token_event({"email": E2E, "email_verified": "false"}, ["cis-reviewer"]))
+
+
+def test_e2e_token_log_names_the_account(capsys):
+    workforce.pre_token_generation(token_event(E2E_ATTRS, ["cis-reviewer"], client_id="cis"))
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert {"event": "workforce_e2e_test_token_issued", "trigger": "TokenGeneration_HostedAuth",
+            "client_id": "cis", "email": E2E} in lines
+
+
+# ------------------------------------------------------------------ TEMPORARY Booking E2E test address (AA-910)
+def test_booking_e2e_constant():
+    assert workforce.E2E_BOOKING_TEST_STAFF_EMAIL == BOOKING_E2E
+    assert workforce.E2E_BOOKING_TEST_STAFF_GROUPS == ("booking-admin",)
+
+
+@pytest.mark.parametrize("email", [BOOKING_E2E, "E2E-Booking@E2E-Mail.Lumiguides.IT.com"])
+def test_booking_e2e_address_may_be_admin_created(email, capsys):
+    out = workforce.pre_sign_up(admin_create(email))
+    assert out["response"] == {"autoConfirmUser": False, "autoVerifyEmail": False, "autoVerifyPhone": False}
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert {"event": "workforce_e2e_test_create_allowed", "email": BOOKING_E2E} in lines
+
+
+@pytest.mark.parametrize("email", [
+    "e2e-booking2@e2e-mail.lumiguides.it.com",
+    "e2e-booking@lumiguides.it.com",
+    "e2e-booking@e2e-mail.lumiguides.it.com.evil.com",
+    "e2e-booking@x.e2e-mail.lumiguides.it.com",
+    "e2e-bookings@e2e-mail.lumiguides.it.com",
+    "booking@e2e-mail.lumiguides.it.com",
+    "e2e-booking-admin@e2e-mail.lumiguides.it.com",
+    "e2e-test-crm-atlas-owner@e2e-mail.lumiguides.it.com",  # CRM e2e users are EXTERNAL/partner-pool only
+    # Non-ASCII look-alikes. U+212A KELVIN SIGN lower-cases to ASCII 'k' (the fold that would alias the entry);
+    # zero-width space and fullwidth 'k' do not fold but must not match either.
+    "e2e-boo\u212aing@e2e-mail.lumiguides.it.com",
+    "E2E-BOO\u212aING@E2E-MAIL.LUMIGUIDES.IT.COM",
+    "e2e-boo\u200bking@e2e-mail.lumiguides.it.com",
+    "e2e-boo\uff4bing@e2e-mail.lumiguides.it.com",
+])
+def test_other_addresses_near_the_booking_e2e_one_are_still_denied(email, capsys):
+    denied(workforce.pre_sign_up, admin_create(email))
+    denied(workforce.pre_token_generation, token_event({"email": email, "email_verified": "true"}, ["booking-admin"]))
+    events = {json.loads(line)["event"] for line in capsys.readouterr().out.splitlines()}
+    assert "workforce_e2e_test_create_allowed" not in events
+    assert "workforce_e2e_test_token_issued" not in events
+
+
+def test_kelvin_sign_really_folds_to_the_booking_address():
+    # Keeps the look-alike case above honest: without the ASCII-only lookup this address would match the map.
+    kelvin = "e2e-boo\u212aing@e2e-mail.lumiguides.it.com"
+    assert kelvin.lower() == BOOKING_E2E  # the fold happens, so the ASCII check must see the raw value
+    assert workforce._e2e_groups(kelvin, kelvin.lower()) is None
+    assert workforce._e2e_groups(None, BOOKING_E2E) is None
+    assert workforce._e2e_groups(BOOKING_E2E, BOOKING_E2E) == ("booking-admin",)
+
+
+def test_booking_e2e_denied_when_staff_groups_override_drops_booking_admin(monkeypatch, capsys):
+    # A STAFF_GROUPS override without booking-admin strips the only group, so the token is refused (never issued
+    # with an empty or different group set).
+    monkeypatch.setenv("STAFF_GROUPS", "cis-admin,cis-reviewer,booking-sales")
+    denied(workforce.pre_token_generation, token_event(BOOKING_E2E_ATTRS, ["booking-admin"]))
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert any(line["event"] == "workforce_pre_token_denied" for line in lines)
+    assert not any(line["event"] == "workforce_e2e_test_token_issued" for line in lines)
+
+
+def test_booking_e2e_self_sign_up_is_still_denied():
+    event = sign_up_event("PreSignUp_SignUp", user_name=BOOKING_E2E, attrs={"email": BOOKING_E2E})
+    denied(workforce.pre_sign_up, event)
+
+
+@pytest.mark.parametrize("user_name", ["Google_1", "Facebook_42"])
+def test_booking_e2e_federated_sign_in_is_still_denied(user_name):
+    event = sign_up_event("PreSignUp_ExternalProvider", user_name=user_name,
+                          attrs={"email": BOOKING_E2E, "email_verified": "true"})
+    denied(workforce.pre_sign_up, event)
+
+
+def test_booking_e2e_missing_domain_config_still_fails_closed(monkeypatch):
+    monkeypatch.setenv("ALLOWED_EMAIL_DOMAIN", "")
+    denied(workforce.pre_sign_up, admin_create(BOOKING_E2E))
+    denied(workforce.pre_token_generation, token_event(BOOKING_E2E_ATTRS, ["booking-admin"]))
+
+
+@pytest.mark.parametrize("source", ["TokenGeneration_HostedAuth", "TokenGeneration_RefreshTokens"])
+def test_booking_e2e_admin_gets_a_token(source, capsys):
+    out = workforce.pre_token_generation(
+        token_event(BOOKING_E2E_ATTRS, ["booking-admin", "rogue"], source=source, client_id="booking-staff"))
+    details = out["response"]["claimsAndScopeOverrideDetails"]
+    assert details["groupOverrideDetails"]["groupsToOverride"] == ["booking-admin"]
+    assert details["accessTokenGeneration"]["claimsToAddOrOverride"] == {"email": BOOKING_E2E}
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert {"event": "workforce_e2e_test_token_issued", "trigger": source,
+            "client_id": "booking-staff", "email": BOOKING_E2E} in lines
+
+
+@pytest.mark.parametrize("groups", [
+    ["cis-reviewer"],             # the CIS E2E account's set does not transfer
+    ["cis-admin"],
+    ["booking-admin", "cis-reviewer"],
+    ["booking-admin", "booking-sales"],
+    ["booking-admin", "crm-platform-admin"],
+    ["booking-sales"],
+    ["booking-contracting"],
+    ["booking-content_creator"],
+    ["crm-platform-admin"],
+    [],
+    ["rogue"],
+])
+def test_booking_e2e_with_any_other_staff_group_is_denied(groups, capsys):
+    denied(workforce.pre_token_generation, token_event(BOOKING_E2E_ATTRS, groups))
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert any(line["event"] == "workforce_pre_token_denied" for line in lines)
+    assert not any(line["event"] == "workforce_e2e_test_token_issued" for line in lines)
+
+
+def test_booking_e2e_unverified_email_is_denied():
+    denied(workforce.pre_token_generation,
+           token_event({"email": BOOKING_E2E, "email_verified": "false"}, ["booking-admin"]))
+
+
+def test_cis_e2e_cannot_borrow_the_booking_group():
+    # The map is per address: the CIS E2E account with booking-admin is still refused.
+    denied(workforce.pre_token_generation, token_event(E2E_ATTRS, ["booking-admin"]))
+
+
+def test_booking_e2e_address_is_a_mailbox_recipient():
+    # Guard (AA-910): the SES receipt rule (e2e_mailbox.tf) must accept mail for every WORKFORCE E2E address, or
+    # Cognito's sign-in code bounces and the E2E sign-in cannot finish.
+    tf = (Path(__file__).resolve().parents[2] / "e2e_mailbox.tf").read_text()
+    domain = re.search(r'e2e_mail_domain\s*=\s*"([^"$]+)\$\{var\.dns_zone_name\}"', tf).group(1)
+    locals_ = dict(re.findall(r'^\s*(e2e_mail_\w*recipient)\s*=\s*"([^"@]+)@\$\{local\.e2e_mail_domain\}"', tf, re.M))
+    rule = re.search(r"recipients\s*=\s*concat\(\[([^\]]*)\]", tf).group(1)
+    in_rule = {locals_[name] for name in re.findall(r"local\.(e2e_mail_\w*recipient)\b", rule)}
+    assert domain == "e2e-mail."
+    assert {email.split("@", 1)[0] for email in workforce.E2E_TEST_STAFF} == in_rule
+    assert all(email.endswith("@e2e-mail.lumiguides.it.com") for email in workforce.E2E_TEST_STAFF)
