@@ -15,6 +15,8 @@ on:
       # group added or renamed there must run the guard too (AA-854 review).
       - "accounts/aa365/identity.tf"
       - "accounts/aa365/identity_variables.tf"
+      # AA-910: test_booking_e2e_address_is_a_mailbox_recipient reads the SES receipt rule recipients.
+      - "accounts/aa365/e2e_mailbox.tf"
       # AA-854 I2: WORKFORCE bootstrap tool (break-glass, staff create, PKCE spike) and its tests.
       - "tools/identity/**"
       - ".github/workflows/identity-triggers-test.yml"
@@ -27,6 +29,8 @@ on:
       # group added or renamed there must run the guard too (AA-854 review).
       - "accounts/aa365/identity.tf"
       - "accounts/aa365/identity_variables.tf"
+      # AA-910: test_booking_e2e_address_is_a_mailbox_recipient reads the SES receipt rule recipients.
+      - "accounts/aa365/e2e_mailbox.tf"
       # AA-854 I2: WORKFORCE bootstrap tool (break-glass, staff create, PKCE spike) and its tests.
       - "tools/identity/**"
       - ".github/workflows/identity-triggers-test.yml"
