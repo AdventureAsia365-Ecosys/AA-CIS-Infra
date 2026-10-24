@@ -949,7 +949,7 @@ resource "aws_cognito_managed_login_branding" "external" {
 resource "aws_wafv2_web_acl" "identity" {
   count       = var.identity_waf_enabled ? 1 : 0
   name        = "${local.id_prefix}-pools"
-  description = "Rate limits for the WORKFORCE, EXTERNAL and PARTNER Cognito pools (AA-703, AA-908)"
+  description = "Rate limits for the WORKFORCE, EXTERNAL and PARTNER Cognito pools, AA-703 and AA-908"
   scope       = "REGIONAL"
 
   default_action {
