@@ -30,6 +30,10 @@
 --      tenant, table document, column content, document id) before it is stored in the documents bucket (SSE-KMS as
 --      a second layer, AA-CIS-Infra crm_storage.tf); the file name is encrypted too; a passport scan is write-only
 --      and never visible to travellers.
+--   7b. Same-agency keys: UNIQUE (tenant_id, id) on crm.traveler, crm.trip and crm.traveler_profile, and every
+--      new reference to them is a composite (tenant_id, id) foreign key. Referential checks bypass FORCE RLS, so a
+--      single-column key would let one agency's row point at another agency's traveller or trip; the composite key
+--      makes the database refuse it. The document key must be exactly tenants/<its tenant>/documents/<its id>.
 --   8. F2 views for the NOLOGIN readers, owned by crm_owner (FORCE RLS binds the owner too, so they show the agency
 --      of app.tenant_id only): v_ai_traveler_profile, v_ai_trip_party, v_ai_trip_context (crm_ai_reader) and
 --      v_insight_fact (crm_insights: no token, no trip id). crm_support_reader stays without grants: its non-F1
@@ -131,12 +135,30 @@ ALTER TABLE crm.trip_party ADD CONSTRAINT trip_party_age_band_list_chk CHECK (
 CREATE INDEX IF NOT EXISTS trip_party_token_idx ON crm.trip_party (traveler_token);
 COMMENT ON COLUMN crm.trip_party.age_band_at_departure IS 'AA-937 (crm-006, R32): the traveller''s age band on the trip''s start date, from the F1 DOB; recomputed only when that DOB or the start date changes (app.travellers.age_bands), one audit event per recompute';
 
+-- ── 3b. Same-agency keys for the composite foreign keys below (7b) ───────────────────────────────
+-- Referential checks bypass FORCE RLS: a key on (tenant_id, id) makes a cross-agency reference impossible.
+DO $$
+DECLARE
+    spec text[];
+BEGIN
+    FOREACH spec SLICE 1 IN ARRAY ARRAY[
+        ARRAY['traveler', 'traveler_tenant_id_uq', 'traveler_id'],
+        ARRAY['trip', 'trip_tenant_id_uq', 'trip_id'],
+        ARRAY['traveler_profile', 'traveler_profile_tenant_token_uq', 'traveler_token']
+    ] LOOP
+        IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_constraint
+                        WHERE conrelid = format('crm.%I', spec[1])::regclass AND conname = spec[2]) THEN
+            EXECUTE format('ALTER TABLE crm.%I ADD CONSTRAINT %I UNIQUE (tenant_id, %I)', spec[1], spec[2], spec[3]);
+        END IF;
+    END LOOP;
+END $$;
+
 -- ── 4. crm.profile_history (F2) ──────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS crm.profile_history (
     history_id       UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id        UUID NOT NULL DEFAULT NULLIF(current_setting('app.tenant_id', true), '')::uuid
                      REFERENCES crm.tenant (tenant_id),
-    traveler_token   UUID NOT NULL REFERENCES crm.traveler_profile (traveler_token),
+    traveler_token   UUID NOT NULL,
     aa_departure_id  TEXT,
     aa_product_key   TEXT,
     stage_reached    TEXT NOT NULL,
@@ -154,6 +176,8 @@ CREATE TABLE IF NOT EXISTS crm.profile_history (
     CONSTRAINT profile_history_stage_chk CHECK (stage_reached IN (
         'inquiry', 'qualifying', 'proposal', 'booked', 'pre_departure', 'travelling', 'completed', 'lost', 'cancelled'
     )),
+    CONSTRAINT profile_history_profile_fk FOREIGN KEY (tenant_id, traveler_token)
+        REFERENCES crm.traveler_profile (tenant_id, traveler_token),
     CONSTRAINT profile_history_month_chk CHECK (year_month = date_trunc('month', year_month)::date),
     CONSTRAINT profile_history_trash_chk CHECK (
         (deleted_at IS NULL) = (deleted_by IS NULL) AND (deleted_at IS NULL) = (purge_after IS NULL)
@@ -167,8 +191,8 @@ CREATE TABLE IF NOT EXISTS crm.traveler_relation (
     relation_id      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id        UUID NOT NULL DEFAULT NULLIF(current_setting('app.tenant_id', true), '')::uuid
                      REFERENCES crm.tenant (tenant_id),
-    from_traveler_id UUID NOT NULL REFERENCES crm.traveler (traveler_id),
-    to_traveler_id   UUID NOT NULL REFERENCES crm.traveler (traveler_id),
+    from_traveler_id UUID NOT NULL,
+    to_traveler_id   UUID NOT NULL,
     kind             TEXT NOT NULL,
     inverse_id       UUID REFERENCES crm.traveler_relation (relation_id) ON DELETE SET NULL,
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -177,6 +201,10 @@ CREATE TABLE IF NOT EXISTS crm.traveler_relation (
     deleted_at       TIMESTAMPTZ,
     deleted_by       TEXT,
     purge_after      TIMESTAMPTZ,
+    CONSTRAINT traveler_relation_from_fk FOREIGN KEY (tenant_id, from_traveler_id)
+        REFERENCES crm.traveler (tenant_id, traveler_id),
+    CONSTRAINT traveler_relation_to_fk FOREIGN KEY (tenant_id, to_traveler_id)
+        REFERENCES crm.traveler (tenant_id, traveler_id),
     CONSTRAINT traveler_relation_kind_chk CHECK (kind IN (
         'spouse', 'partner', 'parent', 'child', 'sibling', 'friend', 'referrer', 'referred'
     )),
@@ -269,7 +297,7 @@ CREATE TABLE IF NOT EXISTS crm.traveler_health (
     health_id        UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id        UUID NOT NULL DEFAULT NULLIF(current_setting('app.tenant_id', true), '')::uuid
                      REFERENCES crm.tenant (tenant_id),
-    traveler_id      UUID NOT NULL REFERENCES crm.traveler (traveler_id),
+    traveler_id      UUID NOT NULL,
     health_flags_enc BYTEA NOT NULL,
     consent_id       UUID NOT NULL REFERENCES crm.consent (consent_id),
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -278,6 +306,8 @@ CREATE TABLE IF NOT EXISTS crm.traveler_health (
     deleted_at       TIMESTAMPTZ,
     deleted_by       TEXT,
     purge_after      TIMESTAMPTZ,
+    CONSTRAINT traveler_health_traveler_fk FOREIGN KEY (tenant_id, traveler_id)
+        REFERENCES crm.traveler (tenant_id, traveler_id),
     CONSTRAINT traveler_health_enc_chk CHECK (octet_length(health_flags_enc) >= 30),
     CONSTRAINT traveler_health_trash_chk CHECK (
         (deleted_at IS NULL) = (deleted_by IS NULL) AND (deleted_at IS NULL) = (purge_after IS NULL)
@@ -314,8 +344,8 @@ CREATE TABLE IF NOT EXISTS crm.document (
     document_id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id            UUID NOT NULL DEFAULT NULLIF(current_setting('app.tenant_id', true), '')::uuid
                          REFERENCES crm.tenant (tenant_id),
-    trip_id              UUID REFERENCES crm.trip (trip_id),
-    traveler_id          UUID REFERENCES crm.traveler (traveler_id),
+    trip_id              UUID,
+    traveler_id          UUID,
     kind                 TEXT NOT NULL,
     s3_key               TEXT NOT NULL,
     sha256               BYTEA NOT NULL,
@@ -332,13 +362,18 @@ CREATE TABLE IF NOT EXISTS crm.document (
     deleted_by           TEXT,
     purge_after          TIMESTAMPTZ,
     CONSTRAINT document_s3_key_uq UNIQUE (s3_key),
+    -- A NULL subject column skips its key (MATCH SIMPLE); document_subject_chk requires one of the two.
+    CONSTRAINT document_trip_fk FOREIGN KEY (tenant_id, trip_id) REFERENCES crm.trip (tenant_id, trip_id),
+    CONSTRAINT document_traveler_fk FOREIGN KEY (tenant_id, traveler_id)
+        REFERENCES crm.traveler (tenant_id, traveler_id),
     CONSTRAINT document_subject_chk CHECK (trip_id IS NOT NULL OR traveler_id IS NOT NULL),
     CONSTRAINT document_kind_chk CHECK (kind IN (
         'passport_scan', 'waiver_pdf', 'terms_pdf', 'ticket', 'voucher', 'invoice_pdf', 'supplier_confirmation', 'other'
     )),
-    -- The object key names the agency and the document only: no file name, no traveller.
+    -- The object key names the row's own agency and document only: no file name, no traveller, never another
+    -- agency's prefix (the task role's grant covers tenants/*/documents/*, so this is the structural binding).
     CONSTRAINT document_s3_key_chk CHECK (
-        s3_key ~ '^tenants/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/documents/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        s3_key = 'tenants/' || tenant_id::text || '/documents/' || document_id::text
     ),
     CONSTRAINT document_sha256_chk CHECK (octet_length(sha256) = 32),
     CONSTRAINT document_size_chk CHECK (size_bytes BETWEEN 1 AND 10485760),
@@ -359,7 +394,7 @@ CREATE INDEX IF NOT EXISTS document_traveler_idx ON crm.document (traveler_id) W
 CREATE INDEX IF NOT EXISTS document_trip_idx ON crm.document (trip_id) WHERE trip_id IS NOT NULL;
 COMMENT ON TABLE crm.document IS 'AA-937 (crm-006): agency documents of a trip or traveller (F1 group B, design §4.1 Fix A7). The object in the documents bucket is AES-256-GCM under the tenant docs DEK (AAD = tenant, document, content, document id), then SSE-KMS as a second layer; sha256 is the digest of that stored object. Passport scans are write-only; visible_to_travelers drives the client portal (CRM-24a). No NOLOGIN reader is granted it.';
 COMMENT ON COLUMN crm.document.filename_enc IS 'pii:free_text; the uploaded file name, encrypted (vault DEK)';
-COMMENT ON COLUMN crm.document.s3_key IS 'tenants/<tenant id>/documents/<document id>: no name, no traveller';
+COMMENT ON COLUMN crm.document.s3_key IS 'exactly tenants/<this row''s tenant id>/documents/<this row''s document id>: no name, no traveller, no other agency';
 
 -- ── RLS + triggers on the new tenant tables ──────────────────────────────────────────────────────
 DO $$
@@ -442,6 +477,16 @@ BEGIN
             RAISE EXCEPTION 'crm-006: % must have ENABLE + FORCE row level security', t;
         END IF;
     END LOOP;
+    -- 7b: every new reference to a traveller, trip or profile is a same-agency (tenant_id, id) key.
+    IF EXISTS (SELECT 1 FROM pg_catalog.pg_constraint con
+                WHERE con.contype = 'f'
+                  AND con.conrelid IN ('crm.profile_history'::regclass, 'crm.traveler_relation'::regclass,
+                                       'crm.traveler_health'::regclass, 'crm.document'::regclass)
+                  AND con.confrelid IN ('crm.traveler'::regclass, 'crm.trip'::regclass,
+                                        'crm.traveler_profile'::regclass)
+                  AND cardinality(con.conkey) <> 2) THEN
+        RAISE EXCEPTION 'crm-006: a new reference to a traveller, trip or profile is not a (tenant_id, id) key';
+    END IF;
     -- Fix A1 / design §4.3: no NOLOGIN reader reaches an F1 table, crm.trip_traveler included.
     FOREACH t IN ARRAY ARRAY['crm.traveler', 'crm.traveler_health', 'crm.traveler_relation', 'crm.document',
                              'crm.trip_traveler', 'crm.note', 'crm.consent', 'crm.form_submission', 'crm.tenant_key',
