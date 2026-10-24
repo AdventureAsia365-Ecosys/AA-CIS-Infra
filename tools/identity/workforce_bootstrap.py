@@ -84,6 +84,10 @@ STAFF_GROUPS = (
     "booking-sales",
     "booking-contracting",
     "booking-content_creator",
+    # AA-939 / root ADR 0006b decision 6: AA-Partner staff groups (identity.tf, the trigger's DEFAULT_STAFF_GROUPS).
+    "crm-platform-admin",
+    "crm-ops",
+    "crm-support",
 )
 BREAKGLASS_GROUPS = ("cis-admin", "booking-admin")  # ADR 0006 decision 11
 # breakglass-otp-probe asks these app clients (aa-workforce-<env>-<name>) for first factors: the
