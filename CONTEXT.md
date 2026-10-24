@@ -123,7 +123,11 @@ accounts/
                                    APIs, AA-911 D-1), groups, trigger Lambdas in
                                    lambda_src/identity_triggers + tests; SES (ses.tf identity) on,
                                    EXTERNAL native sign-up, WAF and custom domains gated by
-                                   variables, default off — AA-854)
+                                   variables, default off — AA-854; managed login branding: one style
+                                   per WORKFORCE and per EXTERNAL client, for_each over each client
+                                   resource — a managed-login-v2 client without a style answers 403
+                                   on /login; tools/terraform/managed_login_branding.py in
+                                   managed-login-branding.yml fails CI on a gap, AA-935 S249)
     identity_m2m.tf               (AA-972, root ADR 0006b d7: M2M pool aa-m2m-dev, resource servers
                                    booking.b2b (read/quote/hold/book) and, AA-976, cis.catalog (read),
                                    client-credentials client aa-m2m-dev-crm (AA-Partner -> Booking B2B

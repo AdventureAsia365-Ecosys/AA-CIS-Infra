@@ -1,0 +1,49 @@
+name: Managed Login Branding
+
+# AA-935 follow-up (S249): with managed login version 2, a Cognito app client without a managed login branding
+# style answers HTTP 403 "Login pages unavailable" on /login. On 24/10/2026 every EXTERNAL client was in that state.
+# tools/terraform/managed_login_branding.py fails when an interactive client of a v2 pool has no
+# aws_cognito_managed_login_branding covering it (a new client key, a new pool such as the AA-939 partner pool).
+# Offline, no AWS access.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "accounts/aa365/**"
+      - "tools/terraform/managed_login_branding.py"
+      - "tools/terraform/tests/test_managed_login_branding.py"
+      - ".github/workflows/managed-login-branding.yml"
+  push:
+    branches: [main]
+    paths:
+      - "accounts/aa365/**"
+      - "tools/terraform/managed_login_branding.py"
+      - "tools/terraform/tests/test_managed_login_branding.py"
+      - ".github/workflows/managed-login-branding.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  managed-login-branding:
+    name: Managed login branding coverage
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install pytest
+        run: python -m pip install "pytest>=8,<10"
+
+      - name: Unit tests
+        run: python -B -m pytest -p no:cacheprovider -q tools/terraform/tests/test_managed_login_branding.py
+
+      - name: Check accounts/aa365 pool clients
+        run: python3 -B tools/terraform/managed_login_branding.py --source accounts/aa365
