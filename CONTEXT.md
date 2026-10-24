@@ -129,11 +129,13 @@ accounts/
                                    on /login; tools/terraform/managed_login_branding.py in
                                    managed-login-branding.yml fails CI on a gap, AA-935 S249)
     identity_m2m.tf               (AA-972, root ADR 0006b d7: M2M pool aa-m2m-dev, resource servers
-                                   booking.b2b (read/quote/hold/book) and, AA-976, cis.catalog (read),
-                                   client-credentials client aa-m2m-dev-crm (AA-Partner -> Booking B2B
-                                   and -> CIS catalog.http.v1; each receiver checks only its own scope),
+                                   booking.b2b (read/quote/hold/book), AA-976 cis.catalog (read) and
+                                   AA-978 cis.tenant (read), client-credentials client aa-m2m-dev-crm
+                                   (AA-Partner -> Booking B2B, -> CIS catalog.http.v1 and -> CIS
+                                   tenant.membership.v1; each receiver checks only its own scope),
                                    prefix domain for the token endpoint, secret container
-                                   aa-crm/dev/m2m-booking-client (no value); booking.tf passes
+                                   aa-crm/dev/m2m-booking-client (value written after apply, never by
+                                   Terraform; crm_app.tf injects it as M2M_CLIENT, AA-978); booking.tf passes
                                    COGNITO_M2M_ISSUER / COGNITO_M2M_CRM_CLIENT_ID. CIS needs no env var: it
                                    keeps the Dev issuer and CRM client id as code constants with an env
                                    override, api/core/m2m_auth.py)
@@ -237,10 +239,12 @@ accounts/
                                    tools/terraform/crm_key_policy_diff.py (plan role, read-only: live GetKeyPolicy vs state))
     crm_app.tf                    (AA-933 CRM-05, AA-Partner API runtime: ECR aa-crm-<env>-api (IMMUTABLE, git-SHA
                                    tags), log group /ecs/aa-crm-<env>, secret shell crm/<env>/sentry-dsn, execution
-                                   role (this repo, this log group, the two crm/ secrets), task role
+                                   role (this repo, this log group, the two crm/ secrets and, AA-978, the
+                                   M2M client secret aa-crm/<env>/m2m-booking-client), task role
                                    aa-crm-<env>-ecs-task-role (the name the crm_data.tf key policies trust; ECS Exec +
                                    PutMetricData AA/Jobs/Crm only), task definition Fargate ARM64 with the route-class
-                                   identity env, target group aa-crm-<env>-api-tg (/crm/health), ALB rule crm_api
+                                   identity env and, AA-978, CIS_API_URL (var.crm_cis_api_url) + secret M2M_CLIENT
+                                   for the CIS membership feed (crm_membership_pull), target group aa-crm-<env>-api-tg (/crm/health), ALB rule crm_api
                                    (partner host + X-AA-Origin + /crm, /crm/*; above crm_partner_default), service
                                    aa-crm-<env>-api (desired 0, ignore_changes count + task definition), GitHub OIDC
                                    deploy role aa-crm-<env>-app-deploy (immutable subject, var.crm_github_repo_id),
@@ -500,7 +504,9 @@ makes CI Terraform Plan fail with 403.
   session verification (no per-IP rule while the WAF is off). `/content/{content_proxy+}` has a higher override
   300 / 600 (TripPlanner cover `<img>` bursts; busiest second 100). `/catalog/{catalog_proxy+}` (AA-976, ANY,
   NONE at the gateway, HTTP_PROXY to `/catalog/{catalog_proxy}`; the CIS app verifies the M2M token) serves
-  `catalog.http.v1` to the partner CRM on the stage default. Per-IP login limits and per-user backoff are in
+  `catalog.http.v1` to the partner CRM on the stage default. `/tenant/membership/{membership_proxy+}` (AA-978, same
+  shape, HTTP_PROXY to `/tenant/membership/{membership_proxy}`; only this subtree of `/tenant`) serves
+  `tenant.membership.v1` (scope `cis.tenant/read`) to the CRM worker on the stage default. Per-IP login limits and per-user backoff are in
   the CIS app (`api/core/login_throttle.py`). The login and content overrides keep detailed metrics off where they
   would be new (~0.30 USD per metric-month). The WAF on the REST stages stays deferred (S241: on when customer
   sign-up opens); reusing the existing ALB web ACL would cost ~0.60 USD per million requests inspected, no new ACL
