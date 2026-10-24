@@ -26,7 +26,9 @@
 # Security:
 #   - The rule accepts mail for a fixed list of recipients only: the CIS staff E2E address and, since
 #     AA-935, the e2e test users of the synthetic AA-Partner agencies (tools/identity/crm_e2e_users.json,
-#     e2e-test-crm-<agency>-<role>@; EXTERNAL-pool users, email-code sign-in to the CRM web on Dev).
+#     e2e-test-crm-<agency>-<role>@; EXTERNAL-pool users, email-code sign-in to the CRM web on Dev), and,
+#     since AA-908, two synthetic travellers e2e-test-traveller@ / e2e-test-traveller-2@ (EXTERNAL pool,
+#     TripPlanner sign-up and email-code sign-in on Dev).
 #     Anything else to the sub-domain is bounced by SES (no matching rule). Their codes land under the
 #     same prefix; the CIS reader role can read them too, which is acceptable for synthetic Dev agency
 #     users (no real person, no real agency data). Spam/virus scan on; SES only tags the verdict, the reader must not
@@ -54,6 +56,11 @@ locals {
   e2e_crm_users = jsondecode(file("${path.module}/../../tools/identity/crm_e2e_users.json")).users
   e2e_crm_recipients = [
     for u in local.e2e_crm_users : "e2e-test-crm-${u.agency}-${u.role}@${local.e2e_mail_domain}"
+  ]
+  # AA-908: two synthetic travellers (EXTERNAL pool, tripplanner client, native email sign-up) for the
+  # TripPlanner sign-in / My Trips check: one owns the trip, the other must see an empty list and a 404.
+  e2e_traveller_recipients = [
+    for n in ["", "-2"] : "e2e-test-traveller${n}@${local.e2e_mail_domain}"
   ]
   e2e_mail_bucket       = "${local.name_prefix}-e2e-mail-${var.account_id}"
   e2e_mail_prefix       = "inbound/"
@@ -219,7 +226,7 @@ resource "aws_ses_active_receipt_rule_set" "e2e" {
 resource "aws_ses_receipt_rule" "e2e_cognito" {
   name          = local.e2e_mail_rule
   rule_set_name = aws_ses_receipt_rule_set.e2e.rule_set_name
-  recipients    = concat([local.e2e_mail_recipient], local.e2e_crm_recipients)
+  recipients    = concat([local.e2e_mail_recipient], local.e2e_crm_recipients, local.e2e_traveller_recipients)
   enabled       = true
   scan_enabled  = true
   # Require (S243 option B): the code mail now comes straight from Cognito/SES, which delivers over
@@ -304,7 +311,9 @@ output "e2e_mailbox" {
   value = {
     recipient      = local.e2e_mail_recipient
     crm_recipients = local.e2e_crm_recipients
-    bucket         = aws_s3_bucket.e2e_mail.id
-    prefix         = local.e2e_mail_prefix
+    # AA-908: read by the agent (MFA admin role) during the TripPlanner sign-in check; no CI reader yet.
+    traveller_recipients = local.e2e_traveller_recipients
+    bucket               = aws_s3_bucket.e2e_mail.id
+    prefix               = local.e2e_mail_prefix
   }
 }

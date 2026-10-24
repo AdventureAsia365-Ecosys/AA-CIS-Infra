@@ -126,7 +126,11 @@ accounts/
                                    APIs, AA-911 D-1), groups, trigger Lambdas in
                                    lambda_src/identity_triggers + tests; SES (ses.tf identity) on,
                                    EXTERNAL native sign-up, WAF and custom domains gated by
-                                   variables, default off — AA-854; managed login branding: one style
+                                   variables, default off — AA-854; Dev tfvars turn the WAF on (AA-908;
+                                   traveller native sign-up still off): one web ACL on the WORKFORCE, EXTERNAL
+                                   and PARTNER pools, per-IP limits on the sign-up/sign-in API calls and
+                                   on managed-login form posts (not /oauth2/*), alarm
+                                   aa-identity-dev-waf-blocked; managed login branding: one style
                                    per WORKFORCE and per EXTERNAL client, for_each over each client
                                    resource — a managed-login-v2 client without a style answers 403
                                    on /login; tools/terraform/managed_login_branding.py in
@@ -172,8 +176,8 @@ accounts/
     ses.tf                        (SES domain identity, DKIM/MAIL FROM/DMARC records, configuration sets,
                                    ses:SendEmail grants for the app roles, reputation alarms — AA-811)
     e2e_mailbox.tf                (AA-816 I5: SES inbound for the Cognito E2E: MX e2e-mail.lumiguides.it.com,
-                                   the region's single ACTIVE receipt rule set aa-cis-dev-e2e (rule e2e-cognito,
-                                   one recipient) -> S3 aa-cis-dev-e2e-mail-<acct>/inbound/ (1-day expiry), and
+                                   the region's single ACTIVE receipt rule set aa-cis-dev-e2e (rule e2e-cognito:
+                                   the staff E2E address, the CRM e2e users, AA-908's two e2e travellers) -> S3 aa-cis-dev-e2e-mail-<acct>/inbound/ (1-day expiry), and
                                    the read-only GitHub OIDC role aa-cis-dev-e2e-mail-reader (AA-CIS-App, env e2e,
                                    main). Any future SES receiving in us-west-1 adds rules to this set)
     custom_domains.tf             (AA-818: ACM certs api-booking./api-tripplanner. (us-west-1) and auth./staff-auth.

@@ -190,21 +190,23 @@ variable "identity_client_urls" {
       logout_urls   = ["http://localhost:3002/"]
     }
     "tripplanner" = {
-      callback_urls = ["https://tripplanner.lumiguides.it.com/auth/callback", "http://localhost:3003/auth/callback"]
-      logout_urls   = ["https://tripplanner.lumiguides.it.com/", "http://localhost:3003/"]
+      # AA-908 (S250): both production hosts of the Vercel project aa-tripplanner. The guest cookie
+      # (__Host-tp_guest) is host-only, so the callback must land on the host where sign-in started.
+      callback_urls = ["https://tripplanner.lumiguides.it.com/auth/callback", "https://aa-tripplanner.vercel.app/auth/callback", "http://localhost:3003/auth/callback"]
+      logout_urls   = ["https://tripplanner.lumiguides.it.com/", "https://aa-tripplanner.vercel.app/", "http://localhost:3003/"]
     }
   }
 }
 
 # ── WAF on the pools (ADR 0006 decision 1) ───────────────────────────────────
 variable "identity_waf_enabled" {
-  description = "Attach one shared REGIONAL web ACL with per-IP rate rules to both pools. BILLABLE: about $7/month for this single shared ACL ($5 ACL + 2 x $1 rules + $0.60 per million requests; ADR 0006 quotes $12-15/month for two ACLs). Off by default: S241 D-19 = quote first, enable only with Nghiep's go (AA-854). Required by identity_external_native_signup_enabled (precondition on the EXTERNAL pool)."
+  description = "Attach one shared REGIONAL web ACL with per-IP rate rules to the WORKFORCE, EXTERNAL and PARTNER pools. BILLABLE: about $8/month for this single shared ACL ($5 ACL + 3 x $1 rules + $0.60 per million requests, AA-908; ADR 0006 quotes $12-15/month for two ACLs). Off by default: S241 D-19 = quote first, enable only with Nghiep's go (AA-854). Required by identity_external_native_signup_enabled (precondition on the EXTERNAL pool)."
   type        = bool
   default     = false
 }
 
 variable "identity_waf_signup_rate_limit" {
-  description = "Max SignUp / InitiateAuth / code-resend calls per IP per 5 minutes before WAF blocks."
+  description = "Max SignUp / InitiateAuth / code-resend API calls plus managed-login form posts (any POST outside /oauth2/) per IP per 5 minutes before WAF blocks. A CI browser sign-in makes about 3-4 such posts (AA-908)."
   type        = number
   default     = 100
 }
