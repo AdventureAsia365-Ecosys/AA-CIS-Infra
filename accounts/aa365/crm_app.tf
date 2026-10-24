@@ -313,6 +313,11 @@ resource "aws_ecs_task_definition" "crm_api" {
       { name = "RATE_LIMIT_XFF_HOPS", value = "2" },
       { name = "KEY_PROVIDER", value = "kms" },
       { name = "KMS_DATA_KEY_ID", value = aws_kms_alias.crm["data"].name },
+      # AA-936: the public inquiry form (app.intake.public): pages on the client host may post; limits per
+      # address per minute and per form per hour.
+      { name = "INTAKE_PAGE_ORIGINS", value = local.crm_intake_origin },
+      { name = "RATE_LIMIT_INTAKE_PER_MINUTE", value = "5" },
+      { name = "RATE_LIMIT_INTAKE_FORM_PER_HOUR", value = "200" },
       ], local.crm_identity_env, var.crm_sentry_enabled ? [
       { name = "SENTRY_REQUIRED", value = "true" },
     ] : [])

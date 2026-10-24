@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Live checks of the AA-Partner edge: CloudFront -> VPC origin -> NLB -> ALB (AA-931, AA-933, AA-935). Stdlib only, no
+"""Live checks of the AA-Partner edge: CloudFront -> VPC origin -> NLB -> ALB (AA-931, AA-933, AA-935, AA-936). Stdlib only, no
 AWS calls.
 
 Run after an apply that touches crm_edge.tf, crm_app.tf, crm_web.tf or alb_rules.tf. No task needs to run: with the web
@@ -17,6 +17,12 @@ Checks (exit 1 if any fails):
   web-healthz    https://<partner host>/healthz 200 {"service": "aa-crm-web"} or 503 (no healthy web task)
   crm-health     https://<partner host>/crm/health   200 = the API answers (crm_api rule); 503 = the rule matched but
                                                 aa-crm-dev-api has no healthy task (desired 0): reported, not failed
+  client-root    https://<client host>/         AA-936: the CRM web off /c/* (crm_client_default): its 404 page (not
+                                                JSON), or 503 = no healthy web task (reported, not failed)
+  client-public  https://<client host>/crm/public/v1/forms/short   AA-936: the CRM API (crm_client_public): 422 JSON
+                                                (the key is too short), or 503 = no healthy API task
+  client-no-api  https://<client host>/crm/health   AA-936: NOT the API (only /crm/public/* is): the web's 404 page,
+                                                or 503 (no healthy web task); a 200 JSON health answer fails
   raw-cf         https://<cf domain>/           403 "Forbidden" from the ALB deny rule (never CIS / Booking)
   api-header     https://<api host>/health + X-AA-Origin: guess   403 (deny rule) or 200 (header dropped),
                                                 never the partner 404
@@ -86,6 +92,25 @@ def eval_crm_health(status: int, body: bytes, ctype: str, location: str = "") ->
     return False, f"status={status} body={body[:60]!r}"
 
 
+def eval_client_web_404(status: int, body: bytes, ctype: str, location: str = "") -> Result:
+    """The client host's default rule reaches the CRM web, which answers 404 off /c/* (an HTML page, never JSON)."""
+    if status == 404 and _json(body) is None:
+        return True, "status=404 page (AA-Partner web answers off /c/*)"
+    if status == 503 and _json(body) is None:
+        return True, "status=503 (rule matched, aa-crm-dev-web has no healthy task: desired 0?)"
+    return False, f"status={status} type={ctype or '-'} body={body[:60]!r}"
+
+
+def eval_client_public(status: int, body: bytes, ctype: str, location: str = "") -> Result:
+    """/crm/public/* on the client host reaches the CRM API: a too-short form key is FastAPI's 422 JSON."""
+    data = _json(body)
+    if status == 422 and isinstance(data, dict) and "detail" in data:
+        return True, "status=422 JSON (AA-Partner API answers /crm/public/*)"
+    if status == 503 and not is_partner_404(status, body, ctype) and data is None:
+        return True, "status=503 (rule matched, aa-crm-dev-api has no healthy task: desired 0?)"
+    return False, f"status={status} type={ctype or '-'} body={body[:60]!r}"
+
+
 def eval_raw_cf(status: int, body: bytes, ctype: str, location: str = "") -> Result:
     return status == 403 and body.strip() == b"Forbidden", f"status={status} body={body[:40]!r}"
 
@@ -108,6 +133,9 @@ def build_checks(args: argparse.Namespace) -> dict[str, Callable[[], Result]]:
         "partner-path": run(eval_web_default, args.host, "/crmx"),
         "web-healthz": run(eval_web_healthz, args.host, "/healthz"),
         "crm-health": run(eval_crm_health, args.host, "/crm/health"),
+        "client-root": run(eval_client_web_404, args.client_host, "/"),
+        "client-public": run(eval_client_public, args.client_host, "/crm/public/v1/forms/short"),
+        "client-no-api": run(eval_client_web_404, args.client_host, "/crm/health"),
         "raw-cf": run(eval_raw_cf, args.cf_domain, "/"),
         "api-header": run(eval_api_header, args.api_host, "/health", GUESS_HEADER),
         "api-plain": run(eval_ok, args.api_host, "/health"),
@@ -116,8 +144,9 @@ def build_checks(args: argparse.Namespace) -> dict[str, Callable[[], Result]]:
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description="AA-Partner CloudFront edge live checks (AA-931, AA-933, AA-935)")
+    ap = argparse.ArgumentParser(description="AA-Partner CloudFront edge live checks (AA-931, AA-933, AA-935, AA-936)")
     ap.add_argument("--host", default="partner-dev.lumiguides.it.com")
+    ap.add_argument("--client-host", default="go-dev.lumiguides.it.com", help="AA-936 client host (inquiry form)")
     ap.add_argument("--cf-domain", required=True, help="the distribution's *.cloudfront.net name (terraform output crm_edge)")
     ap.add_argument("--api-host", default="api-cis.lumiguides.it.com")
     ap.add_argument("--booking-host", default="api-booking.lumiguides.it.com")
@@ -134,7 +163,7 @@ def main(argv=None) -> int:
         except Exception as exc:  # noqa: BLE001 - report and continue
             ok, detail = False, f"error {type(exc).__name__}: {exc}"
         failed += 0 if ok else 1
-        print(f"{'PASS' if ok else 'FAIL'}  {name:<12} {detail}", flush=True)
+        print(f"{'PASS' if ok else 'FAIL'}  {name:<13} {detail}", flush=True)
     return 1 if failed else 0
 
 

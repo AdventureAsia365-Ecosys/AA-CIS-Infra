@@ -36,7 +36,7 @@
 # =============================================================================
 
 variable "crm_web_client_hosts" {
-  description = "AA-935: traveller (client) hosts the CRM web serves /c/* on (WEB_CLIENT_HOSTS), e.g. go-dev.lumiguides.it.com. Empty until the first client page (AA-936) adds the host, its record and its ALB rule."
+  description = "AA-935: extra traveller (client) hosts the CRM web serves /c/* on (WEB_CLIENT_HOSTS). AA-936 adds go-dev. itself (crm_client_edge.tf); list only additional hosts here."
   type        = list(string)
   default     = []
 }
@@ -61,7 +61,8 @@ locals {
     { name = "ENVIRONMENT", value = var.environment },
     { name = "WEB_PUBLIC_ORIGIN", value = "https://${local.crm_partner_host}" },
     { name = "WEB_PARTNER_HOSTS", value = local.crm_partner_host },
-    { name = "WEB_CLIENT_HOSTS", value = join(",", var.crm_web_client_hosts) },
+    # AA-936: the client host of crm_client_edge.tf, plus any extra host given here.
+    { name = "WEB_CLIENT_HOSTS", value = join(",", distinct(concat(local.crm_client_hosts, var.crm_web_client_hosts))) },
     { name = "CRM_API_ORIGIN", value = "https://${local.crm_partner_host}" },
     { name = "COGNITO_DOMAIN", value = local.crm_web_cognito_domain },
     { name = "COGNITO_CLIENT_ID", value = aws_cognito_user_pool_client.external["cis-portal"].id },
