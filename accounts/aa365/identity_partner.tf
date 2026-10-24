@@ -334,7 +334,9 @@ resource "aws_cloudwatch_event_rule" "identity_partner_pool_config" {
       userIdentity = {
         sessionContext = {
           sessionIssuer = {
-            arn = [{ "anything-but" = [local.idpartner_tf_apply_role_arn] }]
+            # exists=false: a call without a role session (an IAM user's static key, root) has no
+            # sessionIssuer at all, and anything-but alone would not match it (AA-939 review).
+            arn = [{ "anything-but" = [local.idpartner_tf_apply_role_arn] }, { exists = false }]
           }
         }
       }
@@ -380,7 +382,7 @@ resource "aws_cloudwatch_event_rule" "identity_partner_admin_bypass" {
           userIdentity = {
             sessionContext = {
               sessionIssuer = {
-                arn = [{ "anything-but" = [aws_iam_role.crm_ecs_task.arn] }]
+                arn = [{ "anything-but" = [aws_iam_role.crm_ecs_task.arn] }, { exists = false }]
               }
             }
           }

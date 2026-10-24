@@ -69,3 +69,19 @@ pool, MFA required).
 | `$PY tools/identity/crm_dev_identity.py --pool partner e2e-users --apply --write-secrets` | AA-939: the same users in the partner pool. A new user is created with SUPPRESS and a random temporary password, then enrolled through the partner-web client the way a person signs in the first time (USER_AUTH + PASSWORD, a random permanent password, TOTP enrolment), and `{email, sub, agency, role, pool, password, totp_secret}` is stored in its secret (`--write-secrets` is required: the values exist nowhere else). Existing users keep their stored values. Entries with `"invitee": true` are skipped. Expect one partner-pool "admin bypass" alert mail per run (identity_partner.tf). The E2E environment secrets `E2ECRMPASSWORD` / `E2ECRMTOTP` are copied from the owner's secret. |
 | `$PY tools/identity/crm_dev_identity.py --pool partner invitee-reset [--apply]` | AA-939: deletes the partner-pool account of the `"invitee": true` address so the one-off timed E2E "invite -> active < 5 min" (AA-Partner `e2e/tests/invite.spec.ts`) starts from no account. |
 | `$PY tools/identity/crm_dev_identity.py web-secret [--apply] [--rotate-session]` | Writes `crm/dev/web` (the `crm_web.tf` secret shell) = `{cognito_client_secret, session_secret}`: the client secret read from the `cis-portal` client (or, with `--pool partner`, the `partner-web` client: run it right after `crm_partner_signin_enabled = true` is applied, then deploy the web), the session secret random and kept on re-runs unless `--rotate-session` (signs every CRM web user out). Run it before the first web task starts. |
+
+### Runbook: an invitee lost the one-time password (AA-939)
+
+The partner pool is admin-create only with required MFA, so the claim step shows the temporary password once (it
+lives 15 minutes in a sealed cookie). If the person closed the page before the first sign-in, the account stays in
+`FORCE_CHANGE_PASSWORD`: a second claim answers `already_claimed` without a password, and a new invitation to the same
+address answers 409 `account_setup_pending` on its claim. The CRM task role may not reset it (the ADR 0006b
+allow-list), so AA support does, after the agency owner confirms the address:
+
+1. The owner withdraws the open invitation on Settings > Team (if there is one).
+2. An admin with MFA checks the account never signed in (`UserStatus` must be `FORCE_CHANGE_PASSWORD`; never delete a
+   `CONFIRMED` account here — that is the lost-factor runbook), with the pool id from `terraform output identity_partner_pool_id`:
+   `aws cognito-idp admin-get-user --user-pool-id <partner-pool-id> --username <address> --profile aa365-admin --region us-west-1`
+3. Delete it (one partner-pool "admin bypass" alert mail is expected):
+   `aws cognito-idp admin-delete-user --user-pool-id <partner-pool-id> --username <address> --profile aa365-admin --region us-west-1`
+4. The owner invites the address again; the new claim creates a fresh account and shows a new one-time password.
