@@ -63,7 +63,9 @@ between them). Expected from 244 + the cis_app password (S17).
 Partner CRM (AA-932): owner crm (rl-003 crm_owner / crm_app, rl-004 NOLOGIN readers, CIS 269 registry grant,
 crm-001 first file). Cells: crm_app role and NOINHERIT, each NOLOGIN reader granted to crm_app only, crm_owner
 registry grants, crm_app login after its own set-password (crm_app_secret_ready / crm_app_password_set), 42501
-both ways (crm_app -> booking / tripplanner / shared; every AA app role -> crm.job).
+both ways (crm_app -> booking / tripplanner / shared; every AA app role -> crm.job). AA-937 (crm-006): no NOLOGIN
+reader holds a privilege on an F1 vault table, crm.trip_traveler included (Fix A1), and crm_ai_reader / crm_insights
+hold none on any base table of crm (catalog facts).
 
 Mirrors db/owners.yaml (schemas, anchor schemas, owner roles, transfer keys, runtime secrets, view
 owners, runtime privileges, contract consumer grants on single objects, RLS allowlist, master role):
@@ -219,6 +221,14 @@ CRM_APP = "crm_app"
 CRM_APP_LOGIN_KEYS = ("crm_app_secret_ready", "crm_app_password_set")
 CRM_OWNER = "crm_owner"
 CRM_NOLOGIN_ROLES = ("crm_ai_reader", "crm_eraser", "crm_insights", "crm_support_reader")
+# AA-937 (CRM-09, design v3 §4.3 Fix A1): no NOLOGIN reader holds any privilege on an F1 identity-vault table,
+# crm.trip_traveler included (the F1 side of the party twins, joinable to F2 by trip_id), and crm_ai_reader /
+# crm_insights read their crm-006 views only (no base table at all). Catalog facts (has_table_privilege), keyed on
+# crm-006; tables that do not exist yet are skipped (crm.trip_traveler must exist for the cell to pass).
+CRM_F1_TABLES = ("crm.traveler", "crm.traveler_health", "crm.traveler_relation", "crm.document", "crm.trip_traveler",
+                 "crm.note", "crm.consent", "crm.form_submission", "crm.tenant_key", "crm.integration_credential",
+                 "crm.member")
+CRM_VIEW_ONLY_READERS = ("crm_ai_reader", "crm_insights")
 # Password roles whose login cell waits for their DSN secret and the set-password marker.
 LOGIN_KEYS = {CIS_APP: CIS_APP_LOGIN_KEYS, CRM_APP: CRM_APP_LOGIN_KEYS}
 # Cross-app reads (X1 plan S2): each must raise 42501 through the role's own login.
@@ -245,7 +255,7 @@ CROSS_APP = (
 )
 
 VERSION_KEYS = ("rl-001", "243", "bk-014", "tp-013", "244", "rl-002", "245", "rl-003", "rl-004", "269",
-                "crm-001") + CONSUMER_GRANT_KEYS
+                "crm-001", "crm-006") + CONSUMER_GRANT_KEYS
 TRANSFER_KEYS = {name: f"{name}_transferred" for name in OWNERS}
 KEY_TEXT = {
     "rl-001": "rl-001 registered (X1 S3, first apply of the S8 train)",
@@ -259,6 +269,7 @@ KEY_TEXT = {
     "rl-004": "rl-004 registered (AA-932: CRM NOLOGIN roles granted to crm_app, crm_app NOINHERIT)",
     "269": "CIS 269 registered (AA-932: crm_owner may register crm- keys)",
     "crm-001": "crm-001 registered (AA-932: crm.job, crm_app grants and default privileges)",
+    "crm-006": "crm-006 registered (AA-937: F1 / F2 complete, the F2 views and the first reader grants)",
     "crm_transferred": "crm-001 registered and schema crm owned by crm_owner (AA-932)",
     "crm_app_secret_ready": "crm/dev/database-url holds a crm_app DSN (Nghiệp's hand edit, AA-932)",
     "crm_app_password_set": (f"role crm_app carries the '{PASSWORD_MARKER}' comment of DB Migrate "
@@ -294,6 +305,23 @@ MEMBERS_SQL = """
 SELECT pg_catalog.pg_get_userbyid(m.member)::text AS role
   FROM pg_catalog.pg_auth_members m JOIN pg_catalog.pg_roles r ON r.oid = m.roleid
  WHERE r.rolname = $1 ORDER BY 1"""
+# AA-937: which CRM NOLOGIN reader ($1) holds any privilege on which existing F1 table ($2).
+CRM_READER_F1_SQL = """
+SELECT r.rolname::text AS role, t.rel,
+       pg_catalog.has_table_privilege(r.oid, t.oid, 'SELECT, INSERT, UPDATE, DELETE, TRUNCATE') AS granted
+  FROM pg_catalog.pg_roles r
+ CROSS JOIN (SELECT x AS rel, pg_catalog.to_regclass(x) AS oid FROM unnest($2::text[]) x) t
+ WHERE r.rolname = ANY($1::text[]) AND t.oid IS NOT NULL
+ ORDER BY 1, 2"""
+# AA-937: base tables (not views) of schema crm on which crm_ai_reader / crm_insights ($1) hold any privilege.
+CRM_READER_BASE_SQL = """
+SELECT r.rolname::text AS role, c.oid::regclass::text AS rel
+  FROM pg_catalog.pg_roles r
+ CROSS JOIN pg_catalog.pg_class c
+ WHERE r.rolname = ANY($1::text[]) AND c.relkind IN ('r', 'p')
+   AND c.relnamespace = (SELECT oid FROM pg_catalog.pg_namespace WHERE nspname = 'crm')
+   AND pg_catalog.has_table_privilege(r.oid, c.oid, 'SELECT, INSERT, UPDATE, DELETE, TRUNCATE')
+ ORDER BY 1, 2"""
 ANCHOR_SQL = """
 SELECT nspname::text AS schema, pg_catalog.pg_get_userbyid(nspowner)::text AS owner
   FROM pg_catalog.pg_namespace WHERE nspname = ANY($1::text[])"""
@@ -726,6 +754,26 @@ def _crm_nologin_cells(roles: dict) -> list:
     return cells
 
 
+def _crm_vault_cells(info: dict) -> list:
+    """crm-006 (AA-937, design v3 §4.3 Fix A1): the F1 vault, crm.trip_traveler included, is reached by no CRM NOLOGIN
+    reader; crm_ai_reader and crm_insights hold no privilege on any base table of crm (their views only)."""
+    err = info.get("error", "") if info else "CRM reader privileges not collected"
+    checked = info.get("checked", []) if info else []
+    cells = []
+    for r in CRM_NOLOGIN_ROLES:
+        hits = [x["rel"] for x in (info or {}).get("f1", []) if x["role"] == r]
+        cells.append(Cell(f"vault.{r}", "owner role",
+                          f"{r}: no privilege on any F1 vault table, crm.trip_traveler included (design v3 §4.3)",
+                          ("crm-006",), ok=not err and not hits and "crm.trip_traveler" in checked, error=err,
+                          detail={"granted": hits, "tables_checked": len(checked)}))
+    for r in CRM_VIEW_ONLY_READERS:
+        hits = [x["rel"] for x in (info or {}).get("base", []) if x["role"] == r]
+        cells.append(Cell(f"views_only.{r}", "owner role",
+                          f"{r}: no privilege on any base table of crm, its crm-006 views only", ("crm-006",),
+                          ok=not err and not hits, error=err, detail={"base_tables": hits[:SAMPLE]}))
+    return cells
+
+
 def build_cells(facts: dict, keys: dict) -> list:
     cells: list = []
     roles = facts["roles"]
@@ -752,6 +800,7 @@ def build_cells(facts: dict, keys: dict) -> list:
 
     # Partner CRM NOLOGIN roles (rl-004): reached only by SET LOCAL ROLE from crm_app, which is NOINHERIT.
     cells += _crm_nologin_cells(roles)
+    cells += _crm_vault_cells(facts.get("crm_readers", {}))
 
     # Logins through each role's own secret.
     # cis_app: Nghiệp writes its DSN first (S17), set-password runs after; in between the login fails
@@ -993,6 +1042,15 @@ async def collect_catalog(conn, cfg: dict, facts: dict, runtime_user) -> list:
     for role in sorted(names):
         v, e = await _savepoint(conn, lambda role=role: _role_info(conn, role))
         facts["roles"][role] = v if e is None else {"error": safe_err(e)}
+
+    async def crm_readers():
+        f1 = await conn.fetch(CRM_READER_F1_SQL, list(CRM_NOLOGIN_ROLES), list(CRM_F1_TABLES))
+        base = await conn.fetch(CRM_READER_BASE_SQL, list(CRM_VIEW_ONLY_READERS))
+        return {"checked": sorted({r["rel"] for r in f1}),
+                "f1": [{"role": r["role"], "rel": r["rel"]} for r in f1 if r["granted"]],
+                "base": [{"role": r["role"], "rel": r["rel"]} for r in base]}
+    v, e = await _savepoint(conn, crm_readers)
+    facts["crm_readers"] = {"error": safe_err(e)} if e else v
 
     for name, owner in OWNERS.items():
         v, e = await _savepoint(conn, lambda o=owner: conn.fetch(NOT_OWNED_SQL, list(o.schemas), o.owner_role))
@@ -1249,7 +1307,7 @@ def empty_facts() -> dict:
     return {"catalog": {"login": None, "registered": [], "anchor_owner": {}}, "roles": {}, "ownership": {},
             "owner_grants": {}, "runtime_grants": {}, "default_acl": {}, "consumer": {},
             "registry_writes": {}, "rls_enable_only": {}, "tenant_matrix": {}, "ttv": {}, "force_parity": {},
-            "sessions": {}, "logins": {}, "cis_runtime": {}}
+            "sessions": {}, "logins": {}, "cis_runtime": {}, "crm_readers": {}}
 
 
 def parse_config(argv: list) -> dict:
