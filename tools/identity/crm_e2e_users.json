@@ -1,0 +1,11 @@
+{
+  "_comment": "AA-935 (CRM-07): the e2e test users of the synthetic AA-Partner agencies on Dev. One source for e2e_mailbox.tf (receipt-rule recipients) and tools/identity/crm_dev_identity.py; the agency keys and roles match AA-Partner api/app/seed/catalogue.py. Usernames e2e-test-crm-<agency>-<role>, mail e2e-test-crm-<agency>-<role>@e2e-mail.<zone>.",
+  "users": [
+    {"agency": "sen-vang", "role": "owner"},
+    {"agency": "sen-vang", "role": "agent"},
+    {"agency": "sen-vang", "role": "assistant"},
+    {"agency": "southern-cross", "role": "owner"},
+    {"agency": "southern-cross", "role": "agent"},
+    {"agency": "harbour-lights", "role": "owner"}
+  ]
+}

@@ -55,3 +55,13 @@ no Secrets Manager client created, an enabled user left enabled, exit 2 on a fai
 capsys check that no secret value reaches stdout or stderr. They make no AWS calls.
 
 `scripts/` is gitignored in this repo, so this tool lives in `tools/`. Check with `git ls-files tools/identity`.
+
+## crm_dev_identity.py — AA-Partner (CRM) Dev identity (AA-935)
+
+Same rules as above (admin with MFA, stdlib + boto3, account guard, values never printed). DRY RUN unless `--apply`.
+Pools and clients are found by name (`aa-external-<env>`, `aa-external-<env>-cis-portal`).
+
+| Command | What it does |
+|---|---|
+| `$PY tools/identity/crm_dev_identity.py e2e-users [--apply] [--write-secrets]` | The e2e users of the synthetic CRM agencies (`crm_e2e_users.json`, same agency keys and roles as AA-Partner `api/app/seed/catalogue.py`) in the EXTERNAL pool: `e2e-test-crm-<agency>-<role>@e2e-mail.lumiguides.it.com`, AdminCreateUser with `MessageAction=SUPPRESS` and `email_verified=true`, no password (e-mail code sign-in; the codes land in the e2e mailbox bucket, `e2e_mailbox.tf`). Re-runs create only the missing users. Prints each user's `sub`, the seeder argument `--member <agency>:<role>:<sub>` and the full `python -m app.seed --apply ...` command to run in the CRM API container (ECS Exec). `--write-secrets` stores `{email, sub, agency, role, pool}` in `crm/dev/e2e-test-crm/<agency>-<role>`. |
+| `$PY tools/identity/crm_dev_identity.py web-secret [--apply] [--rotate-session]` | Writes `crm/dev/web` (the `crm_web.tf` secret shell) = `{cognito_client_secret, session_secret}`: the client secret read from the `cis-portal` client, the session secret random and kept on re-runs unless `--rotate-session` (signs every CRM web user out). Run it before the first web task starts. |

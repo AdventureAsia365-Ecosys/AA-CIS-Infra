@@ -140,7 +140,7 @@ variable "identity_facebook_api_version" {
 
 # ── App client URLs ──────────────────────────────────────────────────────────
 variable "identity_client_urls" {
-  description = "Callback and sign-out URLs per app client key (cis-admin, cis-admin-preview, booking-staff, booking-staff-preview, breakglass, cis-portal, booking-customer, tripplanner). Hosts follow the S237 hostname decision (AA-818); they need not resolve yet. Paths are placeholders until each app implements its callback route. booking-staff points at the aa-booking-admin Vercel hosts (S242); AA-911 (S246, root ADR 0006a A11, decision D-1) adds two Preview-only WORKFORCE clients, booking-staff-preview (booking-preview on aa-booking-admin) and cis-admin-preview (aa-cis-preview on aa-cis-frontend), each with ONLY its fixed Preview host, aliased by CI to the preview under test; the production clients keep their URLs (a Preview host is never a production callback) and both APIs cap the preview client ids at viewer; breakglass stays production-only; cis-portal points at portal.lumiguides.it.com (S243, AA-885); booking-customer stays on localhost until its frontend host is chosen."
+  description = "Callback and sign-out URLs per app client key (cis-admin, cis-admin-preview, booking-staff, booking-staff-preview, breakglass, cis-portal, booking-customer, tripplanner). Hosts follow the S237 hostname decision (AA-818); they need not resolve yet. Paths are placeholders until each app implements its callback route. booking-staff points at the aa-booking-admin Vercel hosts (S242); AA-911 (S246, root ADR 0006a A11, decision D-1) adds two Preview-only WORKFORCE clients, booking-staff-preview (booking-preview on aa-booking-admin) and cis-admin-preview (aa-cis-preview on aa-cis-frontend), each with ONLY its fixed Preview host, aliased by CI to the preview under test; the production clients keep their URLs (a Preview host is never a production callback) and both APIs cap the preview client ids at viewer; breakglass stays production-only; cis-portal points at portal.lumiguides.it.com (S243, AA-885) and, since AA-935, also at the AA-Partner CRM web on partner-dev.lumiguides.it.com (/auth/callback, /signed-out); booking-customer stays on localhost until its frontend host is chosen."
   type = map(object({
     callback_urls = list(string)
     logout_urls   = list(string)
@@ -175,8 +175,10 @@ variable "identity_client_urls" {
       # S243 AA-885: the tenant portal is its own Vercel project (aa-cis-portal, root portal/) on
       # portal.lumiguides.it.com; local dev port 3004. Still placeholders: tenants sign in with an API key
       # until AA-813 (Phase 3) adds the Cognito callback route at this path.
-      callback_urls = ["https://portal.lumiguides.it.com/api/auth/callback/cognito", "http://localhost:3004/api/auth/callback/cognito"]
-      logout_urls   = ["https://portal.lumiguides.it.com/tenant-login", "http://localhost:3004/tenant-login"]
+      # AA-935 (CRM-07, design v3 Fix C10): the AA-Partner CRM web signs agency users in with this same client on
+      # Dev until AA-939 (partner pool): its callback and sign-out pages on the partner host, local dev port 3005.
+      callback_urls = ["https://portal.lumiguides.it.com/api/auth/callback/cognito", "http://localhost:3004/api/auth/callback/cognito", "https://partner-dev.lumiguides.it.com/auth/callback", "http://localhost:3005/auth/callback"]
+      logout_urls   = ["https://portal.lumiguides.it.com/tenant-login", "http://localhost:3004/tenant-login", "https://partner-dev.lumiguides.it.com/signed-out", "http://localhost:3005/signed-out"]
     }
     "booking-customer" = {
       callback_urls = ["http://localhost:3002/auth/callback"]

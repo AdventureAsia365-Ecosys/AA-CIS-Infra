@@ -100,7 +100,8 @@ def test_repo_source_passes():
     assert kinds["crm_partner_default"] == "exact"
     assert kinds["crm_api"] == "exact"
     actions = {r.name.split(":")[1]: (r.action, r.status_code) for r in report.rules}
-    assert actions["crm_partner_default"] == ("fixed-response", "404")
+    # AA-935: the partner host's default forwards to the CRM web (was a fixed 404 JSON, AA-933).
+    assert actions["crm_partner_default"][0] == "forward"
     assert kinds["booking"] == "none"
 
 

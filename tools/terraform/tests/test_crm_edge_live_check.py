@@ -1,7 +1,7 @@
-"""Tests of tools/terraform/crm_edge_live_check.py (AA-933). Offline, stdlib + pytest.
+"""Tests of tools/terraform/crm_edge_live_check.py (AA-933, AA-935). Offline, stdlib + pytest.
 
-The partner host's default 404 body lives in two places (crm_edge.tf message_body and the live check); the first test
-keeps them in step.
+Since AA-935 the partner host's default rule forwards to the CRM web target group; the first test keeps crm_edge.tf
+and the live check in step.
 """
 from __future__ import annotations
 
@@ -24,14 +24,11 @@ def _default_rule() -> str:
     return EDGE_TF.split('resource "aws_lb_listener_rule" "crm_partner_default"', 1)[1].split("\nresource ", 1)[0]
 
 
-def test_terraform_default_rule_matches_live_check():
+def test_terraform_default_rule_forwards_to_the_web():
     rule = _default_rule()
-    assert re.search(r'type\s*=\s*"fixed-response"', rule)
-    assert re.search(r'status_code\s*=\s*"404"', rule)
-    assert re.search(r'content_type\s*=\s*"application/json"', rule)
-    body = re.search(r"message_body\s*=\s*jsonencode\((\{.*?\})\)", rule).group(1)
-    pairs = dict(re.findall(r'(\w+)\s*=\s*"([^"]*)"', body))
-    assert pairs == chk.PARTNER_404
+    assert re.search(r'type\s*=\s*"forward"', rule)
+    assert re.search(r"target_group_arn\s*=\s*aws_lb_target_group\.crm_web\.arn", rule)
+    assert "fixed-response" not in rule
 
 
 def test_no_spike_left_in_edge():
@@ -39,12 +36,22 @@ def test_no_spike_left_in_edge():
     assert not (REPO / "accounts" / "aa365" / "assets" / "crm_spike").exists()
 
 
-def test_partner_default_pass_and_fail():
-    assert chk.eval_partner_default(404, BODY, "application/json")[0]
-    assert chk.eval_partner_default(404, BODY, "application/json; charset=utf-8")[0]
-    assert not chk.eval_partner_default(403, b"Forbidden\n", "text/plain")[0]
-    assert not chk.eval_partner_default(404, b'{"detail":"Not Found"}', "text/plain")[0]
-    assert not chk.eval_partner_default(200, b"<html>", "text/html")[0]
+def test_web_default_pass_and_fail():
+    refresh = "https://partner-dev.lumiguides.it.com/auth/refresh?next=%2F"
+    assert chk.eval_web_default(307, b"", "text/plain", refresh)[0]
+    assert chk.eval_web_default(503, b"<html>503 Service Temporarily Unavailable</html>", "text/html")[0]
+    assert not chk.eval_web_default(404, BODY, "application/json")[0]  # the old fixed default came back
+    assert not chk.eval_web_default(503, b'{"status":"not_ready"}', "application/json")[0]  # the API, not the web
+    assert not chk.eval_web_default(307, b"", "text/plain", "https://evil.example/")[0]
+    assert not chk.eval_web_default(403, b"Forbidden\n", "text/plain")[0]
+    assert not chk.eval_web_default(200, b"<html>", "text/html")[0]
+
+
+def test_web_healthz():
+    assert chk.eval_web_healthz(200, b'{"service":"aa-crm-web","git_sha":"abc"}', "application/json")[0]
+    assert chk.eval_web_healthz(503, b"<html>503</html>", "text/html")[0]
+    assert not chk.eval_web_healthz(200, b'{"service":"aa-crm-api"}', "application/json")[0]
+    assert not chk.eval_web_healthz(404, BODY, "application/json")[0]
 
 
 @pytest.mark.parametrize(
@@ -70,7 +77,8 @@ def test_api_header_never_the_partner_404():
 
 def test_only_filter_runs_selected(monkeypatch, capsys):
     calls = []
-    monkeypatch.setattr(chk, "get", lambda host, path, headers=None: (calls.append(path), (404, BODY, "application/json"))[1])
+    redirect = (307, b"", "text/plain", "https://partner-dev.lumiguides.it.com/auth/refresh?next=%2F")
+    monkeypatch.setattr(chk, "get", lambda host, path, headers=None: (calls.append(path), redirect)[1])
     assert chk.main(["--cf-domain", "x.cloudfront.net", "--only", "partner-root,partner-path"]) == 0
     assert calls == ["/", "/crmx"]
     assert "PASS  partner-root" in capsys.readouterr().out
