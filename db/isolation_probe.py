@@ -169,6 +169,10 @@ CONSUMER_GRANTS = (
     ("tripplanner", ("INSERT",), "shared.llm_call_log", ""),
     ("cis_app", ("USAGE", "SELECT"), "booking.v_ops_funnel_daily", "bk-017"),
     ("cis_app", ("USAGE", "SELECT"), "booking.v_ops_case_status", "bk-017"),
+    ("cis_app", ("USAGE", "SELECT"), "booking.v_supply_hotels", "bk-023"),        # AA-835 supply contract views
+    ("cis_app", ("USAGE", "SELECT"), "booking.v_supply_services", "bk-023"),
+    ("cis_app", ("USAGE", "SELECT"), "booking.v_supply_media", "bk-023"),
+    ("cis_app", ("USAGE", "SELECT"), "booking.v_supply_outbox", "bk-023"),
     ("cis_app", ("USAGE", "SELECT"), "tripplanner.v_ops_traffic_daily", "tp-015"),
 )
 CONSUMER_GRANT_KEYS = tuple(sorted({k for *_, k in CONSUMER_GRANTS if k}))
