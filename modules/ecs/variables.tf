@@ -255,3 +255,9 @@ variable "t9_faq_llm_filter" {
     error_message = "t9_faq_llm_filter must be off, shadow or on."
   }
 }
+
+variable "photos_cdn_distribution_arn" {
+  description = "AA-835: ARN of the photos CloudFront distribution (accounts/aa365/photos_cdn.tf). Gives the CIS task role cloudfront:CreateInvalidation on it and the worker env PHOTO_CDN_DISTRIBUTION_ID (the supply_media_purge job). Empty = CDN gated off: no grant, no env."
+  type        = string
+  default     = ""
+}

@@ -203,6 +203,8 @@ module "ecs" {
   place_shapes_enabled = true
   # AA-779: on since S247 (shadow verdicts read on real blogs first; ADR 0011 in AA-CIS-App). Rollback: "shadow".
   t9_faq_llm_filter = "on"
+  # AA-835 (S6 review): the supply_media_purge job invalidates withdrawn Booking photo copies on the photos CDN.
+  photos_cdn_distribution_arn = local.photos_cdn_on == 1 ? aws_cloudfront_distribution.photos_cdn[0].arn : ""
   # AA-839: data_erasure apply switch + tenant retention window, driven by local.erasure_drill above.
   erasure_apply_enabled         = local.erasure_drill
   erasure_tenant_retention_days = local.erasure_drill ? 0 : null # null = module default (30)
