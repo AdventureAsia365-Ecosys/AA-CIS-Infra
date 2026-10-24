@@ -41,7 +41,9 @@
 --      RLS enabled but not forced: crm_app sees the row of app.tenant_id only; the owner's SECURITY DEFINER
 --      functions read every row (crm.audit_export_agencies() lists the agencies for the export job, since crm_app
 --      cannot list crm.tenant; the drop function checks every agency is verified). ON DELETE CASCADE: it never
---      blocks the offboarding delete of a tenant row.
+--      blocks the offboarding delete of a tenant row. crm_app may UPDATE only (exported_until, last_seq) and INSERT
+--      only (tenant_id, exported_until); `verified_until` moves only through crm.audit_mark_verified() (SECURITY
+--      DEFINER: the agency of app.tenant_id, forward only, never past exported_until).
 --   5. crm.audit_export_manifest: the hash chain, one row per agency per exported hour (append-only template
 --      variant): seq, [period_start, period_end), event_count, content_sha256 (the events of the object),
 --      prev_manifest_sha256 (64 zeros for seq 1), manifest_sha256, object_key, object_sha256. A trigger refuses a
@@ -214,6 +216,9 @@ CREATE OR REPLACE FUNCTION crm.audit_ensure_partitions() RETURNS integer
     SECURITY DEFINER
     SET search_path = pg_catalog
     SET "TimeZone" = 'UTC'
+    -- CREATE TABLE ... PARTITION OF locks the parent: wait at most 2 s behind a long reader instead of queueing every
+    -- audit insert (bound by the app pool's 5 s command timeout) behind this statement. The hourly job retries.
+    SET lock_timeout = '2s'
 AS $$
 DECLARE
     v_base timestamp := date_trunc('month', now() AT TIME ZONE 'UTC');
@@ -253,7 +258,7 @@ END;
 $$;
 REVOKE ALL ON FUNCTION crm.audit_ensure_partitions() FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION crm.audit_ensure_partitions() TO crm_app;
-COMMENT ON FUNCTION crm.audit_ensure_partitions() IS 'AA-940 (crm-007): creates the missing monthly partitions of crm.audit_event from the current UTC month to three months ahead (FORCE RLS, tenant policy, TRUNCATE trigger, no crm_app privilege). Returns how many it created. Run by the hourly crm_audit_export job.';
+COMMENT ON FUNCTION crm.audit_ensure_partitions() IS 'AA-940 (crm-007): creates the missing monthly partitions of crm.audit_event from the current UTC month to three months ahead (FORCE RLS, tenant policy, TRUNCATE trigger, no crm_app privilege). Returns how many it created. lock_timeout 2 s (the parent lock); run by the hourly crm_audit_export job, which retries.';
 
 SELECT crm.audit_ensure_partitions();
 
@@ -274,7 +279,12 @@ CREATE TABLE IF NOT EXISTS crm.audit_export_tenant (
     CONSTRAINT audit_export_tenant_verified_chk CHECK (verified_until IS NULL OR verified_until <= exported_until),
     CONSTRAINT audit_export_tenant_seq_chk CHECK (last_seq >= 0)
 );
-REVOKE DELETE, TRUNCATE ON crm.audit_export_tenant FROM crm_app;
+-- crm_app: SELECT its row, INSERT a new agency's row (the tenant trigger runs as the inserter) and move the export
+-- marks only. `verified_until` moves through crm.audit_mark_verified() (below), which keeps it monotonic and never past
+-- `exported_until`; there is no table-level UPDATE and no DELETE / TRUNCATE.
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON crm.audit_export_tenant FROM crm_app;
+GRANT INSERT (tenant_id, exported_until) ON crm.audit_export_tenant TO crm_app;
+GRANT UPDATE (exported_until, last_seq) ON crm.audit_export_tenant TO crm_app;
 -- ENABLE without FORCE, on purpose: crm_app sees and updates only the row of app.tenant_id (the export works inside
 -- one agency's context), while the owner's SECURITY DEFINER functions below (the agency list for the export job, the
 -- retention check) read every row. The tenant policy keeps the catalogue rule a ("tenant_id table without RLS").
@@ -308,19 +318,45 @@ CREATE OR REPLACE TRIGGER tenant_audit_register
 
 -- The agency list for the export job and the metrics sampler (crm_app cannot list crm.tenant or the registry: RLS).
 CREATE OR REPLACE FUNCTION crm.audit_export_agencies()
-    RETURNS TABLE (tenant_id uuid, exported_until timestamptz, verified_until timestamptz, last_seq bigint)
+    RETURNS TABLE (tenant_id uuid, exported_until timestamptz, verified_until timestamptz, last_seq bigint,
+                   registered_at timestamptz)
     LANGUAGE sql
     STABLE
     SECURITY DEFINER
     SET search_path = pg_catalog
 AS $$
-    SELECT x.tenant_id, x.exported_until, x.verified_until, x.last_seq
+    SELECT x.tenant_id, x.exported_until, x.verified_until, x.last_seq, x.created_at
       FROM crm.audit_export_tenant x
      ORDER BY x.tenant_id;
 $$;
 REVOKE ALL ON FUNCTION crm.audit_export_agencies() FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION crm.audit_export_agencies() TO crm_app;
-COMMENT ON FUNCTION crm.audit_export_agencies() IS 'AA-940 (crm-007): every agency of the audit export registry with its export / verification marks (ids and times only). Used by the crm_audit_export / crm_audit_retention jobs and the metrics sampler.';
+COMMENT ON FUNCTION crm.audit_export_agencies() IS 'AA-940 (crm-007): every agency of the audit export registry with its export / verification marks and registration time (ids and times only). Used by the crm_audit_export / crm_audit_retention jobs and the metrics sampler.';
+
+-- The only way `verified_until` moves (crm_app has no UPDATE on it): in the agency of app.tenant_id, forward only, never
+-- past `exported_until`. Returns true when the mark moved. The caller (crm_audit_retention) calls it only after the
+-- verification of both archived copies passed; the database cannot re-check the buckets (accepted risk, AA-940 notes).
+CREATE OR REPLACE FUNCTION crm.audit_mark_verified(p_until timestamptz) RETURNS boolean
+    LANGUAGE plpgsql
+    SECURITY DEFINER
+    SET search_path = pg_catalog
+AS $$
+DECLARE
+    v_tenant uuid := NULLIF(current_setting('app.tenant_id', true), '')::uuid;
+BEGIN
+    IF v_tenant IS NULL OR p_until IS NULL THEN
+        RAISE EXCEPTION 'crm: audit_mark_verified needs app.tenant_id and a time' USING ERRCODE = 'invalid_parameter_value';
+    END IF;
+    UPDATE crm.audit_export_tenant x SET verified_until = p_until
+     WHERE x.tenant_id = v_tenant
+       AND (x.verified_until IS NULL OR x.verified_until < p_until)
+       AND p_until <= x.exported_until;
+    RETURN FOUND;
+END;
+$$;
+REVOKE ALL ON FUNCTION crm.audit_mark_verified(timestamptz) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION crm.audit_mark_verified(timestamptz) TO crm_app;
+COMMENT ON FUNCTION crm.audit_mark_verified(timestamptz) IS 'AA-940 (crm-007): moves verified_until of the agency of app.tenant_id forward, never past exported_until (crm_app has no UPDATE on that column). Called by crm_audit_retention after the database rows, the chain and both archived copies verified.';
 
 -- Backfill: every existing agency, exported from the hour of its first event (or this hour when it has none).
 -- FORCE RLS binds the owner, so it is lifted for this one statement and restored at once (same transaction).
@@ -526,8 +562,15 @@ BEGIN
         RAISE EXCEPTION 'crm-007: crm.audit_export_tenant must have RLS enabled and not forced';
     END IF;
     IF pg_catalog.has_table_privilege('crm_app', 'crm.audit_export_tenant', 'DELETE')
-       OR NOT pg_catalog.has_table_privilege('crm_app', 'crm.audit_export_tenant', 'UPDATE') THEN
-        RAISE EXCEPTION 'crm-007: crm_app must SELECT / INSERT / UPDATE (never DELETE) crm.audit_export_tenant';
+       OR pg_catalog.has_table_privilege('crm_app', 'crm.audit_export_tenant', 'UPDATE')
+       OR pg_catalog.has_table_privilege('crm_app', 'crm.audit_export_tenant', 'TRUNCATE')
+       OR pg_catalog.has_column_privilege('crm_app', 'crm.audit_export_tenant', 'verified_until', 'UPDATE')
+       OR pg_catalog.has_column_privilege('crm_app', 'crm.audit_export_tenant', 'verified_until', 'INSERT')
+       OR NOT pg_catalog.has_table_privilege('crm_app', 'crm.audit_export_tenant', 'SELECT')
+       OR NOT pg_catalog.has_column_privilege('crm_app', 'crm.audit_export_tenant', 'exported_until', 'UPDATE')
+       OR NOT pg_catalog.has_column_privilege('crm_app', 'crm.audit_export_tenant', 'last_seq', 'UPDATE')
+       OR NOT pg_catalog.has_column_privilege('crm_app', 'crm.audit_export_tenant', 'tenant_id', 'INSERT') THEN
+        RAISE EXCEPTION 'crm-007: crm_app must SELECT, INSERT (tenant_id, exported_until) and UPDATE (exported_until, last_seq) only on crm.audit_export_tenant (verified_until through crm.audit_mark_verified)';
     END IF;
     IF EXISTS (SELECT 1 FROM pg_catalog.pg_policy pol JOIN pg_catalog.pg_class c ON c.oid = pol.polrelid
                WHERE c.relnamespace = 'crm'::regnamespace AND 0 = ANY (pol.polroles)) THEN
@@ -536,7 +579,7 @@ BEGIN
     FOREACH t IN ARRAY ARRAY['crm.audit_event_check_at()', 'crm.audit_partition_bounds()',
                              'crm.audit_ensure_partitions()', 'crm.audit_drop_expired_partitions(boolean)',
                              'crm.audit_register_tenant()', 'crm.audit_manifest_chain()',
-                             'crm.audit_export_agencies()'] LOOP
+                             'crm.audit_export_agencies()', 'crm.audit_mark_verified(timestamptz)'] LOOP
         IF pg_catalog.has_function_privilege('public', t, 'EXECUTE') THEN
             RAISE EXCEPTION 'crm-007: % is executable by PUBLIC (SEC-4)', t;
         END IF;
