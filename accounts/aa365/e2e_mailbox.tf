@@ -24,15 +24,18 @@
 #     keeps both untouched. `e2e-mail` was free in the zone.
 #
 # Security:
-#   - The rule accepts mail for a fixed list of recipients only: the CIS staff E2E address and, since
+#   - The rule accepts mail for a fixed list of recipients only: the CIS staff E2E address, since AA-910
+#     (S250) the Booking staff E2E address e2e-booking@ (WORKFORCE user in booking-admin only; the trigger
+#     allow-map lambda_src/identity_triggers/workforce.py E2E_TEST_STAFF, root ADR 0006a A10) and, since
 #     AA-935, the e2e test users of the synthetic AA-Partner agencies (tools/identity/crm_e2e_users.json,
 #     e2e-test-crm-<agency>-<role>@; EXTERNAL-pool users, email-code sign-in to the CRM web on Dev).
 #     Anything else to the sub-domain is bounced by SES (no matching rule). Their codes land under the
 #     same prefix; the CIS reader role can read them too, which is acceptable for synthetic Dev agency
 #     users (no real person, no real agency data). Spam/virus scan on; SES only tags the verdict, the reader must not
 #     trust the message beyond pulling a 6-8 digit code from it.
-#   - Messages hold one-time sign-in codes of a reviewer-role staff user: 1-day expiry, BPA, SSE-S3,
-#     TLS-only access, object reads denied to every principal except the reader role and the MFA
+#   - Messages hold one-time sign-in codes of a reviewer-role CIS staff user and (AA-910) of a booking-admin
+#     staff user, whose codes the CIS reader role can read too (same prefix; accepted for Dev, S250).
+#     1-day expiry, BPA, SSE-S3, TLS-only access, object reads denied to every principal except the reader role and the MFA
 #     admin role. SES may only PutObject from this account's rule (aws:SourceAccount + SourceArn).
 #   - The reader role cannot write or delete (read-only by design, S243); the 1-day lifecycle
 #     cleans up. Its trust is the immutable AA-CIS-App subject + `environment:e2e` + ref main.
@@ -50,6 +53,8 @@
 locals {
   e2e_mail_domain    = "e2e-mail.${var.dns_zone_name}"
   e2e_mail_recipient = "e2e@${local.e2e_mail_domain}"
+  # AA-910 (S250): Booking staff admin E2E user; must equal workforce.py E2E_BOOKING_TEST_STAFF_EMAIL.
+  e2e_mail_booking_recipient = "e2e-booking@${local.e2e_mail_domain}"
   # AA-935: e2e users of the synthetic CRM agencies (one source with tools/identity/crm_dev_identity.py).
   e2e_crm_users = jsondecode(file("${path.module}/../../tools/identity/crm_e2e_users.json")).users
   e2e_crm_recipients = [
@@ -219,7 +224,7 @@ resource "aws_ses_active_receipt_rule_set" "e2e" {
 resource "aws_ses_receipt_rule" "e2e_cognito" {
   name          = local.e2e_mail_rule
   rule_set_name = aws_ses_receipt_rule_set.e2e.rule_set_name
-  recipients    = concat([local.e2e_mail_recipient], local.e2e_crm_recipients)
+  recipients    = concat([local.e2e_mail_recipient, local.e2e_mail_booking_recipient], local.e2e_crm_recipients)
   enabled       = true
   scan_enabled  = true
   # Require (S243 option B): the code mail now comes straight from Cognito/SES, which delivers over
@@ -302,9 +307,10 @@ output "e2e_mail_reader_role_arn" {
 output "e2e_mailbox" {
   description = "AA-816 I5: where the Cognito E2E mail lands."
   value = {
-    recipient      = local.e2e_mail_recipient
-    crm_recipients = local.e2e_crm_recipients
-    bucket         = aws_s3_bucket.e2e_mail.id
-    prefix         = local.e2e_mail_prefix
+    recipient         = local.e2e_mail_recipient
+    booking_recipient = local.e2e_mail_booking_recipient
+    crm_recipients    = local.e2e_crm_recipients
+    bucket            = aws_s3_bucket.e2e_mail.id
+    prefix            = local.e2e_mail_prefix
   }
 }
