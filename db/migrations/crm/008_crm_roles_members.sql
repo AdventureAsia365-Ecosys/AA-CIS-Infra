@@ -15,25 +15,32 @@
 -- What:
 --   1. UNIQUE (tenant_id, member_id) on crm.member, so the new references to a member are same-agency keys
 --      (referential checks bypass FORCE RLS; crm-006 7b did the same for travellers and trips).
---   2. crm.guard_member_write() on crm.member (BEFORE INSERT, and UPDATE OF role, status, deleted_at):
+--   2. crm.guard_member_write() on crm.member (BEFORE INSERT OR UPDATE OR DELETE, every column; crm_app keeps the
+--      DELETE privilege crm-002 asserts, so the trigger is what refuses it — a membership only moves state):
 --      a. inside a member's request (app.actor = member:<id>, set by tenant_tx()) only an OWNER writes memberships
 --         (app.member_role = 'owner'): an agent or assistant can never grant, change or remove a role, whatever the
 --         API code does (SQLSTATE CRM02 role_write_forbidden);
 --      b. an invitation being accepted (app.actor = invitation:<id>) may write exactly the member that invitation
 --         names: same agency, same role, same Cognito subject, invitation in status claimed;
 --      c. platform contexts (app.actor platform:* / seed:*) may write (L1 console, owner recovery, the Dev seeder);
---         a context without app.actor (a migration, an admin session) is not restricted by rule a;
+--         a session without app.actor that is NOT crm_app (a migration, an admin session) is "unscoped" and not
+--         restricted; a crm_app session without app.actor writes nothing (every API context names its actor);
 --      d. the last active owner of an agency cannot stop being one (demoted, disabled, trashed) except by a platform
 --         context: SQLSTATE CRM01 last_owner. Per-agency advisory lock, so two owners demoting each other at the same
 --         time cannot both pass. A platform deactivation of the last owner is what leaves an agency in "recovery
---         only" (item 4).
+--         only" (item 4);
+--      e. a member's identity (member_id, tenant_id, cognito_iss, cognito_sub, created_at / created_by) is fixed
+--         outside platform contexts, so no one inside an agency rebinds a row to another token subject; and no
+--         DELETE by any crm_app session, whatever its actor (only an unscoped or platform admin session deletes).
 --   3. crm.member_invitation (base template, F1 field: the invited e-mail): role, the e-mail encrypted by the vault
 --      (email_enc) with its blind index (email_bidx, one live invitation per address per agency), the SHA-256 of the
 --      single-use token (token_hash; the token itself is only in the invitation mail), expires_at (at most 30 days),
 --      the Cognito (iss, sub) the claim step created or found, and the member it became. Status pending -> claimed ->
 --      accepted, or revoked / expired. A SELECT-only policy invitation_token_lookup TO crm_app finds one row by
 --      app.invite_token_hash (hex) before any agency is known (the claim and accept steps, app.tenancy
---      invitation_tx); crm.guard_invitation_write() lets only an owner or a platform context invite an owner.
+--      invitation_tx). crm.guard_invitation_write() (every INSERT / UPDATE) names the columns each writer may change:
+--      an owner invites and withdraws, the invitation itself only moves pending -> claimed -> accepted (or expires),
+--      an agent, assistant, job or actor-less crm_app session writes nothing (SQLSTATE CRM02).
 --   4. crm.owner_recovery_request (base template, ids only): a platform context (L1 console, CRM-13a) opens it for an
 --      existing member; eligible_at is at least 14 days after it opens (CHECK); every active member sees it and may
 --      cancel while it is pending; only a platform context completes it, and not before eligible_at (SQLSTATE CRM03
@@ -52,7 +59,8 @@
 -- Runs as crm_owner (DB Migrate switch), one BEGIN … COMMIT block, no role DDL. Idempotent (IF NOT EXISTS, DROP …
 -- IF EXISTS, CREATE OR REPLACE, ON CONFLICT DO NOTHING). Rollback: a forward crm- file (MIG-14); before AA-939
 -- deploys nothing reads these objects (the member trigger applies at once: it only refuses writes that no deployed
--- code makes — agents and assistants have no membership write path today).
+-- code makes — agents and assistants have no membership write path today, no code deletes a member, and every
+-- context that writes one (provisioning_tx, the seeder) names its app.actor).
 
 BEGIN;
 
@@ -174,7 +182,15 @@ INSERT INTO crm.status_transition (table_name, from_status, to_status) VALUES
     ('member_invitation', 'claimed', 'expired')
 ON CONFLICT DO NOTHING;
 
--- Only an owner (or a platform context: the L1 first-owner invite) invites an owner.
+-- Who may write an invitation, and which columns each writer may change (every other column is fixed for it):
+--   platform contexts and unscoped sessions (a migration, an admin session: no app.actor, not crm_app): anything
+--     but the role (the L1 first-owner invite);
+--   member:<owner>: inserts a new pending, unbound invitation; afterwards only closes it (revoked / expired) or
+--     trashes it — never its token, address, subject, expiry or the member it became;
+--   invitation:<that same id> (claim / accept, app.tenancy invitation_tx): pending -> claimed (sets cognito_iss,
+--     cognito_sub, claimed_at), claimed -> accepted (sets accepted_at and member_id, which must carry the claimed
+--     subject and role), or pending / claimed -> expired once expires_at has passed;
+--   anyone else (member:<agent / assistant>, job:, intake_form:, a crm_app session without an actor): nothing.
 CREATE OR REPLACE FUNCTION crm.guard_invitation_write() RETURNS trigger
     LANGUAGE plpgsql
     SET search_path = pg_catalog
@@ -182,23 +198,68 @@ AS $$
 DECLARE
     actor text := COALESCE(NULLIF(current_setting('app.actor', true), ''), '');
     member_role text := COALESCE(NULLIF(current_setting('app.member_role', true), ''), '');
+    platform boolean := actor LIKE 'platform:%' OR actor LIKE 'seed:%';
+    unscoped boolean := actor = '' AND current_user::text <> 'crm_app';
+    may_change text[];
 BEGIN
-    IF actor LIKE 'member:%' AND member_role <> 'owner' THEN
-        RAISE EXCEPTION 'crm: role_write_forbidden (only the owner invites)' USING ERRCODE = 'CRM02';
-    END IF;
-    IF NEW.role = 'owner' AND NOT (member_role = 'owner' OR actor LIKE 'platform:%' OR actor LIKE 'seed:%'
-                                   OR (TG_OP = 'UPDATE' AND OLD.role = 'owner')) THEN
-        RAISE EXCEPTION 'crm: role_write_forbidden (only an owner invites an owner)' USING ERRCODE = 'CRM02';
-    END IF;
     IF TG_OP = 'UPDATE' AND NEW.role IS DISTINCT FROM OLD.role THEN
         RAISE EXCEPTION 'crm: member_invitation.role is fixed' USING ERRCODE = 'CRM02';
+    END IF;
+    IF platform OR unscoped THEN
+        RETURN NEW;
+    END IF;
+    IF actor LIKE 'member:%' THEN
+        IF member_role <> 'owner' THEN
+            RAISE EXCEPTION 'crm: role_write_forbidden (only the owner invites or changes an invitation)'
+                USING ERRCODE = 'CRM02';
+        END IF;
+        IF TG_OP = 'INSERT' THEN
+            IF NEW.status <> 'pending' OR NEW.cognito_sub IS NOT NULL OR NEW.member_id IS NOT NULL
+               OR NEW.deleted_at IS NOT NULL THEN
+                RAISE EXCEPTION 'crm: role_write_forbidden (a new invitation is pending and unbound)' USING ERRCODE = 'CRM02';
+            END IF;
+            RETURN NEW;
+        END IF;
+        IF NEW.status IS DISTINCT FROM OLD.status AND NEW.status NOT IN ('revoked', 'expired') THEN
+            RAISE EXCEPTION 'crm: role_write_forbidden (the owner only withdraws an invitation)' USING ERRCODE = 'CRM02';
+        END IF;
+        may_change := ARRAY['status', 'updated_at', 'deleted_at', 'deleted_by', 'purge_after'];
+    ELSIF actor LIKE 'invitation:%' THEN
+        IF TG_OP = 'INSERT' OR OLD.invitation_id::text <> substr(actor, length('invitation:') + 1) THEN
+            RAISE EXCEPTION 'crm: role_write_forbidden (an invitation writes only itself)' USING ERRCODE = 'CRM02';
+        END IF;
+        IF OLD.status = 'pending' AND NEW.status = 'claimed' THEN
+            may_change := ARRAY['status', 'updated_at', 'cognito_iss', 'cognito_sub', 'claimed_at'];
+        ELSIF OLD.status = 'claimed' AND NEW.status = 'accepted' THEN
+            may_change := ARRAY['status', 'updated_at', 'accepted_at', 'member_id'];
+            IF NOT EXISTS (
+                SELECT 1 FROM crm.member m
+                 WHERE m.tenant_id = OLD.tenant_id AND m.member_id = NEW.member_id AND m.role = OLD.role
+                   AND m.cognito_iss = OLD.cognito_iss AND m.cognito_sub = OLD.cognito_sub
+            ) THEN
+                RAISE EXCEPTION 'crm: role_write_forbidden (the accepted member does not carry the claimed subject)'
+                    USING ERRCODE = 'CRM02';
+            END IF;
+        ELSIF OLD.status IN ('pending', 'claimed') AND NEW.status = 'expired' AND OLD.expires_at <= now() THEN
+            may_change := ARRAY['status', 'updated_at'];
+        ELSE
+            RAISE EXCEPTION 'crm: role_write_forbidden (an invitation moves pending -> claimed -> accepted, or expires)'
+                USING ERRCODE = 'CRM02';
+        END IF;
+    ELSE
+        RAISE EXCEPTION 'crm: role_write_forbidden (actor % may not write invitations)',
+            COALESCE(NULLIF(split_part(actor, ':', 1), ''), 'without app.actor') USING ERRCODE = 'CRM02';
+    END IF;
+    IF (to_jsonb(NEW) - may_change) IS DISTINCT FROM (to_jsonb(OLD) - may_change) THEN
+        RAISE EXCEPTION 'crm: role_write_forbidden (this writer may change only %)', array_to_string(may_change, ', ')
+            USING ERRCODE = 'CRM02';
     END IF;
     RETURN NEW;
 END;
 $$;
 REVOKE ALL ON FUNCTION crm.guard_invitation_write() FROM PUBLIC;
 CREATE OR REPLACE TRIGGER member_invitation_guard_write
-    BEFORE INSERT OR UPDATE OF role ON crm.member_invitation
+    BEFORE INSERT OR UPDATE ON crm.member_invitation
     FOR EACH ROW EXECUTE FUNCTION crm.guard_invitation_write();
 
 -- ── 2. Membership writes and the last owner ──────────────────────────────────────────────────────
@@ -210,10 +271,32 @@ DECLARE
     actor text := COALESCE(NULLIF(current_setting('app.actor', true), ''), '');
     member_role text := COALESCE(NULLIF(current_setting('app.member_role', true), ''), '');
     platform boolean := actor LIKE 'platform:%' OR actor LIKE 'seed:%';
+    -- No app.actor and not the API login: a migration (crm_owner) or an admin session. crm_app always names one.
+    unscoped boolean := actor = '' AND current_user::text <> 'crm_app';
     invite_ok boolean := false;
     was_owner boolean := false;
     is_owner boolean;
 BEGIN
+    IF actor = '' AND NOT unscoped THEN
+        RAISE EXCEPTION 'crm: role_write_forbidden (an API session names its actor)' USING ERRCODE = 'CRM02';
+    END IF;
+    IF TG_OP = 'DELETE' THEN
+        -- A membership only moves state (disabled, trashed). crm_app keeps the DELETE privilege crm-001's default
+        -- privileges gave it (crm-002's Guard 1 asserts it, and a re-run of crm-002 must stay a no-op), so the refusal
+        -- is here: no crm_app session deletes a member, whatever its actor; only an unscoped / platform admin session.
+        IF current_user::text = 'crm_app' OR NOT (platform OR unscoped) THEN
+            RAISE EXCEPTION 'crm: role_write_forbidden (a membership is never deleted inside the app)'
+                USING ERRCODE = 'CRM02';
+        END IF;
+        RETURN OLD;
+    END IF;
+    -- The identity a token resolves to is fixed: nobody inside an agency rebinds a row to another subject.
+    IF TG_OP = 'UPDATE' AND NOT (platform OR unscoped)
+       AND (NEW.member_id, NEW.tenant_id, NEW.cognito_iss, NEW.cognito_sub, NEW.created_at, NEW.created_by)
+           IS DISTINCT FROM (OLD.member_id, OLD.tenant_id, OLD.cognito_iss, OLD.cognito_sub, OLD.created_at, OLD.created_by)
+    THEN
+        RAISE EXCEPTION 'crm: role_write_forbidden (a member''s identity is fixed)' USING ERRCODE = 'CRM02';
+    END IF;
     IF actor LIKE 'invitation:%' THEN
         -- The member this invitation names: same agency, role and subject, invitation claimed (being accepted).
         SELECT EXISTS (
@@ -227,7 +310,7 @@ BEGIN
         END IF;
     ELSIF actor LIKE 'member:%' AND member_role <> 'owner' THEN
         RAISE EXCEPTION 'crm: role_write_forbidden (only the owner changes memberships)' USING ERRCODE = 'CRM02';
-    ELSIF actor <> '' AND NOT platform AND actor NOT LIKE 'member:%' THEN
+    ELSIF NOT (platform OR unscoped) AND actor NOT LIKE 'member:%' THEN
         RAISE EXCEPTION 'crm: role_write_forbidden (actor % may not write memberships)', split_part(actor, ':', 1)
             USING ERRCODE = 'CRM02';
     END IF;
@@ -235,7 +318,7 @@ BEGIN
     IF TG_OP = 'UPDATE' THEN
         was_owner := OLD.role = 'owner' AND OLD.status = 'active' AND OLD.deleted_at IS NULL;
         is_owner := NEW.role = 'owner' AND NEW.status = 'active' AND NEW.deleted_at IS NULL;
-        IF was_owner AND NOT is_owner AND NOT platform THEN
+        IF was_owner AND NOT is_owner AND NOT (platform OR unscoped) THEN
             -- Serialise owner changes per agency; each query below takes a fresh snapshot (VOLATILE, READ COMMITTED).
             PERFORM pg_advisory_xact_lock(hashtextextended('crm.member.owner:' || NEW.tenant_id::text, 0));
             IF NOT EXISTS (
@@ -251,11 +334,13 @@ BEGIN
 END;
 $$;
 REVOKE ALL ON FUNCTION crm.guard_member_write() FROM PUBLIC;
+-- Every write (no column list: a column added later is guarded too). crm.member has no column a non-owner updates.
+-- DELETE too: crm_app still holds DELETE on crm.member (crm-002), and the trigger refuses it.
 CREATE OR REPLACE TRIGGER member_guard_write
-    BEFORE INSERT OR UPDATE OF role, status, deleted_at ON crm.member
+    BEFORE INSERT OR UPDATE OR DELETE ON crm.member
     FOR EACH ROW EXECUTE FUNCTION crm.guard_member_write();
 
-COMMENT ON FUNCTION crm.guard_member_write() IS 'AA-939 (crm-008): inside a member request only an owner writes memberships (CRM02); an accepting invitation writes only the member it names; the last active owner stays unless a platform context acts (CRM01, advisory lock per agency).';
+COMMENT ON FUNCTION crm.guard_member_write() IS 'AA-939 (crm-008): inside a member request only an owner writes memberships (CRM02); a member''s identity (member_id, tenant_id, cognito_iss, cognito_sub) is fixed outside platform contexts; an accepting invitation writes only the member it names; no DELETE inside the app; the last active owner stays unless a platform context acts (CRM01, advisory lock per agency).';
 
 -- ── 4. crm.owner_recovery_request (Q1 6.3) ───────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS crm.owner_recovery_request (
@@ -321,9 +406,10 @@ AS $$
 DECLARE
     actor text := COALESCE(NULLIF(current_setting('app.actor', true), ''), '');
     platform boolean := actor LIKE 'platform:%' OR actor LIKE 'seed:%';
+    unscoped boolean := actor = '' AND current_user::text <> 'crm_app';
 BEGIN
     IF TG_OP = 'INSERT' THEN
-        IF NOT platform AND actor <> '' THEN
+        IF NOT (platform OR unscoped) THEN
             RAISE EXCEPTION 'crm: platform_only (AA opens an owner recovery, L1 console)' USING ERRCODE = 'CRM04';
         END IF;
         RETURN NEW;
@@ -336,14 +422,14 @@ BEGIN
         RETURN NEW;  -- a decided request: the status transition trigger refuses any further move
     END IF;
     IF NEW.status = 'completed' AND OLD.status <> 'completed' THEN
-        IF NOT platform AND actor <> '' THEN
+        IF NOT (platform OR unscoped) THEN
             RAISE EXCEPTION 'crm: platform_only (AA completes an owner recovery)' USING ERRCODE = 'CRM04';
         END IF;
         IF now() < OLD.eligible_at THEN
             RAISE EXCEPTION 'crm: recovery_not_due (eligible at %)', OLD.eligible_at USING ERRCODE = 'CRM03';
         END IF;
     END IF;
-    IF NEW.status = 'cancelled' AND OLD.status <> 'cancelled' AND NOT (platform OR actor = '' OR actor LIKE 'member:%') THEN
+    IF NEW.status = 'cancelled' AND OLD.status <> 'cancelled' AND NOT (platform OR unscoped OR actor LIKE 'member:%') THEN
         RAISE EXCEPTION 'crm: a member or AA cancels an owner recovery' USING ERRCODE = 'CRM04';
     END IF;
     RETURN NEW;
@@ -400,8 +486,9 @@ CREATE OR REPLACE FUNCTION crm.guard_platform_write() RETURNS trigger
 AS $$
 DECLARE
     actor text := COALESCE(NULLIF(current_setting('app.actor', true), ''), '');
+    unscoped boolean := actor = '' AND current_user::text <> 'crm_app';
 BEGIN
-    IF actor <> '' AND actor NOT LIKE 'platform:%' AND actor NOT LIKE 'seed:%' THEN
+    IF NOT (unscoped OR actor LIKE 'platform:%' OR actor LIKE 'seed:%') THEN
         RAISE EXCEPTION 'crm: platform_only (% is written by AA, L1 console)', TG_TABLE_NAME USING ERRCODE = 'CRM04';
     END IF;
     RETURN NEW;
@@ -452,6 +539,20 @@ BEGIN
             END LOOP;
         END LOOP;
     END LOOP;
+    -- crm.member: no TRUNCATE for crm_app (a trigger cannot refuse it); both guards fire on every write, not on a
+    -- column list, and the member guard on DELETE too (crm_app's DELETE privilege stays, crm-002).
+    IF pg_catalog.has_table_privilege('crm_app', 'crm.member', 'TRUNCATE') THEN
+        RAISE EXCEPTION 'crm-008: crm_app may TRUNCATE crm.member';
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_catalog.pg_trigger tg
+                WHERE (tg.tgrelid, tg.tgname) IN (('crm.member'::regclass, 'member_guard_write'),
+                                                  ('crm.member_invitation'::regclass, 'member_invitation_guard_write'))
+                  AND cardinality(tg.tgattr::int2[]) > 0)
+       OR NOT EXISTS (SELECT 1 FROM pg_catalog.pg_trigger tg
+                       WHERE tg.tgrelid = 'crm.member'::regclass AND tg.tgname = 'member_guard_write'
+                         AND tg.tgtype & 8 = 8) THEN
+        RAISE EXCEPTION 'crm-008: the member / invitation guards must fire on every write (and DELETE on crm.member)';
+    END IF;
     -- New references to a member are same-agency (tenant_id, member_id) keys.
     IF EXISTS (SELECT 1 FROM pg_catalog.pg_constraint con
                 WHERE con.contype = 'f' AND con.confrelid = 'crm.member'::regclass
