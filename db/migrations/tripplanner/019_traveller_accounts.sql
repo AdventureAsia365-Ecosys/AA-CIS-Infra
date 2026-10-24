@@ -13,9 +13,11 @@
 -- What (additive only; the running Lambdas never read the new objects until the AA-908 S4 deploy):
 --   1. tripplanner.traveller_accounts (id, iss, sub, created_at, last_sign_in_at), UNIQUE (iss, sub). iss and sub
 --      carry the DM-6.1 tag pii:online_id.
---   2. tripplanner.sessions.account_id: nullable FK to traveller_accounts(id), plus the partial index
---      sessions_account_idx (My Trips lists the sessions of one account). NULL = a guest session. The claim
+--   2. tripplanner.sessions.account_id: nullable FK to traveller_accounts(id) ON DELETE SET NULL, plus the partial
+--      index sessions_account_idx (My Trips lists the sessions of one account). NULL = a guest session. The claim
 --      (S4) sets it once, only where it is NULL: a session owned by an account is never moved to another one.
+--      ON DELETE SET NULL is the DM-7 retention rule (root 02-data-management.md): erasing an account unlinks its
+--      sessions, so the reviewed erasure step is one DELETE of the account row.
 --   3. Grants: the runtime role tripplanner may SELECT, INSERT and UPDATE accounts (upsert at sign-in,
 --      last_sign_in_at). No DELETE / TRUNCATE (the tp_owner default privileges gave them: revoked here): erasing an
 --      account is a reviewed erasure step (DM-6.7), not a runtime path. sessions keeps its runtime DML (tp-013).
@@ -59,7 +61,7 @@ COMMENT ON COLUMN tripplanner.traveller_accounts.sub IS
     'pii:online_id; tp-019: Cognito subject (user id) of the traveller, unique per issuer.';
 
 ALTER TABLE tripplanner.sessions
-    ADD COLUMN IF NOT EXISTS account_id uuid REFERENCES tripplanner.traveller_accounts (id);
+    ADD COLUMN IF NOT EXISTS account_id uuid REFERENCES tripplanner.traveller_accounts (id) ON DELETE SET NULL;
 
 COMMENT ON COLUMN tripplanner.sessions.account_id IS
     'tp-019 (AA-908): the traveller account that claimed this guest session at sign-in; NULL = guest. Set once, never moved to another account.';
