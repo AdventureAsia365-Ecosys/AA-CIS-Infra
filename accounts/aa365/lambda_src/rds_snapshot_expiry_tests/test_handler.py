@@ -222,7 +222,8 @@ class FakeRds:
         if DBInstanceIdentifier not in self.instances:
             raise FakeClientError("DBInstanceNotFound")
         return {"DBInstances": [{"DBInstanceIdentifier": DBInstanceIdentifier,
-                                 "InstanceCreateTime": self.instances[DBInstanceIdentifier]}]}
+                                 "InstanceCreateTime": self.instances[DBInstanceIdentifier],
+                                 "BackupRetentionPeriod": 7}]}
 
     def get_paginator(self, name):
         assert name == "describe_db_snapshots"
@@ -358,3 +359,58 @@ class RunTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FakeCloudWatch:
+    def __init__(self):
+        self.calls = []
+
+    def put_metric_data(self, **kwargs):
+        self.calls.append(kwargs)
+        return {}
+
+
+class CopyAgeTest(unittest.TestCase):
+    """AA-942 (CRM-14, V1): the oldest backup copy each instance still holds goes to CloudWatch for the alarm."""
+
+    def _env(self, **over):
+        env = dict(ENV, DRY_RUN="false", METRICS_NAMESPACE="AA/RDS", COPY_AGE_SINCE="2026-08-01")
+        env.update(over)
+        return env
+
+    def test_kept_copies_count_deleted_ones_do_not(self):
+        snaps = [snap("old", age=40), snap("keep-audit", age=60), snap("young", age=3),
+                 snap("pre-crm", age=400, tags={"aa:retain": "keep"})]
+        rds, sns, cw = FakeRds(snaps), FakeSns(), FakeCloudWatch()
+        summary = h.run(rds, sns, env=self._env(), now=NOW, cloudwatch=cw)
+        self.assertEqual(rds.deleted, ["old"])
+        self.assertEqual(summary["copy_age_days"], {"aa-cis-dev-db": 60.0})  # pre-crm is before COPY_AGE_SINCE
+        self.assertEqual(summary["backup_retention_days"], {"aa-cis-dev-db": 7})
+        [call] = cw.calls
+        self.assertEqual(call["Namespace"], "AA/RDS")
+        values = {m["MetricName"]: m["Value"] for m in call["MetricData"]}
+        self.assertEqual(values, {"BackupCopyMaxAgeDays": 60.0, "AutomatedBackupRetentionDays": 7.0})
+        self.assertEqual(call["MetricData"][0]["Dimensions"], [{"Name": "DBInstanceIdentifier", "Value": "aa-cis-dev-db"}])
+
+    def test_dry_run_counts_what_would_be_deleted_and_no_snapshot_is_zero(self):
+        rds, sns, cw = FakeRds([snap("old", age=40)]), FakeSns(), FakeCloudWatch()
+        summary = h.run(rds, sns, env=self._env(DRY_RUN="true"), now=NOW, cloudwatch=cw)
+        self.assertEqual(summary["copy_age_days"], {"aa-cis-dev-db": 40.0})
+        rds, sns, cw = FakeRds([]), FakeSns(), FakeCloudWatch()
+        summary = h.run(rds, sns, env=self._env(), now=NOW, cloudwatch=cw)
+        self.assertEqual(summary["copy_age_days"], {"aa-cis-dev-db": 0.0})
+
+    def test_no_namespace_no_metrics_and_a_gone_instance_has_no_retention(self):
+        rds, sns, cw = FakeRds([snap("young", age=3)]), FakeSns(), FakeCloudWatch()
+        summary = h.run(rds, sns, env=dict(ENV, DRY_RUN="false"), now=NOW, cloudwatch=cw)
+        self.assertEqual(cw.calls, [])
+        self.assertNotIn("copy_age_days", summary)
+        rds, sns, cw = FakeRds([snap("young", age=3)], instances={}), FakeSns(), FakeCloudWatch()
+        summary = h.run(rds, sns, env=self._env(), now=NOW, cloudwatch=cw)
+        self.assertEqual(summary["backup_retention_days"], {})
+        self.assertEqual([m["MetricName"] for m in cw.calls[0]["MetricData"]], ["BackupCopyMaxAgeDays"])
+
+    def test_bad_since_raises(self):
+        rds, sns = FakeRds([]), FakeSns()
+        with self.assertRaises(ValueError):
+            h.run(rds, sns, env=self._env(COPY_AGE_SINCE="21/10/2026"), now=NOW, cloudwatch=FakeCloudWatch())

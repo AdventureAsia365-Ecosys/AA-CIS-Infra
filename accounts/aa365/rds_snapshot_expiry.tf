@@ -24,6 +24,13 @@
 # Cost: one ~1 s invocation a day, ~0 USD/month. Savings = storage of expired snapshots
 # (RDS ChargedBackupUsage 0.095 USD/GB-month).
 #
+# AA-942 (CRM-14, design V1 "erased data in backups and DEK copies <= 30 days; alarm on any snapshot holding crm"):
+# after each run the function also publishes, per allowlisted instance, the age in days of the oldest manual snapshot
+# it still holds (kept by keep-*, aa:retain, the orphan guard, the cap or a failed delete; snapshots created before
+# var.rds_backup_copy_age_since hold no CRM data and do not count) and the automated backup retention, into AA/RDS
+# (BackupCopyMaxAgeDays, AutomatedBackupRetentionDays). The alarm below fires when either is above 30 days, or when a
+# day passes without the metric (the function did not run). Cost: 2 custom metrics + 1 alarm, about 0.70 USD/month.
+#
 # CI apply role (aa-cis-infra-tf-apply) can create everything here: role names match aa-*-dev-*
 # with the workload boundary (IAMRoleManageStack), Lambda via AWSLambda_FullAccess, log group /
 # alarm via CloudWatchFullAccess, and the schedule sits in the module.eventbridge group, the only
@@ -78,6 +85,24 @@ variable "rds_snapshot_expiry_schedule_expression" {
   description = "AA-869 — schedule of the daily manual-snapshot expiry run"
   type        = string
   default     = "cron(0 22 * * ? *)"
+}
+
+variable "rds_backup_copy_age_since" {
+  description = "AA-942 — snapshots created before this UTC day (YYYY-MM-DD) hold no crm data and are left out of the copy-age metric"
+  type        = string
+  # The CRM design (S246) was approved on 21/10/2026; crm-001 was applied after that, so no older snapshot holds crm.
+  default = "2026-10-21"
+
+  validation {
+    condition     = can(regex("^[0-9]{4}-[0-9]{2}-[0-9]{2}$", var.rds_backup_copy_age_since))
+    error_message = "rds_backup_copy_age_since must be YYYY-MM-DD."
+  }
+}
+
+variable "rds_backup_copy_max_age_days" {
+  description = "AA-942 — alarm when an instance still holds a backup copy (manual snapshot or automated retention) older than this"
+  type        = number
+  default     = 30
 }
 
 locals {
@@ -183,6 +208,14 @@ resource "aws_iam_role_policy" "rds_snapshot_expiry_perms" {
         Action   = ["sns:Publish"]
         Resource = aws_sns_topic.alerts.arn
       },
+      {
+        # AA-942: the backup-copy age metrics. PutMetricData has no resource ARN; the namespace condition limits it.
+        Sid       = "PutBackupCopyAgeMetrics"
+        Effect    = "Allow"
+        Action    = "cloudwatch:PutMetricData"
+        Resource  = "*"
+        Condition = { StringEquals = { "cloudwatch:namespace" = "AA/RDS" } }
+      },
     ]
   })
 }
@@ -215,6 +248,8 @@ resource "aws_lambda_function" "rds_snapshot_expiry" {
       INSTANCE_ALLOWLIST  = join(",", var.rds_snapshot_expiry_instances)
       ALERT_TOPIC_ARN     = aws_sns_topic.alerts.arn
       ENV_NAME            = var.environment
+      METRICS_NAMESPACE   = "AA/RDS"
+      COPY_AGE_SINCE      = var.rds_backup_copy_age_since
     }
   }
 
@@ -252,6 +287,50 @@ resource "aws_cloudwatch_metric_alarm" "rds_snapshot_expiry_errors" {
   alarm_actions       = [aws_sns_topic.alerts.arn]
   ok_actions          = [aws_sns_topic.alerts.arn]
   tags                = local.rds_snapshot_expiry_tags
+}
+
+# AA-942 (CRM-14, V1): an instance holds a backup copy older than the promise (30 days): a kept manual snapshot made
+# after the CRM existed, or automated retention above 30 days. Erased CRM data would outlive the erasure receipt's
+# backup_purge_by date. Missing data = breaching: a day without the metric means the function did not run.
+resource "aws_cloudwatch_metric_alarm" "rds_backup_copy_age" {
+  for_each = toset(var.rds_snapshot_expiry_instances)
+
+  alarm_name          = "${local.rds_snapshot_expiry_fn_name}-copy-age-${each.key}"
+  alarm_description   = "AA-942 (CRM-14, V1): ${each.key} holds a backup copy older than ${var.rds_backup_copy_max_age_days} days (a manual snapshot kept by keep-*, aa:retain or the orphan guard, or automated retention above ${var.rds_backup_copy_max_age_days}), or the expiry function did not report. Erased CRM data must leave every copy within ${var.rds_backup_copy_max_age_days} days: delete or re-tag the snapshot, or lower the retention.${local.runbook_suffix.database}"
+  comparison_operator = "GreaterThanThreshold"
+  threshold           = var.rds_backup_copy_max_age_days
+  evaluation_periods  = 1
+  treat_missing_data  = "breaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
+  tags                = merge(local.rds_snapshot_expiry_tags, { Issue = "AA-942" })
+
+  metric_query {
+    id          = "worst"
+    expression  = "MAX([age, retention])"
+    label       = "Oldest backup copy (days)"
+    return_data = true
+  }
+  metric_query {
+    id = "age"
+    metric {
+      namespace   = "AA/RDS"
+      metric_name = "BackupCopyMaxAgeDays"
+      dimensions  = { DBInstanceIdentifier = each.key }
+      period      = 86400
+      stat        = "Maximum"
+    }
+  }
+  metric_query {
+    id = "retention"
+    metric {
+      namespace   = "AA/RDS"
+      metric_name = "AutomatedBackupRetentionDays"
+      dimensions  = { DBInstanceIdentifier = each.key }
+      period      = 86400
+      stat        = "Maximum"
+    }
+  }
 }
 
 # ── EventBridge Scheduler → Lambda (dedicated invoke role) ───────────────────

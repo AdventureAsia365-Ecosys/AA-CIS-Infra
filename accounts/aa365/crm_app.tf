@@ -278,11 +278,16 @@ resource "aws_iam_role_policy" "crm_ecs_task" {
         # AA-937 (CRM-09, design v3 §4.1 Fix A7): agency documents. The app seals every object with the agency's docs
         # DEK before the PUT (AA-Partner api/app/documents), so the bucket only ever holds ciphertext; keys are
         # tenants/<tenant>/documents/<document>. Objects under that prefix only: no List, no bucket-level action, no
-        # version or retention action. Delete is the trash purge (CRM-14) and offboarding (CRM-35).
-        Sid      = "CrmDocumentsObjects"
-        Effect   = "Allow"
-        Action   = ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"]
-        Resource = "${aws_s3_bucket.crm["documents"].arn}/tenants/*/documents/*"
+        # version or retention action. Delete is the trash purge and the erasures (CRM-14, AA-942). AA-942 adds the
+        # agency offboarding export: exports/tenants/<tenant>/<request>.jsonl.enc, sealed with the agency's export
+        # DEK before the PUT, removed by the erase and by the bucket rule exports-7d (crm_storage.tf).
+        Sid    = "CrmDocumentsObjects"
+        Effect = "Allow"
+        Action = ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"]
+        Resource = [
+          "${aws_s3_bucket.crm["documents"].arn}/tenants/*/documents/*",
+          "${aws_s3_bucket.crm["documents"].arn}/exports/tenants/*",
+        ]
       },
       {
         # The bucket's default SSE-KMS (data key, second layer, crm_storage.tf): through S3 only and bound to the
@@ -321,7 +326,9 @@ resource "aws_iam_role_policy" "crm_ecs_task" {
 # key ARN, so the public app repo never needs the account id; the app stores the ARN KMS returns per wrapped DEK);
 # DOCUMENTS_BUCKET (AA-937): the documents bucket name (task role grant CrmDocumentsObjects above);
 # AUDIT_BUCKET_COMPLIANCE / AUDIT_BUCKET_GOVERNANCE / AUDIT_RETENTION_DRY_RUN (AA-940): the two audit tiers and the
-# retention dry run. GIT_SHA and APP_VERSION are baked into the image.
+# retention dry run; LIFECYCLE_DRY_RUN (AA-942): every hard delete of agency data (daily crm_lifecycle run, erasure,
+# offboarding erase) only counts while "true"; turning it off is an ops decision (DM-7.2), like JOB_RETENTION_DRY_RUN.
+# GIT_SHA and APP_VERSION are baked into the image.
 # -----------------------------------------------------------------------------
 resource "aws_ecs_task_definition" "crm_api" {
   family                   = local.crm_service
@@ -348,6 +355,7 @@ resource "aws_ecs_task_definition" "crm_api" {
       { name = "DB_SSL", value = "require" },
       { name = "WORKER_ENABLED", value = "true" },
       { name = "JOB_RETENTION_DRY_RUN", value = "true" },
+      { name = "LIFECYCLE_DRY_RUN", value = "true" },
       { name = "RATE_LIMIT_PUBLIC_PER_MINUTE", value = "60" },
       { name = "RATE_LIMIT_XFF_HOPS", value = "2" },
       { name = "KEY_PROVIDER", value = "kms" },
