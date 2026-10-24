@@ -257,7 +257,7 @@ accounts/
                                    aa-crm-<env>-scrub-corpus (environment scrub-corpus only, ApplyGuardrail only) for
                                    AA-Partner's "Scrub corpus" workflow; task env SCRUB_GUARDRAIL_ID / _VERSION / _REGION
                                    via local.crm_scrub_env in crm_app.tf. Needs the MFA bootstrap apply of cicd_crm.tf
-                                   CrmBedrockGuardrailManage first. ~ $0.75/month)
+                                   CrmBedrockGuardrail* first. ~ $0.75/month)
     variables.tf / tripplanner_variables.tf / booking_variables.tf
   acc1-bedrock/   ← acc1 Bedrock invoker role (fallback) + Cost Explorer reader
   acc3-bedrock/   ← acc3 Bedrock invoker role (primary) + Bedrock Batch (batch.tf)

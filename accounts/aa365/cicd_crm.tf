@@ -210,15 +210,50 @@ data "aws_iam_policy_document" "tf_apply_crm" {
   }
 
   # AA-938 (CRM-10, design §4.5): the F3 scrub guardrail aa-crm-<env>-scrub (crm_scrub.tf) and its published
-  # versions. Control plane only: no ApplyGuardrail / InvokeModel for the apply role. CreateGuardrail takes no
-  # guardrail ARN at create time; the name is set by crm_scrub.tf.
+  # versions. Control plane only: no ApplyGuardrail / InvokeModel for the apply role. Like the CRM-04 keys, every
+  # mutating verb is limited to guardrails tagged App = crm (crm_scrub_tags carries it): create only with the tag, then
+  # update / version / delete / tag only a guardrail that has it, and never remove the App tag. Reads stay unscoped
+  # (refresh of a guardrail before its tags are known).
   statement {
-    sid = "CrmBedrockGuardrailManage"
+    sid       = "CrmBedrockGuardrailCreateTagged"
+    actions   = ["bedrock:CreateGuardrail", "bedrock:TagResource"]
+    resources = ["arn:aws:bedrock:${var.aws_region}:${var.account_id}:guardrail/*"]
+    condition {
+      test     = "StringEquals"
+      variable = "aws:RequestTag/App"
+      values   = ["crm"]
+    }
+  }
+  statement {
+    sid = "CrmBedrockGuardrailManageTagged"
     actions = [
-      "bedrock:CreateGuardrail", "bedrock:UpdateGuardrail", "bedrock:DeleteGuardrail", "bedrock:GetGuardrail",
-      "bedrock:CreateGuardrailVersion", "bedrock:TagResource", "bedrock:UntagResource",
-      "bedrock:ListTagsForResource",
+      "bedrock:UpdateGuardrail", "bedrock:DeleteGuardrail", "bedrock:CreateGuardrailVersion", "bedrock:TagResource",
     ]
+    resources = ["arn:aws:bedrock:${var.aws_region}:${var.account_id}:guardrail/*"]
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/App"
+      values   = ["crm"]
+    }
+  }
+  statement {
+    sid       = "CrmBedrockGuardrailUntagExceptApp"
+    actions   = ["bedrock:UntagResource"]
+    resources = ["arn:aws:bedrock:${var.aws_region}:${var.account_id}:guardrail/*"]
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/App"
+      values   = ["crm"]
+    }
+    condition {
+      test     = "ForAllValues:StringNotEquals"
+      variable = "aws:TagKeys"
+      values   = ["App"]
+    }
+  }
+  statement {
+    sid       = "BedrockGuardrailRead"
+    actions   = ["bedrock:GetGuardrail", "bedrock:ListTagsForResource"]
     resources = ["arn:aws:bedrock:${var.aws_region}:${var.account_id}:guardrail/*"]
   }
   statement {

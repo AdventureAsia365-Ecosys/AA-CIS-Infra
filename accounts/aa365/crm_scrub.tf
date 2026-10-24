@@ -23,7 +23,7 @@
 #     - task env SCRUB_GUARDRAIL_ID / SCRUB_GUARDRAIL_VERSION / SCRUB_GUARDRAIL_REGION (local.crm_scrub_env, read by
 #       crm_app.tf). Off = no env = the app refuses every scrub (fail closed), so AI stays impossible.
 #
-# Order of applies: the apply role has no Bedrock verbs until cicd_crm.tf statement CrmBedrockGuardrailManage is
+# Order of applies: the apply role has no Bedrock verbs until cicd_crm.tf statements CrmBedrockGuardrail* are
 # applied (BOOTSTRAP, local MFA apply of aws_iam_policy.tf_apply_crm, Nghiệp). Then set
 # crm_scrub_guardrail_enabled = true in terraform.tfvars and apply through CI. The next AA-Partner deploy picks the env
 # up (deploy-dev.yml copies the latest task definition revision).
@@ -35,7 +35,7 @@
 # =============================================================================
 
 variable "crm_scrub_guardrail_enabled" {
-  description = "AA-938: create the F3 scrub guardrail (acc2), grant the CRM task role and the corpus role ApplyGuardrail on it, and pass its id / version to the AA-Partner task. Turn on only AFTER the MFA bootstrap apply of cicd_crm.tf CrmBedrockGuardrailManage."
+  description = "AA-938: create the F3 scrub guardrail (acc2), grant the CRM task role and the corpus role ApplyGuardrail on it, and pass its id / version to the AA-Partner task. Turn on only AFTER the MFA bootstrap apply of the cicd_crm.tf CrmBedrockGuardrail* statements."
   type        = bool
   default     = false
 }
