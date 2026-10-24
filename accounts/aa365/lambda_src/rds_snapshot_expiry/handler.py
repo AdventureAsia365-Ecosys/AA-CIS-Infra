@@ -26,6 +26,14 @@ Safety
   MAX_DELETES_PER_RUN: at most that many deletions per run (oldest first); the rest are reported
   as over_cap and wait for the next run.
 
+Backup-copy age (AA-942, card CRM-14, design V1: erased data leaves every backup copy within 30 days)
+  After the run, the age in days of the oldest manual snapshot each allowlisted instance still has (kept by a
+  keep- name, an aa:retain tag or the orphan guard, held back by the cap, or a failed delete), counting only
+  snapshots created on or after COPY_AGE_SINCE (the day the first crm migration could exist; older snapshots hold
+  no CRM data), and the instance's automated backup retention in days, go to CloudWatch (METRICS_NAMESPACE,
+  dimension DBInstanceIdentifier: BackupCopyMaxAgeDays, AutomatedBackupRetentionDays). An alarm fires above 30
+  (rds_snapshot_expiry.tf). No namespace = no metrics.
+
 Report
   One JSON log line per snapshot (identifier, instance, created, age_days, decision, reason) and
   a summary line. An SNS message goes to ALERT_TOPIC_ARN only when something was deleted, would
@@ -282,6 +290,46 @@ def build_message(decisions: list[Decision], *, env_name: str, dry_run: bool) ->
     return subject[:100], "\n".join(lines)
 
 
+COPY_AGE_METRIC = "BackupCopyMaxAgeDays"
+RETENTION_METRIC = "AutomatedBackupRetentionDays"
+
+
+def copy_ages(decisions: list[Decision], allowlist: Iterable[str], since: datetime | None) -> dict[str, float]:
+    """Oldest manual snapshot (days) each allowlisted instance still holds after the run; 0 when none.
+
+    Deleted and skipped snapshots do not count; snapshots created before ``since`` do not either.
+    """
+    ages = {i: 0.0 for i in allowlist}
+    for d in decisions:
+        if d.instance not in ages or d.age_days is None or d.decision in (DELETED, SKIP):
+            continue
+        if since is not None and d._created_dt is not None and d._created_dt < since:
+            continue
+        ages[d.instance] = max(ages[d.instance], d.age_days)
+    return ages
+
+
+def metric_data(ages: dict[str, float], retention: dict[str, int], now: datetime) -> list[dict]:
+    data = []
+    for instance, age in sorted(ages.items()):
+        dims = [{"Name": "DBInstanceIdentifier", "Value": instance}]
+        data.append({"MetricName": COPY_AGE_METRIC, "Dimensions": dims, "Timestamp": now, "Value": float(age),
+                     "Unit": "None"})
+        if instance in retention:
+            data.append({"MetricName": RETENTION_METRIC, "Dimensions": dims, "Timestamp": now,
+                         "Value": float(retention[instance]), "Unit": "None"})
+    return data
+
+
+def parse_since(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    day = parse_retain_until(value)
+    if day is None:
+        raise ValueError(f"COPY_AGE_SINCE must be YYYY-MM-DD, got {value!r}")
+    return datetime(day.year, day.month, day.day, tzinfo=timezone.utc)
+
+
 # ── AWS side ─────────────────────────────────────────────────────────────────
 
 
@@ -313,6 +361,23 @@ def list_manual_snapshots(rds) -> list[dict]:
     return out
 
 
+def backup_retention(rds, allowlist: Iterable[str]) -> dict[str, int]:
+    """Allowlisted instances that exist now -> BackupRetentionPeriod (days). Missing -> left out."""
+    out: dict[str, int] = {}
+    for ident in allowlist:
+        try:
+            resp = rds.describe_db_instances(DBInstanceIdentifier=ident)
+        except Exception as exc:  # noqa: BLE001 — botocore ClientError; tests use no boto3
+            code = (getattr(exc, "response", None) or {}).get("Error", {}).get("Code")
+            if code in ("DBInstanceNotFound", "DBInstanceNotFoundFault"):
+                continue
+            raise
+        for inst in resp.get("DBInstances", []):
+            if inst.get("DBInstanceIdentifier") == ident and inst.get("BackupRetentionPeriod") is not None:
+                out[ident] = int(inst["BackupRetentionPeriod"])
+    return out
+
+
 def describe_live_instances(rds, allowlist: Iterable[str]) -> dict[str, datetime | None]:
     """Allowlisted instances that exist now -> InstanceCreateTime. Not found -> left out.
 
@@ -334,8 +399,10 @@ def describe_live_instances(rds, allowlist: Iterable[str]) -> dict[str, datetime
     return live
 
 
-def run(rds, sns, *, env: dict, now: datetime) -> dict:
+def run(rds, sns, *, env: dict, now: datetime, cloudwatch=None) -> dict:
     dry_run = is_dry_run(env.get("DRY_RUN"))
+    namespace = env.get("METRICS_NAMESPACE", "")
+    since = parse_since(env.get("COPY_AGE_SINCE"))
     retain_days = _int_env(env, "RETAIN_DAYS", 30, 1)
     max_deletes = _int_env(env, "MAX_DELETES_PER_RUN", 3, 0)
     allowlist = parse_allowlist(env.get("INSTANCE_ALLOWLIST"))
@@ -374,6 +441,14 @@ def run(rds, sns, *, env: dict, now: datetime) -> dict:
         sns.publish(TopicArn=topic, Subject=subject, Message=message)
         summary["notified"] = True
 
+    if namespace and cloudwatch is not None:
+        ages = copy_ages(decisions, allowlist, since)
+        retention = backup_retention(rds, allowlist)
+        cloudwatch.put_metric_data(Namespace=namespace, MetricData=metric_data(ages, retention, now))
+        summary["copy_age_days"] = ages
+        summary["backup_retention_days"] = retention
+        _log({"event": "copy_age", "copy_age_days": ages, "backup_retention_days": retention})
+
     errors = [d.identifier for d in decisions if d.decision == ERROR]
     if errors:
         # Fail the invocation so the Errors alarm fires (async retries are off in Terraform).
@@ -385,5 +460,6 @@ def handler(event, context):  # noqa: ARG001 — Lambda signature
     import boto3  # bundled with the Lambda runtime; imported here so tests need no boto3
 
     return run(
-        boto3.client("rds"), boto3.client("sns"), env=dict(os.environ), now=datetime.now(timezone.utc)
+        boto3.client("rds"), boto3.client("sns"), env=dict(os.environ), now=datetime.now(timezone.utc),
+        cloudwatch=boto3.client("cloudwatch"),
     )
