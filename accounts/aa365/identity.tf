@@ -743,7 +743,8 @@ resource "aws_route53_record" "identity_custom_domain" {
 # to the asset set still forces a replacement: the apply deletes and recreates each style (a few
 # seconds without a style per client). Because the delete runs before the create, a payload Cognito
 # rejects would leave every WORKFORCE client (breakglass included) without a style: pre-validate the
-# exact payload on an EXTERNAL client first (runbook + rollback commands in
+# exact payload on a temporary throwaway client first, never on a live EXTERNAL client (each EXTERNAL client
+# has its own Terraform-managed style since S249; runbook + rollback commands in
 # docs/implementation-notes/AA-816-staff-auth-domain.md). If Cognito rejects buttons.borderRadius
 # 24, use 16.
 # Assets: accounts/aa365/assets/identity/ (form logo = the official CIS frontend logo PNG; header,
