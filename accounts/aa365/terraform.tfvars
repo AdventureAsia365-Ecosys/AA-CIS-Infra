@@ -55,6 +55,11 @@ booking_github_repo_id = "1418188499"
 # AA-Partner (S248, AA-933): immutable GitHub repo id — pins the aa-crm-dev-app-deploy OIDC trust to this repo.
 crm_github_repo_id = "1430388300"
 
+# AA-939 (S249): the CRM web signs in with the partner pool (partner-web client, MFA required). The e2e users exist on
+# the partner pool and are members of the synthetic agencies; after the apply: crm_dev_identity.py web-secret --pool
+# partner --apply, then deploy the web.
+crm_partner_signin_enabled = true
+
 # AA-811 (S238): AA-Booking sends the staff "new inquiry" e-mail (SES, ses.tf) to this inbox on Dev.
 booking_staff_notify_email = "nghieppham@adventure.asia"
 
