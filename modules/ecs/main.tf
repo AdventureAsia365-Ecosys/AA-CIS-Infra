@@ -46,6 +46,14 @@ locals {
   t9_faq_filter_env = [
     { name = "T9_FAQ_LLM_FILTER", value = var.t9_faq_llm_filter },
   ]
+
+  # AA-835 (S6 review): the supply_media_purge job (AA-CIS-App services/jobs/supply_media_purge_job.py, worker only)
+  # invalidates /supply/<type>/<media_id>-* on the photos CDN after it deletes a withdrawn Booking photo's CIS copies.
+  # Empty ARN (CDN gated off) = no env, no grant: the job then skips the invalidation ("not_configured").
+  photos_cdn_distribution_id = var.photos_cdn_distribution_arn == "" ? "" : element(split("/", var.photos_cdn_distribution_arn), 1)
+  supply_photo_purge_env = local.photos_cdn_distribution_id == "" ? [] : [
+    { name = "PHOTO_CDN_DISTRIBUTION_ID", value = local.photos_cdn_distribution_id },
+  ]
 }
 
 # ── ECS Exec session log (S241 D-07) ──────────────────────────
@@ -201,7 +209,7 @@ resource "aws_iam_role_policy" "ecs_task_policy" {
   role = aws_iam_role.ecs_task.id
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
+    Statement = concat([
       {
         Effect = "Allow"
         Action = [
@@ -335,8 +343,28 @@ resource "aws_iam_role_policy" "ecs_task_policy" {
         Effect   = "Deny"
         Action   = ["s3:PutObject", "s3:DeleteObject"]
         Resource = "arn:aws:s3:::${var.bronze_bucket_name}/data-model/*"
+      },
+      # AA-835 (S6 review) — DM-7 row "supply_media": when Booking withdraws a supply photo's usage rights or removes
+      # it, the supply_media_purge job deletes the CIS WebP copies (photos/supply/<type>/<media_id>-{1600,600}.webp).
+      # The only S3 delete this role holds, on that prefix only; every other CIS photo (photos/<country slug>/) stays
+      # put/get only.
+      {
+        Sid      = "DeleteSupplyPhotoCopies"
+        Effect   = "Allow"
+        Action   = ["s3:DeleteObject"]
+        Resource = "arn:aws:s3:::${var.bronze_bucket_name}/photos/supply/*"
       }
-    ]
+      ],
+      # AA-835 (S6 review) — the same job invalidates the deleted copies on the photos CDN (TTL up to a year, min one
+      # day). Only on this one distribution; absent when the CDN is gated off.
+      var.photos_cdn_distribution_arn == "" ? [] : [
+        {
+          Sid      = "InvalidateSupplyPhotoCopies"
+          Effect   = "Allow"
+          Action   = ["cloudfront:CreateInvalidation"]
+          Resource = var.photos_cdn_distribution_arn
+        }
+    ])
   })
 }
 
@@ -710,6 +738,7 @@ resource "aws_ecs_task_definition" "worker" {
       local.place_shapes_env,
       local.erasure_env,
       local.t9_faq_filter_env,
+      local.supply_photo_purge_env,
       var.redis_host != null ? [{ name = "REDIS_HOST", value = var.redis_host }] : []
     )
     secrets = [
