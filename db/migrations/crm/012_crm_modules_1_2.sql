@@ -30,8 +30,10 @@
 --      b. Undo: while app.stage_undo = <history id>, the change must be the exact reverse of that crm.trip_stage_history
 --         row, which must be the trip's latest row, at most 15 s old (the API offers 10 s), not itself an undo, not a
 --         move into cancelled (the cancel flow has its own effects and no undo), and written by the same actor
---         (app.actor = its created_by: only the member who moved undoes; a job move has no undo). The edge table and
---         the gates are not consulted for it. Anything else raises SQLSTATE CRM20 ('undo_not_allowed').
+--         (app.actor = its created_by: only the member who moved undoes; a job move has no undo). The row must record
+--         an edge of crm.status_transition (so a history row a session wrote itself can at most take a trip back along
+--         the reverse of a real edge, never past the edge table to any stage); the gates are not consulted for the
+--         reverse. Anything else raises SQLSTATE CRM20 ('undo_not_allowed').
 --         Every other change: the edge must be a row of crm.status_transition (check_violation, as in crm-005).
 --   3. crm.trip: intake_completeness jsonb {s1, s2, s3} (integers 0..100, crm.completeness_ok), cancel_reason_code
 --      (fixed list, set exactly when stage = cancelled), last_activity_at (the board's "quiet > 3 days" flag; bumped by
@@ -254,6 +256,8 @@ BEGIN
            OR r.to_stage = 'cancelled'
            OR r.at < now() - interval '15 seconds'
            OR r.created_by IS DISTINCT FROM v_actor
+           OR NOT EXISTS (SELECT 1 FROM crm.status_transition t
+                           WHERE t.table_name = 'trip' AND t.from_status = r.from_stage AND t.to_status = r.to_stage)
            OR EXISTS (SELECT 1 FROM crm.trip_stage_history h
                        WHERE h.trip_id = OLD.trip_id AND h.history_id <> r.history_id AND h.at >= r.at) THEN
             RAISE EXCEPTION 'crm: undo_not_allowed (% % -> % cannot be taken back)', TG_TABLE_NAME, OLD.stage, NEW.stage
@@ -289,7 +293,7 @@ BEGIN
 END;
 $$;
 REVOKE ALL ON FUNCTION crm.enforce_stage_transition() FROM PUBLIC;
-COMMENT ON FUNCTION crm.enforce_stage_transition() IS 'AA-936 (crm-005), replaced by AA-943 (crm-012): a stage change must be an edge in crm.status_transition; on crm.trip the gates qualifying -> proposal (s2 >= 80 or app.gate_override = stage2), proposal -> booked (app.gate_override = booking), booked -> pre_departure (app.gate_override = stage3) raise CRM19; while app.stage_undo names the trip''s latest move (<= 15 s old, same actor, not an undo, not into cancelled) only its exact reverse is allowed, anything else raises CRM20.';
+COMMENT ON FUNCTION crm.enforce_stage_transition() IS 'AA-936 (crm-005), replaced by AA-943 (crm-012): a stage change must be an edge in crm.status_transition; on crm.trip the gates qualifying -> proposal (s2 >= 80 or app.gate_override = stage2), proposal -> booked (app.gate_override = booking), booked -> pre_departure (app.gate_override = stage3) raise CRM19; while app.stage_undo names the trip''s latest move (<= 15 s old, same actor, not an undo, not into cancelled, itself an edge) only its exact reverse is allowed, anything else raises CRM20.';
 
 -- ── 5. crm.task.priority ─────────────────────────────────────────────────────────────────────────
 ALTER TABLE crm.task ADD COLUMN IF NOT EXISTS priority TEXT NOT NULL DEFAULT 'normal';
