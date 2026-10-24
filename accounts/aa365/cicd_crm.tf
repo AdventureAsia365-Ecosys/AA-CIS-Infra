@@ -208,6 +208,24 @@ data "aws_iam_policy_document" "tf_apply_crm" {
     ]
     resources = ["arn:aws:ses:${var.aws_region}:${var.account_id}:contact-list/*"]
   }
+
+  # AA-938 (CRM-10, design §4.5): the F3 scrub guardrail aa-crm-<env>-scrub (crm_scrub.tf) and its published
+  # versions. Control plane only: no ApplyGuardrail / InvokeModel for the apply role. CreateGuardrail takes no
+  # guardrail ARN at create time; the name is set by crm_scrub.tf.
+  statement {
+    sid = "CrmBedrockGuardrailManage"
+    actions = [
+      "bedrock:CreateGuardrail", "bedrock:UpdateGuardrail", "bedrock:DeleteGuardrail", "bedrock:GetGuardrail",
+      "bedrock:CreateGuardrailVersion", "bedrock:TagResource", "bedrock:UntagResource",
+      "bedrock:ListTagsForResource",
+    ]
+    resources = ["arn:aws:bedrock:${var.aws_region}:${var.account_id}:guardrail/*"]
+  }
+  statement {
+    sid       = "BedrockGuardrailList"
+    actions   = ["bedrock:ListGuardrails"]
+    resources = ["*"]
+  }
 }
 
 resource "aws_iam_policy" "tf_apply_crm" {

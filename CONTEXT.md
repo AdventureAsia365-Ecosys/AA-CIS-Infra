@@ -248,6 +248,16 @@ accounts/
                                    admitted by RDS); the API deploy role also deploys it (crm_app.tf). The cis-portal
                                    client lists the partner host's /auth/callback and /signed-out (identity_variables.tf);
                                    the e2e mailbox rule takes the CRM e2e users of tools/identity/crm_e2e_users.json)
+    crm_scrub.tf                  (AA-938 CRM-10, AA-Partner F3 scrubber pass 3, all behind
+                                   var.crm_scrub_guardrail_enabled (default false): Bedrock guardrail aa-crm-<env>-scrub
+                                   in acc2 (every PII entity on action NONE = detect only; no URL / AGE, no regex, no
+                                   content / topic / word filters) + a published version (description = hash of the
+                                   entity list, skip_destroy); inline policy aa-crm-<env>-ecs-task-scrub
+                                   (bedrock:ApplyGuardrail on that guardrail only) on the CRM task role; GitHub OIDC role
+                                   aa-crm-<env>-scrub-corpus (environment scrub-corpus only, ApplyGuardrail only) for
+                                   AA-Partner's "Scrub corpus" workflow; task env SCRUB_GUARDRAIL_ID / _VERSION / _REGION
+                                   via local.crm_scrub_env in crm_app.tf. Needs the MFA bootstrap apply of cicd_crm.tf
+                                   CrmBedrockGuardrailManage first. ~ $0.75/month)
     variables.tf / tripplanner_variables.tf / booking_variables.tf
   acc1-bedrock/   ← acc1 Bedrock invoker role (fallback) + Cost Explorer reader
   acc3-bedrock/   ← acc3 Bedrock invoker role (primary) + Bedrock Batch (batch.tf)
@@ -427,7 +437,8 @@ makes CI Terraform Plan fail with 403.
   (`aa-cis-dev-app-deploy` for AA-CIS-App, `aa-cis-infra-tf-plan` / `aa-cis-infra-tf-apply` for this
   repo's own Terraform / DB Migrate / schema-dump workflows), `tripplanner.tf`
   (`aa-tripplanner-dev-app-deploy`), `booking.tf` (`aa-booking-dev-app-deploy`) and `crm_app.tf`
-  (`aa-crm-dev-app-deploy`, AA-Partner, AA-933). Each app repo
+  (`aa-crm-dev-app-deploy`, AA-Partner, AA-933), plus `crm_scrub.tf` (`aa-crm-dev-scrub-corpus`, AA-Partner
+  "Scrub corpus" workflow, environment `scrub-corpus`, AA-938). Each app repo
   and each job type gets its **own** role. The old shared `aa-cis-dev-role` is retired (AA-806
   step 3); the apply boundary denies every write on that name so it cannot come back.
 - **OIDC subject fact (learned AA-588, re-verified AA-678):** the repos have GitHub's immutable
