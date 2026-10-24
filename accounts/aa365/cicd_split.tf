@@ -89,12 +89,17 @@ locals {
   # (bootstrap: local apply), or plan fails with AccessDenied on refresh after it is first applied.
   # AA-874: + the CIS Redis AUTH secret. Its version is write-only (secret_string_wo), but refresh
   # still reads the version (GetSecretValue), so the plan role needs it like any other version.
-  # AA-908: + the TripPlanner BFF's WAF header value (identity.tf, only while identity_waf_enabled).
-  tf_plan_secret_arns = concat([
-    aws_secretsmanager_secret.tripplanner_db.arn,
-    aws_secretsmanager_secret.tripplanner_api_key.arn,
-    module.elasticache.auth_secret_arn,
-  ], aws_secretsmanager_secret.identity_traveller_bff[*].arn)
+  # AA-908: + the TripPlanner BFF's WAF header value (identity.tf, only while identity_waf_enabled) and its sign-up
+  # proof key (only while traveller native sign-up is on).
+  tf_plan_secret_arns = concat(
+    [
+      aws_secretsmanager_secret.tripplanner_db.arn,
+      aws_secretsmanager_secret.tripplanner_api_key.arn,
+      module.elasticache.auth_secret_arn,
+    ],
+    aws_secretsmanager_secret.identity_traveller_bff[*].arn,
+    aws_secretsmanager_secret.identity_traveller_signup_proof[*].arn,
+  )
 
   # CIS app objects the app deploy role may touch.
   cis_task_families = ["${local.name_prefix}-api", "${local.name_prefix}-worker"]

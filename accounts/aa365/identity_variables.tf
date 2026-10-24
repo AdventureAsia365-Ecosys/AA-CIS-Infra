@@ -200,7 +200,7 @@ variable "identity_client_urls" {
 
 # ── WAF on the pools (ADR 0006 decision 1) ───────────────────────────────────
 variable "identity_waf_enabled" {
-  description = "Attach one shared REGIONAL web ACL with per-IP rate rules to the WORKFORCE, EXTERNAL and PARTNER pools. BILLABLE: about $9/month for this single shared ACL ($5 ACL + 4 x $1 rules + $0.60 per million requests, AA-908; ADR 0006 quotes $12-15/month for two ACLs) plus $0.40/month for the TripPlanner BFF header secret. Off by default: S241 D-19 = quote first, enable only with Nghiep's go (AA-854). Required by identity_external_native_signup_enabled (precondition on the EXTERNAL pool)."
+  description = "Attach one shared REGIONAL web ACL with per-IP rate rules to the WORKFORCE, EXTERNAL and PARTNER pools. BILLABLE: about $9/month for this single shared ACL ($5 ACL + 4 x $1 rules + $0.60 per million requests, AA-908; ADR 0006 quotes $12-15/month for two ACLs) plus $0.80/month for the TripPlanner BFF header secret and its sign-up proof key (the latter only with identity_external_native_signup_enabled). Off by default: S241 D-19 = quote first, enable only with Nghiep's go (AA-854). Required by identity_external_native_signup_enabled (precondition on the EXTERNAL pool)."
   type        = bool
   default     = false
 }

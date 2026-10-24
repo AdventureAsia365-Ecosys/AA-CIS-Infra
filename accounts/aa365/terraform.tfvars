@@ -80,7 +80,7 @@ cis_ops_alert_email = "nghieppham@adventure.asia"
 identity_waf_enabled = true
 # AA-908 S4/S5 (S250, option b): traveller native sign-up on, for the TripPlanner BFF's passwordless SignUp
 # (email code only, root ADR 0006 decisions 1 and 4; no password is ever sent). The pre sign-up trigger allows it
-# on the traveller clients only (tripplanner, booking-customer). The managed-login /signup page of those clients
-# still offers a password (S1 spike): nothing links to it, and closing it is a follow-up
-# (docs/implementation-notes/AA-908.md, "Should know").
+# on the traveller clients only (tripplanner, booking-customer), and only with the BFF's signed proof in
+# ValidationData (identity.tf identity_traveller_signup_proof): a direct public-API SignUp with a password and the
+# managed-login /signup page are refused.
 identity_external_native_signup_enabled = true

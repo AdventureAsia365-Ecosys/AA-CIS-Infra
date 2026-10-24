@@ -227,11 +227,13 @@ locals {
     GOOGLE_PROVIDER_NAME   = "Google"
     FACEBOOK_PROVIDER_NAME = "Facebook"
     NATIVE_SIGNUP_ENABLED  = tostring(local.id_ext_native_signup)
+    # AA-908 review round: the key of the TripPlanner BFF's sign-up proof (external.py docstring).
+    SIGNUP_PROOF_SECRET_ID = local.id_ext_native_signup ? aws_secretsmanager_secret.identity_traveller_signup_proof[0].arn : ""
   }
 
   # Roles: `pure` = logs only (both pre token triggers and the WORKFORCE pre sign-up, which make no
   # Cognito call); `external-signup` = logs + ListUsers / AdminLinkProviderForUser /
-  # DescribeUserPoolClient on the EXTERNAL pool.
+  # DescribeUserPoolClient on the EXTERNAL pool + GetSecretValue on the BFF sign-up proof key (AA-908).
   id_triggers = {
     "workforce-pre-sign-up" = { handler = "workforce.pre_sign_up", role = "pure", env = local.id_workforce_env, pool = "workforce" }
     "workforce-pre-token"   = { handler = "workforce.pre_token_generation", role = "pure", env = local.id_workforce_env, pool = "workforce" }
@@ -324,6 +326,24 @@ resource "aws_iam_role_policy" "identity_external_signup_cognito" {
       Effect   = "Allow"
       Action   = ["cognito-idp:ListUsers", "cognito-idp:AdminLinkProviderForUser", "cognito-idp:DescribeUserPoolClient"]
       Resource = aws_cognito_user_pool.external.arn
+    }]
+  })
+}
+
+# AA-908 review round: the EXTERNAL pre sign-up reads the BFF sign-up proof key (one secret, by ARN), only while
+# native sign-up is on.
+resource "aws_iam_role_policy" "identity_external_signup_proof_key" {
+  count = local.id_ext_native_signup ? 1 : 0
+  name  = "${local.id_prefix}-external-signup-proof-key"
+  role  = aws_iam_role.identity_trigger["external-signup"].id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid      = "ReadSignupProofKey"
+      Effect   = "Allow"
+      Action   = ["secretsmanager:GetSecretValue"]
+      Resource = aws_secretsmanager_secret.identity_traveller_signup_proof[0].arn
     }]
   })
 }
@@ -947,9 +967,13 @@ resource "aws_cognito_managed_login_branding" "external" {
 #   re-keying, not a bypass: every sign-in call still has a per-person limit, and a caller without the value is
 #   counted per IP as before. If the value leaked, its holder could spread its calls over forged traveller
 #   addresses, still under the global per-IP cap; rotate with -replace=random_password.identity_traveller_bff[0]
-#   and update the Vercel env. A BFF-keyed request without a valid X-AA-Traveller-IP is not counted by that rule
-#   (AWS WAF skips a forwarded-IP rate rule when the header is missing); the BFF always sends it. The global cap
-#   still counts all BFF traffic per egress IP (1000 / 5 min, far above a traveller's sign-in plus hourly refresh).
+#   and update the Vercel env. A BFF-keyed request without a valid X-AA-Traveller-IP would not be counted by that
+#   rule (AWS WAF skips a forwarded-IP rate rule when the header is missing), so the BFF sends the key ONLY together
+#   with a traveller address (AA-TripPlanner-Web frontend/lib/cognito.ts call()); without one, its call stays on the
+#   per-egress-IP rules. The global cap still counts all BFF traffic per egress IP (1000 / 5 min, far above a
+#   traveller's sign-in plus hourly refresh). It is kept on purpose as the backstop if the key leaks; the residual
+#   (calls spread over many client addresses can fill one egress address's global counter) is in the AA-908 notes.
+#   Who may sign up at all is decided by the pre sign-up trigger, not here: identity_traveller_signup_proof below.
 # CI sign-ins (AA-CIS-App e2e-cognito.yml / ui-smoke.yml smoke-staff, AA-Partner e2e-dev.yml) are browser
 # sign-ins through managed login on GitHub-hosted runners: about 3-4 scoped POSTs and fewer than 10
 # requests on the pool domain per sign-in (the page assets come from Cognito's CloudFront hosts, which
@@ -1219,6 +1243,39 @@ resource "aws_secretsmanager_secret_version" "identity_traveller_bff" {
   count         = var.identity_waf_enabled ? 1 : 0
   secret_id     = aws_secretsmanager_secret.identity_traveller_bff[0].id
   secret_string = random_password.identity_traveller_bff[0].result
+}
+
+# AA-908 review round (S250): the key of the TripPlanner BFF's sign-up proof. With native sign-up on, anyone could
+# otherwise call the public SignUp API with ClientId=tripplanner, the victim's address and a Password: the user
+# waits UNCONFIRMED, the victim later confirms it with the emailed code (the BFF's ResendConfirmationCode path), and
+# the attacker signs in with USER_AUTH + PASSWORD (offered to any user who has one, header above), holding the
+# victim's sub and email_verified=true. So the EXTERNAL pre sign-up accepts a native SignUp on a traveller client only
+# with ValidationData bff_ts + bff_proof = HMAC-SHA256(this key, "<email>\n<bff_ts>"), at most 5 minutes old
+# (lambda_src/identity_triggers/external.py). The BFF never sends a password, so every self-registered traveller is
+# passwordless. This also closes the managed-login /signup page (it sends no proof).
+# A key of its own, not the WAF header value above: that value is visible in the web ACL definition and in sampled
+# requests. Copied into the Vercel env TP_COGNITO_SIGNUP_PROOF_KEY of aa-tripplanner. Guarded types like the BFF key
+# (allow_guarded=true on the first CI apply; the ARN is in local.tf_plan_secret_arns, bootstrap: local MFA apply).
+# Rotate: -replace=random_password.identity_traveller_signup_proof[0], then the Vercel env; triggers re-read the
+# secret within 5 minutes (sign-ups in between fail closed with "sign-up unavailable").
+resource "random_password" "identity_traveller_signup_proof" {
+  count   = local.id_ext_native_signup ? 1 : 0
+  length  = 48
+  special = false
+}
+
+resource "aws_secretsmanager_secret" "identity_traveller_signup_proof" {
+  count                   = local.id_ext_native_signup ? 1 : 0
+  name                    = "tripplanner/${var.environment}/cognito-signup-proof-key"
+  description             = "AA-908: HMAC key of the TripPlanner BFF's sign-up proof (ValidationData bff_proof), checked by the EXTERNAL pre sign-up trigger. Copied into the Vercel env TP_COGNITO_SIGNUP_PROOF_KEY."
+  recovery_window_in_days = var.environment == "dev" ? 0 : 30
+  tags                    = local.id_tags
+}
+
+resource "aws_secretsmanager_secret_version" "identity_traveller_signup_proof" {
+  count         = local.id_ext_native_signup ? 1 : 0
+  secret_id     = aws_secretsmanager_secret.identity_traveller_signup_proof[0].id
+  secret_string = random_password.identity_traveller_signup_proof[0].result
 }
 
 resource "aws_wafv2_web_acl_association" "identity" {

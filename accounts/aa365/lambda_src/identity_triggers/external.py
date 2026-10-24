@@ -13,12 +13,29 @@ the client NAME with DescribeUserPoolClient on its own pool (cached per containe
 NATIVE_SIGNUP_ENABLED ("true" only once SES/EMAIL_OTP is live) gates native SignUp on traveller
 clients; federated sign-up does not depend on it.
 
+A native SignUp on a traveller client is accepted only from the TripPlanner BFF (AA-908, review round
+S250). The public SignUp API takes a Password, and ALLOW_USER_AUTH offers the PASSWORD challenge to any
+user who has one, so an open SignUp would let anyone pre-register a victim's address with a password and
+inherit the account once the victim confirms it with the emailed code (root ADR 0006 decision 4: no
+passwords for travellers). The BFF never sends a password and signs each SignUp in ValidationData:
+
+  bff_ts    = unix seconds when the BFF made the call
+  bff_proof = hex HMAC-SHA256(key, "<normalised email>\n<bff_ts>")
+
+The key is the Secrets Manager secret SIGNUP_PROOF_SECRET_ID (tripplanner/<env>/cognito-signup-proof-key,
+Vercel env TP_COGNITO_SIGNUP_PROOF_KEY), read by this trigger and cached per container for a few
+minutes. A missing, stale or wrong proof is refused, which also closes the managed-login /signup page.
+
 AdminCreateUser (CIS invitations, Phase 3) is always allowed. Facebook is never linked.
 """
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import os
+import re
+import time
 from typing import Any
 
 from common import (
@@ -35,6 +52,7 @@ from common import (
     normalise_email,
     parse_identities,
     provider_links,
+    secrets_client,
     split_federated_username,
     user_attr,
 )
@@ -43,6 +61,15 @@ from common import (
 _FORBIDDEN_SIGNUP_ATTRIBUTES = ("email_verified", "phone_number_verified")
 
 _client_name_cache: dict[str, str] = {}
+
+# BFF sign-up proof (module docstring). A proof older or newer than this is refused (replay window).
+PROOF_MAX_SKEW_S = 300
+# How long a container keeps the proof key before reading the secret again (picks up a rotation).
+PROOF_KEY_TTL_S = 300
+_PROOF_RE = re.compile(r"[0-9a-f]{64}")
+_TS_RE = re.compile(r"[0-9]{1,12}")
+_MIN_PROOF_KEY_CHARS = 32
+_proof_key_cache: dict[str, tuple[float, bytes]] = {}
 
 
 def _client_class(cognito: Any, pool_id: str, client_id: str | None) -> str:
@@ -60,12 +87,47 @@ def _client_class(cognito: Any, pool_id: str, client_id: str | None) -> str:
     raise Deny(f"client not allowed: {name}")
 
 
+def signup_proof(key: bytes, email: str, ts: str) -> str:
+    """The proof the BFF sends for `email` (already normalised) at unix time `ts` (a decimal string)."""
+    return hmac.new(key, f"{email}\n{ts}".encode(), hashlib.sha256).hexdigest()
+
+
+def _proof_key(secrets: Any, now: float) -> bytes:
+    secret_id = os.environ.get("SIGNUP_PROOF_SECRET_ID", "").strip()
+    if not secret_id:
+        raise Deny("sign-up proof key not configured")
+    cached = _proof_key_cache.get(secret_id)
+    if cached and now - cached[0] < PROOF_KEY_TTL_S:
+        return cached[1]
+    value = (secrets or secrets_client()).get_secret_value(SecretId=secret_id).get("SecretString") or ""
+    if len(value) < _MIN_PROOF_KEY_CHARS:
+        raise Deny("sign-up proof key too short")
+    key = value.encode()
+    _proof_key_cache[secret_id] = (now, key)
+    return key
+
+
+def _require_bff_proof(event: dict, email: str, secrets: Any) -> None:
+    data = (event.get("request") or {}).get("validationData") or {}
+    ts = data.get("bff_ts")
+    proof = data.get("bff_proof")
+    if not (isinstance(ts, str) and _TS_RE.fullmatch(ts)) or not (
+        isinstance(proof, str) and _PROOF_RE.fullmatch(proof)
+    ):
+        raise Deny("sign-up proof missing or malformed")
+    now = time.time()
+    if abs(now - int(ts)) > PROOF_MAX_SKEW_S:
+        raise Deny("sign-up proof outside its time window")
+    if not hmac.compare_digest(signup_proof(_proof_key(secrets, now), email, ts), proof):
+        raise Deny("sign-up proof invalid")
+
+
 # ---------------------------------------------------------------------------------------------
 # Pre sign-up
 # ---------------------------------------------------------------------------------------------
-def pre_sign_up(event: dict, context: Any = None, cognito: Any = None) -> dict:
+def pre_sign_up(event: dict, context: Any = None, cognito: Any = None, secrets: Any = None) -> dict:
     try:
-        return _pre_sign_up(event, cognito)
+        return _pre_sign_up(event, cognito, secrets)
     except Deny as exc:
         log("external_pre_sign_up_denied", reason=str(exc), trigger=event.get("triggerSource"))
     except Exception as exc:  # noqa: BLE001 - fail closed
@@ -73,7 +135,7 @@ def pre_sign_up(event: dict, context: Any = None, cognito: Any = None) -> dict:
     raise Exception(GENERIC_EXTERNAL_ERROR)
 
 
-def _pre_sign_up(event: dict, cognito: Any) -> dict:
+def _pre_sign_up(event: dict, cognito: Any, secrets: Any = None) -> dict:
     source = event.get("triggerSource")
     attrs = (event.get("request") or {}).get("userAttributes") or {}
 
@@ -105,7 +167,9 @@ def _pre_sign_up(event: dict, cognito: Any) -> dict:
                 raise Deny(f"sign-up may not set {name}")
         if any(name.startswith("custom:") for name in attrs):
             raise Deny("sign-up may not set custom attributes")
-        normalise_email(attrs.get("email"))
+        email = normalise_email(attrs.get("email"))
+        # Only the TripPlanner BFF may create a traveller (no password, module docstring).
+        _require_bff_proof(event, email, secrets)
         log("external_sign_up_allowed", client=client_class)
         return ensure_no_auto_flags(event)
 

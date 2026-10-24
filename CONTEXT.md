@@ -128,7 +128,8 @@ accounts/
                                    EXTERNAL native sign-up, WAF and custom domains gated by
                                    variables, default off — AA-854; Dev tfvars turn the WAF and
                                    traveller native sign-up on (AA-908; the TripPlanner BFF's passwordless
-                                   SignUp): one web ACL on the WORKFORCE, EXTERNAL and PARTNER pools,
+                                   SignUp, accepted by the pre sign-up trigger only with the BFF's HMAC
+                                   proof, key tripplanner/dev/cognito-signup-proof-key): one web ACL on the WORKFORCE, EXTERNAL and PARTNER pools,
                                    per-IP limits on the sign-up/sign-in API calls and on managed-login form
                                    posts (not /oauth2/*), the TripPlanner BFF's API calls (header value =
                                    secret tripplanner/dev/cognito-bff-key) counted per traveller address
