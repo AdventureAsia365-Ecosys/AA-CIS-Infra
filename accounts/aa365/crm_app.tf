@@ -310,8 +310,9 @@ resource "aws_iam_role_policy" "crm_ecs_task" {
 # SENTRY_DSN / SENTRY_REQUIRED (only with var.crm_sentry_enabled), the identity values (local.crm_identity_env),
 # and the key provider (AA-934): KEY_PROVIDER=kms and KMS_DATA_KEY_ID = the alias of the CRM data key (an alias, not the
 # key ARN, so the public app repo never needs the account id; the app stores the ARN KMS returns per wrapped DEK);
-# DOCUMENTS_BUCKET (AA-937): the documents bucket name (task role grant CrmDocumentsObjects above).
-# GIT_SHA and APP_VERSION are baked into the image.
+# DOCUMENTS_BUCKET (AA-937): the documents bucket name (task role grant CrmDocumentsObjects above);
+# AUDIT_BUCKET_COMPLIANCE / AUDIT_BUCKET_GOVERNANCE / AUDIT_RETENTION_DRY_RUN (AA-940): the two audit tiers and the
+# retention dry run. GIT_SHA and APP_VERSION are baked into the image.
 # -----------------------------------------------------------------------------
 resource "aws_ecs_task_definition" "crm_api" {
   family                   = local.crm_service
@@ -348,6 +349,11 @@ resource "aws_ecs_task_definition" "crm_api" {
       { name = "RATE_LIMIT_INTAKE_PER_MINUTE", value = "5" },
       { name = "RATE_LIMIT_INTAKE_FORM_PER_HOUR", value = "200" },
       { name = "DOCUMENTS_BUCKET", value = aws_s3_bucket.crm["documents"].bucket },
+      # AA-940 (CRM-12): the hourly audit export to both Object Lock tiers (crm_storage.tf crm_ecs_task_audit_export);
+      # the daily audit retention only reports partitions it would drop until a human turns the dry run off (DM-7.2).
+      { name = "AUDIT_BUCKET_COMPLIANCE", value = aws_s3_bucket.crm["audit-c"].bucket },
+      { name = "AUDIT_BUCKET_GOVERNANCE", value = aws_s3_bucket.crm["audit-g"].bucket },
+      { name = "AUDIT_RETENTION_DRY_RUN", value = "true" },
       ], local.crm_identity_env, var.crm_sentry_enabled ? [
       { name = "SENTRY_REQUIRED", value = "true" },
     ] : [])
