@@ -11,7 +11,7 @@ is kept for three things only, and the runner reads its DSN itself, in the task,
 it): `roles/` files (role bootstrap, extensions, undo files), `mode=set-password` (`ALTER ROLE … PASSWORD`
 needs CREATEROLE) and `mode=run-script`. Those runs log `master login: in-task DSN from aa-cis/dev/rds`.
 
-Migrator task (DB Migrate, DB Schema Dump, DB Isolation Probe, DB Tour Liveness Gate): `.github/scripts/migrator-task.sh prepare`
+Migrator task (DB Migrate, DB Schema Dump, DB Isolation Probe, DB Tour Liveness Gate, DB Freshness Probe): `.github/scripts/migrator-task.sh prepare`
 registers a revision of the family copied from its latest ACTIVE revision with only the image replaced by
 the image the CIS api service runs now (roles, secret, logs, cpu/memory unchanged); the task runs in the
 api service's subnets with the security group `aa-cis-dev-sg-db-migrate`, container `migrate`, log stream
@@ -497,6 +497,67 @@ leaked (CIS `services/tour_lifecycle`, AA-Booking, TripPlanner), never the probe
 The master session lasts seconds and is the run-script use the isolation probe's `sessions.master_break_glass_only`
 allows for; the nightly times keep the two apart. Cost: one Fargate task of about two minutes a night (under
 $0.10 a month).
+
+## Downstream freshness probe (AA-991)
+**DB Freshness Probe** (`.github/workflows/db-freshness-probe.yml`, nightly 05:13 UTC, manual) asks whether every
+layer built on a tour's atoms followed its source by itself after a Master publish or a pause / retire: segments,
+ranking, routes, `geo.tour_place`, place-card links, T8 angle requests, SEO context. Same delivery as the tour liveness
+gate: `scripts/aa991_freshness_probe.py` runs through the run-script path (migrator task, runner sha256 check, master
+login read in the task, `READ_ONLY`), switches to **`cis_app`** inside its read-only snapshot (the role the S251
+baseline was measured as; a refused switch is an error, never a master read) and prints ids and counts only. Then
+`freshness_gate.py` reads the task log, writes the step summary (one row per metric: gate, n, aged, S251 baseline,
+delta, sample) and keeps `task.log` + `gate.json` as the artifact (30 days).
+
+- **Aged.** A tour *changed* at `GREATEST(published_tours.updated_at, v_tour_liveness.changed_at)` (Master publish, or
+  pause / retire / restore). A stale link is *aged* when its tour changed more than 24 hours before the run; that is
+  the only grace (Dev has no traffic: AA-991 scope 2).
+- **Gate classes** (`METRICS` in the probe): `stale` = a link the job chain must keep in step, counted when enforced;
+  `info` = coverage or a by-design number, reported against the baseline, never red.
+- **Report mode (shipped):** `freshness_gate.ENFORCE = False`. Red only when the probe itself failed: task exit,
+  no READ_ONLY run, no single verdict line, a JSON part missing or cut, verdict and JSON disagree, a metric that failed
+  to run, the visibility floor (`cis_app` sees no active Master or no active atom), not read as `cis_app`, or a
+  baseline metric missing from the probe. A count above its S251 baseline is a warning; the summary lists the stale
+  metrics that would be red once enforced.
+- **Enforce:** a one-line PR sets `ENFORCE = True` once AA-988, AA-989 and AA-990 are Done and a report night shows
+  `stale_aged=0`; from then on any `stale` metric with aged > 0 is red. For one run (the red → green alarm test):
+  dispatch with `enforce=true`.
+- **Parity, not timestamps, for ranking and routes.** Route detection never rewrites an unchanged route and ranking
+  is a platform-wide versioned swap, so "older than atoms" is only `info`. The probe re-derives what the jobs would
+  build: every (tour, segment) pair of active atoms has a current `atom_ranking` row and no current row sits on a gone
+  pair; the current `acp_contract.route` set equals `derive_routes()` over the current non-excluded ranking (a
+  verbatim port of AA-CIS-App `services/acp_contract/route_detection.py`: change both together).
+
+| metric | gate | what | S251 baseline (25/10/2026) |
+|---|---|---|---|
+| `atoms_older_than_master` | stale | active tours whose newest active atom is older than the Master text | 0 |
+| `active_tours_without_atoms` | stale | active tours with no active atom | 0 |
+| `active_atoms_without_segment` | info | active atoms in no segment (incl. transit / unnamed places, which never form one) | 9,004 (25,877 − 16,873) |
+| `tours_with_place_atoms_but_no_segment` | stale | active tours with place atoms and not one atom in a segment (the AA-695 failure) | first run |
+| `orphan_segments` | stale | segments with no active atom, no current ranking row and in no current route | 8,578 (18,978 − 10,400; S251 did not test the references, so ≤) |
+| `ranking_missing` | stale | tours with an active (tour, segment) pair and no current ranking row | first run |
+| `ranking_off_active_pairs` | stale | tours with a current ranking row on a pair that is gone | first run (S251 segment-level twin: 0) |
+| `active_tours_without_ranking` | info | active tours with no current ranking row | 9 (892 − 883) |
+| `routes_missing` | stale | tours where route detection would build a route that is not current | first run |
+| `routes_differ` | stale | tours with a current route route detection would not build now, or with other segments | first run |
+| `active_tours_without_route` | info | active tours with no current route (many have no 2-day run) | 192 (892 − 700) |
+| `current_routes_older_than_atoms` | info | S251 query, weak signal (unchanged routes are kept) | 3 |
+| `routes_with_dead_segment` | stale | current routes listing a segment with no active atom | 0 |
+| `geo_tour_place_rows_on_inactive_atoms` | info | S251 query: rows none of whose `atom_ids` is active (all tours) | 2,038 of 2,480 |
+| `geo_tour_place_stale_rows` | stale | the same, rows of active tours only | first run |
+| `place_card_links_missing` | stale | active place atoms without an `atom_place_card` row in tours carded before | first run |
+| `active_place_atoms_without_card_link` | info | every active place atom without a link (coverage: AA-784) | first run (105 active atoms linked) |
+| `tenant_versions_older_than_master` | info | tenant versions created before their Master's update; by design (AA-990 / AA-986: the tenant is told, nothing is overwritten) | 2 of 55 |
+| `angle_gate_requests_on_inactive_atoms` | stale | T8 angle requests on an atom that is not active | 14 of 25 |
+| `seo_context_expired` | info | S251 query: `seo_context` past `expires_at`, all tours | 76 of 918 |
+| `seo_context_expired_active_tours` | stale | the same, active tours only | first run |
+
+Baselines live in `freshness_gate.BASELINE`; "first run" rows get their number from the first nightly report (record
+it here in the follow-up PR that sets them). Not in the probe: atom embeddings and `published_tours.content_embedding`
+(AA-989 decides whether they are read at all), the catalog views (the master and `cis_app` have no catalog grant; the
+tour liveness gate reads them as `booking` / `tripplanner`). The auto-sync proof (one tour re-written, one paused and
+restored, per-layer timeline) is an orchestrator harness, not a workflow: root `.tmp-session/s251/aa991/`, results
+in the root repo's `docs/audits/`. Cost: one Fargate task of about two minutes a night (under $0.10 a month); no new
+resource.
 
 ## Rules
 - Every file self-registers: `INSERT INTO shared.schema_versions ... ON CONFLICT DO NOTHING`,
