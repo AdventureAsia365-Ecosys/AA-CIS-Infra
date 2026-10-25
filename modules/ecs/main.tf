@@ -32,6 +32,13 @@ locals {
     { name = "PLACE_SHAPES_ENABLED", value = var.place_shapes_enabled ? "on" : "off" },
   ]
 
+  # AA-988: the segment_gc stage of the platform recompute job (AA-CIS-App services/acp_contract/segment_gc.py): report
+  # (default, counts only), apply (deletes zero-reference orphan segments, <= 10,000 per pass) or off. The job runs
+  # on the worker; the api carries the same value so a recompute it runs inline behaves the same.
+  segment_gc_env = [
+    { name = "SEGMENT_GC_MODE", value = var.segment_gc_mode },
+  ]
+
   # AA-839: the data_erasure job's apply switch and the tenant retention window (AA-CIS-App
   # services/jobs/erasure_job.py). The api checks the flag before it enqueues an apply (403) and the job
   # re-checks both on the worker, so api and worker carry the same values. Apply is on only for the
@@ -550,6 +557,7 @@ resource "aws_ecs_task_definition" "api" {
       local.ops_alert_mail_env,
       local.bedrock_satellite_env,
       local.place_shapes_env,
+      local.segment_gc_env,
       local.erasure_env,
       local.redis_env,
     )
@@ -757,6 +765,7 @@ resource "aws_ecs_task_definition" "worker" {
       local.ops_alert_mail_env,
       local.bedrock_satellite_env,
       local.place_shapes_env,
+      local.segment_gc_env,
       local.erasure_env,
       local.t9_faq_filter_env,
       local.supply_photo_purge_env,

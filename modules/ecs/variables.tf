@@ -261,6 +261,16 @@ variable "place_shapes_enabled" {
   default     = false
 }
 
+variable "segment_gc_mode" {
+  description = "AA-988: env SEGMENT_GC_MODE on api and worker for the recompute job's segment_gc stage: report (default), apply or off."
+  type        = string
+  default     = "report"
+  validation {
+    condition     = contains(["report", "apply", "off"], var.segment_gc_mode)
+    error_message = "segment_gc_mode must be report, apply or off."
+  }
+}
+
 variable "erasure_apply_enabled" {
   description = "AA-839: env ERASURE_APPLY_ENABLED (true/false) on api and worker. The data_erasure apply runs only when true; default false (DRY RUN only)."
   type        = bool
