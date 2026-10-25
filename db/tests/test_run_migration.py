@@ -1182,7 +1182,8 @@ class CheckFilesTest(unittest.TestCase):
         self.assertIn("ok    db/migrations/roles/001_x.sql", out.getvalue())
 
     def test_clean_repo_passes_and_lint_errors_fail(self):
-        root = self.make_repo({"cis/240_a.sql": PLAIN, "tripplanner/011_b.sql": NO_TX})
+        # NO_TX touches shared.*, so it lives in cis/ (AA-853: a tripplanner/ copy of it fails the ownership lint).
+        root = self.make_repo({"cis/240_a.sql": PLAIN, "cis/241_b.sql": NO_TX})
         self.assertEqual(files.run(files.all_copies(root), root, out=io.StringIO()), 0)
         root = self.make_repo({"cis/240_a.sql": "BEGIN;\nDROP TABLE x;\nCOMMIT;\n"})
         out = io.StringIO()

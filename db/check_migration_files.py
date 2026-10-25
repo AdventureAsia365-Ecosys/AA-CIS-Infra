@@ -14,6 +14,9 @@
     tag without starting with it ('Home address, pii:address') is a warning, as in the schema reference.
     Comments written through dynamic SQL (EXECUTE format(…)) are out of reach; the schema reference's tag
     findings are the backstop.
+  * ownership lint (AA-853, check_migration_ownership.py): a file of an owner dir creates, alters, drops,
+    comments on, grants on or writes to objects in its owner's schemas only (db/owners.yaml `schemas`), apart
+    from its own registration in shared.schema_versions. roles/ is not checked.
 
 Usage:
   python3 db/check_migration_files.py            # every copy (CI, PR and nightly)
@@ -33,6 +36,7 @@ from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import check_migration_ownership  # noqa: E402  (AA-853 ownership lint)
 import gen_schema_reference as gen  # noqa: E402  (TAG_CLASSES, parse_tag: one home for the DM-6.1 classes)
 import run_migration  # noqa: E402
 
@@ -90,7 +94,10 @@ def lint_file(path: Path, rel: str = "") -> tuple[list[str], list[str]]:
         return ["is not valid UTF-8"], []
     errors, warnings = run_migration.lint(sql, run_migration.parse_directives(sql), rel or path.as_posix())
     tag_errors, tag_warnings = tag_lint(sql)
-    return list(errors) + tag_errors, list(warnings) + tag_warnings
+    # AA-853: errors only; its dynamic-SQL notes would repeat on every nightly run (`python3
+    # db/check_migration_ownership.py FILE` prints them).
+    own_errors, _own_notes = check_migration_ownership.lint(sql, rel or path.as_posix())
+    return list(errors) + tag_errors + own_errors, list(warnings) + tag_warnings
 
 
 def all_copies(repo_root: Path) -> list[str]:

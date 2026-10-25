@@ -20,7 +20,9 @@ name: Migration Copy Guard
 # BEGIN … COMMIT block, or no-transaction). DB Migrate runs the same lint before apply.
 # db/migrations/roles/ (key rl-NNN) is Infra-native: path, registration and lint only, no owner compare.
 # The lint also fails a `COMMENT ON COLUMN … IS 'pii:<class>…'` whose class is not a data standards DM-6.1 class
-# (gen_schema_reference.TAG_CLASSES, standards v1.3, AA-929).
+# (gen_schema_reference.TAG_CLASSES, standards v1.3, AA-929), and (AA-853, db/check_migration_ownership.py) an owner-dir
+# file that creates, alters, drops, comments on, grants on or writes to an object outside its owner's schemas
+# (db/owners.yaml `schemas`; its own shared.schema_versions registration excepted).
 #
 # Third job (AA-929, data standards DM-7.1): every table a copy of a new-app dir (check_retention_rows.RETENTION_OWNERS,
 # today crm) creates must have a row in the retention table of Part B section 7 on the root repo's master. The job
@@ -41,6 +43,7 @@ on:
       - "db/check_erd_drift.py"
       - "db/schema_dump.py"
       - "db/check_migration_files.py"
+      - "db/check_migration_ownership.py"
       - "db/check_retention_rows.py"
       - "db/run_migration.py"
       - "db/tests/**"
