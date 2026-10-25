@@ -41,7 +41,6 @@ secret_jwt_arn    = "arn:aws:secretsmanager:us-west-1:005097885195:secret:aa-cis
 # Lambda plaintext runtime config — placeholders, enter real values by hand
 # (do NOT copy account-1 values across).
 database_url        = "postgresql://REPLACE_ME:REPLACE_ME@REPLACE_ME:5432/aa_cis_dev?sslmode=require"
-redis_url           = ""
 dataforseo_login    = "REPLACE_ME"
 dataforseo_password = "REPLACE_ME"
 
