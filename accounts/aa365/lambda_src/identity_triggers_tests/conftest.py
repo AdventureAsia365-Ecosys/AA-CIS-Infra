@@ -15,6 +15,8 @@ sys.dont_write_bytecode = True  # keep __pycache__ out of the archive_file sourc
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "identity_triggers"))
 
 POOL_ID = "us-west-1_TESTPOOL"
+PROOF_SECRET_ID = "tripplanner/test/cognito-signup-proof-key"
+PROOF_KEY = "p" * 48
 
 
 class FakeCognito:
@@ -50,6 +52,18 @@ class FakeCognito:
     def describe_user_pool_client(self, **kwargs):
         self.describe_calls.append(kwargs)
         return {"UserPoolClient": {"ClientName": self.clients[kwargs["ClientId"]]}}
+
+
+class FakeSecrets:
+    """Minimal stand-in for the boto3 secretsmanager client (the BFF sign-up proof key)."""
+
+    def __init__(self, values=None):
+        self.values = dict(values or {})
+        self.calls = []
+
+    def get_secret_value(self, **kwargs):
+        self.calls.append(kwargs)
+        return {"SecretString": self.values[kwargs["SecretId"]]}
 
 
 def native_user(email, status="CONFIRMED", enabled=True, verified="true", identities=None,
@@ -109,4 +123,5 @@ def trigger_env(monkeypatch):
         "TRAVELLER_CLIENT_NAMES", "aa-external-dev-tripplanner,aa-external-dev-booking-customer"
     )
     monkeypatch.setenv("NATIVE_SIGNUP_ENABLED", "true")
+    monkeypatch.setenv("SIGNUP_PROOF_SECRET_ID", PROOF_SECRET_ID)
     monkeypatch.delenv("STAFF_GROUPS", raising=False)
