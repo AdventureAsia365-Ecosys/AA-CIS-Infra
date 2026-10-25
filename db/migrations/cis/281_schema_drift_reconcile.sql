@@ -1,5 +1,5 @@
 -- migrate: destructive
--- Migration 282: AA-853 (S251 decision D2) — codify in git the CIS schema state Dev has but no migration makes. Dev is
+-- Migration 281: AA-853 (S251 decision D2) — codify in git the CIS schema state Dev has but no migration makes. Dev is
 -- the truth: on Dev every statement below is a no-op (each one checks the catalog first and does nothing when Dev's
 -- shape is already there: no ALTER, no rewrite, no lock beyond catalog reads); on a database built from the migration
 -- files alone (a fresh install, the CI DB, the nightly schema drift replay of AA-CIS-Infra) it converges to Dev.
@@ -16,7 +16,7 @@
 --   c. indexes as Dev has them: 044 ran in an earlier form (143's header lists the live constraint as
 --      uq_tenant_brand_name_version; the file names it uq_brand_rules_tenant_brand_version; assumption: on Dev it is a
 --      UNIQUE constraint, as 143 says, not a bare unique index: the dump lists no p/u constraints, so the drift report
---      cannot tell the two apart; 282 renames 044's constraint, so a converged database has a constraint), and 048's
+--      cannot tell the two apart; 281 renames 044's constraint, so a converged database has a constraint), and 048's
 --      GIN index on generated_content.metadata is idx_generated_content_metadata_gin with jsonb_path_ops on Dev (the file:
 --      idx_generated_content_metadata_brand_rule, default opclass);
 --   d. tables dropped by hand: acp_shared.unknown_ledger (AA-598 G3, 16/09/2026) and acp_shared.content_metric_snapshot,
@@ -59,7 +59,7 @@
 --      than cis_owner / catalog_owner, a cis_owner view on a catalog view, a policy or rule other than a view's own
 --      _RETURN on a changed column, a column grant or default on a view.
 --   6. Post-check: every column, index, nullability and CHECK is Dev's; every dropped table is gone; every recreated
---      view exists with its owner, columns, options and privileges. Then register 282.
+--      view exists with its owner, columns, options and privileges. Then register 281.
 --
 -- On Dev (expected; the preflight below shows it): steps 1-5 find nothing to do and say so in NOTICEs; step 5's GRANT
 -- CREATE on schema catalog is not even issued. The two `SET LOCAL ROLE` switches of the catalog recipe still run (they
@@ -79,16 +79,15 @@
 -- `destructive` header is for the drops of step 4, which only run on a database that still has those objects; DB
 -- Migrate takes its RDS snapshot first as for any destructive file.
 --
--- Readiness: no REQUIRED_CIS_SCHEMA bump (api/core/readiness.py): no code needs 282. NUMBER: 282 was assigned by the
--- S251 plan (281 is held for another lane). The readiness check compares max(version) of shared.schema_versions, so
--- if 281 is applied after 282, code that needs 281 must not be deployed on 282's evidence alone.
+-- Readiness: no REQUIRED_CIS_SCHEMA bump (api/core/readiness.py): no code needs 281. NUMBER: 281 (the S251 plan first
+-- held 281 for AA-825, which needed no CIS migration, so this file took 281 and the numbers stay gapless).
 --
 -- X1. One BEGIN … COMMIT block. DB Migrate runs cis/ files as cis_owner (245), the owner of every table and of the
 -- cis_owner views it touches; catalog views are dropped and recreated as catalog_owner after GRANT CREATE ON SCHEMA
 -- catalog TO catalog_owner, then SET LOCAL ROLE cis_owner and REVOKE (the recipe of 253 / 258 / 273 / 279). Never
--- RESET ROLE. The state between the blocks travels in the transaction-local setting aa282.state (set_config).
+-- RESET ROLE. The state between the blocks travels in the transaction-local setting aa281.state (set_config).
 --
--- Undo: none needed on Dev (nothing changes). On a converged copy the old shape is the files before 282; a forward
+-- Undo: none needed on Dev (nothing changes). On a converged copy the old shape is the files before 281; a forward
 -- migration would have to re-add what Dev dropped, which nobody wants.
 --
 -- The SQL that is applied to Dev is the copy in AA-CIS-Infra db/migrations/cis/ (DB Migrate workflow); keep the two
@@ -108,11 +107,11 @@ BEGIN
                              'silver_aa_internal.raw_sources', 'silver_aa_internal.raw_tours',
                              'silver_aa_internal.generated_content'] LOOP
         IF to_regclass(t) IS NULL THEN
-            RAISE EXCEPTION 'migration 282: % does not exist', t;
+            RAISE EXCEPTION 'migration 281: % does not exist', t;
         END IF;
     END LOOP;
     IF to_regrole('catalog_owner') IS NULL OR to_regrole('cis_owner') IS NULL THEN
-        RAISE EXCEPTION 'migration 282: roles cis_owner and catalog_owner must exist (Infra roles/, CIS 225)';
+        RAISE EXCEPTION 'migration 281: roles cis_owner and catalog_owner must exist (Infra roles/, CIS 225)';
     END IF;
 END $$;
 
@@ -138,9 +137,9 @@ BEGIN
            AND NOT a.attisdropped;
         IF cur IS NULL THEN
             EXECUTE format('ALTER TABLE %I.%I ADD COLUMN %I %s', r.s, r.t, r.c, r.typ);
-            RAISE NOTICE 'migration 282: added %.%.% %', r.s, r.t, r.c, r.typ;
+            RAISE NOTICE 'migration 281: added %.%.% %', r.s, r.t, r.c, r.typ;
         ELSIF cur <> r.typ THEN
-            RAISE EXCEPTION 'migration 282: %.%.% is %, Dev has %', r.s, r.t, r.c, cur, r.typ;
+            RAISE EXCEPTION 'migration 281: %.%.% is %, Dev has %', r.s, r.t, r.c, cur, r.typ;
         END IF;
     END LOOP;
 END $$;
@@ -165,20 +164,20 @@ BEGIN
          WHERE a.attrelid = format('%I.%I', r.s, r.t)::regclass AND a.attname = r.c AND a.attnum > 0
            AND NOT a.attisdropped;
         IF has_nn IS NULL THEN
-            RAISE EXCEPTION 'migration 282: %.%.% does not exist', r.s, r.t, r.c;
+            RAISE EXCEPTION 'migration 281: %.%.% does not exist', r.s, r.t, r.c;
         ELSIF has_nn = r.want THEN
             CONTINUE;
         ELSIF r.want THEN
             EXECUTE format('SELECT count(*) FROM %I.%I WHERE %I IS NULL', r.s, r.t, r.c) INTO n;
             IF n > 0 THEN
-                RAISE EXCEPTION 'migration 282: %.%.% has % NULL row(s); Dev has it NOT NULL: fix the data first',
+                RAISE EXCEPTION 'migration 281: %.%.% has % NULL row(s); Dev has it NOT NULL: fix the data first',
                                 r.s, r.t, r.c, n;
             END IF;
             EXECUTE format('ALTER TABLE %I.%I ALTER COLUMN %I SET NOT NULL', r.s, r.t, r.c);
-            RAISE NOTICE 'migration 282: %.%.% SET NOT NULL', r.s, r.t, r.c;
+            RAISE NOTICE 'migration 281: %.%.% SET NOT NULL', r.s, r.t, r.c;
         ELSE
             EXECUTE format('ALTER TABLE %I.%I ALTER COLUMN %I DROP NOT NULL', r.s, r.t, r.c);
-            RAISE NOTICE 'migration 282: %.%.% DROP NOT NULL', r.s, r.t, r.c;
+            RAISE NOTICE 'migration 281: %.%.% DROP NOT NULL', r.s, r.t, r.c;
         END IF;
     END LOOP;
 END $$;
@@ -192,31 +191,31 @@ BEGIN
                                                    AND conname = 'uq_brand_rules_tenant_brand_version') THEN
             ALTER TABLE shared.tenant_brand_rules
                 RENAME CONSTRAINT uq_brand_rules_tenant_brand_version TO uq_tenant_brand_name_version;
-            RAISE NOTICE 'migration 282: renamed uq_brand_rules_tenant_brand_version to uq_tenant_brand_name_version';
+            RAISE NOTICE 'migration 281: renamed uq_brand_rules_tenant_brand_version to uq_tenant_brand_name_version';
         ELSIF to_regclass('shared.uq_brand_rules_tenant_brand_version') IS NOT NULL THEN
             ALTER INDEX shared.uq_brand_rules_tenant_brand_version RENAME TO uq_tenant_brand_name_version;
-            RAISE NOTICE 'migration 282: renamed index uq_brand_rules_tenant_brand_version';
+            RAISE NOTICE 'migration 281: renamed index uq_brand_rules_tenant_brand_version';
         ELSE
             ALTER TABLE shared.tenant_brand_rules
                 ADD CONSTRAINT uq_tenant_brand_name_version UNIQUE (tenant_id, brand_name, version);
-            RAISE NOTICE 'migration 282: added uq_tenant_brand_name_version';
+            RAISE NOTICE 'migration 281: added uq_tenant_brand_name_version';
         END IF;
     END IF;
     -- 048: Dev's GIN index on generated_content.metadata (jsonb_path_ops)
     IF to_regclass('silver_aa_internal.idx_generated_content_metadata_gin') IS NULL THEN
         CREATE INDEX idx_generated_content_metadata_gin
             ON silver_aa_internal.generated_content USING gin (metadata jsonb_path_ops);
-        RAISE NOTICE 'migration 282: created idx_generated_content_metadata_gin';
+        RAISE NOTICE 'migration 281: created idx_generated_content_metadata_gin';
     END IF;
     IF to_regclass('silver_aa_internal.idx_generated_content_metadata_brand_rule') IS NOT NULL THEN
         DROP INDEX silver_aa_internal.idx_generated_content_metadata_brand_rule;
-        RAISE NOTICE 'migration 282: dropped idx_generated_content_metadata_brand_rule (048 as written; not on Dev)';
+        RAISE NOTICE 'migration 281: dropped idx_generated_content_metadata_brand_rule (048 as written; not on Dev)';
     END IF;
     -- 123: the partial unique index on the hand-made file_hash column (step 1)
     IF to_regclass('silver_aa_internal.idx_raw_sources_file_hash') IS NULL THEN
         CREATE UNIQUE INDEX idx_raw_sources_file_hash
             ON silver_aa_internal.raw_sources USING btree (file_hash) WHERE (file_hash IS NOT NULL);
-        RAISE NOTICE 'migration 282: created idx_raw_sources_file_hash';
+        RAISE NOTICE 'migration 281: created idx_raw_sources_file_hash';
     END IF;
 END $$;
 
@@ -239,10 +238,10 @@ BEGIN
         END IF;
         EXECUTE format('SELECT count(*) FROM %s', t) INTO n;
         IF n > 0 THEN
-            RAISE EXCEPTION 'migration 282: % has % row(s); Dev dropped it empty (AA-598 / AA-603): decide first', t, n;
+            RAISE EXCEPTION 'migration 281: % has % row(s); Dev dropped it empty (AA-598 / AA-603): decide first', t, n;
         END IF;
         EXECUTE format('DROP TABLE %s', t);
-        RAISE NOTICE 'migration 282: dropped % (empty; dropped by hand on Dev)', t;
+        RAISE NOTICE 'migration 281: dropped % (empty; dropped by hand on Dev)', t;
     END LOOP;
     -- The v1 schemas: the ones present that the running role may drop (v1), all checked first, then dropped together.
     FOREACH s IN ARRAY ARRAY['bronze', 'gold', 'ops', 'silver'] LOOP
@@ -250,7 +249,7 @@ BEGIN
             CONTINUE;
         END IF;
         IF NOT pg_has_role(current_user, (SELECT nspowner FROM pg_namespace WHERE nspname = s), 'USAGE') THEN
-            RAISE NOTICE 'migration 282: schema % (001''s v1 layer, gone on Dev) belongs to %, not to %: left as is '
+            RAISE NOTICE 'migration 281: schema % (001''s v1 layer, gone on Dev) belongs to %, not to %: left as is '
                          '(owner decision in AA-CIS-Infra db/schema_drift_decisions.json)',
                          s, (SELECT pg_get_userbyid(nspowner) FROM pg_namespace WHERE nspname = s), current_user;
             CONTINUE;
@@ -266,7 +265,7 @@ BEGIN
     FOREACH t IN ARRAY coalesce(tables, ARRAY[]::text[]) LOOP
         EXECUTE format('SELECT count(*) FROM %s', t) INTO n;
         IF n > 0 THEN
-            RAISE EXCEPTION 'migration 282: % has % row(s); Dev has no v1 schema: decide first', t, n;
+            RAISE EXCEPTION 'migration 281: % has % row(s); Dev has no v1 schema: decide first', t, n;
         END IF;
     END LOOP;
     -- Nothing outside these schemas may depend on anything in them (a view, a foreign key, a column of an enum
@@ -299,7 +298,7 @@ BEGIN
     SELECT string_agg(DISTINCT pg_describe_object(classid, objid, objsubid), ', ') INTO outside
       FROM dep WHERE dep_schema IS NULL OR NOT (dep_schema = ANY (v1));
     IF outside IS NOT NULL THEN
-        RAISE EXCEPTION 'migration 282: objects outside the v1 schemas % depend on them: %; decide first', v1, outside;
+        RAISE EXCEPTION 'migration 281: objects outside the v1 schemas % depend on them: %; decide first', v1, outside;
     END IF;
     -- RESTRICT throughout: the tables together (foreign keys between them), then the enum / domain types, then the
     -- schemas, which must be empty by then. Anything else in them (a function, a view, a free sequence) makes the
@@ -314,12 +313,12 @@ BEGIN
         EXECUTE 'DROP TYPE ' || types;
     END IF;
     EXECUTE 'DROP SCHEMA ' || (SELECT string_agg(quote_ident(x), ', ') FROM unnest(v1) x);
-    RAISE NOTICE 'migration 282: dropped schema(s) % (001''s v1 layer, empty; gone on Dev): % table(s)',
+    RAISE NOTICE 'migration 281: dropped schema(s) % (001''s v1 layer, empty; gone on Dev): % table(s)',
                  v1, cardinality(coalesce(tables, ARRAY[]::text[]));
 END $$;
 
 -- ── 5. Column types: save the dependent views, drop, alter, recreate ───────────────────────────────────────────────
--- 5a. What differs, and the views (transitively) that depend on it. Writes aa282.state; issues the catalog GRANT only
+-- 5a. What differs, and the views (transitively) that depend on it. Writes aa281.state; issues the catalog GRANT only
 --     when there is something to do.
 DO $$
 DECLARE
@@ -348,8 +347,8 @@ BEGIN
      WHERE format_type(a.atttypid, a.atttypmod) <> w.typ;
 
     IF pending IS NULL THEN
-        PERFORM set_config('aa282.state', '{"pending": false}', true);
-        RAISE NOTICE 'migration 282: column types already as on Dev, step 5 is a no-op';
+        PERFORM set_config('aa281.state', '{"pending": false}', true);
+        RAISE NOTICE 'migration 281: column types already as on Dev, step 5 is a no-op';
         RETURN;
     END IF;
 
@@ -365,7 +364,7 @@ BEGIN
         OR (d.classid = 'pg_rewrite'::regclass
             AND (SELECT rulename FROM pg_rewrite WHERE oid = d.objid) <> '_RETURN');
     IF bad IS NOT NULL THEN
-        RAISE EXCEPTION 'migration 282: cannot change the column types under %', bad;
+        RAISE EXCEPTION 'migration 281: cannot change the column types under %', bad;
     END IF;
 
     -- Views on the changed columns, then views on those views; depth = longest path, so a view comes after every
@@ -421,7 +420,7 @@ BEGIN
         OR (e->>'schema' = 'catalog') <> (e->>'owner' = 'catalog_owner')
         OR (e->>'colacl')::boolean OR (e->>'coldefault')::boolean OR (e->>'extra')::boolean;
     IF bad IS NOT NULL THEN
-        RAISE EXCEPTION 'migration 282: cannot recreate these dependent views faithfully (materialized, owned by '
+        RAISE EXCEPTION 'migration 281: cannot recreate these dependent views faithfully (materialized, owned by '
                         'another role, catalog / owner mismatch, column grants or defaults, rules or triggers): %', bad;
     END IF;
     -- A cis_owner view must not read a catalog view of the set: cis_owner views are recreated first.
@@ -433,7 +432,7 @@ BEGIN
                                         AND b->>'oid' <> a->>'oid'
      WHERE a->>'owner' = 'cis_owner' AND b->>'owner' = 'catalog_owner';
     IF bad IS NOT NULL THEN
-        RAISE EXCEPTION 'migration 282: cis_owner view(s) % read a catalog view of the set', bad;
+        RAISE EXCEPTION 'migration 281: cis_owner view(s) % read a catalog view of the set', bad;
     END IF;
 
     SELECT coalesce(jsonb_agg(DISTINCT jsonb_build_object(
@@ -448,9 +447,9 @@ BEGIN
     IF EXISTS (SELECT 1 FROM jsonb_array_elements(views) e WHERE e->>'owner' = 'catalog_owner') THEN
         GRANT CREATE ON SCHEMA catalog TO catalog_owner;
     END IF;
-    PERFORM set_config('aa282.state', jsonb_build_object('pending', true, 'columns', pending, 'views', views,
+    PERFORM set_config('aa281.state', jsonb_build_object('pending', true, 'columns', pending, 'views', views,
                                                          'triggers', trigs)::text, true);
-    RAISE NOTICE 'migration 282: % column(s) to change, % dependent view(s), % trigger(s)',
+    RAISE NOTICE 'migration 281: % column(s) to change, % dependent view(s), % trigger(s)',
                  jsonb_array_length(pending), jsonb_array_length(views), jsonb_array_length(trigs);
 END $$;
 
@@ -458,7 +457,7 @@ END $$;
 SET LOCAL ROLE catalog_owner;
 DO $$
 DECLARE
-    st jsonb := current_setting('aa282.state')::jsonb;
+    st jsonb := current_setting('aa281.state')::jsonb;
     e  jsonb;
 BEGIN
     IF NOT (st->>'pending')::boolean THEN
@@ -475,7 +474,7 @@ END $$;
 SET LOCAL ROLE cis_owner;
 DO $$
 DECLARE
-    st   jsonb := current_setting('aa282.state')::jsonb;
+    st   jsonb := current_setting('aa281.state')::jsonb;
     e    jsonb;
     rel  text;
     alt  text;
@@ -495,7 +494,7 @@ BEGIN
             SELECT string_agg(format('ALTER COLUMN %I TYPE %s', x->>'col', x->>'to'), ', ') INTO alt
               FROM jsonb_array_elements(st->'columns') x WHERE x->>'rel' = rel;
             EXECUTE format('ALTER TABLE %s %s', rel, alt);
-            RAISE NOTICE 'migration 282: ALTER TABLE % %', rel, alt;
+            RAISE NOTICE 'migration 281: ALTER TABLE % %', rel, alt;
         END LOOP;
         FOR e IN SELECT x FROM jsonb_array_elements(st->'triggers') x LOOP
             EXECUTE e->>'def';
@@ -531,7 +530,7 @@ BEGIN
         -- same values in another form: compare without casts, parentheses and blanks
         IF regexp_replace(norm, '::(character varying|text)(\[\])?|[() ]', '', 'g')
            <> regexp_replace(con.dev, '::(character varying|text)(\[\])?|[() ]', '', 'g') THEN
-            RAISE EXCEPTION 'migration 282: % is %, not the values Dev has (%): decide first', con.name, norm, con.dev;
+            RAISE EXCEPTION 'migration 281: % is %, not the values Dev has (%): decide first', con.name, norm, con.dev;
         END IF;
         SELECT obj_description(c.oid, 'pg_constraint') INTO cmt FROM pg_constraint c
          WHERE c.conrelid = 'silver_aa_internal.raw_tours'::regclass AND c.conname = con.name;
@@ -540,7 +539,7 @@ BEGIN
         IF cmt IS NOT NULL THEN
             EXECUTE format('COMMENT ON CONSTRAINT %I ON silver_aa_internal.raw_tours IS %L', con.name, cmt);
         END IF;
-        RAISE NOTICE 'migration 282: % in Dev''s form', con.name;
+        RAISE NOTICE 'migration 281: % in Dev''s form', con.name;
     END LOOP;
 END $$;
 
@@ -548,7 +547,7 @@ END $$;
 --     options, privileges and comments. The same block runs twice.
 DO $$
 DECLARE
-    st jsonb := current_setting('aa282.state')::jsonb;
+    st jsonb := current_setting('aa281.state')::jsonb;
     e  jsonb;
     g  jsonb;
     c  jsonb;
@@ -585,7 +584,7 @@ END $$;
 SET LOCAL ROLE catalog_owner;
 DO $$
 DECLARE
-    st jsonb := current_setting('aa282.state')::jsonb;
+    st jsonb := current_setting('aa281.state')::jsonb;
     e  jsonb;
     g  jsonb;
     c  jsonb;
@@ -630,7 +629,7 @@ END $$;
 -- ── 6. Post-check ──────────────────────────────────────────────────────────────────────────────────────────────────
 DO $$
 DECLARE
-    st  jsonb := current_setting('aa282.state')::jsonb;
+    st  jsonb := current_setting('aa281.state')::jsonb;
     bad text;
     e   jsonb;
 BEGIN
@@ -660,24 +659,24 @@ BEGIN
         OR (w.typ IS NOT NULL AND format_type(a.atttypid, a.atttypmod) <> w.typ)
         OR (w.nn IS NOT NULL AND a.attnotnull <> w.nn);
     IF bad IS NOT NULL THEN
-        RAISE EXCEPTION 'migration 282: post-check: not as on Dev: %', bad;
+        RAISE EXCEPTION 'migration 281: post-check: not as on Dev: %', bad;
     END IF;
     IF to_regclass('shared.uq_tenant_brand_name_version') IS NULL
        OR to_regclass('silver_aa_internal.idx_generated_content_metadata_gin') IS NULL
        OR to_regclass('silver_aa_internal.idx_generated_content_metadata_brand_rule') IS NOT NULL
        OR to_regclass('silver_aa_internal.idx_raw_sources_file_hash') IS NULL THEN
-        RAISE EXCEPTION 'migration 282: post-check: the indexes are not as on Dev';
+        RAISE EXCEPTION 'migration 281: post-check: the indexes are not as on Dev';
     END IF;
     IF to_regclass('acp_shared.unknown_ledger') IS NOT NULL OR to_regclass('acp_deliver.pieces') IS NOT NULL
        OR to_regclass('acp_deliver.packets') IS NOT NULL OR to_regclass('acp_shared.acp_v2_slots') IS NOT NULL
        OR to_regclass('acp_shared.acp_v2_runs') IS NOT NULL
        OR to_regclass('acp_shared.content_metric_snapshot') IS NOT NULL THEN
-        RAISE EXCEPTION 'migration 282: post-check: a table Dev dropped still exists';
+        RAISE EXCEPTION 'migration 281: post-check: a table Dev dropped still exists';
     END IF;
     IF (st->>'pending')::boolean THEN
         FOR e IN SELECT x FROM jsonb_array_elements(st->'views') x LOOP
             IF to_regclass(e->>'name') IS NULL THEN
-                RAISE EXCEPTION 'migration 282: post-check: view % was not recreated', e->>'name';
+                RAISE EXCEPTION 'migration 281: post-check: view % was not recreated', e->>'name';
             END IF;
             IF (SELECT pg_get_userbyid(relowner) FROM pg_class WHERE oid = (e->>'name')::regclass) <> e->>'owner'
                OR (SELECT coalesce(array_to_string(reloptions, ', '), '') FROM pg_class
@@ -691,18 +690,18 @@ BEGIN
                                  ORDER BY x.grantee, x.privilege_type), '[]'::jsonb)
                      FROM pg_class k, aclexplode(k.relacl) x
                     WHERE k.oid = (e->>'name')::regclass AND x.grantee <> k.relowner) <> e->'acl' THEN
-                RAISE EXCEPTION 'migration 282: post-check: view % differs from before (owner, options, columns or '
+                RAISE EXCEPTION 'migration 281: post-check: view % differs from before (owner, options, columns or '
                                 'privileges)', e->>'name';
             END IF;
         END LOOP;
     END IF;
     IF has_schema_privilege('catalog_owner', 'catalog', 'CREATE') THEN
-        RAISE EXCEPTION 'migration 282: post-check: catalog_owner still has CREATE on schema catalog';
+        RAISE EXCEPTION 'migration 281: post-check: catalog_owner still has CREATE on schema catalog';
     END IF;
 END $$;
 
 INSERT INTO shared.schema_versions (version, applied_at, description)
-VALUES ('282', now(),
+VALUES ('281', now(),
         'AA-853 D2: codify the Dev-only schema state (hand columns, nullability, index names, hand drops, raw_tours '
         'text and plans numeric(8,4) with their views); a no-op on Dev')
 ON CONFLICT (version) DO NOTHING;
