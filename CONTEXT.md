@@ -626,7 +626,12 @@ makes CI Terraform Plan fail with 403.
   floor error, when the login sees no AA rows through FORCE RLS). Checks of later slices report `pending` until their
   object exists (L4) or `ENFORCED_SINCE` in the script names the date the slice went live (L3, L5); a slice in
   `LANDED` (L2 today) whose object goes missing is red, never pending. The CIS and tenant layers of the S248 memo
-  probe are not in the gate yet (follow-up slice under AA-986). The CIS
+  probe are not in the gate yet (follow-up slice under AA-986). **DB Freshness Probe** (`db-freshness-probe.yml`,
+  AA-991; nightly 05:13 UTC and manual) runs `db/scripts/aa991_freshness_probe.py` the same way, reads as `cis_app`, and
+  counts per layer the links that did not follow a tour's atoms (segments, ranking, routes by parity with route
+  detection, `geo.tour_place`, place-card links, T8 angle requests, SEO context); `db/freshness_gate.py` is report-only
+  (`ENFORCE = False`, red only when the probe itself fails) until AA-988/989/990 close, then red on stale links of tours
+  changed more than 24 h ago. The S251 baseline is in `db/README.md`. The CIS
   migration freeze and the `catalog.*` view freeze (XD9) ended with CIS 246 (S22, 19/10/2026).
 - **Docs Gen** (`docs-gen.yml`, AA-893) reads the `accounts/aa365` state with the read-only plan role
   (`terraform show -json`, no plan, no lock) nightly and after every Terraform Apply that changed
