@@ -233,3 +233,8 @@ with 100 rows, waits 2 minutes and deletes 40 (prints T1/T2 for the PITR restore
 (WRITE) copies the 40 missing rows back from the copy in one transaction and refuses any other count;
 `s249_drill_cleanup.py` (WRITE) drops `drill_s249`. The copy's host is derived from `db.dev.internal` in the task,
 so no endpoint is written here. One-off: delete these four files once the drill record is in `docs/ops/drills/`.
+
+`aa990_reader_checks.py` (AA-990, S252, read-only): do the readers outside CIS follow the S1 v2 rewrite? Saved
+TripPlanner pins (`add_component` events through `tripplanner.component_id_map`) that no longer resolve to a
+`geo.tour_place` row (`dangling`) or sit on replaced atoms, and the CRM AA catalog cache per served state (live
+`catalog.v_tour.content_hash` matches, tours not cached yet, pass state). Counts and timestamps only; always returns 0.
