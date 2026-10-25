@@ -46,10 +46,14 @@
 --      crm_app deletes expired rows (the hourly date-rule job). No hold guard: a credential row, nothing to keep.
 --      The code mail (message_id) is stored with the code masked; the code itself waits in code_enc (vault DEK)
 --      only while the code is pending and until the agency's mailbox sent it, so nobody at the agency can read it
---      in the Messages tab. delivery = dev_echo marks a code the Dev echo also returned in the API answer.
+--      in the Messages tab. delivery = mailbox: sent from the agency's mailbox, whose provider keeps a Sent copy,
+--      so the owner of that mailbox can still read the code there (e-sign v0 limit, CONTEXT.md); dev_echo: the Dev
+--      echo also returned it in the API answer.
 --   7. crm.signature_request (base template; design group E, M12 v0): one traveller's signature of one waiver
 --      version: doc_sha256 pinned at signing, signed_name_enc (pii:name), the verified signing code (otp_id, SET
---      NULL when the 24-hour purge deletes the code row), evidence_sha256 (SHA-256 of the evidence record), status
+--      NULL when the 24-hour purge deletes the code row), code_delivery (the signing code's delivery, kept after
+--      that purge), evidence_record (the canonical evidence JSON, no PII: the typed name only as its SHA-256) and
+--      evidence_sha256 = SHA-256 of it (CHECK, so the hash can be re-verified at any time), status
 --      pending -> signed | void. Sealed once signed (CRM31).
 --   8. crm.client_link purposes: + proposal (the C-03 / C-04 page) and portal (the C-05 portal), both naming a
 --      traveller.
@@ -504,7 +508,7 @@ COMMENT ON TABLE crm.otp_challenge IS 'AA-946 (crm-016; design v3 group E, M11 /
 COMMENT ON COLUMN crm.otp_challenge.code_hash IS 'conf:credential; SHA-256 of (otp_id bytes || the 6-digit code); the code itself is never stored';
 COMMENT ON COLUMN crm.otp_challenge.code_enc IS 'conf:credential; the 6-digit code under the tenant vault DEK, kept only while the code is pending and its mail (message_id) is not sent yet: the mail sender puts it into the mail at send time and clears it; the stored message shows the code masked';
 COMMENT ON COLUMN crm.otp_challenge.message_id IS 'the code mail (crm.message, stored with the code masked) the agency''s mailbox sends; SET NULL when that message is erased';
-COMMENT ON COLUMN crm.otp_challenge.delivery IS 'mailbox (the code reached only the traveller''s e-mail) | dev_echo (PORTAL_OTP_DEV_ECHO, Dev only: the API answer carried the code too); written into the signature evidence';
+COMMENT ON COLUMN crm.otp_challenge.delivery IS 'mailbox (sent from the agency mailbox to the traveller''s e-mail; the stored message is masked, but the mail provider keeps a Sent copy that the owner of the sending mailbox can read: e-sign v0 limit) | dev_echo (PORTAL_OTP_DEV_ECHO, Dev only: the API answer carried the code too); copied to signature_request.code_delivery and into the signature evidence';
 COMMENT ON COLUMN crm.otp_challenge.session_hash IS 'conf:credential; SHA-256 of the portal session token a verified sign-in code opened (never the token)';
 
 -- ── 7. crm.signature_request ─────────────────────────────────────────────────────────────────────
@@ -521,6 +525,8 @@ CREATE TABLE IF NOT EXISTS crm.signature_request (
     signed_at       TIMESTAMPTZ,
     signed_name_enc BYTEA,
     otp_id          UUID,
+    code_delivery   TEXT,
+    evidence_record BYTEA,
     evidence_sha256 BYTEA,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     created_by      TEXT NOT NULL DEFAULT COALESCE(NULLIF(current_setting('app.actor', true), ''), current_user::text),
@@ -540,11 +546,18 @@ CREATE TABLE IF NOT EXISTS crm.signature_request (
         AND (signed_at IS NULL) = (signed_name_enc IS NULL)
         AND (signed_at IS NULL) = (doc_sha256 IS NULL)
         AND (signed_at IS NULL) = (evidence_sha256 IS NULL)
+        AND (signed_at IS NULL) = (evidence_record IS NULL)
+        AND (signed_at IS NULL) = (code_delivery IS NULL)
         AND (signed_at IS NOT NULL OR otp_id IS NULL)
     ),
+    CONSTRAINT signature_request_code_delivery_chk CHECK (code_delivery IN ('mailbox', 'dev_echo')),
     CONSTRAINT signature_request_hash_chk CHECK (
         coalesce(octet_length(doc_sha256), 32) = 32 AND coalesce(octet_length(evidence_sha256), 32) = 32
         AND coalesce(octet_length(signed_name_enc), 30) >= 30
+    ),
+    CONSTRAINT signature_request_evidence_chk CHECK (
+        evidence_record IS NULL
+        OR (octet_length(evidence_record) BETWEEN 2 AND 4096 AND sha256(evidence_record) = evidence_sha256)
     ),
     CONSTRAINT signature_request_trash_chk CHECK (
         (deleted_at IS NULL) = (deleted_by IS NULL) AND (deleted_at IS NULL) = (purge_after IS NULL)
@@ -559,9 +572,11 @@ INSERT INTO crm.status_transition (table_name, from_status, to_status) VALUES
     ('signature_request', 'pending', 'void')
 ON CONFLICT DO NOTHING;
 REVOKE DELETE, TRUNCATE ON crm.signature_request FROM crm_app;
-COMMENT ON TABLE crm.signature_request IS 'AA-946 (crm-016; design v3 group E, M12 v0, §5.7): one traveller''s signature of one waiver version on one trip: pending -> signed (typed full name under the tenant vault DEK, the document hash pinned, the verified signing code, SHA-256 of the evidence record) | void. v0 = no PDF and no PAdES seal (CRM-25). Sealed once signed (CRM31). The trip''s delete block reads the trip_commitment row (kind signature) the API writes with it. crm_app never deletes one; erasure through crm.erase_subject.';
+COMMENT ON TABLE crm.signature_request IS 'AA-946 (crm-016; design v3 group E, M12 v0, §5.7): one traveller''s signature of one waiver version on one trip: pending -> signed (typed full name under the tenant vault DEK, the document hash pinned, the verified signing code and how it was delivered (code_delivery), the canonical evidence record and its SHA-256) | void. v0 = no PDF and no PAdES seal (CRM-25); the signing code goes out from the agency''s own mailbox, whose Sent copy its owner can read (v0 limit, CONTEXT.md). Sealed once signed (CRM31). The trip''s delete block reads the trip_commitment row (kind signature) the API writes with it. crm_app never deletes one; erasure through crm.erase_subject.';
 COMMENT ON COLUMN crm.signature_request.signed_name_enc IS 'pii:name; the full name the traveller typed to sign, AES-256-GCM under the tenant vault DEK';
-COMMENT ON COLUMN crm.signature_request.evidence_sha256 IS 'SHA-256 of the canonical evidence record (request, trip, traveller, document hash, signing code id, signed at, typed-name hash, consent ticks)';
+COMMENT ON COLUMN crm.signature_request.code_delivery IS 'how the signing code was delivered (otp_challenge.delivery, copied at signing so it outlives the 24-hour code purge): mailbox (sent from the agency mailbox; the provider keeps a Sent copy the sending mailbox''s owner can read, so it proves the code went to the traveller''s address, not that only the traveller saw it: e-sign v0 limit) | dev_echo (Dev only: the API answer carried the code too)';
+COMMENT ON COLUMN crm.signature_request.evidence_record IS 'the canonical evidence record exactly as hashed: UTF-8 JSON, sorted keys, no spaces (request, trip, traveller, access, document id and hash, signing code id, code_delivery, signed at, SHA-256 of the typed name, consent ticks); no PII (the typed name only as its SHA-256); kept so evidence_sha256 can be re-verified after the code row is purged';
+COMMENT ON COLUMN crm.signature_request.evidence_sha256 IS 'SHA-256 of evidence_record (CHECK signature_request_evidence_chk): request, trip, traveller, access, document id and hash, signing code id, code_delivery, signed at, typed-name hash, consent ticks';
 
 -- ── 8. crm.client_link purposes ──────────────────────────────────────────────────────────────────
 ALTER TABLE crm.client_link DROP CONSTRAINT IF EXISTS client_link_purpose_chk;
@@ -612,7 +627,8 @@ BEGIN
             '''currency'', ''due_on'', ''paid_at'', ''tenant_id'')';
     EXECUTE 'CREATE OR REPLACE TRIGGER signature_request_sealed BEFORE UPDATE ON crm.signature_request FOR EACH ROW '
             'EXECUTE FUNCTION crm.guard_sealed_row(''pending'', ''trip_id'', ''traveler_id'', ''access_id'', '
-            '''doc_id'', ''doc_sha256'', ''signed_at'', ''signed_name_enc'', ''evidence_sha256'', ''tenant_id'')';
+            '''doc_id'', ''doc_sha256'', ''signed_at'', ''signed_name_enc'', ''code_delivery'', ''evidence_record'', '
+            '''evidence_sha256'', ''tenant_id'')';
     -- 11c. Hold rule 4h.
     EXECUTE 'DROP TRIGGER IF EXISTS agreement_doc_hold_guard ON crm.agreement_doc';
     EXECUTE 'CREATE TRIGGER agreement_doc_hold_guard BEFORE DELETE OR UPDATE ON crm.agreement_doc FOR EACH ROW '
@@ -1202,7 +1218,7 @@ BEGIN
 END $$;
 
 INSERT INTO shared.schema_versions (version, applied_at, description)
-VALUES ('crm-016', now(), 'AA-946: CRM-18 thin full lifecycle (agreement_doc, proposal with accept, payment_schedule + manual payment, traveler_access, otp_challenge, signature_request (e-sign v0), client_link purposes proposal / portal, computable booking and Stage 3 gates, Stage 3 locked before the deposit or a manual_booking override (CRM32, crm.portal_unlocked), code mail stored masked, sealed rows (CRM31), erase_subject + hold rule for the new tables incl. the typed acceptance name)')
+VALUES ('crm-016', now(), 'AA-946: CRM-18 thin full lifecycle (agreement_doc, proposal with accept, payment_schedule + manual payment, traveler_access, otp_challenge, signature_request (e-sign v0, sealed code_delivery + evidence record), client_link purposes proposal / portal, computable booking and Stage 3 gates, Stage 3 locked before the deposit or a manual_booking override (CRM32, crm.portal_unlocked), code mail stored masked, sealed rows (CRM31), erase_subject + hold rule for the new tables incl. the typed acceptance name)')
 ON CONFLICT (version) DO NOTHING;
 
 COMMIT;
