@@ -248,7 +248,9 @@ owners:
     # so a CIS / Booking / TripPlanner DB Migrate apply is never blocked by the CRM (card CRM-04 E check).
     # crm_membership_pull (AA-978): the CIS membership feed pull, re-queued every 20 s with a key per slot (AA-Partner
     # app/jobs/kinds.py DEPLOY_GATE_EXEMPT), short transactions only, like Booking's bk_inquiry_pull.
-    idle_exempt_kinds: [crm_heartbeat, crm_membership_pull]
+    # crm_booking_sync (AA-947): the AA outage queue and the Booking /events feed, re-queued every 60 s with a key per
+    # slot (AA-Partner app/jobs/kinds.py DEPLOY_GATE_EXEMPT); each request / event is its own short transaction.
+    idle_exempt_kinds: [crm_heartbeat, crm_membership_pull, crm_booking_sync]
     set_local_roles: []
     role_lint_from: 1
     consumer_grants: []

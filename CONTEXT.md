@@ -256,7 +256,9 @@ accounts/
                                    aa-crm-<env>-ecs-task-role (the name the crm_data.tf key policies trust; ECS Exec +
                                    PutMetricData AA/Jobs/Crm only), task definition Fargate ARM64 with the route-class
                                    identity env and, AA-978, CIS_API_URL (var.crm_cis_api_url) + secret M2M_CLIENT
-                                   for the CIS membership feed (crm_membership_pull), target group aa-crm-<env>-api-tg (/crm/health), ALB rule crm_api
+                                   for the CIS membership feed (crm_membership_pull), AA-947, BOOKING_API_URL
+                                   (var.crm_booking_api_url) for booking.b2b.v1 (crm_booking_sync, same M2M_CLIENT),
+                                   target group aa-crm-<env>-api-tg (/crm/health), ALB rule crm_api
                                    (partner host + X-AA-Origin + /crm, /crm/*; above crm_partner_default), service
                                    aa-crm-<env>-api (desired 0, ignore_changes count + task definition), GitHub OIDC
                                    deploy role aa-crm-<env>-app-deploy (immutable subject, var.crm_github_repo_id),

@@ -265,7 +265,9 @@ MIGRATE ERROR: refusing apply — busy: booking.job (queued=1). Wait until every
 - **Exempt kinds** (`IDLE_EXEMPT_KINDS` in `run_migration.py`, per owner): `booking.job`
   `crm.job` `crm_heartbeat` (AA-932: the AA-Partner worker's always-queued liveness kind, so no CRM job blocks a
   CIS / Booking / TripPlanner apply; AA-933 registers it under this name) and `crm_membership_pull` (AA-978: the
-  CIS membership feed pull, re-queued every 20 s, short transactions; in AA-Partner `DEPLOY_GATE_EXEMPT`);
+  CIS membership feed pull, re-queued every 20 s, short transactions; in AA-Partner `DEPLOY_GATE_EXEMPT`) and
+  `crm_booking_sync` (AA-947: the AA outage queue and the Booking event feed, re-queued every 60 s, short
+  transactions; in AA-Partner `DEPLOY_GATE_EXEMPT`);
   `bk_inquiry_pull` (always queued at +60 s, Booking `intake.RECURRING` in
   `backend/app/inquiry/intake.py`; a Booking `DEPLOY_GATE_EXEMPT` registry arrives with B4). It runs
   short transactions, so a running one is safe too; `shared.job` has none since AA-751 (S240): the
