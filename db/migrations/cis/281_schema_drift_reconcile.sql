@@ -142,6 +142,14 @@ BEGIN
             RAISE EXCEPTION 'migration 281: %.%.% is %, Dev has %', r.s, r.t, r.c, cur, r.typ;
         END IF;
     END LOOP;
+    -- Dev's shared.tenant_brand_rules.created_at has DEFAULT now() (read from information_schema, S251); the others
+    -- have no default.
+    IF NOT EXISTS (SELECT 1 FROM pg_attrdef d
+                     JOIN pg_attribute a ON a.attrelid = d.adrelid AND a.attnum = d.adnum
+                    WHERE d.adrelid = 'shared.tenant_brand_rules'::regclass AND a.attname = 'created_at') THEN
+        ALTER TABLE shared.tenant_brand_rules ALTER COLUMN created_at SET DEFAULT now();
+        RAISE NOTICE 'migration 281: shared.tenant_brand_rules.created_at SET DEFAULT now()';
+    END IF;
 END $$;
 
 -- ── 2. Nullability ─────────────────────────────────────────────────────────────────────────────────────────────────
