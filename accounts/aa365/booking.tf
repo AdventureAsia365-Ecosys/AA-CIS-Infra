@@ -235,8 +235,10 @@ resource "aws_iam_role_policy" "booking_ecs_execution" {
 # aws_iam_role_policy.booking_ecs_task_ses_send, AA-811), and cloudwatch:PutMetricData into namespace
 # AA/Jobs/Booking only (observability_ecosys.tf aws_iam_role_policy.booking_ecs_task_put_metric_jobs,
 # the job backlog sampler, AA-751), and s3:PutObject / s3:GetObject on supply-media/* of the Booking supply-media
-# bucket (booking_media.tf aws_iam_role_policy.booking_ecs_task_supply_media, supplier photos, AA-835). No Bedrock,
-# no other S3, no CIS secrets: add them only when a feature needs them.
+# bucket (booking_media.tf aws_iam_role_policy.booking_ecs_task_supply_media, supplier photos, AA-835), and
+# s3:PutObject on archive/booking/* of the CIS bronze bucket (aws_iam_role_policy.booking_ecs_task_retention_archive
+# below: the bk_retention_job archive of failed / cancelled jobs before delete, AA-825). No Bedrock, no other S3, no
+# CIS secrets: add them only when a feature needs them.
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "booking_ecs_task" {
   name                 = "${local.bk_name_prefix}-ecs-task-role"
@@ -285,6 +287,30 @@ resource "aws_iam_role_policy" "booking_ecs_task" {
   })
 }
 
+# AA-825 (S251): Booking retention archive. bk_retention_job writes each batch of finished booking.job rows (succeeded
+# after 30 d, failed / cancelled after 90 d) to
+# s3://<bronze>/archive/booking/job/<yyyy>/<mm>/<job>-<run>-<part>-b<NNNNN>.jsonl.gz (SSE AES256, the bucket default)
+# in the same transaction as their DELETE, so without this grant a live run with any candidates fails before it
+# deletes them (AA-Booking backend/app/retention/policy.py ARCHIVE_PREFIX). PutObject only, on the Booking-only
+# prefix: the CIS archive (archive/<table>/..., CIS task role) and every other bronze prefix stay out of reach; no
+# read, list or delete (restore is an operator task). Cost: IAM is free; the objects are a few KB a month.
+resource "aws_iam_role_policy" "booking_ecs_task_retention_archive" {
+  name = "${local.bk_name_prefix}-ecs-task-retention-archive"
+  role = aws_iam_role.booking_ecs_task.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "RetentionArchivePut"
+        Effect   = "Allow"
+        Action   = ["s3:PutObject"]
+        Resource = "${module.s3.bronze_bucket_arn}/archive/booking/*"
+      },
+    ]
+  })
+}
+
 # -----------------------------------------------------------------------------
 # Task definition. The image tag `bootstrap` is never pushed: the service starts at
 # desired_count 0, and the AA-Booking deploy workflow registers a new revision from this one with
@@ -298,7 +324,9 @@ resource "aws_iam_role_policy" "booking_ecs_task" {
 # COGNITO_M2M_CRM_CLIENT_ID (identity_m2m.tf; the B2B API answers 503 without them). GIT_SHA is baked into the
 # image at build time. AA-871: SENTRY_DSN (secret booking/<env>/sentry-dsn) and SENTRY_REQUIRED=true, both only
 # while var.booking_sentry_enabled (booking_variables.tf says why it waits for the secret value). AA-835:
-# SUPPLY_MEDIA_BUCKET (booking_media.tf), where the supplier photo upload writes.
+# SUPPLY_MEDIA_BUCKET (booking_media.tf), where the supplier photo upload writes. AA-825 (S251):
+# RETENTION_OVERRIDE_ENABLED, the explicit opt-in for the retention manual_override proof run; the app refuses an
+# override unless ENVIRONMENT is dev / test / local AND this is "true" (fail closed, no default), so only dev sets it.
 #
 # A change here registers a new revision that the service ignores (ignore_changes below); the next
 # AA-Booking deploy copies the family's LATEST revision (deploy-dev.yml, AA-811) and carries it to the task.
@@ -330,6 +358,8 @@ resource "aws_ecs_task_definition" "booking" {
       { name = "COGNITO_M2M_CRM_CLIENT_ID", value = aws_cognito_user_pool_client.m2m_crm.id },
       # AA-835: supplier photos (booking_media.tf); the app writes supply-media/<type>/<entity>/<id>.<ext> there.
       { name = "SUPPLY_MEDIA_BUCKET", value = aws_s3_bucket.booking_supply_media.bucket },
+      # AA-825: the retention manual_override (explicit-cutoff proof run) is Dev only; any other environment gets false.
+      { name = "RETENTION_OVERRIDE_ENABLED", value = var.environment == "dev" ? "true" : "false" },
       ], var.booking_sentry_enabled ? [
       { name = "SENTRY_REQUIRED", value = "true" },
     ] : [])
