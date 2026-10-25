@@ -74,6 +74,17 @@ CREATE TABLE acp_contract.atom_segment (segment_id text PRIMARY KEY, canonical_p
     canonical_action text NOT NULL, created_at timestamptz NOT NULL);
 CREATE TABLE acp_contract.atom_segment_member (segment_id text NOT NULL, atom_id text NOT NULL,
     is_alias boolean NOT NULL DEFAULT false, PRIMARY KEY (segment_id, atom_id));
+CREATE TABLE acp_contract.atom_segment_alias (segment_id_old text PRIMARY KEY, segment_id_canonical text NOT NULL,
+    merged_at timestamptz NOT NULL DEFAULT now());
+CREATE TABLE acp_shared.subject (subject_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id uuid NOT NULL DEFAULT '00000000-0000-0000-0000-000000000002', segment_id text, route_id text,
+    channel text NOT NULL DEFAULT 'blog', state text NOT NULL DEFAULT 'proposed',
+    cleared_bar_reason jsonb NOT NULL DEFAULT '{}', created_at timestamptz NOT NULL DEFAULT now());
+ALTER TABLE acp_shared.subject ENABLE ROW LEVEL SECURITY;
+CREATE POLICY subject_cis_app_all ON acp_shared.subject TO cis_app USING (true) WITH CHECK (true);
+CREATE TABLE acp_shared.debate_brand_fit_cache (id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id uuid NOT NULL DEFAULT '00000000-0000-0000-0000-000000000002', segment_id text, route_id text,
+    brand_version integer NOT NULL DEFAULT 1, computed_at timestamptz NOT NULL DEFAULT now());
 CREATE TABLE acp_contract.atom_ranking (tour_id uuid NOT NULL, segment_id text NOT NULL, market text NOT NULL,
     excluded_reason text, computed_at timestamptz NOT NULL, version integer NOT NULL DEFAULT 1,
     superseded_at timestamptz, recurrence integer NOT NULL DEFAULT 1, questions integer NOT NULL DEFAULT 0,
@@ -89,11 +100,13 @@ CREATE TABLE acp_shared.atom_place_card (atom_id text PRIMARY KEY, card_id uuid,
     resolved_at timestamptz NOT NULL DEFAULT now(), miss_reason text);
 CREATE TABLE acp_shared.angle_gate_request (request_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id uuid NOT NULL DEFAULT '00000000-0000-0000-0000-000000000002', atom_id text NOT NULL,
-    status text NOT NULL DEFAULT 'pending_goal', created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL);
+    status text NOT NULL DEFAULT 'pending_goal', created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL,
+    route_segment_ids jsonb);
 ALTER TABLE acp_shared.angle_gate_request ENABLE ROW LEVEL SECURITY;
 CREATE POLICY angle_gate_request_cis_app_all ON acp_shared.angle_gate_request TO cis_app USING (true) WITH CHECK (true);
 CREATE TABLE silver_aa_internal.seo_context (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), tour_id uuid NOT NULL,
-    tenant_id uuid NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001', expires_at timestamptz);
+    tenant_id uuid NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001', expires_at timestamptz,
+    cache_key character varying(500), fetched_at timestamptz NOT NULL DEFAULT now());
 CREATE TABLE shared.job (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), kind text NOT NULL, status text NOT NULL,
     created_at timestamptz NOT NULL DEFAULT now());
 GRANT USAGE ON SCHEMA gold_aa_internal, acp_contract, acp_shared, geo, silver_aa_internal, shared TO cis_app;
@@ -126,9 +139,13 @@ INSERT INTO acp_contract.atom_segment (segment_id, canonical_place, canonical_ac
  ('S3', 'Hue old', 'visit', now() - interval '10 days'), ('S5', 'Kyoto', 'visit', now() - interval '10 days'),
  ('S6', 'Nara', 'visit', now() - interval '10 days'), ('S7', 'Seoul', 'visit', now() - interval '10 days'),
  ('S8', 'Nowhere', 'visit', now() - interval '10 days'), ('S9', 'Gone', 'visit', now() - interval '10 days'),
- ('S10', 'Kyoto', 'eat', now() - interval '10 days');
+ ('S10', 'Kyoto', 'eat', now() - interval '10 days'), ('S11', 'Hanoi old', 'visit', now() - interval '10 days'),
+ ('S12', 'Seoul', 'walk', now() - interval '10 days');
 INSERT INTO acp_contract.atom_segment_member (segment_id, atom_id) VALUES
- ('S1', 'a1'), ('S2', 'a2'), ('S3', 'a3old'), ('S5', 'a5'), ('S6', 'a6'), ('S7', 'a7'), ('S10', 'a5');
+ ('S1', 'a1'), ('S2', 'a2'), ('S3', 'a3old'), ('S5', 'a5'), ('S6', 'a6'), ('S7', 'a7'), ('S10', 'a5'),
+ ('S12', 'a7');
+-- AA-988: S11 gave way to S1 (alias row keeps it); S12's only member is an atom of the paused T4 (kept for a restore)
+INSERT INTO acp_contract.atom_segment_alias (segment_id_old, segment_id_canonical) VALUES ('S11', 'S1');
 INSERT INTO acp_contract.atom_ranking (tour_id, segment_id, market, computed_at, superseded_at) VALUES
  ('{T[1]}', 'S1', 'US', now() - interval '3 days', NULL), ('{T[1]}', 'S2', 'US', now() - interval '3 days', NULL),
  ('{T[1]}', 'S1', 'US', now() - interval '9 days', now() - interval '3 days'),
@@ -148,21 +165,28 @@ INSERT INTO gold_aa_internal.tenant_tour_versions (published_tour_id, created_at
 INSERT INTO acp_shared.angle_gate_request (atom_id, created_at, updated_at) VALUES
  ('a3old', now() - interval '9 days', now() - interval '9 days'), ('a1', now() - interval '1 day', now()),
  ('gone-atom', now() - interval '1 hour', now() - interval '1 hour');
-INSERT INTO silver_aa_internal.seo_context (tour_id, expires_at) VALUES
- ('{T[1]}', now() + interval '30 days'), ('{T[2]}', now() - interval '2 days'), ('{T[4]}', now() - interval '1 hour');
+INSERT INTO silver_aa_internal.seo_context (tour_id, expires_at, cache_key, fetched_at) VALUES
+ ('{T[1]}', now() + interval '30 days', 'x:ideas_v3', now() - interval '10 days'),
+ ('{T[2]}', now() - interval '2 days', 'x:ideas_v2', now() - interval '200 days'),
+ ('{T[4]}', now() - interval '1 hour', NULL, now() - interval '40 days'),
+ ('{T[3]}', now() - interval '2 days', 'x:ideas_v3', now() - interval '30 days'),
+ ('{T[3]}', now() - interval '20 days', NULL, now() - interval '300 days');
+-- AA-990/991: T3's newest row expired but is an ideas_v3 row S1 still reuses (fetched 30 days ago) → not stale;
+-- T3's older row never counts (newest row per tour only).
 INSERT INTO shared.job (kind, status) VALUES ('recompute', 'queued'), ('a3_atomize', 'succeeded');
 """
 
 # metric -> (n, aged) for the seed above (worked out by hand in docs/implementation-notes/AA-991.md, Should know).
 EXPECTED = {
     "atoms_older_than_master": (1, 1), "active_tours_without_atoms": (1, 1), "active_atoms_without_segment": (1, 1),
-    "tours_with_place_atoms_but_no_segment": (1, 1), "orphan_segments": (1, 1), "ranking_missing": (1, 0),
+    "tours_with_place_atoms_but_no_segment": (1, 1), "orphan_segments": (1, 1),
+    "orphan_segments_kept_referenced": (2, 2), "ranking_missing": (1, 0),
     "ranking_off_active_pairs": (2, 2), "active_tours_without_ranking": (1, 1), "routes_missing": (1, 0),
     "routes_differ": (1, 1), "active_tours_without_route": (2, 1), "current_routes_older_than_atoms": (1, 1),
     "routes_with_dead_segment": (1, 1), "geo_tour_place_rows_on_inactive_atoms": (2, 2),
     "geo_tour_place_stale_rows": (1, 1), "place_card_links_missing": (1, 1),
     "active_place_atoms_without_card_link": (3, 1), "tenant_versions_older_than_master": (1, 1),
-    "angle_gate_requests_on_inactive_atoms": (2, 1), "seo_context_expired": (2, 1),
+    "angle_gate_requests_on_inactive_atoms": (2, 1), "seo_context_expired": (4, 3),
     "seo_context_expired_active_tours": (1, 1),
 }
 
@@ -247,6 +271,8 @@ class ProbeOnPostgresTest(unittest.TestCase):
         m = self.res["metrics"]
         self.assertEqual(m["atoms_older_than_master"]["sample_aged"], [T[2]])
         self.assertEqual(m["orphan_segments"]["sample"], ["S8"])
+        self.assertEqual(m["orphan_segments_kept_referenced"]["sample"], ["S11", "S12"])
+        self.assertEqual(m["seo_context_expired_active_tours"]["sample"], [T[2]])
         self.assertEqual(m["routes_missing"]["sample"], [T[3]])
         self.assertEqual(m["routes_differ"]["sample_aged"], [T[2]])
         self.assertEqual(sorted(m["ranking_off_active_pairs"]["sample"]), sorted([T[2], T[4]]))

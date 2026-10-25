@@ -155,6 +155,26 @@ class ProbeShapeTest(unittest.TestCase):
         for name, spec in list(probe.METRICS.items()) + list(probe.ROUTE_METRICS.items()):
             self.assertIn(spec[0], ("stale", "info"), name)
 
+    def test_orphan_segments_are_split_by_every_reference_the_cis_gc_respects(self):
+        # AA-988: the stale metric = what AA-CIS-App segment_gc deletes; the info twin = what a reference keeps
+        sql = " ".join(probe.ORPHAN_SETS.split())
+        for frag in ("acp_contract.v_active_tour_atoms", "NOT t.deleted AND NOT t.is_empty_marker",
+                     "FROM acp_contract.atom_ranking WHERE superseded_at IS NULL", "FROM acp_contract.atom_ranking)",
+                     "segment_id_old", "segment_id_canonical", "FROM acp_shared.subject",
+                     "acp_shared.debate_brand_fit_cache", "sj.route_id = r.route_id", "g.route_segment_ids",
+                     "WHERE am.segment_id IS NULL AND cr.segment_id IS NULL AND ct.segment_id IS NULL"):
+            self.assertIn(frag, sql)
+        self.assertIn("WHERE NOT o.referenced", probe.METRICS["orphan_segments"][2])
+        self.assertIn("WHERE o.referenced", probe.METRICS["orphan_segments_kept_referenced"][2])
+        self.assertEqual(probe.METRICS["orphan_segments_kept_referenced"][0], "info")
+
+    def test_seo_metric_reads_the_newest_row_and_the_s1_reuse_rule(self):
+        sql = " ".join(probe.METRICS["seo_context_expired_active_tours"][2].split())
+        self.assertIn("DISTINCT ON (tour_id)", sql)
+        self.assertIn("ORDER BY tour_id, fetched_at DESC", sql)
+        self.assertIn("LIKE '%:ideas_v3'", sql)
+        self.assertIn("make_interval(days => 180)", sql)
+
     def test_every_metric_returns_id_and_aged_and_uses_the_cutoff(self):
         for name, (_g, _u, inner) in probe.METRICS.items():
             with self.subTest(metric=name):

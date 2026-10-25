@@ -38,7 +38,9 @@ BASELINE = {
     "active_tours_without_atoms": 0,
     "active_atoms_without_segment": 9004,          # 25,877 active atoms - 16,873 in a segment
     "tours_with_place_atoms_but_no_segment": None,
-    "orphan_segments": 8578,                       # 18,978 segments - 10,400 holding an active atom
+    "orphan_segments": 8578,                       # 18,978 segments - 10,400 holding an active atom (narrowed by
+                                                   # AA-988 to zero-reference orphans: an upper bound now)
+    "orphan_segments_kept_referenced": None,       # AA-988 info: orphans a reference keeps (history)
     "ranking_missing": None,
     "ranking_off_active_pairs": None,              # S251 segment-level twin: 0 rows on dead segments
     "active_tours_without_ranking": 9,             # 892 active - 883 tours with current rows

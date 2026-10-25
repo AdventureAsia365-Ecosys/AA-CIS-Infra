@@ -533,7 +533,8 @@ delta, sample) and keeps `task.log` + `gate.json` as the artifact (30 days).
 | `active_tours_without_atoms` | stale | active tours with no active atom | 0 |
 | `active_atoms_without_segment` | info | active atoms in no segment (incl. transit / unnamed places, which never form one) | 9,004 (25,877 − 16,873) |
 | `tours_with_place_atoms_but_no_segment` | stale | active tours with place atoms and not one atom in a segment (the AA-695 failure) | first run |
-| `orphan_segments` | stale | segments with no active atom, no current ranking row and in no current route | 8,578 (18,978 − 10,400; S251 did not test the references, so ≤) |
+| `orphan_segments` | stale | segments with no active atom, no current ranking row and in no current route, and (AA-988) no reference of any kind: what the CIS `segment_gc` recompute stage deletes (`ORPHAN_SETS` mirrors its `ORPHANS_SQL`) | 8,578 (18,978 − 10,400; S251 did not test the references, so ≤) |
+| `orphan_segments_kept_referenced` | info | the same orphans that a reference keeps: member on a live atom of a paused / trashed tour, ranking row, alias row (old or canonical), Subject, brand-fit cache row, route a Subject names, angle-request route list | first run |
 | `ranking_missing` | stale | tours with an active (tour, segment) pair and no current ranking row | first run |
 | `ranking_off_active_pairs` | stale | tours with a current ranking row on a pair that is gone | first run (S251 segment-level twin: 0) |
 | `active_tours_without_ranking` | info | active tours with no current ranking row | 9 (892 − 883) |
@@ -549,7 +550,7 @@ delta, sample) and keeps `task.log` + `gate.json` as the artifact (30 days).
 | `tenant_versions_older_than_master` | info | tenant versions created before their Master's update; by design (AA-990 / AA-986: the tenant is told, nothing is overwritten) | 2 of 55 |
 | `angle_gate_requests_on_inactive_atoms` | stale | T8 angle requests on an atom that is not active | 14 of 25 |
 | `seo_context_expired` | info | S251 query: `seo_context` past `expires_at`, all tours | 76 of 918 |
-| `seo_context_expired_active_tours` | stale | the same, active tours only | first run |
+| `seo_context_expired_active_tours` | stale | active tours whose newest `seo_context` row is past `expires_at` and not reusable by S1 (an `ideas_v3` row fetched within 180 days is reused whatever its `expires_at`: AA-CIS-App `s1_prefetch.py`; 25/10 all 75 expired rows were such rows) | first run |
 
 Baselines live in `freshness_gate.BASELINE`; "first run" rows get their number from the first nightly report (record
 it here in the follow-up PR that sets them). Not in the probe: atom embeddings and `published_tours.content_embedding`
