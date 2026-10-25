@@ -41,6 +41,7 @@ on:
       - "db/schema_drift.py"
       - "db/schema_drift_decisions.json"
       - "db/replay_baseline/**"
+      - "db/gen_replay_baseline.py"     # AA-853 replay baseline generator (tests in db/tests/test_replay_baseline.py)
       - "db/gen_schema_reference.py"
       - "db/gen_erd.py"
       - "tools/docs/aws_mask.py"   # imported by db/gen_schema_reference.py (AA-981)

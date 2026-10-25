@@ -274,3 +274,134 @@ live via manual DDL"; the column itself was added by hand). Two more findings lo
 (`shared.destinations.geo_precision` keeps 226, `shared.tenants.cancelled_at` keeps 042). A PostgreSQL 16.15 server
 is now refused with exit 1. Unit tests: 666 (16 new).
 
+
+## S251 (part 2): replay baseline, legacy order, CIS 281 (branch fix/aa-853-replay-baseline, stacked on #383)
+
+Orchestrator decisions D1 (baseline for the lost lineage) and D2 (Dev is the truth: CIS migration 281), taken under
+Nghiệp's S251 blanket approval. This section covers the Infra side; CIS 281 has its own notes in AA-CIS-App
+`docs/implementation-notes/AA-853.md`.
+
+### Decisions
+
+- **Baseline placement: right before the first replayed file that needs the object, not at "start".** That is the
+  latest point the evidence fixes; "start" would claim that 001-018 (grant loops, 003's schema rebuild, 008's RLS
+  loop) acted on objects nobody can show existed then, and `gold_aa_internal.tenant_tour_versions` cannot exist before
+  003 creates its schema. The ACP lineage is one file before CIS 020 (the first file that touches any of it);
+  tenant_tour_versions one before 107. `before` now takes a registry key OR an owner file rel (`cis/020_x.sql`), since
+  the first needing files are unregistered legacy files.
+- **Shape per object (SPEC in `db/gen_replay_baseline.py`, generated from the live dump, regenerable, `--check`):**
+  live objects = live columns / NOT NULL / CHECK / FK / indexes MINUS what a surviving later CIS file adds (037, 107,
+  109, 175), with the pre-change CHECK where the later file's text says what it was (108: tenant_tour_versions status
+  without `ai_generated`); the primary key comes from the dump's primary index (`ADD CONSTRAINT … PRIMARY KEY USING
+  INDEX`; the dump keeps only CHECK / FK constraints). Tables Dev later dropped (121): only what later files need
+  (`acp_runs.run_id`, `acp_hitl_requests.hitl_id`, both as PKs because FKs name them); a table no later file needs a
+  column of (`visibility_reports`, `content_calendars`, `blog_drafts`) is created with NO column, honestly empty.
+  Defaults are not in the dump: only the two later files rely on are written (`rule_id`, `run_id`:
+  `gen_random_uuid()`, 020 inserts without a key). Assumptions written into the file per object: the exact
+  expressions of the live-only policies `output_rules_rls` / `tenant_tour_versions_isolation` (229's header names
+  them and drops them), blog_drafts' key / FK to acp_hitl_requests (never named by a file: left out),
+  `acp_gold_output.published_content` (121 drops it with IF EXISTS: not created, only its schema).
+- **Recorded hand DDL is baseline too (beyond D1's lost lineage, same mechanism, same guard).** With the lineage in,
+  the replay stopped at guards that check Dev states no migration makes: 239 needs RLS + `tenant_isolation` on
+  `shared.pipeline_runs` (008's header: "S7 applied RLS only on shared.pipeline_runs"; the repo's 004 cannot have run
+  as written: uuid = text), 244 refuses the tables AA-603 dropped by hand, 123 indexes `raw_sources.file_hash`
+  ("already live via manual DDL"). Replaying them at the point the evidence gives is faithful; doing it only in 281
+  (at the end) leaves 239 / 244 / 245 failed and ~30 policy findings. Files: `001_s7_pipeline_runs_rls` (before 008),
+  `004_raw_sources_file_hash` (before 123), `005_g3_drop_unknown_ledger` (before 153; root repo
+  `docs/archive/2026/audit-cis-g3-execute.sql`, 16/09/2026), `006_aa603_drop_n7n8_tables` (before 160;
+  `docs/archive/2026/aa603-drop-n7n8-tables.sql`, 21/09/2026). 281 codifies the same end state for a files-only DB.
+- **Never applied to a real DB, three locks:** (1) every baseline file's FIRST statement after its BEGIN is a guard
+  that RAISEs unless `current_setting('aa_replay.baseline', true) = 'on'` AND `application_name = 'db-replay'`; only
+  `replay_migrations.run_item` sends that SET, only for baseline files (`baseline_statements`), and `add_baseline`
+  refuses a file whose first statement after BEGIN is not the guard (`baseline_guard_error`); (2) `run_migration.lint` refuses any SQL carrying the marker
+  `aa-853-replay-baseline`, whatever its path (DB Migrate check and apply both lint first); (3) DB Migrate's path rule
+  (`^(cis|…|roles)/NNN_x.sql$` under `db/migrations/`) cannot select `db/replay_baseline/`. Tests:
+  `db/tests/test_replay_baseline.py`. Local proof on PostgreSQL 15: the G3 file under `application_name` db-migrate
+  or db-replay without the setting, and with the setting but db-migrate, RAISEs; only db-replay + setting applies.
+- **The replay's master gets BYPASSRLS.** On RDS the master reads FORCE RLS tables unfiltered through rds_superuser
+  (AA-817 probe v2; 239's and 244's guards refuse to run otherwise, 245's header); plain PostgreSQL has no such role
+  and BYPASSRLS is not inherited, so it is set on `aa_cis_admin` itself. Files that read `rolbypassrls` of the
+  runner (229/237/241/262/265/266 "privileged") then pass via that instead of via ownership: same outcome.
+- **Order fixes (decisions `replay_order`, with evidence):** 043-050 (back-registered by 143 on 2026-09-04; 104 of
+  2026-08-15 reads 043's `brand_name`) before 051, the first registry row after their first commits (2026-05-27..29);
+  `replay_order` gains `files` for unregistered legacy files: 019_social_content + 021 (header dates 21/05/2026; 021
+  alters 030's audit_log) before 032, 062-064 (dated 2026-06-04; name order put them after 143's 050, i.e. after 121
+  dropped what they alter) before 058. Lower bounds, like the TripPlanner entries.
+- **Owner decisions (`decisions`):** `public.checkpoint_migrations` unmanaged, keep (LangGraph bookkeeping, kept on
+  purpose by 122); schemas `bronze`, `gold`, `ops`, `silver` missing, keep-dropped (001's v1 layer, gone on Dev; in a
+  DB Migrate-built DB they are the master's and 281, running as cis_owner, leaves them with a NOTICE; a master-run
+  roles/ file for an empty unused layer is not worth it).
+
+### Changed
+
+- New: `db/gen_replay_baseline.py`, `db/replay_baseline/001…006_*.sql` (generated), `db/tests/test_replay_baseline.py`
+  (16 tests), `db/migrations/cis/282_schema_drift_reconcile.sql` (byte copy of AA-CIS-App's; moved to its own PR in the review fixes).
+- `db/replay_migrations.py`: `BASELINE_SETTING`, `baseline_statements` (baseline sent whole after the SET),
+  `_position` (key or file anchor) for `add_baseline` and `apply_order_fixes` (`files`), guard check in
+  `add_baseline`, master BYPASSRLS, docstring. `db/run_migration.py`: `BASELINE_MARKER` + lint refusal.
+- `db/schema_drift_decisions.json`: 6 `baseline` entries, 3 more `replay_order` entries, 5 `decisions`, `about`.
+- `db/tests/test_schema_drift.py`: guarded fixture, `files` entries valid. `db/README.md`, copy-guard paths filter.
+
+### Results (local, PostgreSQL 15.17 + pgvector, live dump of run 40168418702, owner repos at main)
+
+| | #383 (c53bd21) | this branch, live as is (281 pending) | this branch + 281 applied (281 registered in a copy of the dump) |
+|---|---|---|---|
+| replay files ok / partly / failed | 215 / 19 / 99 | 334 / 5 / 0 (339, 6 baseline) | 335 / 5 / 0 (340) |
+| role / owner gap fills | 1 role, 79 owner statements | none needed | none needed |
+| gap roots | 22 | 0 | 0 |
+| unmanaged findings (objects) / open | 157 (1571) / 157 | 8 (10) / 7 | **1 (3) / 0** (checkpoint_migrations, decided keep) |
+| missing / changed | 15 / 27 | 6 / 32 | 4 (decided) / **0** |
+| explained by a replay gap | 171 | 0 | 0 |
+| privilege differences (informational) | 507 | 18 | 18 |
+
+"Live as is" is what the first nightly after merging this PR shows: the 7 open unmanaged and 32 changed findings are
+exactly D2's hand drift, which 281 removes once DB Migrate applies it. The 5 partly files are 001 (v1 enum seed), 004 /
+006 (uuid = text: the repo versions cannot have run as written; S7's effect is the baseline), 005 (role `app_user`,
+made by hand and gone), 007 (seed without `slug`): they produce no finding. The 18 privilege differences are the hand
+grants of the hand-made `tripplanner` role on its own schema and the owners of the 4 decided v1 schemas (informational).
+
+### Should know
+
+- Done-when (one green nightly with drift verdict clean: 0 open findings, decided exemptions allowed; see the review
+  fixes below) needs, in order: merge #383, merge this PR, merge the CIS 281 PR and its Infra copy PR,
+  DB Migrate `check` then `apply` cis/281 (destructive header: DB Migrate takes its snapshot; on Dev the file is a
+  no-op, its preflight in the header shows it), then one nightly (or a dispatch of DB Schema Dump with publish=true).
+- The first nightly after this PR (before 281) changes the drift fingerprint and opens the root reference PR.
+- `gen_replay_baseline.py --check schema.json` re-renders from a dump: the header carries the dump's generated_at, so
+  a newer dump differs by that line only; regenerate (and review the diff) when SPEC changes.
+- Not verifiable from the dump: column defaults of the hand-made columns (`tenant_brand_rules.created_at`,
+  `pipeline_runs.llm_*` / `step_name`, `raw_sources.file_hash`); 281 adds them without a default. A read-only check of
+  `information_schema.columns.column_default` on Dev would settle it (not done: subagent, no ECS exec).
+
+### S251 part 2 review fixes (independent review of edc8246)
+
+- **B1, blocking: the guard ran before BEGIN.** `psql -f` without ON_ERROR_STOP prints a failed statement's error and
+  goes on, so `BEGIN; DROP TABLE …; COMMIT;` still ran after the guard raised (reproduced by the reviewer: G3's file
+  dropped `acp_shared.unknown_ledger` with a row in it). Now the generator writes `BEGIN;` then the guard then the
+  DDL: the guard's error aborts the transaction and the closing COMMIT becomes ROLLBACK. `add_baseline` checks the
+  shape, not a substring: one BEGIN … COMMIT block whose first statement is a DO block with the RAISE and both
+  conditions (`replay_migrations.baseline_guard_error`); tests for a guard before BEGIN, a guard after the DDL and a
+  marker-only file. Proof on PostgreSQL 15 with psql -f of the regenerated G3 file on a table with a row: no
+  settings, db-migrate + setting, db-replay without setting: each "ERROR … / current transaction is aborted /
+  ROLLBACK", table and row kept; db-replay + setting: "BEGIN / DROP TABLE / COMMIT".
+- **S1: "0 unmanaged" vs a decided exemption.** `schema_drift.py` now writes a verdict (drift.json `verdict`, first
+  line of the step summary and of the reference's drift section): **clean** when the replay has 0 failed files and 0
+  open findings of any class; a finding with an owner decision (reasoned exemption) does not count. `unmanaged` keeps
+  counting every unmanaged object, decided ones included, so the exemption stays visible. AA-853's Done-when is read
+  as "the nightly drift verdict is clean" (= open_unmanaged 0, open 0, failed 0); proposed wording for Linear:
+  "one green nightly DB Schema Dump whose drift verdict is clean (0 open findings; decided exemptions listed)".
+  New `counts.decided`. The fingerprint is unchanged by this (it never covered the verdict).
+- **S2: baseline 001 is not lost lineage and is not codified.** Its file lead and its decisions `reason` now say so:
+  239 needs the S7 RLS state before 239 runs, so no later file (281) can supply it; a database built from the files
+  alone still lacks it and stops at 239; the replay stand-in exists only so 239 / 244 can run. Same note in CIS
+  `docs/implementation-notes/AA-853.md`.
+- **N5: the 281 byte copy moved to its own PR** (branch `fix/aa-853-cis-282-copy`, stacked on this one), so this PR's
+  Copy Guard does not wait on the CIS PR.
+- CIS-side fixes (S3 RESTRICT drop of the v1 schemas with a pg_depend check, N2 CHECK loop outside the pending gate,
+  N4 refclassid, N1 assumption, N3 E501): see the CIS notes.
+
+Results after the fixes (same live dump, fresh PostgreSQL 15.17 cluster each run; `.tmp/final-live-r2`,
+`.tmp/final-with-282-r2`): identical counts to the table above. Live as is: 334 / 5 / 0, verdict **open** (41 open:
+the D2 drift). 281 registered: 335 / 5 / 0, unmanaged 1 (decided), open 0, changed 0, missing 4 (decided), verdict
+**clean**.
+

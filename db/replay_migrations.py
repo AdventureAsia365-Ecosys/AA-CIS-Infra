@@ -17,7 +17,8 @@ Input:
 
 Steps:
   1. Role bootstrap, as the superuser: the RDS master `aa_cis_admin` (LOGIN CREATEROLE CREATEDB, NOT a superuser,
-     member of a stand-in `rds_superuser`), and every live role that no migration creates (roles_created_by: a
+     member of a stand-in `rds_superuser`, BYPASSRLS for what rds_superuser gives it on RDS: FORCE RLS tables read
+     unfiltered, which 239 / 244 check), and every live role that no migration creates (roles_created_by: a
      `CREATE ROLE` in code, comments left out; today only the TripPlanner runtime role, created by hand in
      2026). A fresh database owned by the master, and the live extensions (vector, pg_stat_statements)
      created in it by the superuser, as RDS lets its master do. A server that is not PostgreSQL 15 is
@@ -29,13 +30,16 @@ Steps:
      (description `backfill: …`, e.g. tp-007 wrote tp-001…tp-006 with applied_at = now()) carry the registration
      time, not when the file ran: they are listed (`backfilled`), and owner decisions in
      db/schema_drift_decisions.json `replay_order` move them before the registry key the evidence proves (S251).
-     Owner-decided baseline files (`baseline`, under db/replay_baseline/) are inserted before their key.
+     Owner-decided baseline files (`baseline`, under db/replay_baseline/, db/gen_replay_baseline.py: the lost AA-ACP-App
+     lineage and recorded hand DDL) are inserted before their key or file; `replay_order` `files` move unregistered
+     legacy files the same way.
   3. Each file runs the way DB Migrate ran it (run_migration.py's own code): logged in as the master, or as
      db_migrator from the X1 S22 cutover (MIGRATOR_LOGIN_FROM) on; switched to the live owner of the dir's anchor
      schema (resolve_role + run_switched, ownership post-check included); roles/ files as the master. A file that
      is one BEGIN … COMMIT block is sent whole (atomic, as DB Migrate does); a legacy file without a registry row,
-     a registered file of another shape and a baseline file run like `psql -f` did before DB Migrate: one
-     statement at a time, going on after an error ("partial"). A failure is recorded and the replay goes on. No
+     a registered file of another shape run like `psql -f` did before DB Migrate: one statement at a time, going on
+     after an error ("partial"). A baseline file is sent whole, after `SET aa_replay.baseline = 'on'`, the one
+     setting its guard accepts (baseline_statements). A failure is recorded and the replay goes on. No
      lint (the copies are linted by the Copy Guard; historic files predate it). Failed / partial files keep the
      `schema.name` they mention and what their DDL changes (ddl_targets), so the drift report can say "explained
      by the failed replay of …" only when that file's DDL would have made the difference.
@@ -93,6 +97,10 @@ MIGRATOR = "db_migrator"
 MIGRATOR_LOGIN_FROM = "246"
 DEFAULT_DB = "aa_cis_dev"                   # the live database name (rl-002 refuses another one); live dump wins
 BASELINE = "baseline"                       # pseudo owner of the owner-decided baseline files
+# The guard every db/replay_baseline/ file begins with (db/gen_replay_baseline.py) raises unless this session setting
+# is 'on' and application_name is APPLICATION_NAME: run_item sets it for baseline files only, so a baseline file
+# applied anywhere else (or as a migration of the replay) does nothing but fail.
+BASELINE_SETTING = "aa_replay.baseline"
 DB_DIR = Path(__file__).resolve().parent
 SCRATCH_PASSWORD = "replay-scratch"          # throw-away container, never a real credential
 APPLICATION_NAME = "db-replay"
@@ -276,6 +284,8 @@ def column_targets(stmt: str, known_schemas: set) -> dict:
                 if a.group(2):
                     cols.add(a.group(2))
     return out
+
+
 DYNAMIC_KIND_RES = (           # what DDL a format()-built string does, by the drift finding kind it can explain
     ("policy", re.compile(r"\b(?:create|alter|drop)\s+policy\b[^;]*%")),
     ("index", re.compile(r"\b(?:create\s+(?:unique\s+)?index|drop\s+index)\b[^;]*%")),
@@ -500,7 +510,10 @@ async def prepare(admin_dsn: str, live: dict, created: set, db_name: str) -> lis
         # RDS gives rds_superuser these with ADMIN, so the master can grant them on (rl-002: db_migrator).
         await conn.execute("GRANT pg_read_all_stats, pg_signal_backend, pg_monitor TO rds_superuser WITH ADMIN OPTION")
         await conn.execute(f"DO $$ BEGIN IF to_regrole('{MASTER}') IS NULL THEN CREATE ROLE {MASTER}; END IF; END $$")
-        await conn.execute(f"ALTER ROLE {MASTER} LOGIN CREATEROLE CREATEDB NOSUPERUSER NOBYPASSRLS "
+        # BYPASSRLS stands in for what rds_superuser gives the RDS master and plain PostgreSQL cannot: it reads FORCE
+        # ROW LEVEL SECURITY tables unfiltered (AA-817 probe v2; 239 and 244 refuse to run when RLS is active for
+        # it, 245's header). Not inherited through the stand-in rds_superuser, so it is set on the master itself.
+        await conn.execute(f"ALTER ROLE {MASTER} LOGIN CREATEROLE CREATEDB NOSUPERUSER BYPASSRLS "
                            f"PASSWORD '{SCRATCH_PASSWORD}'")
         await conn.execute(f"GRANT rds_superuser TO {MASTER}")
         await conn.execute(f"CREATE DATABASE {_q(db_name)} OWNER {MASTER}")
@@ -722,7 +735,10 @@ async def run_item(item: Item, sql: str, login_dsn: str) -> None:
             if plan.error:
                 raise RuntimeError(f"role: {plan.error}")
             item.run_as = plan.run_as
-            if plan.switch:
+            if item.owner == BASELINE:
+                for stmt in baseline_statements(sql):
+                    await conn.execute(stmt)
+            elif plan.switch:
                 shape = rm.registration_error(sql) if d.no_transaction else rm.transaction_parts(sql)[3]
                 if shape:
                     raise RuntimeError(f"role: {shape}")
@@ -758,10 +774,46 @@ async def run_item(item: Item, sql: str, login_dsn: str) -> None:
         item.log_tail = [ln for ln in buf.getvalue().splitlines() if "ERROR" in ln][-5:]
 
 
+def baseline_statements(sql: str) -> list:
+    """Pure: what run_item sends for a baseline file: the one session setting its guard accepts (only here, only for
+    baseline files), then the file whole (its own BEGIN … COMMIT: all or nothing)."""
+    return [f"SET {BASELINE_SETTING} = 'on'", sql]
+
+
+def baseline_guard_error(sql: str) -> str:
+    """Pure: "" for a baseline file shaped as the generator writes it: the marker, one BEGIN … COMMIT block whose
+    FIRST statement is the guard (raises unless this replay's setting and application_name are both present).
+    The guard must sit inside the transaction: psql -f without ON_ERROR_STOP goes on after a failed statement, so a
+    guard before BEGIN would print its error and let the DDL run; inside, the error aborts the block and the closing
+    COMMIT rolls it back. Otherwise the reason."""
+    if rm.BASELINE_MARKER not in sql:
+        return "has no replay guard (marker missing)"
+    begin, body, _commit, error = rm.transaction_parts(sql)
+    if error:
+        return f"has no replay guard inside its transaction ({error})"
+    guard = body[0].text if body else ""
+    if not (re.match(r"^DO\b", body[0].code if body else "") and "RAISE EXCEPTION" in guard
+            and f"current_setting('{BASELINE_SETTING}', true) IS DISTINCT FROM 'on'" in guard
+            and f"IS DISTINCT FROM '{APPLICATION_NAME}'" in guard):
+        return "has no replay guard as the first statement after BEGIN"
+    return ""
+
+
+def _position(items: list, anchor: str) -> int | None:
+    """Index of the item a decision names: a registry key ('107', 'tp-002') or an owner file ('cis/020_x.sql', for an
+    unregistered legacy file, which has no key)."""
+    if "/" in anchor:
+        return next((i for i, it in enumerate(items) if it.rel == anchor), None)
+    return next((i for i, it in enumerate(items) if it.key == anchor), None)
+
+
 def add_baseline(order: dict, baseline: list, texts: dict) -> list:
-    """Owner decisions (db/schema_drift_decisions.json `baseline`): SQL files under db/ that recreate what a lost
-    migration made (e.g. objects of a repo that no longer exists), each run as the master right BEFORE the
-    registry key named in `before` ("start" = first). Pure apart from reading the files; returns problems."""
+    """Owner decisions (db/schema_drift_decisions.json `baseline`): SQL files under db/replay_baseline/ that recreate
+    what a lost migration made (objects of a repo that no longer exists, db/gen_replay_baseline.py), each run as the
+    master right BEFORE the item named in `before`: a registry key, an owner file rel (`cis/020_x.sql`) or "start".
+    A file without the baseline guard as the first statement of its one transaction is refused
+    (baseline_guard_error). Pure apart from reading the files;
+    returns problems."""
     problems = []
     items = order["items"]
     texts.setdefault(BASELINE, {})
@@ -772,11 +824,16 @@ def add_baseline(order: dict, baseline: list, texts: dict) -> list:
             problems.append(f"baseline {rel!r}: not a file under db/replay_baseline/")
             continue
         before = str(b.get("before", "start"))
-        at = 0 if before == "start" else next((i for i, it in enumerate(items) if it.key == before), None)
+        at = 0 if before == "start" else _position(items, before)
         if at is None:
-            problems.append(f"baseline {rel}: registry key {before!r} is not in the replay order")
+            problems.append(f"baseline {rel}: {before!r} is neither a registry key nor a file of the replay order")
             continue
-        texts[BASELINE][rel] = path.read_text(encoding="utf-8")
+        text = path.read_text(encoding="utf-8")
+        shape = baseline_guard_error(text)
+        if shape:
+            problems.append(f"baseline {rel}: {shape} (db/gen_replay_baseline.py writes it)")
+            continue
+        texts[BASELINE][rel] = text
         items.insert(at, Item(BASELINE, rel, f"before {before}", "", False))
     return problems
 
@@ -830,34 +887,40 @@ def backfilled(migrations: list) -> list:
 
 def apply_order_fixes(order: dict, fixes: list) -> list:
     """Owner decisions (db/schema_drift_decisions.json `replay_order`): move registered files whose registry
-    applied_at is not when they ran (back-registered rows) to just before the registry key `before`, in the order
-    `keys` lists them. Pure; returns problems (unknown key, a key moved twice, `before` in the moved set)."""
+    applied_at is not when they ran (back-registered rows, `keys`) or unregistered legacy files whose name-order
+    place is not when they ran (`files`: 'cis/021_x.sql', placed by the evidence of their header date) to just
+    before `before` (a registry key or an owner file), in the order listed. Pure; returns problems (unknown key or
+    file, a key / file moved twice, `before` in the moved set)."""
     problems: list = []
     items = order["items"]
     moved: set = set()
     for fx in fixes:
         keys = [str(k) for k in fx.get("keys", [])]
+        files = [str(f) for f in fx.get("files", [])]
+        names = keys + files
         before = str(fx.get("before", ""))
-        if not keys or not before:
-            problems.append(f"replay_order entry {fx!r}: needs `keys` and `before`")
+        if not names or not before:
+            problems.append(f"replay_order entry {fx!r}: needs `keys` or `files`, and `before`")
             continue
-        if before in keys or set(keys) & moved:
-            problems.append(f"replay_order {keys} before {before}: a key is moved twice or is its own anchor")
+        if before in names or set(names) & moved:
+            problems.append(f"replay_order {names} before {before}: a key is moved twice or is its own anchor")
             continue
-        picked = [it for k in keys for it in items if it.key == k and it.registered]
-        if len(picked) != len(keys):
-            problems.append(f"replay_order {keys}: not every key is a registered file of the replay")
+        picked = ([it for k in keys for it in items if it.key == k and it.registered]
+                  + [it for f in files for it in items if it.rel == f and not it.registered])
+        if len(picked) != len(names):
+            problems.append(f"replay_order {names}: not every key is a registered file of the replay, or every "
+                            f"file an unregistered one")
             continue
-        if not any(it.key == before for it in items):
-            problems.append(f"replay_order {keys}: registry key {before!r} is not in the replay order")
+        if _position(items, before) is None:
+            problems.append(f"replay_order {names}: {before!r} is not in the replay order")
             continue
         for it in picked:
             items.remove(it)
-        at = next(i for i, it in enumerate(items) if it.key == before)
+        at = _position(items, before)
         items[at:at] = picked
         for it in picked:
             it.moved_before = before
-        moved |= set(keys)
+        moved |= set(names)
     return problems
 
 
