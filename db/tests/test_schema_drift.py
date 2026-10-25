@@ -97,7 +97,9 @@ class Baseline(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp) / "replay_baseline"
             base.mkdir()
-            (base / "000_x.sql").write_text("CREATE SCHEMA acp_shared;", encoding="utf-8")
+            guard = (f"-- {rp.rm.BASELINE_MARKER}\n"
+                     f"DO $g$ BEGIN PERFORM current_setting('{rp.BASELINE_SETTING}'); END $g$;\n")
+            (base / "000_x.sql").write_text(guard + "CREATE SCHEMA acp_shared;", encoding="utf-8")
             old = rp.DB_DIR
             rp.DB_DIR = Path(tmp)
             try:
@@ -263,7 +265,8 @@ class Render(unittest.TestCase):
         for b in data["baseline"]:
             self.assertTrue((path.parent / b["file"]).is_file(), b)
         for fx in data.get("replay_order", []):
-            self.assertTrue(fx.get("keys") and fx.get("before") and fx.get("reason") and fx.get("ref"), fx)
+            self.assertTrue((fx.get("keys") or fx.get("files")) and fx.get("before") and fx.get("reason")
+                            and fx.get("ref"), fx)
 
 
 class RoleGaps(unittest.TestCase):

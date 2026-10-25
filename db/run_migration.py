@@ -205,6 +205,9 @@ MASTER_ROLE = "aa_cis_admin"      # RDS master: runs roles/ files, set-password,
 # not the master (X1 S22: db_migrator), for roles/ files, set-password and run-script only.
 MASTER_SECRET = "aa-cis/dev/rds"
 ROLES_DIR = "roles"               # Infra-native files, key rl-NNN
+# AA-853: every db/replay_baseline/ file (lost lineage the drift replay recreates, db/gen_replay_baseline.py) carries
+# this marker; lint refuses it, so a baseline copied into db/migrations/ can never be checked or applied.
+BASELINE_MARKER = "aa-853-replay-baseline"
 # owners.yaml password_roles: LOGIN roles whose password mode=set-password sets from their DSN secret (XD2).
 PASSWORD_ROLES = {"cis_app": "aa-cis/dev/rds-cis-app", "crm_app": "crm/dev/database-url",
                   "db_migrator": "aa-cis/dev/db-migrator"}
@@ -840,6 +843,9 @@ def lint(sql: str, d: Directives, path: str = None) -> tuple:
     or above the dir's role_lint_from, plus the switch's shape rule: such a file is one BEGIN … COMMIT
     block, or a `-- migrate: no-transaction` file whose last statement is a plain literal registration."""
     errors, warnings = list(d.errors), []
+    if BASELINE_MARKER in sql:
+        errors.append(f"this is a schema drift replay baseline ({BASELINE_MARKER}, db/replay_baseline/): it only "
+                      f"feeds db/replay_migrations.py and is never applied to a database (AA-853)")
     owner_dir, number = migration_path(path)
     if owner_dir in OWNER_DIRS and number >= OWNER_DIRS[owner_dir].role_lint_from:
         errors.extend(role_lint(sql, owner_dir))
