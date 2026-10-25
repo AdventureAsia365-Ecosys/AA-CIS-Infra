@@ -354,6 +354,9 @@ resource "aws_iam_role_policy" "crm_ecs_task" {
 # AA-945 (CRM-17 mail, crm_mail.tf local.crm_mail_env / crm_mail_secrets): CRM_INGEST_BUCKET (the ingest bucket the
 # forward-in rule writes raw/ to), CRM_INGEST_DOMAIN (crm-in.<zone>), MAIL_OAUTH_REDIRECT_BASE (the partner host, where
 # the web's OAuth callback lives) and, only with var.crm_mail_oauth_enabled, the secret MAIL_OAUTH.
+# AA-946 (CRM-18 traveller portal): PORTAL_OTP_DEV_ECHO = "true" on dev only: the portal's e-mail code is also returned
+# in the API answer, because the synthetic Dev agencies have no mailbox to send it from (the Dev E2E signs in with it).
+# The API refuses to start with it on outside dev / test / local.
 # GIT_SHA and APP_VERSION are baked into the image.
 # -----------------------------------------------------------------------------
 resource "aws_ecs_task_definition" "crm_api" {
@@ -399,6 +402,8 @@ resource "aws_ecs_task_definition" "crm_api" {
       { name = "AUDIT_RETENTION_DRY_RUN", value = "true" },
       # AA-978: the CIS membership feed (crm_membership_pull); credentials in the secret M2M_CLIENT below.
       { name = "CIS_API_URL", value = var.crm_cis_api_url },
+      # AA-946: the portal code echo, Dev only (synthetic agencies, no mailbox); the API refuses it elsewhere.
+      { name = "PORTAL_OTP_DEV_ECHO", value = var.environment == "dev" ? "true" : "false" },
       ], local.crm_identity_env, local.crm_scrub_env, local.crm_mail_env, var.crm_sentry_enabled ? [
       { name = "SENTRY_REQUIRED", value = "true" },
     ] : [])
