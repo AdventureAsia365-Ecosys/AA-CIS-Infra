@@ -23,8 +23,13 @@ of an unmanaged or missing schema into the schema, so one lost CREATE TABLE is o
 
 Every unmanaged / missing / changed finding carries:
   owner        the owner of its schema (run_migration.OWNER_DIRS, mirror of db/owners.yaml), or '-' (public, …)
-  explained_by the replay files that FAILED (or ran partly) and name the object, i.e. the likely cause is a
-               replay gap, not drift on Dev; fix the replay (a baseline file) or the migration history
+  explained_by the replay files that FAILED (or ran partly) and whose DDL would have made this difference (S251:
+               replay `ddl` of the file: it creates / alters / drops the object, names the column / index /
+               constraint / policy / trigger in a DDL statement on its relation, recreates the view, or builds DDL
+               of that kind with format() on an object it names), i.e. the cause is a replay gap, not drift on
+               Dev; fix the replay (a baseline file, a replay_order entry) or the migration history
+  mentioned_by the failed files that only NAME the object (SELECT, GRANT, a guard), when none explains it: such a
+               finding counts as not explained (`unexplained`, `unmanaged_unexplained`) and needs a look
   decision     the matching entry of db/schema_drift_decisions.json (owner decision: keep as is, drop, write the
                missing migration, …). `open` counts findings with no decision.
 
@@ -148,17 +153,70 @@ def find_decision(decisions: list, cls: str, oid: str) -> dict | None:
     return None
 
 
-def _explained_by(oid: str, schema: str, gaps: list) -> list:
-    """Replay files that failed or ran partly and name this object (or its relation)."""
-    name = oid.split(" ", 1)[1].split(" ", 1)[0]          # schema.table[.column] or schema.fn(args)
-    parts = name.split("(", 1)[0].split(".")
-    rel = ".".join(parts[:2]).lower() if len(parts) >= 2 else ""
+CHILD_KINDS = ("column", "index", "constraint", "policy", "trigger")
+AUTO_NAME_SUFFIXES = ("_check", "_fkey", "_key", "_pkey", "_excl", "_idx")
+
+
+def _child_words(kind: str, rel: str, child: str) -> set:
+    """Names that, in a DDL statement on the relation, mean the statement makes this child: its own name, and for an
+    auto-named constraint / index (<table>_<column>_check, …) the column too."""
+    out = {child}
+    table = rel.split(".", 1)[1] if "." in rel else rel
+    if kind in ("constraint", "index") and child.startswith(table + "_"):
+        rest = child[len(table) + 1:]
+        for suf in AUTO_NAME_SUFFIXES:
+            if rest.endswith(suf) and len(rest) > len(suf):
+                out.add(rest[:-len(suf)])
+    return out
+
+
+def _explained_by(oid: str, schema: str, gaps: list, strong: bool = True) -> list:
+    """Replay files that failed or ran partly and would have made this difference.
+
+    strong (the default) reads the replay's `ddl` of each failed file (replay_migrations.ddl_targets): a schema it
+    creates or changes; a relation, routine or enum it creates / alters / drops; a column, index, constraint, policy
+    or trigger named in a DDL statement on its relation, or any child of a view it recreates / a table it drops; DDL
+    built with format() when its kind fits and the file names the object. A results file without `ddl` (before S251)
+    falls back to every mention. strong=False: the file only names the object or its relation (SELECT, GRANT, a
+    check), which does not explain why it differs."""
+    kind, rest = oid.split(" ", 1)
+    if kind in CHILD_KINDS and kind != "column":
+        rel, child = rest.split(" ", 1)
+    elif kind == "column":
+        rel, child = rest.rsplit(".", 1)
+    else:
+        rel, child = (rest.split("(", 1)[0] if kind != "schema" else ""), ""
+    rel, child = rel.lower(), child.lower()
     hits = []
     for g in gaps:
-        names = g.get("names") or []
-        if (rel and rel in names) or (not rel and schema in g.get("schemas", [])):
+        ddl = g.get("ddl")
+        if strong and isinstance(ddl, dict) and ddl:
+            ok = _ddl_explains(ddl, kind, schema, rel, child)
+        elif strong and "ddl" in g:
+            ok = False                      # the file does no DDL the replay could see
+        else:
+            ok = (rel in (g.get("names") or [])) if rel else (schema in (g.get("schemas") or []))
+        if ok:
             hits.append(g["rel"])
     return hits[:5]
+
+
+def _ddl_explains(ddl: dict, kind: str, schema: str, rel: str, child: str) -> bool:
+    if kind == "schema":
+        return schema in (ddl.get("schemas") or [])
+    if kind in CHILD_KINDS:
+        if rel in (ddl.get("recreated") or []):
+            return True
+        if set((ddl.get("words") or {}).get(rel) or []) & _child_words(kind, rel, child):
+            return True
+    elif rel in (ddl.get("names") or []) or rel in (ddl.get("recreated") or []):
+        return True
+    dyn = ddl.get("dynamic") or {}
+    if dyn and rel in (dyn.get("names") or []):
+        want = "relation" if kind in ("relation", "enum") else kind
+        return want in (dyn.get("kinds") or []) and (
+            kind not in CHILD_KINDS or bool(set(dyn.get("words") or []) & _child_words(kind, rel, child)))
+    return False
 
 
 def diff(live: dict, replay: dict, results: dict | None = None, decisions: list | None = None) -> dict:
@@ -206,6 +264,7 @@ def diff(live: dict, replay: dict, results: dict | None = None, decisions: list 
     for cls in CLASSES:
         for f in found[cls]:
             f["explained_by"] = _explained_by(f["id"], f["schema"], gaps)
+            f["mentioned_by"] = [] if f["explained_by"] else _explained_by(f["id"], f["schema"], gaps, strong=False)
             d = find_decision(decisions, cls, f["id"])
             f["decision"] = ({k: d.get(k) for k in ("decision", "owner", "ref", "note") if d.get(k)} if d else None)
     counts = {cls: len(found[cls]) for cls in CLASSES}
@@ -213,6 +272,9 @@ def diff(live: dict, replay: dict, results: dict | None = None, decisions: list 
     counts["open"] = sum(1 for cls in CLASSES for f in found[cls] if not f["decision"])
     counts["open_unmanaged"] = sum(1 for f in found["unmanaged"] if not f["decision"])
     counts["explained_by_replay_gap"] = sum(1 for cls in CLASSES for f in found[cls] if f["explained_by"])
+    counts["unexplained"] = sum(1 for cls in CLASSES for f in found[cls] if not f["explained_by"])
+    counts["unmanaged_unexplained"] = sum(1 for f in found["unmanaged"] if not f["explained_by"])
+    counts["only_mentioned_by_replay_gap"] = sum(1 for cls in CLASSES for f in found[cls] if f["mentioned_by"])
     counts["privileges"] = len(priv)
     rc = results.get("counts") or {}
     fp_src = json.dumps({cls: [(f["id"], f.get("diff"), f["decision"]) for f in found[cls] if not f["explained_by"]]
@@ -227,7 +289,8 @@ def diff(live: dict, replay: dict, results: dict | None = None, decisions: list 
                    "gaps": [{"rel": g["rel"], "status": g["status"], "key": g.get("key"), "error": g.get("error")}
                             for g in gaps],
                    "pending": results.get("pending", []), "no_file": results.get("no_file", []),
-                   "legacy": results.get("legacy", []), "notes": results.get("notes", [])},
+                   "legacy": results.get("legacy", []), "notes": results.get("notes", []),
+                   "gap_roots": results.get("gap_roots", []), "backfilled": results.get("backfilled", [])},
         **found,
         "privileges": priv,
     }
@@ -255,11 +318,21 @@ def render_markdown(d: dict, heading: str = "##") -> list:
     L.append(f"**Unmanaged** (on Dev, no migration creates it): **{c['unmanaged']}** finding(s), "
              f"{c['unmanaged_objects']} object(s) with their children; **{c['open_unmanaged']} without an owner "
              f"decision**. **Missing** (a migration creates it, not on Dev): {c['missing']}. **Changed**: "
-             f"{c['changed']}. Findings explained by a failed replay file: {c['explained_by_replay_gap']}. "
+             f"{c['changed']}. Findings explained by a failed replay file (it changes the object with DDL): "
+             f"{c['explained_by_replay_gap']}; **not explained by the replay** (drift on Dev to decide): "
+             f"{c.get('unexplained', '?')}, of them unmanaged {c.get('unmanaged_unexplained', '?')}. "
              f"Privilege differences (informational): {c['privileges']}. Owner decisions live in AA-CIS-Infra "
              f"`db/schema_drift_decisions.json`; `drift.json` in the workflow artifact has every finding. Report "
              f"only: a finding fails nothing, and findings a replay gap explains do not move the drift fingerprint.")
     L.append("")
+    roots = [g for g in r.get("gap_roots") or [] if g.get("root")]
+    fills = [n for n in r.get("notes") or [] if n.startswith(("role gap", "owner gap"))]
+    if roots or fills:
+        root_list = ", ".join(f"`{g['object']}`" for g in roots) or "none"
+        L.append(f"Root replay gaps (objects a failed file needed that no file in any repo creates before it; every "
+                 f"other gap is a cascade of these): {root_list}. Role / owner fills the replay made so later files "
+                 f"run as on Dev: {len(fills)} (drift.json `replay.notes`).")
+        L.append("")
     if r.get("gaps"):
         L.append(f"Replay gaps ({len(r['gaps'])}: files that failed or ran partly; their objects show up as unmanaged "
                  f"until the history is fixed or a baseline file covers them):")
@@ -279,6 +352,8 @@ def render_markdown(d: dict, heading: str = "##") -> list:
         L.append("")
         L.append("| object | owner | detail | replay gap | decision |")
         L.append("|---|---|---|---|---|")
+        # findings no replay gap explains first: they are the drift to decide on
+        items = sorted(items, key=lambda f: bool(f["explained_by"]))
         for f in items[:SECTION_LIMIT]:
             if cls == "changed":
                 detail = "; ".join(f"{k}: live `{_cell(v['live'], 50)}` / replay `{_cell(v['replay'], 50)}`"
@@ -288,7 +363,9 @@ def render_markdown(d: dict, heading: str = "##") -> list:
                     (f" {f['attrs'].get('kind')}" if f["kind"] == "relation" else "")
             dec = f["decision"]
             dec_txt = f"{dec.get('decision', '')} ({dec.get('ref', '')})".strip() if dec else "**open**"
-            gap = ", ".join(f"`{x}`" for x in f["explained_by"]) or "-"
+            gap = (", ".join(f"`{x}`" for x in f["explained_by"]) or
+                   ("named only by " + ", ".join(f"`{x}`" for x in f.get("mentioned_by") or []) if f.get("mentioned_by")
+                    else "-"))
             L.append(f"| `{_cell(f['id'], 90)}` | {f['owner']} | {_cell(detail.strip(), 160)} | {gap} | "
                      f"{_cell(dec_txt, 80)} |")
         if len(items) > SECTION_LIMIT:
@@ -306,6 +383,9 @@ def summary_lines(d: dict) -> list:
         f"- unmanaged: {c['unmanaged']} finding(s) ({c['unmanaged_objects']} objects), {c['open_unmanaged']} open",
         f"- missing: {c['missing']}, changed: {c['changed']}, "
         f"explained by a replay gap: {c['explained_by_replay_gap']}",
+        (f"- not explained by the replay (drift on Dev to decide): {c.get('unexplained', '?')} "
+         f"(unmanaged {c.get('unmanaged_unexplained', '?')}, only named by a failed file "
+         f"{c.get('only_mentioned_by_replay_gap', '?')})"),
         f"- privilege differences (informational): {c['privileges']}",
         f"- fingerprint `{d['fingerprint'][:12]}`",
     ]

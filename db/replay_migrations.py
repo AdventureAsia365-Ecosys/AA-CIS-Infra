@@ -13,19 +13,22 @@ Input:
                           full history) and roles (db/migrations/roles here)
   --admin-dsn DSN         a SUPERUSER of a FRESH scratch server (the container's postgres user): roles are cluster
                           wide, so a server that ran a replay before keeps roles the next replay would create itself
-  --decisions FILE        db/schema_drift_decisions.json (its `baseline` list)
+  --decisions FILE        db/schema_drift_decisions.json (its `baseline` and `replay_order` lists)
 
 Steps:
   1. Role bootstrap, as the superuser: the RDS master `aa_cis_admin` (LOGIN CREATEROLE CREATEDB, NOT a superuser,
-     member of a stand-in `rds_superuser`), and every live role that no migration creates with a literal
-     `CREATE ROLE` (e.g. the TripPlanner runtime role, created by hand in 2026). A fresh database owned by the
+     member of a stand-in `rds_superuser`), and every live role that no migration creates (roles_created_by: a
+     `CREATE ROLE` in code, comments left out; today only the TripPlanner runtime role, created by hand in 2026). A fresh database owned by the
      master, and the live extensions (vector, pg_stat_statements) created in it by the superuser, as RDS lets
      its master do.
   2. Order (plan_order, pure): every registered version mapped to its file(s), sorted by applied_at; files of an
      owner with no registry row and numbered BELOW that owner's latest registered file (CIS legacy files applied
      by hand before self-registration) are replayed right after the file before them and flagged; files ABOVE it
-     are pending (not on Dev yet) and skipped; registered versions with no file are listed. Owner-decided baseline
-     files (db/schema_drift_decisions.json `baseline`, under db/replay_baseline/) are inserted before their key.
+     are pending (not on Dev yet) and skipped; registered versions with no file are listed. Back-registered rows
+     (description `backfill: …`, e.g. tp-007 wrote tp-001…tp-006 with applied_at = now()) carry the registration
+     time, not when the file ran: they are listed (`backfilled`), and owner decisions in
+     db/schema_drift_decisions.json `replay_order` move them before the registry key the evidence proves (S251).
+     Owner-decided baseline files (`baseline`, under db/replay_baseline/) are inserted before their key.
   3. Each file runs the way DB Migrate ran it (run_migration.py's own code): logged in as the master, or as
      db_migrator from the X1 S22 cutover (MIGRATOR_LOGIN_FROM) on; switched to the live owner of the dir's anchor
      schema (resolve_role + run_switched, ownership post-check included); roles/ files as the master. A file that
@@ -33,11 +36,25 @@ Steps:
      a registered file of another shape and a baseline file run like `psql -f` did before DB Migrate: one
      statement at a time, going on after an error ("partial"). A failure is recorded and the replay goes on. No
      lint (the copies are linted by the Copy Guard; historic files predate it). Failed / partial files keep the
-     `schema.name` they mention, so the drift report can say "explained by the failed replay of …".
+     `schema.name` they mention and what their DDL changes (ddl_targets), so the drift report can say "explained
+     by the failed replay of …" only when that file's DDL would have made the difference.
+     Gap fills (S251), so one replay gap does not take every later file down with it, each written to `notes`:
+     a. role gap: before each file, every live role whose creating file (role_creators: literal CREATE ROLE, or
+        format('CREATE ROLE %I') over live names) comes earlier but failed is created by the master with its live
+        attributes (never a password: the scratch server's own auth). Only the role: that file's grants stay a gap.
+     b. owner gap: when a dir's X1 ownership-transfer file (transfer_files: CIS 245, bk-014, tp-013) fails, the
+        replay does what it does to ownership, as the master: the dir's schemas to their live owner, every
+        relation / routine / enum the master owns in them to the anchor's live owner (third owners such as
+        catalog_owner keep theirs). Its grants, default privileges and checks stay a gap.
+     The replay targets PostgreSQL 15 (RDS 15.17, the workflow image). On 16 the CREATEROLE rules changed (a role's
+     creator gets ADMIN on it and "is a member"), so rl-001 / rl-002 refuse and the owner fill cannot SET ROLE:
+     a run on 16 is not comparable.
   4. The replayed catalog is dumped with db/schema_dump.collect (the same queries as the live dump).
 
-Output: --out results.json (one row per file: key, file, login, run_as, status, error; plus the lists of
-step 2) and --dump replay-schema.json. Exit 0 when the replay ran to the end (failed files included), 1 when it
+Output: --out results.json (one row per file: key, file, login, run_as, status, error, roles_filled,
+ownership_filled, moved_before, ddl; plus the lists of step 2, `notes` and `gap_roots`: the objects failed files
+needed, root = no file in any repo creates them before the first file that needs them) and --dump
+replay-schema.json. Exit 0 when the replay ran to the end (failed files included), 1 when it
 could not start. Needs asyncpg (the workflow pins it); everything else is the standard library.
 """
 from __future__ import annotations
@@ -87,8 +104,12 @@ class Item:
     status: str = "pending"   # ok | partial (legacy file, some statements failed) | failed
     error: str = ""
     log_tail: list = field(default_factory=list)
+    roles_filled: list = field(default_factory=list)  # live roles created just before this file (role gap)
+    ownership_filled: list = field(default_factory=list)  # ALTER … OWNER TO run after this failed transfer file
+    moved_before: str = ""    # registry key a `replay_order` decision placed this file before ('' = registry order)
     names: list = field(default_factory=list)     # schema.name the file mentions (failed / partial files only)
     schemas: list = field(default_factory=list)   # schemas it mentions (same)
+    ddl: dict = field(default_factory=dict)       # what the file changes with DDL (same; ddl_targets)
 
     @property
     def rel(self) -> str:
@@ -176,13 +197,154 @@ def mentioned(sql: str, known_schemas: set) -> tuple:
     return sorted(names), sorted(schemas)
 
 
-def created_roles(texts: list) -> set:
-    """Role names a migration creates with a literal CREATE ROLE (IF NOT EXISTS guards included)."""
-    out = set()
-    for t in texts:
-        for m in re.finditer(r"\bCREATE\s+(?:ROLE|USER)\s+\"?([A-Za-z_][A-Za-z0-9_$]*)", t, re.IGNORECASE):
-            out.add(m.group(1).lower())
+_ID = r'"?([a-z_][a-z0-9_$]*)"?'
+_QUAL = _ID + r"\s*\.\s*" + _ID
+DDL_RES = (
+    # CREATE / ALTER / DROP of the object itself
+    re.compile(r"\b(?:create(?:\s+or\s+replace)?(?:\s+(?:unlogged|temporary|temp))?|alter|drop)\s+"
+               r"(?:table|view|materialized\s+view|sequence|type|function|procedure|domain|foreign\s+table)\s+"
+               r"(?:if\s+(?:not\s+)?exists\s+)?(?:only\s+)?" + _QUAL),
+    # indexes, policies and triggers name their table after ON
+    re.compile(r"\bcreate\s+(?:unique\s+)?index\s+(?:concurrently\s+)?(?:if\s+not\s+exists\s+)?(?:\"?[a-z0-9_$]+\"?\s+)?"
+               r"on\s+(?:only\s+)?" + _QUAL),
+    re.compile(r"\b(?:create|alter|drop)\s+policy\s+(?:if\s+exists\s+)?\"?[a-z0-9_$]+\"?\s+on\s+" + _QUAL),
+    re.compile(r"\b(?:create(?:\s+or\s+replace)?(?:\s+constraint)?|drop)\s+trigger\s+(?:if\s+exists\s+)?"
+               r"\"?[a-z0-9_$]+\"?\s+[^;]*?\bon\s+" + _QUAL),
+    re.compile(r"\b(?:enable|disable|force|no\s+force)\s+row\s+level\s+security\b[^;]*?\bon\s+" + _QUAL),
+)
+RENAME_RE = re.compile(r"\balter\s+(?:table|view|materialized\s+view|sequence|type)\s+(?:if\s+exists\s+)?" + _QUAL +
+                       r"\s+rename\s+to\s+" + _ID)
+CREATE_RE = re.compile(r"\bcreate(?:\s+or\s+replace)?(?:\s+(?:unlogged|temporary|temp))?\s+"
+                       r"(?:table|view|materialized\s+view|sequence|type|function|procedure|domain)\s+"
+                       r"(?:if\s+not\s+exists\s+)?" + _QUAL)
+RECREATE_RE = re.compile(r"\b(?:create(?:\s+or\s+replace)?\s+(?:materialized\s+)?view"
+                         r"|drop\s+(?:materialized\s+view|view|table))\s+(?:if\s+(?:not\s+)?exists\s+)?" + _QUAL)
+DDL_SCHEMA_RE = re.compile(r"\b(?:create|alter|drop)\s+schema\s+(?:if\s+(?:not\s+)?exists\s+)?" + _ID)
+
+
+WORD_RE = re.compile(r"[a-z_][a-z0-9_$]*")
+DYNAMIC_KIND_RES = (           # what DDL a format()-built string does, by the drift finding kind it can explain
+    ("policy", re.compile(r"\b(?:create|alter|drop)\s+policy\b[^;]*%")),
+    ("index", re.compile(r"\b(?:create\s+(?:unique\s+)?index|drop\s+index)\b[^;]*%")),
+    ("trigger", re.compile(r"\b(?:create(?:\s+or\s+replace)?|drop)\s+trigger\b[^;]*%")),
+    ("column", re.compile(r"\balter\s+table\b[^;]*%[^;]*\b(?:(?:add|drop|alter)\s+column|type)\b")),
+    ("constraint", re.compile(r"\balter\s+table\b[^;]*%[^;]*\b(?:add|drop)\s+constraint\b")),
+    ("relation", re.compile(r"\b(?:create(?:\s+or\s+replace)?|drop)\s+(?:table|view|materialized\s+view)\b[^;]*%")),
+    ("function", re.compile(r"\b(?:create(?:\s+or\s+replace)?|drop)\s+function\b[^;]*%")),
+)
+
+
+def ddl_targets(sql: str, known_schemas: set) -> dict:
+    """What a file changes with DDL, for the drift report to tell "this failed file would have made that difference"
+    from "this failed file only names the object" (a SELECT, a GRANT, a check). Comments are left out; string
+    literals (dynamic SQL) are read as statements of their own. Keys (all sorted):
+      names      'schema.name' it creates / alters / drops (relation, routine, type), puts an index / policy / trigger /
+                 ROW LEVEL SECURITY on, or RENAMEs to
+      schemas    schemas it creates / alters / drops, or changes an object in
+      words      {'schema.name': identifiers of the statements that target it} (column, index, constraint, policy,
+                 trigger names), so "adds an index to raw_tours" does not explain a raw_tours column type
+      recreated  views it creates or replaces and views / tables it drops (every column of theirs is its doing)
+      created    schemas and 'schema.name' it CREATEs (or RENAMEs to): gap_roots tells a lost object from a cascade
+      dynamic    for a file that builds DDL with format('CREATE POLICY %I ON %I.%I …'): the kinds of DDL its strings do,
+                 the objects it names and its words (a broader claim, kind-bound in the report); {} otherwise"""
+    strings: list = []
+    text = (rm._role_view(sql, strings) + " ; " + " ; ".join(strings)).lower()
+    names, schemas, recreated, created = set(), set(), set(), set()
+    detail: dict = {}
+    for stmt in text.split(";"):
+        hit = set()
+        for m in CREATE_RE.finditer(stmt):
+            if m.group(1) in known_schemas:
+                created.add(f"{m.group(1)}.{m.group(2)}")
+        for m in re.finditer(r"\bcreate\s+schema\s+(?:if\s+not\s+exists\s+)?" + _ID, stmt):
+            if m.group(1) in known_schemas:
+                created.add(m.group(1))
+        for rx in DDL_RES:
+            for m in rx.finditer(stmt):
+                if m.group(1) in known_schemas:
+                    hit.add(f"{m.group(1)}.{m.group(2)}")
+        for m in RENAME_RE.finditer(stmt):
+            if m.group(1) in known_schemas:
+                hit.add(f"{m.group(1)}.{m.group(3)}")
+                created.add(f"{m.group(1)}.{m.group(3)}")
+        for m in RECREATE_RE.finditer(stmt):
+            if m.group(1) in known_schemas:
+                recreated.add(f"{m.group(1)}.{m.group(2)}")
+        for m in DDL_SCHEMA_RE.finditer(stmt):
+            if m.group(1) in known_schemas:
+                schemas.add(m.group(1))
+        if not hit:
+            continue
+        words = set(WORD_RE.findall(stmt))
+        for n in hit:
+            names.add(n)
+            schemas.add(n.split(".", 1)[0])
+            detail.setdefault(n, set()).update(words)
+    kinds = sorted({k for k, rx in DYNAMIC_KIND_RES for x in strings if rx.search(x.lower())})
+    dynamic: dict = {}
+    if kinds:
+        dyn_names, _ = mentioned(sql, known_schemas)
+        dynamic = {"kinds": kinds, "names": dyn_names, "words": sorted(set(WORD_RE.findall(text)))}
+    return {"names": sorted(names), "schemas": sorted(schemas), "recreated": sorted(recreated),
+            "created": sorted(created), "words": {k: sorted(v) for k, v in sorted(detail.items())}, "dynamic": dynamic}
+
+
+CREATE_ROLE_RE = re.compile(r"\bCREATE\s+(?:ROLE|USER)\s+\"?([A-Z_][A-Z0-9_$]*)")
+DYNAMIC_CREATE_ROLE_RE = re.compile(r"\bCREATE\s+(?:ROLE|USER)\s+%(?:[0-9]+\$)?[IsL]", re.IGNORECASE)
+
+
+def roles_created_by(sql: str, live_names: frozenset = frozenset()) -> set:
+    """Role names one file creates: a literal `CREATE ROLE x` in its code (comments left out, DO bodies read, IF NOT
+    EXISTS guards included), and, for a file that builds `CREATE ROLE %I` with format(), every live role named by
+    one of its string literals (rl-004: `FOREACH r IN ARRAY ARRAY['crm_ai_reader', …] … format('CREATE ROLE %I', r)`).
+    Read through run_migration's role lint view, so a `CREATE ROLE` inside a comment does not count."""
+    strings: list = []
+    code = rm._role_view(sql, strings)
+    out = {m.group(1).lower() for m in CREATE_ROLE_RE.finditer(code) if not m.group(1).startswith("%")}
+    if any(DYNAMIC_CREATE_ROLE_RE.search(s) for s in strings):
+        out |= {s for s in strings if s in live_names}
     return out
+
+
+def created_roles(texts: list, live_names: frozenset = frozenset()) -> set:
+    """Role names any of the files creates (roles_created_by)."""
+    out: set = set()
+    for t in texts:
+        out |= roles_created_by(t, live_names)
+    return out
+
+
+def role_creators(items: list, texts: dict, live_names: frozenset) -> dict:
+    """Pure: {live role: index in `items` of the FIRST file that creates it}. On Dev the role exists from that file
+    on; when that file fails in the replay (a replay gap upstream of it), fill_roles() creates the role before the
+    next file, so one lost file does not take every later role-dependent file down with it."""
+    out: dict = {}
+    for i, it in enumerate(items):
+        for r in roles_created_by(texts[it.owner][it.file], live_names):
+            if r in live_names and r != MASTER:
+                out.setdefault(r, i)
+    return out
+
+
+def roles_to_fill(index: int, creators: dict, existing: set) -> list:
+    """Pure: the live roles a file at `index` may rely on (their creating file comes earlier) that the replay does not
+    have (that file failed or ran partly). Sorted, for a stable log."""
+    return sorted(r for r, at in creators.items() if at < index and r not in existing)
+
+
+def role_attributes(r: dict) -> str:
+    """CREATE ROLE options from a live dump row: login, inherit, createrole, createdb, connection limit. Never a
+    password (a LOGIN role of the replay logs in through the scratch server's trust or a throw-away password), never
+    SUPERUSER / BYPASSRLS (no live role of the dump has them; the dump states it)."""
+    attrs = ["LOGIN" if r.get("login") else "NOLOGIN", "INHERIT" if r.get("inherit", True) else "NOINHERIT"]
+    if r.get("createrole"):
+        attrs.append("CREATEROLE")
+    if r.get("createdb"):
+        attrs.append("CREATEDB")
+    limit = r.get("connection_limit")
+    if isinstance(limit, int) and limit >= 0:
+        attrs.append(f"CONNECTION LIMIT {limit}")
+    return " ".join(attrs)
 
 
 def bootstrap_roles(live_roles: list, created: set) -> list:
@@ -242,14 +404,10 @@ async def prepare(admin_dsn: str, live: dict, created: set, db_name: str) -> lis
     master = await _connect(_dsn(admin_dsn, MASTER, SCRATCH_PASSWORD, db_name))
     try:
         for r in bootstrap_roles(live.get("roles", []), created):
-            attrs = ["LOGIN" if r.get("login") else "NOLOGIN", "INHERIT" if r.get("inherit", True) else "NOINHERIT"]
-            if r.get("createrole"):
-                attrs.append("CREATEROLE")
-            if r.get("createdb"):
-                attrs.append("CREATEDB")
+            attrs = role_attributes(r)
             await master.execute(f"DO $$ BEGIN IF to_regrole('{r['role']}') IS NULL THEN "
-                                 f"CREATE ROLE {_q(r['role'])} {' '.join(attrs)}; END IF; END $$")
-            notes.append(f"bootstrap role {r['role']} ({' '.join(attrs)}): live, created by no migration")
+                                 f"CREATE ROLE {_q(r['role'])} {attrs}; END IF; END $$")
+            notes.append(f"bootstrap role {r['role']} ({attrs}): live, created by no migration")
     finally:
         await master.close()
     db = await _connect(_dsn(admin_dsn, *_admin_user(admin_dsn), db_name))
@@ -266,6 +424,98 @@ async def prepare(admin_dsn: str, live: dict, created: set, db_name: str) -> lis
     finally:
         await db.close()
     return notes
+
+
+async def fill_roles(master_dsn: str, index: int, creators: dict, live_roles: dict, items: list) -> list:
+    """Role gap (step 3a): before the file at `index`, create (as the master, as on Dev) every live role whose
+    creating file comes earlier but failed in the replay. Only the role itself, with its live attributes: what else
+    that file did (grants, objects) stays a replay gap and keeps explaining its findings. Returns the names."""
+    if not any(at < index for at in creators.values()):
+        return []
+    conn = await _connect(master_dsn)
+    try:
+        existing = {r["rolname"] for r in await conn.fetch("SELECT rolname::text FROM pg_catalog.pg_roles")}
+        out = []
+        for name in roles_to_fill(index, creators, existing):
+            try:
+                await conn.execute(f"CREATE ROLE {_q(name)} {role_attributes(live_roles[name])}")
+                out.append(f"{name} (from {items[creators[name]].rel})")
+            except Exception as exc:      # reported, not fatal: the file that needs it then fails and says why
+                out.append(f"FAILED {name} (from {items[creators[name]].rel}): {type(exc).__name__} {exc}")
+    finally:
+        await conn.close()
+    return out
+
+
+def transfer_files(items: list, texts: dict) -> dict:
+    """Pure: {owner dir: index of its X1 ownership-transfer file} = the first file of the dir whose code runs
+    `ALTER SCHEMA <anchor schema> OWNER TO …` (CIS 245, bk-014, tp-013; crm is born under crm_owner and has none).
+    From that file on, DB Migrate runs the dir's files as the anchor's new owner (resolve_role)."""
+    out: dict = {}
+    for i, it in enumerate(items):
+        od = rm.OWNER_DIRS.get(it.owner)
+        if od is None or it.owner in out:
+            continue
+        code = rm._role_view(texts[it.owner][it.file], [])
+        if re.search(rf"\bALTER SCHEMA \"?{od.anchor_schema.upper()}\"? OWNER TO\b", code):
+            out[it.owner] = i
+    return out
+
+
+OWNED_SQL = """
+SELECT n.nspname::text AS schema, c.relname::text AS name, c.relkind::text AS kind
+FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname = ANY($1::text[]) AND c.relowner = $2::regrole AND c.relkind IN ('r', 'p', 'v', 'm', 'f', 'S')
+  AND NOT (c.relkind = 'S' AND EXISTS (SELECT 1 FROM pg_catalog.pg_depend d WHERE d.classid = 'pg_class'::regclass
+           AND d.objid = c.oid AND d.deptype IN ('a', 'i')))
+  AND NOT c.relispartition
+ORDER BY 1, 2"""
+OWNED_ROUTINES_SQL = """
+SELECT p.oid::regprocedure::text AS sig, p.prokind::text AS kind
+FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+WHERE n.nspname = ANY($1::text[]) AND p.proowner = $2::regrole ORDER BY 1"""
+OWNED_TYPES_SQL = """
+SELECT t.oid::regtype::text AS name
+FROM pg_catalog.pg_type t JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
+WHERE n.nspname = ANY($1::text[]) AND t.typowner = $2::regrole AND t.typtype IN ('e', 'd')
+ORDER BY 1"""
+REL_KEYWORD = {"r": "TABLE", "p": "TABLE", "f": "FOREIGN TABLE", "v": "VIEW", "m": "MATERIALIZED VIEW",
+               "S": "SEQUENCE"}
+
+
+async def fill_ownership(master_dsn: str, owner_dir: str, live_schema_owner: dict) -> list:
+    """Owner gap (step 3b): the dir's transfer file failed in the replay (a replay gap upstream of it), so do what it
+    does to ownership, the way it does it: every schema of the dir that exists goes to its live owner, and every
+    relation, routine and enum/domain in them that the master owns goes to the anchor's live owner (objects of a
+    third owner, e.g. catalog_owner's catalog.* views, stay). Its grants, default privileges and checks are NOT
+    redone: they stay a replay gap (privileges, informational). Returns the statements run, for the report."""
+    od = rm.OWNER_DIRS[owner_dir]
+    new_owner = live_schema_owner.get(od.anchor_schema)
+    if not new_owner or new_owner == MASTER:
+        return []
+    done: list = []
+    conn = await _connect(master_dsn)
+    try:
+        present = [r["nspname"] for r in await conn.fetch(
+            "SELECT nspname::text FROM pg_catalog.pg_namespace WHERE nspname = ANY($1::text[]) ORDER BY 1",
+            list(od.schemas))]
+        stmts = [f"ALTER SCHEMA {_q(sc)} OWNER TO {_q(live_schema_owner.get(sc) or new_owner)}" for sc in present]
+        for r in await conn.fetch(OWNED_SQL, present, MASTER):
+            stmts.append(f"ALTER {REL_KEYWORD[r['kind']]} {_q(r['schema'])}.{_q(r['name'])} OWNER TO {_q(new_owner)}")
+        for r in await conn.fetch(OWNED_ROUTINES_SQL, present, MASTER):
+            kw = "PROCEDURE" if r["kind"] == "p" else ("AGGREGATE" if r["kind"] == "a" else "FUNCTION")
+            stmts.append(f"ALTER {kw} {r['sig']} OWNER TO {_q(new_owner)}")
+        for r in await conn.fetch(OWNED_TYPES_SQL, present, MASTER):
+            stmts.append(f"ALTER TYPE {r['name']} OWNER TO {_q(new_owner)}")
+        for st in stmts:              # one by one: a statement the scratch server refuses is reported, not fatal
+            try:
+                await conn.execute(st)
+                done.append(st)
+            except Exception as exc:
+                done.append(f"FAILED {st}: {type(exc).__name__} {getattr(exc, 'sqlstate', '') or ''} {exc}".strip())
+    finally:
+        await conn.close()
+    return done
 
 
 def _admin_user(admin_dsn: str) -> tuple:
@@ -355,12 +605,98 @@ def add_baseline(order: dict, baseline: list, texts: dict) -> list:
     return problems
 
 
-async def replay(admin_dsn: str, live: dict, sources: dict, out_dump: str | None, baseline: list = ()) -> dict:
+NEEDED_RES = (
+    re.compile(r'relation "([a-z_][a-z0-9_$]*\.[a-z_][a-z0-9_$]*)" does not exist'),
+    re.compile(r'schema "([a-z_][a-z0-9_$]*)" does not exist'),
+    re.compile(r"\b([a-z_][a-z0-9_$]*\.[a-z_][a-z0-9_$]*) (?:does not exist|is missing|missing)\b"),
+    re.compile(r"\bschema ([a-z_][a-z0-9_$]*) \(migration [0-9]+\) is missing"),
+)
+
+
+def gap_roots(items: list, texts: dict, known_schemas: set) -> list:
+    """Pure: the objects the failed / partial files needed (from their first error: `relation "x.y" does not exist`,
+    `schema "x" does not exist`, a guard's `x.y does not exist` / `missing`), with the files that need them and the
+    files that CREATE them (ddl_targets `created`, any status). root = no file creates the object before the first file
+    that needs it: history no repo holds (a baseline file, or an owner decision); otherwise the gap is a cascade of
+    its creator's failure."""
+    need: dict = {}
+    first: dict = {}
+    for i, it in enumerate(items):
+        if it.status == "ok" or not it.error:
+            continue
+        err = it.error.lower()
+        for rx in NEEDED_RES:
+            found = [m.group(1) for m in rx.finditer(err) if m.group(1).split(".", 1)[0] in known_schemas]
+            for obj in found:
+                need.setdefault(obj, []).append(it.rel)
+                first.setdefault(obj, i)
+            if found:
+                break
+    made: dict = {}
+    for i, it in enumerate(items):
+        created = ddl_targets(texts[it.owner][it.file], known_schemas)["created"] if need else []
+        for obj in need:
+            if obj in created:
+                made.setdefault(obj, []).append((i, f"{it.rel} ({it.status})"))
+    return [{"object": o, "needed_by": need[o], "created_by": [r for _, r in made.get(o, [])],
+             "root": not any(i < first[o] for i, _ in made.get(o, []))} for o in sorted(need)]
+
+
+BACKFILL_RE = re.compile(r"^\s*backfill\b", re.IGNORECASE)
+
+
+def backfilled(migrations: list) -> list:
+    """Registry versions whose row was written by a later back-registration (description `backfill: …`, e.g. tp-007
+    registering tp-001…tp-006): their applied_at is the registration time, not when the file ran, so their place
+    in the order is only an upper bound. Reported, and placed by a `replay_order` entry when a dependency proves it."""
+    return sorted(str(m["version"]) for m in migrations if BACKFILL_RE.match(str(m.get("description") or "")))
+
+
+def apply_order_fixes(order: dict, fixes: list) -> list:
+    """Owner decisions (db/schema_drift_decisions.json `replay_order`): move registered files whose registry
+    applied_at is not when they ran (back-registered rows) to just before the registry key `before`, in the order
+    `keys` lists them. Pure; returns problems (unknown key, a key moved twice, `before` in the moved set)."""
+    problems: list = []
+    items = order["items"]
+    moved: set = set()
+    for fx in fixes:
+        keys = [str(k) for k in fx.get("keys", [])]
+        before = str(fx.get("before", ""))
+        if not keys or not before:
+            problems.append(f"replay_order entry {fx!r}: needs `keys` and `before`")
+            continue
+        if before in keys or set(keys) & moved:
+            problems.append(f"replay_order {keys} before {before}: a key is moved twice or is its own anchor")
+            continue
+        picked = [it for k in keys for it in items if it.key == k and it.registered]
+        if len(picked) != len(keys):
+            problems.append(f"replay_order {keys}: not every key is a registered file of the replay")
+            continue
+        if not any(it.key == before for it in items):
+            problems.append(f"replay_order {keys}: registry key {before!r} is not in the replay order")
+            continue
+        for it in picked:
+            items.remove(it)
+        at = next(i for i, it in enumerate(items) if it.key == before)
+        items[at:at] = picked
+        for it in picked:
+            it.moved_before = before
+        moved |= set(keys)
+    return problems
+
+
+async def replay(admin_dsn: str, live: dict, sources: dict, out_dump: str | None, baseline: list = (),
+                 replay_order: list = ()) -> dict:
     texts = {o: {f: (Path(p) / f).read_text(encoding="utf-8") for f in os.listdir(p) if f.endswith(".sql")}
              for o, p in sources.items()}
-    created = created_roles([t for fs in texts.values() for t in fs.values()])
+    live_roles = {r["role"]: r for r in live.get("roles", [])}
+    live_names = frozenset(live_roles)
+    created = created_roles([t for fs in texts.values() for t in fs.values()], live_names)
     order = plan_order(live.get("migrations", []), {o: list(fs) for o, fs in texts.items()})
-    baseline_problems = add_baseline(order, list(baseline), texts)
+    baseline_problems = apply_order_fixes(order, list(replay_order)) + add_baseline(order, list(baseline), texts)
+    creators = role_creators(order["items"], texts, live_names)
+    transfers = transfer_files(order["items"], texts)
+    live_schema_owner = {x["schema"]: x.get("owner") for x in live.get("schemas", [])}
     db_name = (live.get("database") or {}).get("name") or DEFAULT_DB
     notes = await prepare(admin_dsn, live, created, db_name) + baseline_problems
     admin_db = _dsn(admin_dsn, *_admin_user(admin_dsn), db_name)
@@ -380,10 +716,23 @@ async def replay(admin_dsn: str, live: dict, sources: dict, out_dump: str | None
                     migrator_ready = True
             finally:
                 await admin.close()
+        filled = await fill_roles(master_dsn, i, creators, live_roles, order["items"])
+        if filled:
+            item.roles_filled = filled
+            notes.append(f"role gap before {item.rel}: created {', '.join(filled)} with their live attributes "
+                         f"(the file that creates them on Dev failed in the replay)")
         dsn = migrator_dsn if (use_migrator and migrator_ready) else master_dsn
         await run_item(item, texts[item.owner][item.file], dsn)
         if item.status != "ok":
             item.names, item.schemas = mentioned(texts[item.owner][item.file], known_schemas)
+            item.ddl = ddl_targets(texts[item.owner][item.file], known_schemas)
+            if transfers.get(item.owner) == i:
+                item.ownership_filled = await fill_ownership(master_dsn, item.owner, live_schema_owner)
+                bad = [x for x in item.ownership_filled if x.startswith("FAILED")]
+                notes.append(f"owner gap after {item.rel} (the {item.owner} ownership transfer failed in the replay): "
+                             f"{len(item.ownership_filled) - len(bad)} ALTER … OWNER TO statement(s) as the master, so "
+                             f"the dir's later files run as its live owner like on Dev; its grants stay a gap"
+                             + (f"; {len(bad)} refused, first: {bad[0][:200]}" if bad else ""))
         print(f"REPLAY {item.status:6} {item.rel} key={item.key or '-'} login={item.login or '-'} "
               f"as={item.run_as or '-'}{' ' + item.error[:160] if item.error else ''}", flush=True)
     import asyncpg
@@ -408,6 +757,8 @@ async def replay(admin_dsn: str, live: dict, sources: dict, out_dump: str | None
                    "pending": len(order["pending"]), "no_file": len(order["no_file"])},
         "items": [{**{k: v for k, v in asdict(it).items()}, "rel": it.rel} for it in items],
         "pending": order["pending"], "no_file": order["no_file"], "legacy": order["legacy"], "notes": notes,
+        "backfilled": backfilled(live.get("migrations", [])),
+        "gap_roots": gap_roots(items, texts, known_schemas),
     }
 
 
@@ -437,10 +788,11 @@ def main(argv: list | None = None) -> int:
         print("--admin-dsn (or REPLAY_ADMIN_DSN) is required", file=sys.stderr)
         return 1
     live = json.loads(Path(args.live).read_text(encoding="utf-8"))
-    baseline = []
+    decisions: dict = {}
     if args.decisions and Path(args.decisions).is_file():
-        baseline = json.loads(Path(args.decisions).read_text(encoding="utf-8")).get("baseline", [])
-    result = asyncio.run(replay(args.admin_dsn, live, parse_sources(args.source), args.dump, baseline))
+        decisions = json.loads(Path(args.decisions).read_text(encoding="utf-8"))
+    result = asyncio.run(replay(args.admin_dsn, live, parse_sources(args.source), args.dump,
+                                decisions.get("baseline", []), decisions.get("replay_order", [])))
     Path(args.out).write_text(json.dumps(result, indent=1, sort_keys=True, default=str), encoding="utf-8")
     c = result["counts"]
     print(f"REPLAY done files={c['files']} ok={c['ok']} partial={c['partial']} failed={c['failed']} "

@@ -331,11 +331,19 @@ superuser, in a stand-in `rds_superuser`; live roles no migration creates, made 
 made by the superuser), then every applied file in live `shared.schema_versions` order with `run_migration.py`'s own
 role logic (master login, `db_migrator` from the X1 S22 cutover, the live-owner switch with its ownership post-check;
 legacy files without a registry row and owner-decided baseline files run like `psql -f`, one statement at a time),
-then `schema_dump.collect` on the result. No AWS credential or token exists in that job. `db/schema_drift.py` diffs the two dumps
+then `schema_dump.collect` on the result. Gap fills (S251) keep one lost file from failing everything after it:
+a live role whose creating file failed is created (live attributes, no password) before the next file; a failed X1
+ownership transfer (CIS 245, bk-014, tp-013) is followed by its ownership effect (schemas and the master's objects to
+the live owner), so later files still run as the owner like on Dev; back-registered registry rows (`backfill: …`)
+are moved by `replay_order` decisions to where the evidence says they ran. Every fill is listed in `replay.notes`;
+the failed file's other effects stay a gap. PostgreSQL 15 only (16 changed CREATEROLE: rl-001 / rl-002 refuse). No AWS credential or token exists in that job. `db/schema_drift.py` diffs the two dumps
 (schemas, relations, columns, indexes, CHECK/FK constraints, policies, triggers, functions, enums; owners and grants
 separately, informational): **unmanaged** (on Dev, no migration makes it), **missing**, **changed**; children fold into
-their relation, each finding names the failed replay files that mention it (`explained_by`) and its owner decision
-from `db/schema_drift_decisions.json` (`decisions`: finding id or glob, decision, ref; `baseline`: SQL files under
+their relation, each finding names the failed replay files whose DDL would have made it (`explained_by`; files that
+only name it are `mentioned_by` and do not explain it: `unexplained` counts what is drift on Dev to decide), the root
+gaps (`replay.gap_roots`: objects failed files needed that no file in any repo creates) and its owner decision
+from `db/schema_drift_decisions.json` (`decisions`: finding id or glob, decision, ref; `replay_order`: back-registered
+files moved before a registry key, with the evidence; `baseline`: SQL files under
 `db/replay_baseline/` run as the master before a registry key, for history no repo holds any more, such as the
 AA-ACP-Core lineage of `acp_*`). `gen_schema_reference.py --drift drift.json` renders the *Schema drift* section and
 a `drift-fingerprint` marker (in the `publish` job, which holds the App token and no AWS credential); a changed drift

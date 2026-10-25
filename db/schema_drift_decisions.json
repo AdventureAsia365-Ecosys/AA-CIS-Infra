@@ -1,5 +1,45 @@
 {
-  "about": "AA-853 owner decisions for the schema drift report (db/schema_drift.py) and the replay (db/replay_migrations.py). decisions: one entry per finding the owner has decided on: id (exact finding id as drift.json prints it, or a glob with *), class (unmanaged | missing | changed; default: any), owner (owners.yaml key), decision (keep | drop | write-migration | baseline | other text), ref (Linear issue), note. A decided finding is no longer counted as open. baseline: SQL files under db/replay_baseline/ that recreate what a lost migration made (for example the AA-ACP-Core lineage), each run as the master right before the registry key in `before` (or \"start\"): file, before, owner, reason, ref. Change this file by PR; the owner of the schema approves.",
+  "about": "AA-853 owner decisions for the schema drift report (db/schema_drift.py) and the replay (db/replay_migrations.py). decisions: one entry per finding the owner has decided on: id (exact finding id as drift.json prints it, or a glob with *), class (unmanaged | missing | changed; default: any), owner (owners.yaml key), decision (keep | drop | write-migration | baseline | other text), ref (Linear issue), note. A decided finding is no longer counted as open. baseline: SQL files under db/replay_baseline/ that recreate what a lost migration made (for example the AA-ACP-Core lineage), each run as the master right before the registry key in `before` (or \"start\"): file, before, owner, reason, ref. replay_order: registered files whose registry applied_at is not when they ran (back-registered rows, description `backfill: …`), moved before the registry key in `before` in the order `keys` lists them: keys, before, owner, reason (with the evidence), ref. Change this file by PR; the owner of the schema approves.",
   "decisions": [],
-  "baseline": []
+  "baseline": [],
+  "replay_order": [
+    {
+      "keys": [
+        "tp-002",
+        "tp-001"
+      ],
+      "before": "149",
+      "owner": "tripplanner",
+      "ref": "AA-853",
+      "reason": "Back-registered: tp-007 (AA-684) wrote the registry rows of tp-001..tp-006 on 2026-10-11 06:13 UTC with applied_at = now(), after checking their objects exist; the files ran by hand earlier. Placed at the first registry row after the files' first commit (AA-TripPlanner-Web 967c54b, 2026-09-11 03:57 UTC). Proof they ran before 2026-10-01: CIS 198 (applied 2026-10-01 05:36 UTC) has an FK to shared.destinations, which only tp-002 creates. tp-002 first: tp-001's header says apply 002 first (itinerary_components references shared.destinations)."
+    },
+    {
+      "keys": [
+        "tp-003"
+      ],
+      "before": "179",
+      "owner": "tripplanner",
+      "ref": "AA-853",
+      "reason": "Back-registered: tp-007 (AA-684) wrote the registry rows of tp-001..tp-006 on 2026-10-11 06:13 UTC with applied_at = now(), after checking their objects exist; the files ran by hand earlier. Placed at the first registry row after its first commit (2026-09-29 05:19 UTC)."
+    },
+    {
+      "keys": [
+        "tp-004"
+      ],
+      "before": "180",
+      "owner": "tripplanner",
+      "ref": "AA-853",
+      "reason": "Back-registered: tp-007 (AA-684) wrote the registry rows of tp-001..tp-006 on 2026-10-11 06:13 UTC with applied_at = now(), after checking their objects exist; the files ran by hand earlier. Placed at the first registry row after its first commit (2026-09-29 05:33 UTC)."
+    },
+    {
+      "keys": [
+        "tp-005",
+        "tp-006"
+      ],
+      "before": "181",
+      "owner": "tripplanner",
+      "ref": "AA-853",
+      "reason": "Back-registered: tp-007 (AA-684) wrote the registry rows of tp-001..tp-006 on 2026-10-11 06:13 UTC with applied_at = now(), after checking their objects exist; the files ran by hand earlier. Placed at the first registry row after their first commits (2026-09-29 06:15 and 07:45 UTC)."
+    }
+  ]
 }
