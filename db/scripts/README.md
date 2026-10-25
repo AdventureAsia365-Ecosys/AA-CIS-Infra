@@ -196,6 +196,16 @@ FX row and departures with the fee % the check expects (`SCRIPT verify`) and `SC
 PR `READ_ONLY = False`. No cleanup action: FX rows are append-only (a later real VND row supersedes it); the departures
 go with the AA-973 seed cleanup. Notes: `docs/implementation-notes/AA-974.md`.
 
+`aa991_freshness_probe.py` (AA-991, S251, read-only): the downstream freshness probe. Inside one read-only snapshot
+it switches to `cis_app` and counts, per layer, the links that did not follow a tour's atoms (`SCRIPT metric name=…
+gate=stale|info n=… aged=… sample=…`; aged = the tour changed more than 24 h before the run), the catalogue size and
+the visibility floor (`SCRIPT totals …`), the pipeline jobs queued or running (`SCRIPT jobs …`), then
+`SCRIPT verdict stale=<n> stale_aged=<n> errors=<n> list=…` and the same `SCRIPT json[i/n] <part>|` framing as the
+liveness probe. main() always returns 0; the nightly **DB Freshness Probe** runs it and `db/freshness_gate.py` decides
+(report mode until AA-988/989/990 close; metrics and the S251 baseline in `db/README.md`). Ids only (at most 5 per
+metric, anything not id-shaped printed as `masked`); a failed metric logs its exception class and SQLSTATE, the
+server message only for class 42.
+
 `s248_tour_deletion_probe.py` (AA-986, S248, read-only): the cross-app half of the tour-deletion propagation probe
 (root repo audit `docs/audits/2026-10-23-S248-tour-deletion-propagation/`; the CIS half runs by ECS exec as
 `cis_app`). Buckets the AA master tenant's `silver_aa_internal.raw_tours` versions by the live rule
