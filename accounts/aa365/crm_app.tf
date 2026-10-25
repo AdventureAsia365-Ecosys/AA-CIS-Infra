@@ -217,8 +217,6 @@ resource "aws_iam_role_policy" "crm_ecs_execution" {
           aws_secretsmanager_secret.crm_db.arn,
           aws_secretsmanager_secret.crm_sentry_dsn.arn,
           aws_secretsmanager_secret.m2m_crm_client.arn,
-          # AA-945: the agencies' send-as OAuth clients (crm_mail.tf), mapped only with crm_mail_oauth_enabled.
-          aws_secretsmanager_secret.crm_mail_oauth.arn,
         ]
       },
     ]
@@ -351,9 +349,6 @@ resource "aws_iam_role_policy" "crm_ecs_task" {
 # aa-crm/<env>/m2m-booking-client {client_id, client_secret, token_url, scopes} (identity_m2m.tf). The worker's
 # crm_membership_pull asks for scope cis.tenant/read with it; while either is empty the job logs not_configured. The
 # secret holds a value on Dev since AA-972 (a task whose valueFrom secret has no value fails to start).
-# AA-945 (CRM-17 mail, crm_mail.tf local.crm_mail_env / crm_mail_secrets): CRM_INGEST_BUCKET (the ingest bucket the
-# forward-in rule writes raw/ to), CRM_INGEST_DOMAIN (crm-in.<zone>), MAIL_OAUTH_REDIRECT_BASE (the partner host, where
-# the web's OAuth callback lives) and, only with var.crm_mail_oauth_enabled, the secret MAIL_OAUTH.
 # GIT_SHA and APP_VERSION are baked into the image.
 # -----------------------------------------------------------------------------
 resource "aws_ecs_task_definition" "crm_api" {
@@ -399,13 +394,13 @@ resource "aws_ecs_task_definition" "crm_api" {
       { name = "AUDIT_RETENTION_DRY_RUN", value = "true" },
       # AA-978: the CIS membership feed (crm_membership_pull); credentials in the secret M2M_CLIENT below.
       { name = "CIS_API_URL", value = var.crm_cis_api_url },
-      ], local.crm_identity_env, local.crm_scrub_env, local.crm_mail_env, var.crm_sentry_enabled ? [
+      ], local.crm_identity_env, local.crm_scrub_env, var.crm_sentry_enabled ? [
       { name = "SENTRY_REQUIRED", value = "true" },
     ] : [])
     secrets = concat([
       { name = "DATABASE_URL", valueFrom = aws_secretsmanager_secret.crm_db.arn },
       { name = "M2M_CLIENT", valueFrom = aws_secretsmanager_secret.m2m_crm_client.arn }, # AA-978, identity_m2m.tf
-      ], local.crm_mail_secrets, var.crm_sentry_enabled ? [
+      ], var.crm_sentry_enabled ? [
       { name = "SENTRY_DSN", valueFrom = aws_secretsmanager_secret.crm_sentry_dsn.arn },
     ] : [])
     logConfiguration = {
