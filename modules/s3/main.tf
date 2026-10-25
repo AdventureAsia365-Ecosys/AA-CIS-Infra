@@ -78,7 +78,9 @@ resource "aws_s3_bucket_lifecycle_configuration" "bronze" {
   }
 
   # AA-825 (DM-7.3, data-management.md "S3 archive objects"): the retention jobs write
-  # Parquet to archive/<table>/yyyy/mm/ (archive-before-delete). They are read only for a
+  # gzipped JSON Lines (not Parquet: no pyarrow in the CIS or Booking image) to
+  # archive/<table>/yyyy/mm/ and, for Booking, archive/booking/<table>/yyyy/mm/
+  # (archive-before-delete). They are read only for a
   # restore or a later Athena query (L6), so after 90 days they move to Standard-IA.
   # No expiration: the per-table expiry is still to be set (N4), and the archive is the
   # only copy of the deleted rows. ("archive/" does not match "raw-archive/": S3 prefixes
