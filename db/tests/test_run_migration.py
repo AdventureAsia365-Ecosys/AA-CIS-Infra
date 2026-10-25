@@ -471,7 +471,9 @@ class IdleCheckTest(unittest.TestCase):
                   "crm": [job("crm_heartbeat"), job("crm_membership_pull"), job("crm_membership_pull", "running")]}, 0)
         code, conn, _, log = self.run_task(PLAIN, conn=FakeConn(states=[state]))
         self.assertEqual((code, conn.executed, self.sleeps), (0, [PLAIN], []))
-        self.assertIn("MIGRATE idle: crm.job running=0 queued=0 (exempt: crm_heartbeat, crm_membership_pull)", log)
+        self.assertIn(
+            "MIGRATE idle: crm.job running=0 queued=0 (exempt: crm_booking_sync, crm_heartbeat, crm_membership_pull)", log
+        )
         state = ({"booking": [], "shared": [], "crm": [job("crm_membership_pull"), job("crm_intake_process")]}, 0)
         code, conn, _, log = self.run_task(PLAIN, conn=FakeConn(states=[state]))
         self.assertEqual((code, conn.executed), (7, []))

@@ -63,6 +63,17 @@ variable "crm_cis_api_url" {
   }
 }
 
+variable "crm_booking_api_url" {
+  description = "AA-947: BOOKING_API_URL of the AA-Partner task, the Booking API origin the CRM calls booking.b2b.v1 on (<this>/booking/b2b/v1: quotes, holds, confirms, the /events feed) with the same M2M_CLIENT (scopes booking.b2b/*, identity_m2m.tf). The public Booking REST API custom domain (custom_domains.tf); no path, no trailing slash. Empty: AA requests stay pending in the CRM."
+  type        = string
+  default     = "https://api-booking.lumiguides.it.com"
+
+  validation {
+    condition     = var.crm_booking_api_url == "" || can(regex("^https://[a-z0-9.-]+$", var.crm_booking_api_url))
+    error_message = "crm_booking_api_url must be empty or an https origin without a path or trailing slash."
+  }
+}
+
 variable "crm_sentry_enabled" {
   description = "AA-933: map secret crm/<env>/sentry-dsn into the AA-Partner task (SENTRY_DSN) and set SENTRY_REQUIRED=true. Turn on only AFTER the secret has a value (Sentry project aa-partner-api): a task whose secret has no value fails to start."
   type        = bool
@@ -351,6 +362,8 @@ resource "aws_iam_role_policy" "crm_ecs_task" {
 # aa-crm/<env>/m2m-booking-client {client_id, client_secret, token_url, scopes} (identity_m2m.tf). The worker's
 # crm_membership_pull asks for scope cis.tenant/read with it; while either is empty the job logs not_configured. The
 # secret holds a value on Dev since AA-972 (a task whose valueFrom secret has no value fails to start).
+# AA-947 (CRM-19 B2B client): BOOKING_API_URL (var.crm_booking_api_url) with the same M2M_CLIENT (the CRM client holds
+# every booking.b2b scope and cis.catalog/read already, identity_m2m.tf: no Cognito, IAM or secret change).
 # AA-945 (CRM-17 mail, crm_mail.tf local.crm_mail_env / crm_mail_secrets): CRM_INGEST_BUCKET (the ingest bucket the
 # forward-in rule writes raw/ to), CRM_INGEST_DOMAIN (crm-in.<zone>), MAIL_OAUTH_REDIRECT_BASE (the partner host, where
 # the web's OAuth callback lives) and, only with var.crm_mail_oauth_enabled, the secret MAIL_OAUTH.
@@ -402,6 +415,8 @@ resource "aws_ecs_task_definition" "crm_api" {
       { name = "AUDIT_RETENTION_DRY_RUN", value = "true" },
       # AA-978: the CIS membership feed (crm_membership_pull); credentials in the secret M2M_CLIENT below.
       { name = "CIS_API_URL", value = var.crm_cis_api_url },
+      # AA-947: booking.b2b.v1 (crm_booking_sync, the AA product look-up); the same M2M_CLIENT secret.
+      { name = "BOOKING_API_URL", value = var.crm_booking_api_url },
       # AA-946: the portal code echo, Dev only (synthetic agencies, no mailbox); the API refuses it elsewhere.
       { name = "PORTAL_OTP_DEV_ECHO", value = var.environment == "dev" ? "true" : "false" },
       ], local.crm_identity_env, local.crm_scrub_env, local.crm_mail_env, var.crm_sentry_enabled ? [
