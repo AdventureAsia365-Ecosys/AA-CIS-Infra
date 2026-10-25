@@ -37,6 +37,10 @@ on:
       - "db/migrations/**"
       - "db/check_migration_copies.py"
       - "db/rls_catalogue_rules.py"
+      - "db/replay_migrations.py"        # AA-853 drift report (DB Schema Dump); unit tests in db/tests
+      - "db/schema_drift.py"
+      - "db/schema_drift_decisions.json"
+      - "db/replay_baseline/**"
       - "db/gen_schema_reference.py"
       - "db/gen_erd.py"
       - "tools/docs/aws_mask.py"   # imported by db/gen_schema_reference.py (AA-981)

@@ -1,0 +1,5 @@
+{
+  "about": "AA-853 owner decisions for the schema drift report (db/schema_drift.py) and the replay (db/replay_migrations.py). decisions: one entry per finding the owner has decided on: id (exact finding id as drift.json prints it, or a glob with *), class (unmanaged | missing | changed; default: any), owner (owners.yaml key), decision (keep | drop | write-migration | baseline | other text), ref (Linear issue), note. A decided finding is no longer counted as open. baseline: SQL files under db/replay_baseline/ that recreate what a lost migration made (for example the AA-ACP-Core lineage), each run as the master right before the registry key in `before` (or \"start\"): file, before, owner, reason, ref. Change this file by PR; the owner of the schema approves.",
+  "decisions": [],
+  "baseline": []
+}
