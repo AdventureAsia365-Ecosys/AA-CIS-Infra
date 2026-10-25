@@ -207,6 +207,9 @@ module "ecs" {
   # AA-847 lines: the place_shape job (line geometry, Geoapify credits). The flip is false -> true in its own PR;
   # it reaches the tasks on the next CIS Deploy Dev (the deploy copies the latest task-def revision).
   place_shapes_enabled = true
+  # AA-988: delete zero-reference orphan segments in every platform recompute (S252: backfill of 7,671 done by the
+  # runbook with a snapshot + restore file; DRY RUN after = 0 deletable). Rollback: "report".
+  segment_gc_mode = "apply"
   # AA-779: on since S247 (shadow verdicts read on real blogs first; ADR 0011 in AA-CIS-App). Rollback: "shadow".
   t9_faq_llm_filter = "on"
   # AA-645: S1 writer v2 on the worker, on since S248 (set by hand until S250, now carried here so a template
