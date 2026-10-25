@@ -262,6 +262,331 @@ class Render(unittest.TestCase):
         self.assertIsInstance(data.get("baseline"), list)
         for b in data["baseline"]:
             self.assertTrue((path.parent / b["file"]).is_file(), b)
+        for fx in data.get("replay_order", []):
+            self.assertTrue(fx.get("keys") and fx.get("before") and fx.get("reason") and fx.get("ref"), fx)
+
+
+class RoleGaps(unittest.TestCase):
+    """S251: roles a failed file would have created are filled before the next file (role_creators / roles_to_fill)."""
+
+    LIVE = frozenset({"bk_owner", "tp_owner", "catalog_owner", "crm_ai_reader", "crm_eraser", "tripplanner"})
+
+    def test_create_role_in_a_comment_does_not_count(self):
+        sql = "-- CREATE ROLE crm_ai_reader NOLOGIN (if missing)\n/* CREATE ROLE tp_owner */ SELECT 1;"
+        self.assertEqual(rp.roles_created_by(sql, self.LIVE), set())
+
+    def test_create_role_in_a_do_block_counts(self):
+        sql = "DO $$ BEGIN IF to_regrole('bk_owner') IS NULL THEN CREATE ROLE bk_owner NOLOGIN; END IF; END $$;"
+        self.assertEqual(rp.roles_created_by(sql, self.LIVE), {"bk_owner"})
+
+    def test_format_built_create_role_takes_the_live_names_of_its_strings(self):
+        sql = ("DO $$ DECLARE r text; BEGIN FOREACH r IN ARRAY ARRAY['crm_ai_reader', 'crm_eraser', 'not_live'] LOOP "
+               "EXECUTE format('CREATE ROLE %I NOLOGIN', r); END LOOP; END $$;")
+        self.assertEqual(rp.roles_created_by(sql, self.LIVE), {"crm_ai_reader", "crm_eraser"})
+
+    def test_format_built_create_role_ignores_live_names_it_only_grants_to(self):
+        # review S251 #5: a live role in another literal (a GRANT target, a check) is not created by the loop
+        sql = ("DO $$ DECLARE r text; BEGIN "
+               "IF to_regrole('tripplanner') IS NULL THEN RAISE EXCEPTION 'apply rl-001 first'; END IF; "
+               "FOREACH r IN ARRAY ARRAY['crm_ai_reader'] LOOP EXECUTE format('CREATE ROLE %I NOLOGIN', r); END LOOP; "
+               "EXECUTE format('GRANT %I TO %I', 'crm_eraser', 'bk_owner'); END $$;")
+        self.assertEqual(rp.roles_created_by(sql, self.LIVE), {"crm_ai_reader"})
+
+    def test_format_built_create_role_with_literal_arguments(self):
+        sql = "DO $$ BEGIN EXECUTE format('CREATE ROLE %I NOLOGIN', 'tp_owner'); END $$;"
+        self.assertEqual(rp.roles_created_by(sql, self.LIVE), {"tp_owner"})
+
+    def test_the_real_rl_004_creates_only_its_four_nologin_roles(self):
+        path = Path(__file__).resolve().parent.parent / "migrations" / "roles" / "004_crm_nologin_roles.sql"
+        sql = path.read_text(encoding="utf-8")
+        live = frozenset({"crm_ai_reader", "crm_insights", "crm_support_reader", "crm_eraser", "crm_app", "crm_owner",
+                          "aa_cis_admin"})
+        self.assertEqual(rp.roles_created_by(sql, live),
+                         {"crm_ai_reader", "crm_insights", "crm_support_reader", "crm_eraser"})
+
+    def _items(self):
+        order = rp.plan_order([mig("225", "2026-10-01"), mig("rl-001", "2026-10-02"), mig("243", "2026-10-03")],
+                              {"cis": ["225_catalog.sql", "243_grants.sql"], "roles": ["001_x1.sql"]})
+        texts = {"cis": {"225_catalog.sql": "CREATE ROLE catalog_owner NOLOGIN;", "243_grants.sql": "SELECT 1;"},
+                 "roles": {"001_x1.sql": "CREATE ROLE bk_owner NOLOGIN; CREATE ROLE catalog_owner NOLOGIN;"}}
+        return order["items"], texts
+
+    def test_first_creator_wins(self):
+        items, texts = self._items()
+        creators = rp.role_creators(items, texts, self.LIVE)
+        self.assertEqual(creators, {"catalog_owner": 0, "bk_owner": 1})
+
+    def test_only_roles_of_earlier_files_that_the_replay_lacks_are_filled(self):
+        items, texts = self._items()
+        creators = rp.role_creators(items, texts, self.LIVE)
+        self.assertEqual(rp.roles_to_fill(0, creators, set()), [])                 # its own creator runs first
+        self.assertEqual(rp.roles_to_fill(1, creators, set()), ["catalog_owner"])  # 225 failed: rl-001 needs it
+        self.assertEqual(rp.roles_to_fill(2, creators, {"catalog_owner"}), ["bk_owner"])
+        self.assertEqual(rp.roles_to_fill(2, creators, {"catalog_owner", "bk_owner"}), [])
+
+    def test_role_attributes_follow_the_live_row_without_a_password(self):
+        self.assertEqual(rp.role_attributes({"login": True, "inherit": False, "connection_limit": 6}),
+                         "LOGIN NOINHERIT CONNECTION LIMIT 6")
+        self.assertEqual(rp.role_attributes({"login": False, "inherit": True, "connection_limit": -1}),
+                         "NOLOGIN INHERIT")
+        self.assertEqual(rp.role_attributes({"login": True, "createrole": True, "createdb": True}),
+                         "LOGIN INHERIT CREATEROLE CREATEDB")
+
+
+class OwnerTransfer(unittest.TestCase):
+    def test_transfer_file_is_the_first_that_moves_the_anchor_schema(self):
+        order = rp.plan_order([mig("244", "2026-10-01"), mig("245", "2026-10-02"), mig("bk-014", "2026-10-03"),
+                               mig("246", "2026-10-04")],
+                              {"cis": ["244_a.sql", "245_owner.sql", "246_probe.sql"], "booking": ["014_bk.sql"]})
+        texts = {"cis": {"244_a.sql": "-- ALTER SCHEMA shared OWNER TO cis_owner comes in 245\nSELECT 1;",
+                         "245_owner.sql": "BEGIN; ALTER SCHEMA shared OWNER TO cis_owner; COMMIT;",
+                         "246_probe.sql": "ALTER SCHEMA shared OWNER TO cis_owner;"},
+                 "booking": {"014_bk.sql": "ALTER SCHEMA booking OWNER TO bk_owner;"}}
+        self.assertEqual(rp.transfer_files(order["items"], texts), {"cis": 1, "booking": 2})
+
+    def test_cis_scope_moves_every_schema_but_not_the_catalog_objects(self):
+        # review S251 #2: 245 item 4 moves objects in the 11 runtime schemas only; catalog's views stay
+        schemas, objects = rp.transfer_scope("cis", ["shared", "catalog", "geo", "not_cis"])
+        self.assertEqual(schemas, ["catalog", "geo", "shared"])
+        self.assertEqual(objects, ["geo", "shared"])
+        self.assertEqual(rp.transfer_scope("booking", ["booking"]), (["booking"], ["booking"]))
+        self.assertEqual(rp.transfer_scope("tripplanner", []), ([], []))
+
+    def test_every_schema_goes_to_the_new_owner_not_its_live_owner(self):
+        # review S251 #1: 245 sets all 12 CIS schemas to cis_owner; a later owner change on Dev must stay drift
+        stmts = rp.ownership_statements(["catalog", "shared"], [], "cis_owner")
+        self.assertEqual(stmts, ['ALTER SCHEMA "catalog" OWNER TO "cis_owner"',
+                                 'ALTER SCHEMA "shared" OWNER TO "cis_owner"'])
+
+    def test_objects_follow_the_schemas_with_their_kind_keyword(self):
+        objects = [("TABLE", "shared.job"), ("TYPE", "shared.tstz_window"), ("DOMAIN", "shared.iso2"),
+                   ("FUNCTION", "shared.f(integer)"), ("STATISTICS", "shared.job_stx"),
+                   ("TEXT SEARCH CONFIGURATION", 'shared."Simple"')]
+        stmts = rp.ownership_statements(["shared"], objects, "cis_owner")
+        self.assertEqual(stmts[0], 'ALTER SCHEMA "shared" OWNER TO "cis_owner"')
+        self.assertEqual(stmts[1:], [f'ALTER {k} {n} OWNER TO "cis_owner"' for k, n in objects])
+
+    def test_unknown_object_kind_is_refused(self):
+        with self.assertRaises(ValueError):
+            rp.ownership_statements([], [("SERVER", "x")], "cis_owner")
+
+    def test_owned_objects_query_takes_the_kinds_245_moves(self):
+        q = rp.OWNED_OBJECTS_SQL
+        self.assertIn("y.typtype IN ('e', 'd', 'r')", q)                 # range types too
+        self.assertIn("c.relkind IN ('r', 'p', 'v', 'm', 'f', 'S', 'c')", q)   # standalone composite types
+        self.assertIn("d.deptype = 'e'", q)                              # extension members stay
+        for kind in ("pg_statistic_ext", "pg_collation", "pg_conversion", "pg_ts_dict", "pg_ts_config"):
+            self.assertIn(kind, q)
+
+
+class ServerVersion(unittest.TestCase):
+    """review S251 #3: the replay refuses a server that is not PostgreSQL 15."""
+
+    def test_15_is_accepted(self):
+        self.assertIsNone(rp.check_server_version(150017))
+        self.assertIsNone(rp.check_server_version(150000))
+
+    def test_other_majors_are_refused(self):
+        for v in (160015, 140010, 170000):
+            msg = rp.check_server_version(v)
+            self.assertIsNotNone(msg)
+            self.assertIn(f"PostgreSQL {v // 10000}", msg)
+
+
+class FillRolesCache(unittest.TestCase):
+    """review S251 #6: fill_roles asks the server only when a role is due that was not seen yet."""
+
+    def test_no_connection_when_every_due_role_was_seen(self):
+        import asyncio
+        calls = []
+
+        async def fake_connect(*a, **k):
+            calls.append(a)
+            raise AssertionError("must not connect")
+
+        orig = rp._connect
+        rp._connect = fake_connect
+        try:
+            out = asyncio.run(rp.fill_roles("dsn", 5, {"bk_owner": 1, "tp_owner": 2}, {}, [], {"bk_owner", "tp_owner"}))
+            self.assertEqual(out, [])
+            out = asyncio.run(rp.fill_roles("dsn", 1, {"bk_owner": 1, "tp_owner": 2}, {}, [], set()))
+            self.assertEqual(out, [])                                   # nothing due yet (creator not earlier)
+        finally:
+            rp._connect = orig
+        self.assertEqual(calls, [])
+
+
+class ReplayOrder(unittest.TestCase):
+    LIVE = [mig("148", "2026-09-11 01:00"), mig("149", "2026-09-11 04:17"), mig("198", "2026-10-01"),
+            mig("tp-001", "2026-10-11", "backfill: tripplanner schema"), mig("tp-002", "2026-10-11", "backfill: x"),
+            mig("tp-007", "2026-10-11")]
+    SOURCES = {"cis": ["148_a.sql", "149_b.sql", "198_c.sql"],
+               "tripplanner": ["001_tp.sql", "002_dest.sql", "007_register.sql"]}
+
+    def test_back_registered_rows_are_listed(self):
+        self.assertEqual(rp.backfilled(self.LIVE), ["tp-001", "tp-002"])
+
+    def test_moved_before_their_anchor_in_the_given_order(self):
+        order = rp.plan_order(self.LIVE, self.SOURCES)
+        problems = rp.apply_order_fixes(order, [{"keys": ["tp-002", "tp-001"], "before": "149"}])
+        self.assertEqual(problems, [])
+        self.assertEqual([it.key for it in order["items"]], ["148", "tp-002", "tp-001", "149", "198", "tp-007"])
+        self.assertEqual(order["items"][1].moved_before, "149")
+
+    def test_bad_entries_are_reported_and_change_nothing(self):
+        order = rp.plan_order(self.LIVE, self.SOURCES)
+        before = [it.key for it in order["items"]]
+        problems = rp.apply_order_fixes(order, [{"keys": ["tp-001"], "before": "999"},
+                                                {"keys": ["tp-404"], "before": "149"},
+                                                {"keys": ["tp-001"], "before": "tp-001"},
+                                                {"keys": [], "before": "149"}])
+        self.assertEqual(len(problems), 4)
+        self.assertEqual([it.key for it in order["items"]], before)
+
+
+class DdlTargets(unittest.TestCase):
+    KNOWN = frozenset({"shared", "silver_aa_internal", "acp_shared"})
+
+    def test_ddl_targets_words_and_creates(self):
+        sql = ("-- ALTER TABLE shared.ignored ADD x int\n"
+               "CREATE TABLE IF NOT EXISTS acp_shared.audit_log (id bigint, actor text);\n"
+               "ALTER TABLE silver_aa_internal.raw_tours ADD COLUMN IF NOT EXISTS country_iso2 char(2);\n"
+               "CREATE INDEX IF NOT EXISTS idx_x ON silver_aa_internal.raw_tours (sku);\n"
+               "SELECT * FROM shared.tenants;\n"
+               "DROP VIEW IF EXISTS shared.v_usage; CREATE VIEW shared.v_usage AS SELECT 1 AS n;")
+        d = rp.ddl_targets(sql, self.KNOWN)
+        self.assertEqual(d["names"], ["acp_shared.audit_log", "shared.v_usage", "silver_aa_internal.raw_tours"])
+        self.assertEqual(d["created"], ["acp_shared.audit_log", "shared.v_usage"])
+        self.assertEqual(d["recreated"], ["shared.v_usage"])
+        self.assertIn("country_iso2", d["words"]["silver_aa_internal.raw_tours"])
+        self.assertIn("idx_x", d["words"]["silver_aa_internal.raw_tours"])
+        self.assertNotIn("shared.tenants", d["names"])          # a SELECT is not DDL
+        self.assertEqual(d["dynamic"], {})
+
+    def test_format_built_ddl_is_kind_bound(self):
+        sql = ("DO $$ BEGIN EXECUTE format('CREATE POLICY tenant_isolation ON %I.%I USING (true)', 'shared', 't'); "
+               "END $$; SELECT 1 FROM shared.tenants;")
+        d = rp.ddl_targets(sql, self.KNOWN)
+        self.assertEqual(d["dynamic"]["kinds"], ["policy"])
+        self.assertIn("shared.tenants", d["dynamic"]["names"])
+
+    def test_gap_roots_tell_lost_history_from_a_cascade(self):
+        order = rp.plan_order([mig("019", "2026-05-01"), mig("078", "2026-06-01"), mig("079", "2026-06-02")],
+                              {"cis": ["019_a.sql", "078_b.sql", "079_c.sql"]})
+        texts = {"cis": {"019_a.sql": "ALTER TABLE acp_shared.acp_runs ADD x int;",
+                         "078_b.sql": "CREATE SCHEMA IF NOT EXISTS acp_contract; SELECT pt.content_embedding;",
+                         "079_c.sql": "CREATE TABLE acp_contract.tour_atoms (id int);"}}
+        items = order["items"]
+        for it, err in zip(items, ['relation "acp_shared.acp_runs" does not exist',
+                                   "column pt.content_embedding does not exist",
+                                   'schema "acp_contract" does not exist'], strict=True):
+            it.status, it.error = "failed", err
+        roots = {g["object"]: g for g in rp.gap_roots(items, texts, {"acp_shared", "acp_contract"})}
+        self.assertTrue(roots["acp_shared.acp_runs"]["root"])                  # no file creates it
+        self.assertFalse(roots["acp_contract"]["root"])                        # 078 creates it, and failed
+        self.assertEqual(roots["acp_contract"]["created_by"], ["cis/078_b.sql (failed)"])
+
+
+class Attribution2(unittest.TestCase):
+    """S251: a failed file explains a finding only when its DDL makes that difference."""
+
+    def _live_with_column_type(self):
+        live = dump()
+        live["relations"]["shared"]["job"]["columns"][1]["type"] = "character varying(64)"
+        return live
+
+    def test_ddl_on_the_same_table_without_the_column_does_not_explain_it(self):
+        gap = {"items": [{"rel": "cis/004_rls.sql", "status": "partial", "names": ["shared.job"],
+                          "schemas": ["shared"], "ddl": {"names": ["shared.job"], "schemas": ["shared"],
+                                                         "words": {"shared.job": ["enable", "row", "level"]},
+                                                         "recreated": [], "created": [], "dynamic": {}}}]}
+        d = sd.diff(self._live_with_column_type(), dump(), gap)
+        f = d["changed"][0]
+        self.assertEqual(f["explained_by"], [])
+        self.assertEqual(f["mentioned_by"], ["cis/004_rls.sql"])
+        self.assertEqual(d["counts"]["unexplained"], 1)
+        self.assertEqual(d["counts"]["only_mentioned_by_replay_gap"], 1)
+
+    def test_ddl_naming_the_column_explains_it(self):
+        gap = {"items": [{"rel": "cis/090_type.sql", "status": "failed", "names": ["shared.job"],
+                          "ddl": {"names": ["shared.job"], "schemas": ["shared"],
+                                  "words": {"shared.job": ["alter", "kind", "type", "text"]},
+                                  "recreated": [], "created": [], "dynamic": {}}}]}
+        d = sd.diff(self._live_with_column_type(), dump(), gap)
+        self.assertEqual(d["changed"][0]["explained_by"], ["cis/090_type.sql"])
+        self.assertEqual(d["counts"]["unexplained"], 0)
+
+    def test_trigger_naming_a_column_does_not_explain_its_type(self):
+        # review S251 #8: CIS 279's `CREATE TRIGGER … UPDATE OF country ON raw_tours` named country in the words of
+        # raw_tours, so 279 "explained" the text/varchar difference of raw_tours.country
+        gap = {"items": [{"rel": "cis/279_countries.sql", "status": "failed", "names": ["shared.job"],
+                          "ddl": {"names": ["shared.job"], "schemas": ["shared"],
+                                  "words": {"shared.job": ["create", "trigger", "update", "of", "kind"]},
+                                  "columns": {"shared.job": ["kind_iso2"]},
+                                  "recreated": [], "created": [], "dynamic": {}}}]}
+        d = sd.diff(self._live_with_column_type(), dump(), gap)
+        self.assertEqual(d["changed"][0]["explained_by"], [])
+        self.assertEqual(d["changed"][0]["mentioned_by"], ["cis/279_countries.sql"])
+
+    def test_column_ddl_explains_the_column(self):
+        gap = {"items": [{"rel": "cis/090_type.sql", "status": "failed", "names": ["shared.job"],
+                          "ddl": {"names": ["shared.job"], "schemas": ["shared"], "words": {},
+                                  "columns": {"shared.job": ["kind"]},
+                                  "recreated": [], "created": [], "dynamic": {}}}]}
+        d = sd.diff(self._live_with_column_type(), dump(), gap)
+        self.assertEqual(d["changed"][0]["explained_by"], ["cis/090_type.sql"])
+
+    def test_the_real_279_shape_targets_only_country_iso2(self):
+        sql = ("ALTER TABLE silver_aa_internal.raw_tours ADD COLUMN IF NOT EXISTS country_iso2 character(2) "
+               "REFERENCES shared.countries (iso2);\n"
+               "CREATE INDEX IF NOT EXISTS raw_tours_country_iso2_idx ON silver_aa_internal.raw_tours (country_iso2);\n"
+               "CREATE TRIGGER raw_tours_country_iso2 BEFORE INSERT OR UPDATE OF country"
+               " ON silver_aa_internal.raw_tours FOR EACH ROW EXECUTE FUNCTION shared.set_country_iso2();")
+        ddl = rp.ddl_targets(sql, {"silver_aa_internal", "shared"})
+        self.assertEqual(ddl["columns"], {"silver_aa_internal.raw_tours": ["country_iso2"]})
+        self.assertIn("country", ddl["words"]["silver_aa_internal.raw_tours"])
+
+    def test_column_targets_of_alter_and_create_table(self):
+        ct = rp.column_targets("alter table only shared.t add column if not exists a int, alter column b type text, "
+                               "add constraint c check (x in (1, 2)), rename d to e, drop column f, owner to z",
+                               {"shared"})
+        self.assertEqual(ct, {"shared.t": {"a", "b", "d", "e", "f"}})
+        ct = rp.column_targets("create table if not exists shared.t (id int primary key, name text)", {"shared"})
+        self.assertTrue({"id", "name"} <= ct["shared.t"])
+        self.assertEqual(rp.column_targets("alter table other.t add column a int", {"shared"}), {})
+
+    def test_a_results_file_without_columns_falls_back_to_words(self):
+        gap = {"items": [{"rel": "cis/090_type.sql", "status": "failed", "names": ["shared.job"],
+                          "ddl": {"names": ["shared.job"], "schemas": ["shared"],
+                                  "words": {"shared.job": ["alter", "kind", "type", "text"]},
+                                  "recreated": [], "created": [], "dynamic": {}}}]}
+        d = sd.diff(self._live_with_column_type(), dump(), gap)
+        self.assertEqual(d["changed"][0]["explained_by"], ["cis/090_type.sql"])
+
+    def test_a_recreated_view_explains_its_columns(self):
+        live = dump()
+        live["relations"]["shared"]["job"]["columns"].append({"name": "extra", "type": "int", "not_null": False})
+        gap = {"items": [{"rel": "cis/223_view.sql", "status": "failed",
+                          "ddl": {"names": [], "schemas": ["shared"], "words": {}, "recreated": ["shared.job"],
+                                  "created": [], "dynamic": {}}}]}
+        d = sd.diff(live, dump(), gap)
+        self.assertEqual(d["unmanaged"][0]["explained_by"], ["cis/223_view.sql"])
+        self.assertEqual(d["counts"]["unmanaged_unexplained"], 0)
+
+    def test_unexplained_findings_are_listed_first(self):
+        live = dump()
+        live["relations"]["booking"]["zz_by_hand"] = copy.deepcopy(live["relations"]["shared"]["job"])
+        live["relations"]["booking"]["aa_gap"] = copy.deepcopy(live["relations"]["shared"]["job"])
+        gap = {"items": [{"rel": "booking/009_x.sql", "status": "failed",
+                          "ddl": {"names": ["booking.aa_gap"], "schemas": ["booking"], "words": {},
+                                  "recreated": [], "created": ["booking.aa_gap"], "dynamic": {}}}],
+               "gap_roots": [{"object": "booking.lost", "needed_by": ["booking/009_x.sql"], "created_by": [],
+                              "root": True}],
+               "notes": ["role gap before booking/010_y.sql: created bk_owner (from roles/001_r.sql) …"]}
+        md = "\n".join(sd.render_markdown(sd.diff(live, dump(), gap)))
+        self.assertLess(md.index("relation booking.zz_by_hand"), md.index("relation booking.aa_gap"))
+        self.assertIn("`booking.lost`", md)
+        self.assertIn("Role / owner fills the replay made so later files run as on Dev: 1", md)
 
 
 if __name__ == "__main__":

@@ -461,7 +461,7 @@ jobs:
                    "- \(.counts.schemas) schemas, \(.counts.relations) tables/views, \(.counts.indexes) indexes, \(.counts.policies) RLS policies, \(.counts.functions) functions"' ../schema.json
             echo "- Structural fingerprint: \`${OLD_FP:-none}\` on master -> \`$NEW_FP\`"
             if [ -s ../drift.json ] && [ -n "$NEW_DFP" ]; then
-              jq -r '"- Schema drift (AA-853, report only, section in the file): unmanaged \(.counts.unmanaged) (\(.counts.open_unmanaged) without an owner decision), missing \(.counts.missing), changed \(.counts.changed); replay \(.replay.counts.ok)/\(.replay.counts.files) files ok"' ../drift.json
+              jq -r '"- Schema drift (AA-853, report only, section in the file): unmanaged \(.counts.unmanaged) (\(.counts.open_unmanaged) without an owner decision, \(.counts.unmanaged_unexplained // "?") not explained by a replay gap), missing \(.counts.missing), changed \(.counts.changed), not explained by the replay in all \(.counts.unexplained // "?"); replay \(.replay.counts.ok)/\(.replay.counts.files) files ok"' ../drift.json
             else
               echo "- Schema drift (AA-853): not computed in this run (drift job failed, see the run log); master's drift section is kept unchanged"
             fi
