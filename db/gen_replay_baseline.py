@@ -14,7 +14,7 @@ Recorded hand DDL. Four more files replay DDL that ran on Dev outside any migrat
 gives, because a later file needs or checks its effect: sprint S7's row level security on shared.pipeline_runs (008's
 header; 239 checks it), raw_sources.file_hash (123's header; 123 indexes it), and the two archived one-off scripts
 of the AA-Ecosys root repo docs/archive/2026/ (G3 DROP of acp_shared.unknown_ledger, 16/09/2026; AA-603 DROP of the
-N7/N8 tables, 21/09/2026; 244 checks the RLS tables that are left). CIS migration 282 codifies the same end state
+N7/N8 tables, 21/09/2026; 244 checks the RLS tables that are left). CIS migration 281 codifies the same end state
 for a database built from the files alone (D2).
 
 What it is NOT. Never a migration: it is not under db/migrations/, DB Migrate cannot select it (its path regex),
@@ -81,7 +81,7 @@ LEAD_LOST = ("Lost lineage: these objects were created on Dev by the AA-ACP-App 
              "no surviving repo holds their DDL.")
 LEAD_HAND = ("Hand DDL on Dev that no migration holds; the script that ran it is kept in the AA-Ecosys root repo "
              "(docs/archive/2026/), and the replay needs its effect at the date it ran (a later file's guard checks "
-             "that state). CIS migration 282 codifies the same end state for a database built from the files alone.")
+             "that state). CIS migration 281 codifies the same end state for a database built from the files alone.")
 
 SPEC = [
     {
@@ -91,7 +91,7 @@ SPEC = [
                  "shared.pipeline_runs by hand. The repo's 004 cannot have run as written (its policies compare the "
                  "uuid tenant_id with text), and 008 (21/04/2026) says 'S7 applied RLS only on "
                  "shared.pipeline_runs'. Unlike the other hand-DDL files, no CIS migration codifies this and none "
-                 "can: 239 needs the state before 239 runs, so a later file (282) is too late. A database built from "
+                 "can: 239 needs the state before 239 runs, so a later file (281) is too late. A database built from "
                  "the migration files alone still lacks it and stops at 239; this replay stand-in exists only so 239 "
                  "and 244 can run in the replay."),
         "title": "row level security on shared.pipeline_runs as sprint S7 applied it by hand (April 2026)",
@@ -190,7 +190,7 @@ SPEC = [
         "before": "123",
         "lead": ("Hand DDL on Dev that no migration holds: silver_aa_internal.raw_sources.file_hash was added by hand; "
                  "123 (2026-08-28) registers only its unique index, 'already live via manual DDL', and fails without "
-                 "the column. CIS migration 282 codifies the column for a database built from the files alone."),
+                 "the column. CIS migration 281 codifies the column for a database built from the files alone."),
         "title": "silver_aa_internal.raw_sources.file_hash, added by hand before CIS 123 (August 2026)",
         "objects": [
             {"sql": ["ALTER TABLE silver_aa_internal.raw_sources ADD COLUMN file_hash character varying(64);"],

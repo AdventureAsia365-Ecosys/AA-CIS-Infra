@@ -4,7 +4,7 @@
 -- level security on shared.pipeline_runs by hand. The repo's 004 cannot have run as written (its policies compare
 -- the uuid tenant_id with text), and 008 (21/04/2026) says 'S7 applied RLS only on shared.pipeline_runs'. Unlike
 -- the other hand-DDL files, no CIS migration codifies this and none can: 239 needs the state before 239 runs, so a
--- later file (282) is too late. A database built from the migration files alone still lacks it and stops at 239;
+-- later file (281) is too late. A database built from the migration files alone still lacks it and stops at 239;
 -- this replay stand-in exists only so 239 and 244 can run in the replay. Only the schema drift replay
 -- (db/replay_migrations.py, DB Schema Dump) reads this file, right before cis/008_rls_gold_silver.sql
 -- (db/schema_drift_decisions.json `baseline`). It is never applied to a real database: DB Migrate cannot select

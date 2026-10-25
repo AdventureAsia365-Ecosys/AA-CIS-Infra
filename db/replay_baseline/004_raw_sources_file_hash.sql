@@ -2,7 +2,7 @@
 --
 -- REPLAY BASELINE, NOT A MIGRATION. Hand DDL on Dev that no migration holds:
 -- silver_aa_internal.raw_sources.file_hash was added by hand; 123 (2026-08-28) registers only its unique index,
--- 'already live via manual DDL', and fails without the column. CIS migration 282 codifies the column for a
+-- 'already live via manual DDL', and fails without the column. CIS migration 281 codifies the column for a
 -- database built from the files alone. Only the schema drift replay (db/replay_migrations.py, DB Schema Dump)
 -- reads this file, right before 123 (db/schema_drift_decisions.json `baseline`). It is never applied to a real
 -- database: DB Migrate cannot select it, and the guard below (the first statement of the transaction, so psql -f

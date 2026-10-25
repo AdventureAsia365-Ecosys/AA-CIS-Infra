@@ -15,7 +15,7 @@
       "owner": "cis",
       "decision": "keep-dropped",
       "ref": "AA-853",
-      "note": "001's v1 layer (registered with v1.0-v3.0 on 2026-04-20); dropped by hand on Dev before the registry existed. CIS 282 drops it where the running role may (and the schema's tables are empty); on a database migrated by DB Migrate the schema is the RDS master's (001 ran as the master, 245 moves only the 12 CIS schemas), so 282, which runs as cis_owner, leaves it with a NOTICE. Owner decision: Dev's state (gone) is right; the leftover in a files-only database is an empty, unused legacy layer, not worth a master-run roles/ file."
+      "note": "001's v1 layer (registered with v1.0-v3.0 on 2026-04-20); dropped by hand on Dev before the registry existed. CIS 281 drops it where the running role may (and the schema's tables are empty); on a database migrated by DB Migrate the schema is the RDS master's (001 ran as the master, 245 moves only the 12 CIS schemas), so 281, which runs as cis_owner, leaves it with a NOTICE. Owner decision: Dev's state (gone) is right; the leftover in a files-only database is an empty, unused legacy layer, not worth a master-run roles/ file."
     },
     {
       "id": "schema gold",
@@ -23,7 +23,7 @@
       "owner": "cis",
       "decision": "keep-dropped",
       "ref": "AA-853",
-      "note": "001's v1 layer (registered with v1.0-v3.0 on 2026-04-20); dropped by hand on Dev before the registry existed. CIS 282 drops it where the running role may (and the schema's tables are empty); on a database migrated by DB Migrate the schema is the RDS master's (001 ran as the master, 245 moves only the 12 CIS schemas), so 282, which runs as cis_owner, leaves it with a NOTICE. Owner decision: Dev's state (gone) is right; the leftover in a files-only database is an empty, unused legacy layer, not worth a master-run roles/ file."
+      "note": "001's v1 layer (registered with v1.0-v3.0 on 2026-04-20); dropped by hand on Dev before the registry existed. CIS 281 drops it where the running role may (and the schema's tables are empty); on a database migrated by DB Migrate the schema is the RDS master's (001 ran as the master, 245 moves only the 12 CIS schemas), so 281, which runs as cis_owner, leaves it with a NOTICE. Owner decision: Dev's state (gone) is right; the leftover in a files-only database is an empty, unused legacy layer, not worth a master-run roles/ file."
     },
     {
       "id": "schema ops",
@@ -31,7 +31,7 @@
       "owner": "cis",
       "decision": "keep-dropped",
       "ref": "AA-853",
-      "note": "001's v1 layer (registered with v1.0-v3.0 on 2026-04-20); dropped by hand on Dev before the registry existed. CIS 282 drops it where the running role may (and the schema's tables are empty); on a database migrated by DB Migrate the schema is the RDS master's (001 ran as the master, 245 moves only the 12 CIS schemas), so 282, which runs as cis_owner, leaves it with a NOTICE. Owner decision: Dev's state (gone) is right; the leftover in a files-only database is an empty, unused legacy layer, not worth a master-run roles/ file."
+      "note": "001's v1 layer (registered with v1.0-v3.0 on 2026-04-20); dropped by hand on Dev before the registry existed. CIS 281 drops it where the running role may (and the schema's tables are empty); on a database migrated by DB Migrate the schema is the RDS master's (001 ran as the master, 245 moves only the 12 CIS schemas), so 281, which runs as cis_owner, leaves it with a NOTICE. Owner decision: Dev's state (gone) is right; the leftover in a files-only database is an empty, unused legacy layer, not worth a master-run roles/ file."
     },
     {
       "id": "schema silver",
@@ -39,7 +39,7 @@
       "owner": "cis",
       "decision": "keep-dropped",
       "ref": "AA-853",
-      "note": "001's v1 layer (registered with v1.0-v3.0 on 2026-04-20); dropped by hand on Dev before the registry existed. CIS 282 drops it where the running role may (and the schema's tables are empty); on a database migrated by DB Migrate the schema is the RDS master's (001 ran as the master, 245 moves only the 12 CIS schemas), so 282, which runs as cis_owner, leaves it with a NOTICE. Owner decision: Dev's state (gone) is right; the leftover in a files-only database is an empty, unused legacy layer, not worth a master-run roles/ file."
+      "note": "001's v1 layer (registered with v1.0-v3.0 on 2026-04-20); dropped by hand on Dev before the registry existed. CIS 281 drops it where the running role may (and the schema's tables are empty); on a database migrated by DB Migrate the schema is the RDS master's (001 ran as the master, 245 moves only the 12 CIS schemas), so 281, which runs as cis_owner, leaves it with a NOTICE. Owner decision: Dev's state (gone) is right; the leftover in a files-only database is an empty, unused legacy layer, not worth a master-run roles/ file."
     }
   ],
   "baseline": [
@@ -48,7 +48,7 @@
       "before": "cis/008_rls_gold_silver.sql",
       "owner": "cis",
       "ref": "AA-853",
-      "reason": "Hand DDL (S251): sprint S7 applied row level security on shared.pipeline_runs by hand (008's header, 21/04/2026: 'S7 applied RLS only on shared.pipeline_runs'); the repo's 004 cannot have run as written (uuid tenant_id compared with text). 239's guard checks that state. Placed before 008, which states it. Not codified by any CIS migration and it cannot be: 239 needs the state before 239 runs, so a later file (282) is too late. A database built from the migration files alone still lacks it and stops at 239 (files-only installs are not supported past 239); this replay stand-in exists only so 239 and 244 can run in the replay."
+      "reason": "Hand DDL (S251): sprint S7 applied row level security on shared.pipeline_runs by hand (008's header, 21/04/2026: 'S7 applied RLS only on shared.pipeline_runs'); the repo's 004 cannot have run as written (uuid tenant_id compared with text). 239's guard checks that state. Placed before 008, which states it. Not codified by any CIS migration and it cannot be: 239 needs the state before 239 runs, so a later file (281) is too late. A database built from the migration files alone still lacks it and stops at 239 (files-only installs are not supported past 239); this replay stand-in exists only so 239 and 244 can run in the replay."
     },
     {
       "file": "replay_baseline/002_acp_lineage.sql",
@@ -69,21 +69,21 @@
       "before": "123",
       "owner": "cis",
       "ref": "AA-853",
-      "reason": "Hand DDL (S251): silver_aa_internal.raw_sources.file_hash was added by hand before 123 (2026-08-28), whose header says the column was 'already live via manual DDL'; 123 only indexes it. CIS 282 codifies the column."
+      "reason": "Hand DDL (S251): silver_aa_internal.raw_sources.file_hash was added by hand before 123 (2026-08-28), whose header says the column was 'already live via manual DDL'; 123 only indexes it. CIS 281 codifies the column."
     },
     {
       "file": "replay_baseline/005_g3_drop_unknown_ledger.sql",
       "before": "153",
       "owner": "cis",
       "ref": "AA-853",
-      "reason": "Hand DDL (S251): AA-598 G3 dropped acp_shared.unknown_ledger on 16/09/2026 (root repo docs/archive/2026/audit-cis-g3-execute.sql). No registry row on 16-17/09: before 153, the first after. CIS 282 codifies the drop."
+      "reason": "Hand DDL (S251): AA-598 G3 dropped acp_shared.unknown_ledger on 16/09/2026 (root repo docs/archive/2026/audit-cis-g3-execute.sql). No registry row on 16-17/09: before 153, the first after. CIS 281 codifies the drop."
     },
     {
       "file": "replay_baseline/006_aa603_drop_n7n8_tables.sql",
       "before": "160",
       "owner": "cis",
       "ref": "AA-853",
-      "reason": "Hand DDL (S251): AA-603 dropped content_metric_snapshot, acp_deliver.pieces / packets, acp_v2_slots, acp_v2_runs on 21/09/2026 (root repo docs/archive/2026/aa603-drop-n7n8-tables.sql); 244's guard lists the RLS tables left after it. Before 160, the first registry row of 21/09 (a lower bound). CIS 282 codifies the drop."
+      "reason": "Hand DDL (S251): AA-603 dropped content_metric_snapshot, acp_deliver.pieces / packets, acp_v2_slots, acp_v2_runs on 21/09/2026 (root repo docs/archive/2026/aa603-drop-n7n8-tables.sql); 244's guard lists the RLS tables left after it. Before 160, the first registry row of 21/09 (a lower bound). CIS 281 codifies the drop."
     }
   ],
   "replay_order": [

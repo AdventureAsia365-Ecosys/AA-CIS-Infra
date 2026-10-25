@@ -2,7 +2,7 @@
 --
 -- REPLAY BASELINE, NOT A MIGRATION. Hand DDL on Dev that no migration holds; the script that ran it is kept in the
 -- AA-Ecosys root repo (docs/archive/2026/), and the replay needs its effect at the date it ran (a later file's
--- guard checks that state). CIS migration 282 codifies the same end state for a database built from the files
+-- guard checks that state). CIS migration 281 codifies the same end state for a database built from the files
 -- alone. Only the schema drift replay (db/replay_migrations.py, DB Schema Dump) reads this file, right before 160
 -- (db/schema_drift_decisions.json `baseline`). It is never applied to a real database: DB Migrate cannot select
 -- it, and the guard below (the first statement of the transaction, so psql -f without ON_ERROR_STOP rolls the
