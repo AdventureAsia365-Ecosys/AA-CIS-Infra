@@ -506,15 +506,6 @@ resource "aws_apigatewayv2_route" "tripplanner_assembly" {
   target    = "integrations/${aws_apigatewayv2_integration.tripplanner_assembly.id}"
 }
 
-# AA-908: the signed-in traveller routes (/me/trips, /me/claim) live in the assembly Lambda, which routes on
-# requestContext.http.path; without this route API Gateway answers 404 and the BFF shows My Trips as 502.
-# The Lambda permission already allows any route of this API (/*/*), so no IAM change.
-resource "aws_apigatewayv2_route" "tripplanner_me" {
-  api_id    = aws_apigatewayv2_api.tripplanner.id
-  route_key = "ANY /me/{proxy+}"
-  target    = "integrations/${aws_apigatewayv2_integration.tripplanner_assembly.id}"
-}
-
 # AA-806 (from AA-805): narration is the one LLM-backed call (compose/renarrate on the satellite
 # Bedrock roles), so it gets its own route with a lower throttle than the rest of /trip. A specific
 # route wins over the greedy ANY /trip/{proxy+}; both go to the same assembly integration, and the

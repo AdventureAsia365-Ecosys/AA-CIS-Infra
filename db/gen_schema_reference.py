@@ -4,6 +4,8 @@ Usage:
   python3 db/gen_schema_reference.py dump.json --out db-schema-reference.md [--source "run URL"]
   python3 db/gen_schema_reference.py dump.json --fingerprint     # print the structural fingerprint
   python3 db/gen_schema_reference.py dump.json --rls-guard       # X2 RLS catalogue guard summary + annotations
+  python3 db/gen_schema_reference.py dump.json --out ref.md --drift drift.json   # + the AA-853 drift section
+  python3 db/gen_schema_reference.py dump.json --out ref.md --keep-drift-from old.md   # carry old.md's section
 
 Standard library only (runs on the GitHub runner). Output is deterministic for a given dump.
 
@@ -18,6 +20,13 @@ Data standards DM-6.1 (AA-877): each column's `pii:<class>` / `conf:<class>` tag
 comment the dump carries) is rendered after the column and collected in *Personal and confidential data tags (DM-6.1)*, with the untagged
 candidates of the Booking and TripPlanner schemas (PII_CANDIDATE_*). The fingerprint covers the tags and the candidate
 outcome, never the free text of a comment, so editing an untagged comment opens no PR.
+
+Schema drift (AA-853): with --drift (the JSON of db/schema_drift.py) the page gets the section *Schema drift against a
+replay of all migrations* after the RLS catalogue guard, and a `<!-- drift-fingerprint: … -->` marker (a hash of the
+findings and their owner decisions). The schema fingerprint does not cover it; the workflow compares the drift
+fingerprint on its own, so a changed drift set opens the root PR too. Without --drift the page is unchanged.
+When the drift steps fail, --keep-drift-from <master's reference> carries the section and its marker over unchanged,
+so a failed replay never strips the section from master (and the next good run opens no PR just to restore it).
 
 Public repos (AA-981, S248 d15): the page names the account by its label only (acc2), and the rendered text goes
 through AA-CIS-Infra tools/docs/aws_mask.py (account ids -> `{acc2}`-style labels, ARNs without partition and
@@ -38,6 +47,7 @@ from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # the rules module sits next to this file
 import rls_catalogue_rules as rls  # noqa: E402
+import schema_drift  # noqa: E402  (AA-853 drift section)
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools", "docs"))
 import aws_mask  # noqa: E402   AA-981: tools/docs/aws_mask.py (stdlib only)
@@ -362,7 +372,21 @@ def stamp(ts) -> str:
     return str(ts)[:16].replace("T", " ") if ts else ""
 
 
-def render(d: dict, source: Optional[str] = None) -> str:
+DRIFT_HEADING = "## Schema drift against a replay of all migrations"
+
+
+def drift_section_of(text: str) -> list:
+    """The drift section of a rendered reference (its lines, from the heading to the next `## `), or []."""
+    lines = text.splitlines()
+    start = next((i for i, x in enumerate(lines) if x.startswith(DRIFT_HEADING)), None)
+    if start is None:
+        return []
+    end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")), len(lines))
+    return lines[start:end]
+
+
+def render(d: dict, source: Optional[str] = None, drift: Optional[dict] = None,
+           drift_lines: Optional[list] = None) -> str:
     L: list[str] = []
     w = L.append
     rels = d["relations"]
@@ -588,6 +612,10 @@ def render(d: dict, source: Optional[str] = None) -> str:
     w("")
     L.extend(render_pii_tags(d))
     L.extend(render_rls_guard(d))
+    if drift is not None:
+        L.extend(schema_drift.render_markdown(drift))
+    elif drift_lines:
+        L.extend(drift_lines)
     w("## Connections at dump time")
     w("")
     w("Client sessions per `application_name` (`(empty)` = a pool without `application_name`, standards C1.1a).")
@@ -615,6 +643,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--out", help="Markdown file to write (default: stdout)")
     parser.add_argument("--source", help="provenance line, e.g. the workflow run URL")
     parser.add_argument("--fingerprint", action="store_true", help="print the structural fingerprint only")
+    parser.add_argument("--drift", help="db/schema_drift.py JSON: adds the AA-853 drift section (AA-853)")
+    parser.add_argument("--keep-drift-from", help="a rendered reference (master's): carry its drift section over "
+                        "unchanged when --drift is not given (the drift steps failed)")
     parser.add_argument("--rls-guard", action="store_true",
                         help="print the X2 RLS catalogue guard summary and ::warning:: annotations only")
     args = parser.parse_args(argv)
@@ -629,7 +660,15 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.rls_guard:
         sys.stdout.write(rls_guard_report(dump))
         return 0
-    text = render(dump, args.source)
+    drift = None
+    if args.drift:
+        with open(args.drift, encoding="utf-8") as f:
+            drift = json.load(f)
+    kept = None
+    if drift is None and args.keep_drift_from and os.path.isfile(args.keep_drift_from):
+        with open(args.keep_drift_from, encoding="utf-8") as f:
+            kept = drift_section_of(f.read())
+    text = render(dump, args.source, drift, kept)
     if args.out:
         with open(args.out, "w", encoding="utf-8") as f:
             f.write(text)

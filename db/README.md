@@ -323,6 +323,32 @@ Local render: `python3 db/gen_erd.py schema.json --out-dir /tmp/erd --json /tmp/
 (`one`, `many`, `to`, `u`, `erDiagram`, ...) are quoted as table names and a column named `pk`, `fk` or `uk` is
 written `pk_` (the attribute-key words); `erd.json` keeps the real names.
 
+Schema drift against a replay (AA-853, data standards MIG-5; report only): after the dump job, a separate `drift` job
+(no environment, no id-token, no secrets; the replay capped at 15 min) starts a throw-away
+`pgvector/pgvector:0.8.1-pg15` container (pinned by its image index digest) on the runner, clones the owner repos (public, anonymous, `main`) and runs
+`db/replay_migrations.py`: role bootstrap (the master `aa_cis_admin` as RDS has it, LOGIN CREATEROLE CREATEDB, not a
+superuser, in a stand-in `rds_superuser`; live roles no migration creates, made by the master; the live extensions,
+made by the superuser), then every applied file in live `shared.schema_versions` order with `run_migration.py`'s own
+role logic (master login, `db_migrator` from the X1 S22 cutover, the live-owner switch with its ownership post-check;
+legacy files without a registry row and owner-decided baseline files run like `psql -f`, one statement at a time),
+then `schema_dump.collect` on the result. No AWS credential or token exists in that job. `db/schema_drift.py` diffs the two dumps
+(schemas, relations, columns, indexes, CHECK/FK constraints, policies, triggers, functions, enums; owners and grants
+separately, informational): **unmanaged** (on Dev, no migration makes it), **missing**, **changed**; children fold into
+their relation, each finding names the failed replay files that mention it (`explained_by`) and its owner decision
+from `db/schema_drift_decisions.json` (`decisions`: finding id or glob, decision, ref; `baseline`: SQL files under
+`db/replay_baseline/` run as the master before a registry key, for history no repo holds any more, such as the
+AA-ACP-Core lineage of `acp_*`). `gen_schema_reference.py --drift drift.json` renders the *Schema drift* section and
+a `drift-fingerprint` marker (in the `publish` job, which holds the App token and no AWS credential); a changed drift
+fingerprint opens the root PR like a structural change. Findings a replay gap explains (`explained_by`) are left out of
+the fingerprint, so replay noise alone opens no PR (they stay in the section). The drift job and its steps are
+`continue-on-error`: a failed replay never blocks the dump, the reference or the PR, and the publish job then carries
+master's drift section and marker over unchanged (`--keep-drift-from`), so the section never flaps. Nothing fails
+on a finding: fail-on-unmanaged (MIG-5) waits for the baseline file and the owner decisions. `drift.json`,
+`replay-results.json`, `replay-schema.json` and `replay.log` are in the run's `db-schema-drift-<run id>` artifact. Local run (a FRESH PostgreSQL 15
+with pgvector; roles are cluster-wide):
+`python3 db/replay_migrations.py --live schema.json --admin-dsn postgresql://postgres:x@localhost:5432/postgres --source roles=db/migrations/roles --source cis=../../apps/AA-CIS-App/api/migrations --source booking=../../apps/AA-Booking/migrations --source tripplanner=../../apps/AA-TripPlanner-Web/migrations --source crm=../../apps/AA-Partner/api/migrations --out results.json --dump replay.json`
+then `python3 db/schema_drift.py schema.json replay.json --replay-results results.json --out drift.json`.
+
 Design ERD drift (AA-894 scope 3): `check_erd_drift.py` compares the hand-written design pages of the root repo
 (`docs/architecture/erd/design/<schema>.md`, marker `<!-- erd-design schema=<s> enforce=<bool> implied-fk=<col>:<table> -->`)
 with `erd.json`: tables missing or extra, primary keys that differ, FK edges missing or extra (an edge is the child

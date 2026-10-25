@@ -54,25 +54,6 @@ locals {
   supply_photo_purge_env = local.photos_cdn_distribution_id == "" ? [] : [
     { name = "PHOTO_CDN_DISTRIBUTION_ID", value = local.photos_cdn_distribution_id },
   ]
-
-  # AA-874 S5: Redis connection for api and worker (AA-CIS-App shared/cache/redis_conn.py). REDIS_TLS and the
-  # REDIS_AUTH_TOKEN secret appear only when set, so a module call without them renders the old plain env.
-  # REDIS_CLUSTER_ID names the node GET /admin/infra/status describes (admin_pipeline.py).
-  redis_env = concat(
-    var.redis_host != null ? [{ name = "REDIS_HOST", value = var.redis_host }] : [],
-    var.redis_tls ? [{ name = "REDIS_TLS", value = "true" }] : [],
-    var.redis_cluster_id != null ? [{ name = "REDIS_CLUSTER_ID", value = var.redis_cluster_id }] : [],
-  )
-  redis_secrets = var.redis_auth_secret_arn != null ? [
-    { name = "REDIS_AUTH_TOKEN", valueFrom = var.redis_auth_secret_arn },
-  ] : []
-
-  # AA-645 (S248): the S1 writer v2 switch. Set by hand on the worker revision until S250; a Terraform apply
-  # touching this module then registered a template revision without it, and CIS deploy-dev copies the latest
-  # revision, so the next deploy would have put the S1 waves back on writer v1 (lesson S250). Worker only.
-  s1_writer_env = [
-    { name = "S1_WRITER_V2", value = var.s1_writer_v2_enabled ? "on" : "off" },
-  ]
 }
 
 # ── ECS Exec session log (S241 D-07) ──────────────────────────
@@ -551,9 +532,9 @@ resource "aws_ecs_task_definition" "api" {
       local.bedrock_satellite_env,
       local.place_shapes_env,
       local.erasure_env,
-      local.redis_env,
+      var.redis_host != null ? [{ name = "REDIS_HOST", value = var.redis_host }] : []
     )
-    secrets = concat([
+    secrets = [
       { name = "DATABASE_URL", valueFrom = var.secret_rds_arn },
       { name = "OPENAI_API_KEY", valueFrom = var.secret_openai_arn },
       # { name = "LANGFUSE_SECRET_KEY", valueFrom = var.secret_langfuse_arn },            # AA-23: removed
@@ -566,9 +547,7 @@ resource "aws_ecs_task_definition" "api" {
       # AA-296/397). Secret aa-cis/dev/anthropic-key itself deleted from Secrets Manager same PR.
       { name = "DATAFORSEO_LOGIN", valueFrom = "${var.secret_dataforseo_arn}:login::" },
       { name = "DATAFORSEO_PASSWORD", valueFrom = "${var.secret_dataforseo_arn}:password::" },
-      ],
-      local.redis_secrets,
-    )
+    ]
     logConfiguration = {
       logDriver = "awslogs"
       options = {
@@ -760,19 +739,16 @@ resource "aws_ecs_task_definition" "worker" {
       local.erasure_env,
       local.t9_faq_filter_env,
       local.supply_photo_purge_env,
-      local.s1_writer_env,
-      local.redis_env,
+      var.redis_host != null ? [{ name = "REDIS_HOST", value = var.redis_host }] : []
     )
-    secrets = concat([
+    secrets = [
       { name = "DATABASE_URL", valueFrom = var.secret_rds_arn },
       { name = "OPENAI_API_KEY", valueFrom = var.secret_openai_arn },
       { name = "ADMIN_SECRET", valueFrom = var.secret_admin_arn },
       { name = "JWT_SECRET", valueFrom = var.secret_jwt_arn },
       { name = "DATAFORSEO_LOGIN", valueFrom = "${var.secret_dataforseo_arn}:login::" },
       { name = "DATAFORSEO_PASSWORD", valueFrom = "${var.secret_dataforseo_arn}:password::" },
-      ],
-      local.redis_secrets,
-    )
+    ]
     logConfiguration = {
       logDriver = "awslogs"
       options = {

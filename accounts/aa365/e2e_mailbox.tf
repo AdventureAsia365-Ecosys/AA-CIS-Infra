@@ -225,8 +225,7 @@ resource "aws_ses_receipt_rule_set" "e2e" {
 }
 
 # One active set per region (there was none, 19/10/2026). Destroying this resource deactivates
-# receiving for the whole region. AA-945: the set also holds the AA-Partner forward-in rule aa-crm-dev-ingest
-# (crm_mail.tf, recipients crm-in.<zone>, placed after e2e-cognito).
+# receiving for the whole region.
 resource "aws_ses_active_receipt_rule_set" "e2e" {
   rule_set_name = aws_ses_receipt_rule_set.e2e.rule_set_name
 }

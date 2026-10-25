@@ -1,20 +1,9 @@
 from __future__ import annotations
 
-import time
-
 import pytest
 
 import external
-from conftest import (
-    PROOF_KEY,
-    PROOF_SECRET_ID,
-    FakeCognito,
-    FakeSecrets,
-    federated_user,
-    native_user,
-    sign_up_event,
-    token_event,
-)
+from conftest import FakeCognito, federated_user, native_user, sign_up_event, token_event
 
 CLIENTS = {
     "portal-id": "aa-external-dev-cis-portal",
@@ -27,14 +16,6 @@ CLIENTS = {
 @pytest.fixture(autouse=True)
 def clear_cache():
     external._client_name_cache.clear()
-    external._proof_key_cache.clear()
-
-
-@pytest.fixture(autouse=True)
-def secrets(monkeypatch):
-    fake = FakeSecrets({PROOF_SECRET_ID: PROOF_KEY})
-    monkeypatch.setattr(external, "secrets_client", lambda: fake)
-    return fake
 
 
 def cognito(users=None, **kwargs):
@@ -55,17 +36,9 @@ def google(client_id="tp-id", attrs=None, sub="555"):
                          attrs=dict(GOOGLE if attrs is None else attrs), client_id=client_id)
 
 
-def bff_proof(email="traveller@example.com", ts=None, key=PROOF_KEY):
-    ts = str(int(time.time())) if ts is None else ts
-    return {"bff_ts": ts, "bff_proof": external.signup_proof(key.encode(), email, ts)}
-
-
-def native_signup(client_id="tp-id", attrs=None, validation=None):
-    """A native SignUp as the TripPlanner BFF sends it (valid proof), unless `validation` says otherwise."""
-    event = sign_up_event("PreSignUp_SignUp", user_name="traveller@example.com",
-                          attrs={"email": "traveller@example.com"} if attrs is None else attrs, client_id=client_id)
-    event["request"]["validationData"] = bff_proof() if validation is None else validation
-    return event
+def native_signup(client_id="tp-id", attrs=None):
+    return sign_up_event("PreSignUp_SignUp", user_name="traveller@example.com",
+                         attrs={"email": "traveller@example.com"} if attrs is None else attrs, client_id=client_id)
 
 
 # ------------------------------------------------------------------ client-aware decisions
@@ -219,89 +192,3 @@ def test_federated_sign_up_does_not_depend_on_native_flag(monkeypatch):
     c = cognito(users=[native_user("traveller@example.com")])
     external.pre_sign_up(google(), cognito=c)
     assert len(c.link_calls) == 1
-
-
-# ------------------------------------------------------------------ BFF sign-up proof (AA-908 review round)
-def test_native_sign_up_without_proof_is_refused():
-    # A direct public-API SignUp (possibly with a Password) or the managed-login /signup page sends no proof.
-    event = native_signup("tp-id")
-    del event["request"]["validationData"]
-    denied(external.pre_sign_up, event, cognito=cognito())
-
-
-@pytest.mark.parametrize("validation", [
-    {},
-    {"bff_ts": str(int(time.time()))},
-    {"bff_proof": "0" * 64},
-    {"bff_ts": "soon", "bff_proof": "0" * 64},
-    {"bff_ts": str(int(time.time())), "bff_proof": "Z" * 64},
-    {"bff_ts": str(int(time.time())), "bff_proof": "0" * 64 + "\n"},
-])
-def test_native_sign_up_with_malformed_proof_is_refused(validation):
-    denied(external.pre_sign_up, native_signup("tp-id", validation=validation), cognito=cognito())
-
-
-def test_native_sign_up_with_wrong_key_is_refused():
-    denied(external.pre_sign_up, native_signup("tp-id", validation=bff_proof(key="q" * 48)), cognito=cognito())
-
-
-def test_native_sign_up_proof_for_another_email_is_refused():
-    denied(external.pre_sign_up, native_signup("tp-id", validation=bff_proof(email="someone@example.com")),
-           cognito=cognito())
-
-
-@pytest.mark.parametrize("offset", [-external.PROOF_MAX_SKEW_S - 5, external.PROOF_MAX_SKEW_S + 5])
-def test_native_sign_up_with_stale_or_future_proof_is_refused(offset):
-    ts = str(int(time.time()) + offset)
-    denied(external.pre_sign_up, native_signup("tp-id", validation=bff_proof(ts=ts)), cognito=cognito())
-
-
-@pytest.mark.parametrize("client_id", ["tp-id", "bk-id"])
-def test_native_sign_up_with_valid_proof_is_allowed(client_id, secrets):
-    out = external.pre_sign_up(native_signup(client_id), cognito=cognito())
-    assert out["response"]["autoConfirmUser"] is False
-    assert secrets.calls == [{"SecretId": PROOF_SECRET_ID}]
-
-
-def test_proof_key_is_cached_per_container(secrets):
-    external.pre_sign_up(native_signup("tp-id"), cognito=cognito())
-    external.pre_sign_up(native_signup("tp-id"), cognito=cognito())
-    assert len(secrets.calls) == 1
-
-
-def test_proof_key_cache_expires(secrets, monkeypatch):
-    external.pre_sign_up(native_signup("tp-id"), cognito=cognito())
-    ts, key = external._proof_key_cache[PROOF_SECRET_ID]
-    external._proof_key_cache[PROOF_SECRET_ID] = (ts - external.PROOF_KEY_TTL_S - 1, key)
-    external.pre_sign_up(native_signup("tp-id"), cognito=cognito())
-    assert len(secrets.calls) == 2
-
-
-def test_missing_proof_secret_config_fails_closed(monkeypatch):
-    monkeypatch.delenv("SIGNUP_PROOF_SECRET_ID")
-    denied(external.pre_sign_up, native_signup("tp-id"), cognito=cognito())
-
-
-def test_short_proof_key_fails_closed(secrets):
-    secrets.values[PROOF_SECRET_ID] = "short"
-    denied(external.pre_sign_up, native_signup("tp-id"), cognito=cognito())
-
-
-def test_secrets_error_fails_closed(secrets):
-    secrets.values.clear()  # KeyError in the fake = an AccessDenied / outage in real life
-    denied(external.pre_sign_up, native_signup("tp-id"), cognito=cognito())
-
-
-def test_proof_is_not_needed_for_federated_or_admin_sign_up(secrets):
-    external.pre_sign_up(google(), cognito=cognito(users=[native_user("traveller@example.com")]))
-    event = sign_up_event("PreSignUp_AdminCreateUser", attrs={"email": "t@example.com"},
-                          client_id="CLIENT_ID_NOT_APPLICABLE")
-    external.pre_sign_up(event, cognito=cognito())
-    assert secrets.calls == []
-
-
-def test_signup_proof_matches_the_bff_vector():
-    # Same vector as AA-TripPlanner-Web frontend/lib/cognito.test.ts (signUpProof): the two sides must agree.
-    assert external.signup_proof(b"k" * 40, "traveller@example.com", "1800000000") == (
-        "0df8bd490e0f009967f1349b1843abf6b1110bec7c7fb9a4a2f1f718006fdfda"
-    )

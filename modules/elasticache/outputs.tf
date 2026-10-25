@@ -1,3 +1,11 @@
+output "redis_endpoint" {
+  value = aws_elasticache_cluster.main.cache_nodes[0].address
+}
+
+output "redis_port" {
+  value = aws_elasticache_cluster.main.port
+}
+
 # AA-874: the encrypted replication group.
 output "tls_primary_endpoint" {
   description = "Primary endpoint of the TLS + AUTH replication group (clients: rediss://, REDIS_TLS=true)."
