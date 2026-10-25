@@ -28,6 +28,11 @@ enforces; `info` = coverage or by-design number, reported against the S251 basel
   tours_with_place_atoms_but_no_segment stale active tours with place atoms but not one atom in a segment
                                               (segment match never ran for the tour: the AA-695 failure)
   orphan_segments                      stale  segments with no active atom, no current ranking row, no current route
+                                              AND no reference of any kind (AA-988: what the CIS `segment_gc`
+                                              recompute stage deletes; ORPHAN_SETS mirrors its ORPHANS_SQL)
+  orphan_segments_kept_referenced      info   the same orphans that a reference keeps (live member of a paused /
+                                              trashed tour, ranking, alias row, Subject, brand-fit cache row,
+                                              Subject-named route, angle-request route list): history, by design
   ranking_missing                      stale  tours with a (tour, segment) pair of active atoms and no current
                                               atom_ranking row for it (run_atom_ranking ranks every such pair)
   ranking_off_active_pairs             stale  tours with a current atom_ranking row on a pair that no longer exists
@@ -48,7 +53,10 @@ enforces; `info` = coverage or by-design number, reported against the S251 basel
                                               (by design: AA-990 / AA-986, the tenant is told, nothing overwritten)
   angle_gate_requests_on_inactive_atoms stale acp_shared.angle_gate_request rows on an atom that is not active
   seo_context_expired                  info   S251 query: seo_context rows past expires_at (all tours)
-  seo_context_expired_active_tours     stale  the same, active tours only
+  seo_context_expired_active_tours     stale  active tours whose NEWEST seo_context row is past expires_at and is
+                                              not reusable by S1 (AA-CIS-App services/seo_intelligence/s1_prefetch:
+                                              an `ideas_v3` row fetched within S1_REUSE_DAYS is reused whatever its
+                                              expires_at; 25/10: all 75 expired rows were such rows)
 
 Routes and ranking are checked by parity, not timestamps: derive_routes() below is a verbatim port of
 AA-CIS-App services/acp_contract/route_detection.py (derive_routes / _runs / _spans and LEAST_DAYS, LEAST_PLACES,
@@ -95,6 +103,60 @@ ACTIVE_PT = "pt.master_status = 'active' AND pt.deleted_at IS NULL"
 SEGMENTED = """SELECT 1 FROM acp_contract.atom_segment_member m
                  JOIN acp_contract.v_active_tour_atoms a ON a.atom_id = m.atom_id"""
 PLACE_ATOM = "a.place IS NOT NULL AND btrim(a.place) <> ''"
+# AA-988: orphan segments split by reference, mirroring AA-CIS-App services/acp_contract/segment_gc.py ORPHANS_SQL
+# (change both together). Sets first, joined once (no correlated subplan per segment: ~19k segments, ~96k ranking
+# rows). `o` = the AA-991 orphan rule (no active member, no current ranking row, not in a current route) with
+# `referenced` = any reason the CIS `segment_gc` stage keeps one: a member on a live (not deleted, not marker) atom,
+# a ranking row, an alias row either side, a Subject, a brand-fit cache row, a route a Subject names, an angle
+# request's route list.
+ORPHAN_SETS = """WITH active_m AS (
+    SELECT DISTINCT m.segment_id FROM acp_contract.atom_segment_member m
+      JOIN acp_contract.v_active_tour_atoms a ON a.atom_id = m.atom_id),
+live_m AS (
+    SELECT DISTINCT m.segment_id FROM acp_contract.atom_segment_member m
+      JOIN acp_contract.tour_atoms t ON t.atom_id = m.atom_id
+     WHERE NOT t.deleted AND NOT t.is_empty_marker),
+cur_rank AS (SELECT DISTINCT segment_id FROM acp_contract.atom_ranking WHERE superseded_at IS NULL),
+any_rank AS (SELECT DISTINCT segment_id FROM acp_contract.atom_ranking),
+cur_route AS (
+    SELECT DISTINCT e.id AS segment_id FROM acp_contract.route r
+     CROSS JOIN LATERAL jsonb_array_elements_text(r.ordered_segment_ids) e(id)
+     WHERE r.superseded_at IS NULL AND jsonb_typeof(r.ordered_segment_ids) = 'array'),
+subj_route AS (
+    SELECT DISTINCT e.id AS segment_id FROM acp_contract.route r
+      JOIN acp_shared.subject sj ON sj.route_id = r.route_id
+     CROSS JOIN LATERAL jsonb_array_elements_text(r.ordered_segment_ids) e(id)
+     WHERE jsonb_typeof(r.ordered_segment_ids) = 'array'),
+alias AS (
+    SELECT segment_id_old AS segment_id FROM acp_contract.atom_segment_alias
+    UNION SELECT segment_id_canonical FROM acp_contract.atom_segment_alias),
+subj AS (SELECT DISTINCT segment_id FROM acp_shared.subject WHERE segment_id IS NOT NULL),
+bfit AS (SELECT DISTINCT segment_id FROM acp_shared.debate_brand_fit_cache WHERE segment_id IS NOT NULL),
+agr AS (
+    SELECT DISTINCT e.id AS segment_id FROM acp_shared.angle_gate_request g
+     CROSS JOIN LATERAL jsonb_array_elements_text(g.route_segment_ids) e(id)
+     WHERE jsonb_typeof(g.route_segment_ids) = 'array'),
+o AS (
+    SELECT s.segment_id, s.created_at,
+           (lm.segment_id IS NOT NULL OR ar.segment_id IS NOT NULL OR al.segment_id IS NOT NULL
+            OR sj.segment_id IS NOT NULL OR bf.segment_id IS NOT NULL OR sr.segment_id IS NOT NULL
+            OR ag.segment_id IS NOT NULL) AS referenced
+      FROM acp_contract.atom_segment s
+      LEFT JOIN active_m am ON am.segment_id = s.segment_id
+      LEFT JOIN cur_rank cr ON cr.segment_id = s.segment_id
+      LEFT JOIN cur_route ct ON ct.segment_id = s.segment_id
+      LEFT JOIN live_m lm ON lm.segment_id = s.segment_id
+      LEFT JOIN any_rank ar ON ar.segment_id = s.segment_id
+      LEFT JOIN alias al ON al.segment_id = s.segment_id
+      LEFT JOIN subj sj ON sj.segment_id = s.segment_id
+      LEFT JOIN bfit bf ON bf.segment_id = s.segment_id
+      LEFT JOIN subj_route sr ON sr.segment_id = s.segment_id
+      LEFT JOIN agr ag ON ag.segment_id = s.segment_id
+     WHERE am.segment_id IS NULL AND cr.segment_id IS NULL AND ct.segment_id IS NULL)
+"""
+# AA-CIS-App services/seo_intelligence/s1_prefetch.py: SEO_FORMAT and REUSE_DAYS (env S1_SEO_REUSE_DAYS, default 180).
+SEO_FORMAT = "ideas_v3"
+S1_REUSE_DAYS = 180
 
 # name -> (gate, unit, inner query returning text `id` + boolean `aged`; $1 = the cutoff timestamptz).
 METRICS = {
@@ -125,15 +187,10 @@ METRICS = {
          WHERE {PLACE_ATOM}
          GROUP BY a.tour_id, c.changed_at
         HAVING count(m.atom_id) = 0"""),
-    "orphan_segments": ("stale", "segments", f"""
-        SELECT s.segment_id AS id, s.created_at < $1 AS aged
-          FROM acp_contract.atom_segment s
-         WHERE NOT EXISTS ({SEGMENTED} WHERE m.segment_id = s.segment_id)
-           AND NOT EXISTS (SELECT 1 FROM acp_contract.atom_ranking r
-                            WHERE r.segment_id = s.segment_id AND r.superseded_at IS NULL)
-           AND NOT EXISTS (SELECT 1 FROM acp_contract.route r
-                            CROSS JOIN LATERAL jsonb_array_elements_text(r.ordered_segment_ids) e(id)
-                            WHERE r.superseded_at IS NULL AND e.id = s.segment_id)"""),
+    "orphan_segments": ("stale", "segments", ORPHAN_SETS + """
+        SELECT o.segment_id AS id, o.created_at < $1 AS aged FROM o WHERE NOT o.referenced"""),
+    "orphan_segments_kept_referenced": ("info", "segments", ORPHAN_SETS + """
+        SELECT o.segment_id AS id, o.created_at < $1 AS aged FROM o WHERE o.referenced"""),
     "ranking_missing": ("stale", "tours", """
         SELECT p.tour_id::text AS id, c.changed_at < $1 AS aged
           FROM (SELECT DISTINCT a.tour_id, m.segment_id
@@ -221,16 +278,21 @@ METRICS = {
         SELECT s.id::text AS id, s.expires_at < $1 AS aged
           FROM silver_aa_internal.seo_context s
          WHERE s.expires_at < now()"""),
-    "seo_context_expired_active_tours": ("stale", "tours", """
+    "seo_context_expired_active_tours": ("stale", "tours", f"""
         SELECT s.tour_id::text AS id, s.expires_at < $1 AS aged
-          FROM silver_aa_internal.seo_context s
+          FROM (SELECT DISTINCT ON (tour_id) tour_id, cache_key, fetched_at, expires_at
+                  FROM silver_aa_internal.seo_context
+                 ORDER BY tour_id, fetched_at DESC) s
           JOIN chg c ON c.tour_id = s.tour_id AND c.active
-         WHERE s.expires_at < now()"""),
+         WHERE s.expires_at < now()
+           AND NOT (coalesce(s.cache_key, '') LIKE '%:{SEO_FORMAT}'
+                    AND s.fetched_at > now() - make_interval(days => {S1_REUSE_DAYS}))"""),
 }
 # Computed in Python from MOMENTS_SQL + CURRENT_ROUTES_SQL (route parity); listed here for the order and the gate.
 ROUTE_METRICS = {"routes_missing": ("stale", "tours"), "routes_differ": ("stale", "tours")}
 ORDER = ["atoms_older_than_master", "active_tours_without_atoms", "active_atoms_without_segment",
-         "tours_with_place_atoms_but_no_segment", "orphan_segments", "ranking_missing", "ranking_off_active_pairs",
+         "tours_with_place_atoms_but_no_segment", "orphan_segments", "orphan_segments_kept_referenced",
+         "ranking_missing", "ranking_off_active_pairs",
          "active_tours_without_ranking", "routes_missing", "routes_differ", "active_tours_without_route",
          "current_routes_older_than_atoms", "routes_with_dead_segment", "geo_tour_place_rows_on_inactive_atoms",
          "geo_tour_place_stale_rows", "place_card_links_missing", "active_place_atoms_without_card_link",
