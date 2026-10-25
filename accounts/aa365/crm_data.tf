@@ -240,8 +240,8 @@ data "aws_iam_policy_document" "crm_kms_data" {
   }
 }
 
-# ingest: raw inbound mail (SES receipt rule -> S3, client-side encrypted by SES, ≤ 1 day) and the audit export
-# (Object Lock buckets, SSE-KMS).
+# ingest: raw inbound mail (SES receipt rule -> S3 under the bucket default SSE-KMS, ≤ 1 day; AA-945 crm_mail.tf) and
+# the audit export (Object Lock buckets, SSE-KMS).
 data "aws_iam_policy_document" "crm_kms_ingest" {
   source_policy_documents = [data.aws_iam_policy_document.crm_kms_common.json]
 
@@ -270,7 +270,8 @@ data "aws_iam_policy_document" "crm_kms_ingest" {
     }
   }
 
-  # The CRM reads the raw mail SES stored (S3 client-side encryption context of an SES receipt in this account).
+  # The CRM reads the raw mail SES stored (S3 client-side encryption context of an SES receipt in this account). Unused
+  # since AA-945 chose the bucket default SSE-KMS (crm_mail.tf, no kms_key_arn on the S3 action); harmless, kept.
   statement {
     sid       = "CrmRuntimeReadSesMail"
     actions   = ["kms:Decrypt"]
@@ -291,12 +292,13 @@ data "aws_iam_policy_document" "crm_kms_ingest" {
     }
   }
 
-  # SES encrypts the raw mail of the CRM receipt rules (aa-crm-<env>-*, any rule set of this account: the region has
-  # one active set, aa-cis-dev-e2e today) before it writes it to S3. Statement from the SES developer guide
-  # ("Give permission to Amazon SES to use your AWS KMS key").
+  # SES writes the raw mail of the CRM receipt rules (aa-crm-<env>-*, any rule set of this account: the region has
+  # one active set, aa-cis-dev-e2e) into the ingest bucket, whose default encryption is SSE-KMS under this key. Statement
+  # from the SES developer guide ("Give permission to Amazon SES to use your AWS KMS key"); AA-945 adds kms:Decrypt,
+  # which the guide requires for "an S3 bucket with server-side encryption enabled".
   statement {
     sid       = "SesReceiptEncrypt"
-    actions   = ["kms:Encrypt", "kms:GenerateDataKey*"]
+    actions   = ["kms:Encrypt", "kms:GenerateDataKey*", "kms:Decrypt"]
     resources = ["*"]
     principals {
       type        = "Service"

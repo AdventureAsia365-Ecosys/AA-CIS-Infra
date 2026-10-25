@@ -128,6 +128,38 @@ variable "redis_host" {
   default     = null
 }
 
+# AA-874 S5: the CIS api + worker on the TLS + AUTH replication group (AA-CIS-App shared/cache/redis_conn.py).
+variable "redis_tls" {
+  description = "AA-874: env REDIS_TLS=true on api and worker (rediss://, certificate + host name checked). Needs an AA-CIS-App image with shared/cache/redis_conn.py (#983)."
+  type        = bool
+  default     = false
+  nullable    = false
+}
+
+variable "redis_auth_secret_arn" {
+  description = "AA-874: Secrets Manager ARN of the Redis AUTH token, injected as the secret REDIS_AUTH_TOKEN on api and worker (execution role pattern aa-cis/<env>/*). Null = no AUTH."
+  type        = string
+  default     = null
+  validation {
+    # ElastiCache accepts AUTH only over TLS; the app would drop the token with an ERROR, so fail at plan.
+    condition     = var.redis_auth_secret_arn == null || var.redis_tls
+    error_message = "redis_auth_secret_arn needs redis_tls = true (ElastiCache AUTH works only over TLS)."
+  }
+}
+
+variable "redis_cluster_id" {
+  description = "AA-874: env REDIS_CLUSTER_ID on api and worker, the cache cluster GET /admin/infra/status describes (the replication group's member, <group>-001). Null = the app default (the old node id)."
+  type        = string
+  default     = null
+}
+
+variable "s1_writer_v2_enabled" {
+  description = "AA-645: env S1_WRITER_V2 (on/off) on the worker, the S1 writer v2 switch for the A1 admin rewrite (AA-CIS-App services/content_generation/s1_writer_v2_live.py, default off). In Terraform so a template revision from any apply touching this module keeps the live value (lesson S250)."
+  type        = bool
+  default     = false
+  nullable    = false
+}
+
 variable "bronze_bucket_name" {
   description = "S3 bronze bucket name for presigned upload URLs (admin_pipeline.py BRONZE_BUCKET env var)"
   type        = string
