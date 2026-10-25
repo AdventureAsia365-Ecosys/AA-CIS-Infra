@@ -131,11 +131,6 @@ variable "database_url" {
   sensitive   = true
 }
 
-variable "redis_url" {
-  type    = string
-  default = ""
-}
-
 variable "dataforseo_login" {
   type      = string
   default   = ""

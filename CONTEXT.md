@@ -126,10 +126,14 @@ accounts/
                                    APIs, AA-911 D-1), groups, trigger Lambdas in
                                    lambda_src/identity_triggers + tests; SES (ses.tf identity) on,
                                    EXTERNAL native sign-up, WAF and custom domains gated by
-                                   variables, default off — AA-854; Dev tfvars turn the WAF on (AA-908;
-                                   traveller native sign-up still off): one web ACL on the WORKFORCE, EXTERNAL
-                                   and PARTNER pools, per-IP limits on the sign-up/sign-in API calls and
-                                   on managed-login form posts (not /oauth2/*), alarm
+                                   variables, default off — AA-854; Dev tfvars turn the WAF and
+                                   traveller native sign-up on (AA-908; the TripPlanner BFF's passwordless
+                                   SignUp, accepted by the pre sign-up trigger only with the BFF's HMAC
+                                   proof, key tripplanner/dev/cognito-signup-proof-key): one web ACL on the WORKFORCE, EXTERNAL and PARTNER pools,
+                                   per-IP limits on the sign-up/sign-in API calls and on managed-login form
+                                   posts (not /oauth2/*), the TripPlanner BFF's API calls (header value =
+                                   secret tripplanner/dev/cognito-bff-key) counted per traveller address
+                                   (X-AA-Traveller-IP) instead, alarm
                                    aa-identity-dev-waf-blocked; managed login branding: one style
                                    per WORKFORCE and per EXTERNAL client, for_each over each client
                                    resource — a managed-login-v2 client without a style answers 403
@@ -352,7 +356,14 @@ role has an explicit Deny on `GetSecretValue` for the master, `db-migrator`, `bo
 manual idle gate first (root `skill/aa-ship`, X1 plan standing rules). Env on the CIS task definitions comes only
 from `modules/ecs/main.tf` (e.g. AA-847 `PLACE_SHAPES_ENABLED` from `place_shapes_enabled`; AA-839
 `ERASURE_APPLY_ENABLED` / `ERASURE_TENANT_RETENTION_DAYS` from `local.erasure_drill` in `accounts/aa365`); CIS Deploy Dev copies
-the latest revision and swaps the image, so a Terraform env change ships with the next CIS deploy. The old S3 → Lambda → Step Functions pipeline
+the latest revision and swaps the image, so a Terraform env change ships with the next CIS deploy. The reverse also
+holds: an env set by hand on a running revision is lost when any apply touching `module.ecs` registers a new
+template revision, so every runtime switch lives in the module (AA-645 `S1_WRITER_V2` from `s1_writer_v2_enabled`,
+added after the S250 near miss); after such an apply, diff the env names of the newest revision against the running
+one before the next deploy. Redis (AA-874 S5): api and worker get `REDIS_HOST` = the TLS primary endpoint of
+`aws_elasticache_replication_group.main` (`aa-cis-dev-cache`, Valkey, AUTH + TLS + at-rest), `REDIS_TLS=true`,
+`REDIS_CLUSTER_ID` = its member node and the secret `REDIS_AUTH_TOKEN` (`aa-cis/dev/redis-auth`, write-only, never
+in state). The old S3 → Lambda → Step Functions pipeline
 (ingestion/seo/validation/content/export Lambdas, the state machine, 6 SQS queues) and the
 `authorizer` / `brand-brief-parser` Lambdas were retired in AA-750; the pipeline runs in the API
 and the durable job worker.
