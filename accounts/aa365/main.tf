@@ -192,7 +192,14 @@ module "ecs" {
 
   target_group_arn = module.alb.target_group_arn
 
-  redis_host = module.elasticache.redis_endpoint
+  # AA-874 S5: the TLS + AUTH replication group (modules/elasticache). Needs AA-CIS-App #983 deployed (it is);
+  # the apply only registers template revisions (services ignore task_definition), so run CIS deploy-dev in the
+  # same idle gap, right after the S4 key copy. Rollback: point redis_host back at redis_endpoint, drop the
+  # three lines below, apply + deploy (the old node stays until S6).
+  redis_host            = module.elasticache.tls_primary_endpoint
+  redis_tls             = true
+  redis_auth_secret_arn = module.elasticache.auth_secret_arn
+  redis_cluster_id      = module.elasticache.member_cluster_id
 
   # AA-902: satellite account IDs as env (the public CIS repo no longer carries them)
   bedrock_acct_primary  = local.bedrock_acct_primary
@@ -203,6 +210,9 @@ module "ecs" {
   place_shapes_enabled = true
   # AA-779: on since S247 (shadow verdicts read on real blogs first; ADR 0011 in AA-CIS-App). Rollback: "shadow".
   t9_faq_llm_filter = "on"
+  # AA-645: S1 writer v2 on the worker, on since S248 (set by hand until S250, now carried here so a template
+  # revision keeps it). Rollback to writer v1: false, apply, then CIS deploy-dev.
+  s1_writer_v2_enabled = true
   # AA-835 (S6 review): the supply_media_purge job invalidates withdrawn Booking photo copies on the photos CDN.
   photos_cdn_distribution_arn = local.photos_cdn_on == 1 ? aws_cloudfront_distribution.photos_cdn[0].arn : ""
   # AA-839: data_erasure apply switch + tenant retention window, driven by local.erasure_drill above.
