@@ -220,6 +220,10 @@ locals {
     ALLOWED_EMAIL_DOMAIN = lower(var.identity_staff_email_domain)
     STAFF_GROUPS         = join(",", keys(local.id_staff_groups))
     BREAKGLASS_EMAIL     = lower(var.identity_breakglass_email)
+    # A10b (AA-816, S252, root ADR 0006a A10b): switches on the Dev-only E2E CIS admin entry of workforce.py
+    # (E2E_DEV_ONLY_TEST_STAFF). Exactly "true" on dev, "false" everywhere else; the precondition on
+    # aws_lambda_function.identity_trigger refuses "true" outside dev.
+    E2E_DEV_ONLY_STAFF_ENABLED = var.environment == "dev" ? "true" : "false"
   }
   id_external_env = {
     PORTAL_CLIENT_NAMES    = join(",", local.id_portal_client_names)
@@ -370,6 +374,15 @@ resource "aws_lambda_function" "identity_trigger" {
   depends_on = [aws_cloudwatch_log_group.identity_trigger]
 
   tags = merge(local.id_tags, { Function = each.key })
+
+  lifecycle {
+    # A10b (AA-816, S252): belt and braces against a future hand-edited env map: the Dev-only E2E staff entry
+    # (workforce.py E2E_DEV_ONLY_TEST_STAFF) can never be switched on outside dev.
+    precondition {
+      condition     = var.environment == "dev" || lookup(each.value.env, "E2E_DEV_ONLY_STAFF_ENABLED", "false") != "true"
+      error_message = "A10b: the dev-only E2E staff entry (E2E_DEV_ONLY_STAFF_ENABLED) must be off outside dev."
+    }
+  }
 }
 
 resource "aws_lambda_alias" "identity_trigger_live" {

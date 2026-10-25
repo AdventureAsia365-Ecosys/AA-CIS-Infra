@@ -184,7 +184,10 @@ accounts/
                                    fixed recipients: the CIS staff E2E e2e@, the Booking staff E2E e2e-booking@
                                    (AA-910), the CRM e2e users and AA-908's two e2e travellers) -> S3 aa-cis-dev-e2e-mail-<acct>/inbound/ (1-day expiry), and
                                    the read-only GitHub OIDC role aa-cis-dev-e2e-mail-reader (AA-CIS-App, env e2e,
-                                   main). Any future SES receiving in us-west-1 adds rules to this set)
+                                   main). A10b (AA-816, S252, dev only): rule e2e-cognito-admin (recipient
+                                   e2e-cis-admin@, after aa-crm-dev-ingest) -> inbound-admin/, object reads there denied
+                                   to every principal except the MFA admin role (the reader role included). Any future
+                                   SES receiving in us-west-1 adds rules to this set)
     custom_domains.tf             (AA-818: ACM certs api-booking./api-tripplanner. (us-west-1) and auth./staff-auth.
                                    (us-east-1, provider alias aws.us_east_1) + validation records; API GW custom
                                    domains, alias records and Vercel CNAMEs gated by var.custom_domains_enabled;

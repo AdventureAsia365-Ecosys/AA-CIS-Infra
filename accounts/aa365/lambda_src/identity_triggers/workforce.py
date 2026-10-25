@@ -27,6 +27,19 @@ Unicode case-fold (U+212A KELVIN SIGN lower-cases to ASCII 'k') cannot alias an 
 before lower-casing (after it the folded address is already ASCII), and stays here, not in common.normalise_email
 (the EXTERNAL pool shares that helper).
 A code constant on purpose: no configuration can widen it. Removed when the E2E work is finished.
+
+A10b (AA-816, S252, root ADR 0006a A10b): a third address, Dev only, in a SEPARATE read-only map
+E2E_DEV_ONLY_TEST_STAFF:
+  - E2E_CIS_ADMIN_TEST_STAFF_EMAIL (CIS admin evidence screenshots and the AA-916 WM-07 sentence-action sample by the
+    orchestrating agent), cis-admin only, no Booking / CRM group. The CIS directory (migration 283,
+    staff_directory.E2E_CIS_ADMIN_TEST_STAFF_EMAIL) holds the same rule, refuses it unless the API's ENVIRONMENT is
+    exactly "dev", and caps its session at reads plus the content-quality sentence-apply routes
+    (api/middleware/staff_bearer.py). Its sign-in codes land in their own mailbox prefix (e2e_mailbox.tf rule
+    e2e-cognito-admin, prefix inbound-admin/), readable only by the MFA admin role.
+The map is consulted only while the Lambda env E2E_DEV_ONLY_STAFF_ENABLED is exactly the string "true" (read per call,
+no strip / lower; missing or anything else = off, fail closed). identity.tf sets it to "true" only when
+var.environment == "dev" and a precondition refuses "true" anywhere else. The flag can only switch ON an entry whose
+address and groups are code constants; it cannot add an address or widen a group set. Same ASCII-only exact lookup.
 """
 
 from __future__ import annotations
@@ -60,6 +73,16 @@ E2E_TEST_STAFF = MappingProxyType({
     E2E_BOOKING_TEST_STAFF_EMAIL: E2E_BOOKING_TEST_STAFF_GROUPS,
 })
 
+# A10b (AA-816, S252): Dev-only CIS admin E2E address. Consulted only when _dev_only_e2e_enabled() (module docstring).
+E2E_CIS_ADMIN_TEST_STAFF_EMAIL = "e2e-cis-admin@e2e-mail.lumiguides.it.com"
+E2E_CIS_ADMIN_TEST_STAFF_GROUPS = ("cis-admin",)
+E2E_DEV_ONLY_TEST_STAFF = MappingProxyType({
+    E2E_CIS_ADMIN_TEST_STAFF_EMAIL: E2E_CIS_ADMIN_TEST_STAFF_GROUPS,
+})
+# The Lambda env switch for E2E_DEV_ONLY_TEST_STAFF and the one value that turns it on (compared exactly).
+DEV_ONLY_E2E_FLAG = "E2E_DEV_ONLY_STAFF_ENABLED"
+DEV_ONLY_E2E_ON = "true"
+
 DEFAULT_STAFF_GROUPS = (
     "cis-admin,cis-reviewer,cis-content,"
     "booking-admin,booking-sales,booking-contracting,booking-content_creator,"
@@ -78,7 +101,16 @@ def _e2e_groups(raw_email: Any, email: str) -> tuple[str, ...] | None:
     """
     if not isinstance(raw_email, str) or not raw_email.isascii():
         return None
-    return E2E_TEST_STAFF.get(email)
+    groups = E2E_TEST_STAFF.get(email)
+    if groups is None and _dev_only_e2e_enabled():
+        groups = E2E_DEV_ONLY_TEST_STAFF.get(email)
+    return groups
+
+
+def _dev_only_e2e_enabled() -> bool:
+    """A10b: True only when the Lambda env E2E_DEV_ONLY_STAFF_ENABLED is exactly "true" (no strip, no lower-casing;
+    read per call). Missing, empty, "True", " true", "1" ... are all off."""
+    return os.environ.get(DEV_ONLY_E2E_FLAG) == DEV_ONLY_E2E_ON
 
 
 def _allowed_domain() -> str:

@@ -44,6 +44,15 @@
 #     cleans up. Its trust is the immutable AA-CIS-App and AA-Partner (AA-936) subjects + `environment:e2e` + ref main.
 #   - Exposure (AA-910, root ADR 0006a A10a): a booking-admin code gives full Booking write admin on the production
 #     client; AA-Booking refuses that user's writes (403 e2e_read_only), so a leaked code yields admin reads only.
+#   - A10b (AA-816, S252, root ADR 0006a A10b): the Dev-only CIS admin E2E address e2e-cis-admin@ (WORKFORCE user in
+#     cis-admin only; trigger map workforce.py E2E_DEV_ONLY_TEST_STAFF, switched on by E2E_DEV_ONLY_STAFF_ENABLED,
+#     identity.tf) has its OWN rule e2e-cognito-admin (dev only, count) writing to its OWN prefix inbound-admin/. It
+#     is never a recipient of e2e-cognito (its codes must never land in inbound/). SES PutObject statements pair
+#     rule ARN <-> prefix, so neither rule can write into the other's prefix. DenyAdminPrefixReadsExceptMfaAdmin
+#     refuses object reads under inbound-admin/ to every principal except the MFA admin role, the reader role
+#     included whatever its identity policy says (and that policy is scoped to inbound/*, which does not match
+#     inbound-admin/...). The statement has no count: harmless while the prefix is empty, and it protects the prefix
+#     name on every environment. The 1-day lifecycle (filter {}) covers the prefix too.
 #
 # CI: the apply role needs ses:*ReceiptRule* (cicd_split.tf, Sid SESReceiptRuleManage). That is a
 # bootstrap grant: local MFA targeted apply of aws_iam_role_policy.tf_apply first, then Terraform
@@ -81,6 +90,14 @@ locals {
   e2e_mail_tags         = merge(local.ecosys_tags, { App = "cis", Issue = "AA-816" })
   e2e_mail_reader_sub   = "${local.oidc_sub_cis_app}:environment:e2e"
   e2e_mail_object_reads = ["s3:GetObject", "s3:GetObjectVersion", "s3:GetObjectAttributes"]
+
+  # A10b (AA-816, S252): Dev-only CIS admin E2E user; must equal workforce.py E2E_CIS_ADMIN_TEST_STAFF_EMAIL. Own rule
+  # and prefix (never added to e2e-cognito's recipients), readable only by the MFA admin role.
+  e2e_admin_enabled        = var.environment == "dev"
+  e2e_mail_admin_recipient = "e2e-cis-admin@${local.e2e_mail_domain}"
+  e2e_mail_admin_prefix    = "inbound-admin/"
+  e2e_mail_admin_rule      = "e2e-cognito-admin"
+  e2e_mail_admin_rule_arn  = "arn:aws:ses:${var.aws_region}:${var.account_id}:receipt-rule-set/${local.e2e_mail_rule_set}:receipt-rule/${local.e2e_mail_admin_rule}"
 }
 
 # ── 1. DNS: MX for the sub-domain ────────────────────────────────────────────
@@ -169,6 +186,54 @@ data "aws_iam_policy_document" "e2e_mail_bucket" {
     }
   }
 
+  # A10b (AA-816, S252): SES writes the CIS admin E2E mail under inbound-admin/ only from the e2e-cognito-admin rule
+  # (dev only, like the rule). Paired rule ARN <-> prefix: e2e-cognito cannot write here, this rule cannot write inbound/.
+  dynamic "statement" {
+    for_each = local.e2e_admin_enabled ? [1] : []
+    content {
+      sid       = "AllowSesPutFromE2eAdminRule"
+      actions   = ["s3:PutObject"]
+      resources = ["${aws_s3_bucket.e2e_mail.arn}/${local.e2e_mail_admin_prefix}*"]
+
+      principals {
+        type        = "Service"
+        identifiers = ["ses.amazonaws.com"]
+      }
+
+      condition {
+        test     = "StringEquals"
+        variable = "aws:SourceAccount"
+        values   = [var.account_id]
+      }
+
+      condition {
+        test     = "StringEquals"
+        variable = "aws:SourceArn"
+        values   = [local.e2e_mail_admin_rule_arn]
+      }
+    }
+  }
+
+  # A10b: CIS admin sign-in codes. Object reads under inbound-admin/ are denied to every principal except the MFA admin
+  # role, the reader role included even if its identity policy is ever widened. No count on purpose (see header).
+  statement {
+    sid       = "DenyAdminPrefixReadsExceptMfaAdmin"
+    effect    = "Deny"
+    actions   = local.e2e_mail_object_reads
+    resources = ["${aws_s3_bucket.e2e_mail.arn}/${local.e2e_mail_admin_prefix}*"]
+
+    principals {
+      type        = "AWS"
+      identifiers = ["*"]
+    }
+
+    condition {
+      test     = "StringNotEquals"
+      variable = "aws:PrincipalArn"
+      values   = [local.id_breakglass_admin_role_arn]
+    }
+  }
+
   # Message bodies hold sign-in codes: no other principal of the account reads them, whatever its
   # identity policy says (ECS task roles, the CI roles, ReadOnlyAccess). Bucket-level calls
   # (HeadBucket = s3:ListBucket, Get*Configuration) stay open so Terraform plan/apply can refresh.
@@ -253,6 +318,30 @@ resource "aws_ses_receipt_rule" "e2e_cognito" {
   depends_on = [aws_s3_bucket_policy.e2e_mail]
 }
 
+# A10b (AA-816, S252): the Dev-only CIS admin E2E address, its own rule and prefix. Appended at the END of the active
+# set (after aa-crm-dev-ingest): inserting it after e2e-cognito would move aa-crm-dev-ingest, whose own
+# `after = e2e-cognito` would then plan a perpetual diff. Recipients are disjoint from both other rules, so the order
+# has no functional effect.
+resource "aws_ses_receipt_rule" "e2e_cognito_admin" {
+  count         = local.e2e_admin_enabled ? 1 : 0
+  name          = local.e2e_mail_admin_rule
+  rule_set_name = aws_ses_receipt_rule_set.e2e.rule_set_name
+  after         = aws_ses_receipt_rule.crm_ingest.name
+  recipients    = [local.e2e_mail_admin_recipient]
+  enabled       = true
+  scan_enabled  = true
+  tls_policy    = "Require"
+
+  s3_action {
+    position          = 1
+    bucket_name       = aws_s3_bucket.e2e_mail.id
+    object_key_prefix = local.e2e_mail_admin_prefix
+  }
+
+  # SES writes a setup-notification object when the rule is created: the bucket policy must exist.
+  depends_on = [aws_s3_bucket_policy.e2e_mail]
+}
+
 # ── 4. Read-only role for AA-CIS-App GitHub Actions (cognito-e2e.yml) ────────
 resource "aws_iam_role" "e2e_mail_reader" {
   name                 = local.e2e_mail_reader_name
@@ -285,6 +374,9 @@ resource "aws_iam_role" "e2e_mail_reader" {
   tags = local.e2e_mail_tags
 }
 
+# A10b (AA-816, S252): scoped to inbound/* on purpose. The CIS admin E2E prefix inbound-admin/ is out of scope (the
+# string "inbound/" does not match "inbound-admin/..."), and the bucket policy denies it to this role anyway
+# (DenyAdminPrefixReadsExceptMfaAdmin). Never widen this to the bucket or to "inbound*".
 resource "aws_iam_role_policy" "e2e_mail_reader" {
   name = "${local.e2e_mail_reader_name}-policy"
   role = aws_iam_role.e2e_mail_reader.id
@@ -326,5 +418,8 @@ output "e2e_mailbox" {
     traveller_recipients = local.e2e_traveller_recipients
     bucket               = aws_s3_bucket.e2e_mail.id
     prefix               = local.e2e_mail_prefix
+    # A10b (AA-816, S252): dev only (null elsewhere); read by the agent with the MFA admin role.
+    admin_recipient = local.e2e_admin_enabled ? local.e2e_mail_admin_recipient : null
+    admin_prefix    = local.e2e_admin_enabled ? local.e2e_mail_admin_prefix : null
   }
 }
