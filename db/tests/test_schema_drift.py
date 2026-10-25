@@ -284,6 +284,26 @@ class RoleGaps(unittest.TestCase):
                "EXECUTE format('CREATE ROLE %I NOLOGIN', r); END LOOP; END $$;")
         self.assertEqual(rp.roles_created_by(sql, self.LIVE), {"crm_ai_reader", "crm_eraser"})
 
+    def test_format_built_create_role_ignores_live_names_it_only_grants_to(self):
+        # review S251 #5: a live role in another literal (a GRANT target, a check) is not created by the loop
+        sql = ("DO $$ DECLARE r text; BEGIN "
+               "IF to_regrole('tripplanner') IS NULL THEN RAISE EXCEPTION 'apply rl-001 first'; END IF; "
+               "FOREACH r IN ARRAY ARRAY['crm_ai_reader'] LOOP EXECUTE format('CREATE ROLE %I NOLOGIN', r); END LOOP; "
+               "EXECUTE format('GRANT %I TO %I', 'crm_eraser', 'bk_owner'); END $$;")
+        self.assertEqual(rp.roles_created_by(sql, self.LIVE), {"crm_ai_reader"})
+
+    def test_format_built_create_role_with_literal_arguments(self):
+        sql = "DO $$ BEGIN EXECUTE format('CREATE ROLE %I NOLOGIN', 'tp_owner'); END $$;"
+        self.assertEqual(rp.roles_created_by(sql, self.LIVE), {"tp_owner"})
+
+    def test_the_real_rl_004_creates_only_its_four_nologin_roles(self):
+        path = Path(__file__).resolve().parent.parent / "migrations" / "roles" / "004_crm_nologin_roles.sql"
+        sql = path.read_text(encoding="utf-8")
+        live = frozenset({"crm_ai_reader", "crm_insights", "crm_support_reader", "crm_eraser", "crm_app", "crm_owner",
+                          "aa_cis_admin"})
+        self.assertEqual(rp.roles_created_by(sql, live),
+                         {"crm_ai_reader", "crm_insights", "crm_support_reader", "crm_eraser"})
+
     def _items(self):
         order = rp.plan_order([mig("225", "2026-10-01"), mig("rl-001", "2026-10-02"), mig("243", "2026-10-03")],
                               {"cis": ["225_catalog.sql", "243_grants.sql"], "roles": ["001_x1.sql"]})
@@ -323,6 +343,77 @@ class OwnerTransfer(unittest.TestCase):
                          "246_probe.sql": "ALTER SCHEMA shared OWNER TO cis_owner;"},
                  "booking": {"014_bk.sql": "ALTER SCHEMA booking OWNER TO bk_owner;"}}
         self.assertEqual(rp.transfer_files(order["items"], texts), {"cis": 1, "booking": 2})
+
+    def test_cis_scope_moves_every_schema_but_not_the_catalog_objects(self):
+        # review S251 #2: 245 item 4 moves objects in the 11 runtime schemas only; catalog's views stay
+        schemas, objects = rp.transfer_scope("cis", ["shared", "catalog", "geo", "not_cis"])
+        self.assertEqual(schemas, ["catalog", "geo", "shared"])
+        self.assertEqual(objects, ["geo", "shared"])
+        self.assertEqual(rp.transfer_scope("booking", ["booking"]), (["booking"], ["booking"]))
+        self.assertEqual(rp.transfer_scope("tripplanner", []), ([], []))
+
+    def test_every_schema_goes_to_the_new_owner_not_its_live_owner(self):
+        # review S251 #1: 245 sets all 12 CIS schemas to cis_owner; a later owner change on Dev must stay drift
+        stmts = rp.ownership_statements(["catalog", "shared"], [], "cis_owner")
+        self.assertEqual(stmts, ['ALTER SCHEMA "catalog" OWNER TO "cis_owner"',
+                                 'ALTER SCHEMA "shared" OWNER TO "cis_owner"'])
+
+    def test_objects_follow_the_schemas_with_their_kind_keyword(self):
+        objects = [("TABLE", "shared.job"), ("TYPE", "shared.tstz_window"), ("DOMAIN", "shared.iso2"),
+                   ("FUNCTION", "shared.f(integer)"), ("STATISTICS", "shared.job_stx"),
+                   ("TEXT SEARCH CONFIGURATION", 'shared."Simple"')]
+        stmts = rp.ownership_statements(["shared"], objects, "cis_owner")
+        self.assertEqual(stmts[0], 'ALTER SCHEMA "shared" OWNER TO "cis_owner"')
+        self.assertEqual(stmts[1:], [f'ALTER {k} {n} OWNER TO "cis_owner"' for k, n in objects])
+
+    def test_unknown_object_kind_is_refused(self):
+        with self.assertRaises(ValueError):
+            rp.ownership_statements([], [("SERVER", "x")], "cis_owner")
+
+    def test_owned_objects_query_takes_the_kinds_245_moves(self):
+        q = rp.OWNED_OBJECTS_SQL
+        self.assertIn("y.typtype IN ('e', 'd', 'r')", q)                 # range types too
+        self.assertIn("c.relkind IN ('r', 'p', 'v', 'm', 'f', 'S', 'c')", q)   # standalone composite types
+        self.assertIn("d.deptype = 'e'", q)                              # extension members stay
+        for kind in ("pg_statistic_ext", "pg_collation", "pg_conversion", "pg_ts_dict", "pg_ts_config"):
+            self.assertIn(kind, q)
+
+
+class ServerVersion(unittest.TestCase):
+    """review S251 #3: the replay refuses a server that is not PostgreSQL 15."""
+
+    def test_15_is_accepted(self):
+        self.assertIsNone(rp.check_server_version(150017))
+        self.assertIsNone(rp.check_server_version(150000))
+
+    def test_other_majors_are_refused(self):
+        for v in (160015, 140010, 170000):
+            msg = rp.check_server_version(v)
+            self.assertIsNotNone(msg)
+            self.assertIn(f"PostgreSQL {v // 10000}", msg)
+
+
+class FillRolesCache(unittest.TestCase):
+    """review S251 #6: fill_roles asks the server only when a role is due that was not seen yet."""
+
+    def test_no_connection_when_every_due_role_was_seen(self):
+        import asyncio
+        calls = []
+
+        async def fake_connect(*a, **k):
+            calls.append(a)
+            raise AssertionError("must not connect")
+
+        orig = rp._connect
+        rp._connect = fake_connect
+        try:
+            out = asyncio.run(rp.fill_roles("dsn", 5, {"bk_owner": 1, "tp_owner": 2}, {}, [], {"bk_owner", "tp_owner"}))
+            self.assertEqual(out, [])
+            out = asyncio.run(rp.fill_roles("dsn", 1, {"bk_owner": 1, "tp_owner": 2}, {}, [], set()))
+            self.assertEqual(out, [])                                   # nothing due yet (creator not earlier)
+        finally:
+            rp._connect = orig
+        self.assertEqual(calls, [])
 
 
 class ReplayOrder(unittest.TestCase):
@@ -424,6 +515,53 @@ class Attribution2(unittest.TestCase):
         d = sd.diff(self._live_with_column_type(), dump(), gap)
         self.assertEqual(d["changed"][0]["explained_by"], ["cis/090_type.sql"])
         self.assertEqual(d["counts"]["unexplained"], 0)
+
+    def test_trigger_naming_a_column_does_not_explain_its_type(self):
+        # review S251 #8: CIS 279's `CREATE TRIGGER … UPDATE OF country ON raw_tours` named country in the words of
+        # raw_tours, so 279 "explained" the text/varchar difference of raw_tours.country
+        gap = {"items": [{"rel": "cis/279_countries.sql", "status": "failed", "names": ["shared.job"],
+                          "ddl": {"names": ["shared.job"], "schemas": ["shared"],
+                                  "words": {"shared.job": ["create", "trigger", "update", "of", "kind"]},
+                                  "columns": {"shared.job": ["kind_iso2"]},
+                                  "recreated": [], "created": [], "dynamic": {}}}]}
+        d = sd.diff(self._live_with_column_type(), dump(), gap)
+        self.assertEqual(d["changed"][0]["explained_by"], [])
+        self.assertEqual(d["changed"][0]["mentioned_by"], ["cis/279_countries.sql"])
+
+    def test_column_ddl_explains_the_column(self):
+        gap = {"items": [{"rel": "cis/090_type.sql", "status": "failed", "names": ["shared.job"],
+                          "ddl": {"names": ["shared.job"], "schemas": ["shared"], "words": {},
+                                  "columns": {"shared.job": ["kind"]},
+                                  "recreated": [], "created": [], "dynamic": {}}}]}
+        d = sd.diff(self._live_with_column_type(), dump(), gap)
+        self.assertEqual(d["changed"][0]["explained_by"], ["cis/090_type.sql"])
+
+    def test_the_real_279_shape_targets_only_country_iso2(self):
+        sql = ("ALTER TABLE silver_aa_internal.raw_tours ADD COLUMN IF NOT EXISTS country_iso2 character(2) "
+               "REFERENCES shared.countries (iso2);\n"
+               "CREATE INDEX IF NOT EXISTS raw_tours_country_iso2_idx ON silver_aa_internal.raw_tours (country_iso2);\n"
+               "CREATE TRIGGER raw_tours_country_iso2 BEFORE INSERT OR UPDATE OF country"
+               " ON silver_aa_internal.raw_tours FOR EACH ROW EXECUTE FUNCTION shared.set_country_iso2();")
+        ddl = rp.ddl_targets(sql, {"silver_aa_internal", "shared"})
+        self.assertEqual(ddl["columns"], {"silver_aa_internal.raw_tours": ["country_iso2"]})
+        self.assertIn("country", ddl["words"]["silver_aa_internal.raw_tours"])
+
+    def test_column_targets_of_alter_and_create_table(self):
+        ct = rp.column_targets("alter table only shared.t add column if not exists a int, alter column b type text, "
+                               "add constraint c check (x in (1, 2)), rename d to e, drop column f, owner to z",
+                               {"shared"})
+        self.assertEqual(ct, {"shared.t": {"a", "b", "d", "e", "f"}})
+        ct = rp.column_targets("create table if not exists shared.t (id int primary key, name text)", {"shared"})
+        self.assertTrue({"id", "name"} <= ct["shared.t"])
+        self.assertEqual(rp.column_targets("alter table other.t add column a int", {"shared"}), {})
+
+    def test_a_results_file_without_columns_falls_back_to_words(self):
+        gap = {"items": [{"rel": "cis/090_type.sql", "status": "failed", "names": ["shared.job"],
+                          "ddl": {"names": ["shared.job"], "schemas": ["shared"],
+                                  "words": {"shared.job": ["alter", "kind", "type", "text"]},
+                                  "recreated": [], "created": [], "dynamic": {}}}]}
+        d = sd.diff(self._live_with_column_type(), dump(), gap)
+        self.assertEqual(d["changed"][0]["explained_by"], ["cis/090_type.sql"])
 
     def test_a_recreated_view_explains_its_columns(self):
         live = dump()

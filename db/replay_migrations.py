@@ -18,9 +18,10 @@ Input:
 Steps:
   1. Role bootstrap, as the superuser: the RDS master `aa_cis_admin` (LOGIN CREATEROLE CREATEDB, NOT a superuser,
      member of a stand-in `rds_superuser`), and every live role that no migration creates (roles_created_by: a
-     `CREATE ROLE` in code, comments left out; today only the TripPlanner runtime role, created by hand in 2026). A fresh database owned by the
-     master, and the live extensions (vector, pg_stat_statements) created in it by the superuser, as RDS lets
-     its master do.
+     `CREATE ROLE` in code, comments left out; today only the TripPlanner runtime role, created by hand in
+     2026). A fresh database owned by the master, and the live extensions (vector, pg_stat_statements)
+     created in it by the superuser, as RDS lets its master do. A server that is not PostgreSQL 15 is
+     refused (exit 1, see below).
   2. Order (plan_order, pure): every registered version mapped to its file(s), sorted by applied_at; files of an
      owner with no registry row and numbered BELOW that owner's latest registered file (CIS legacy files applied
      by hand before self-registration) are replayed right after the file before them and flagged; files ABOVE it
@@ -43,12 +44,17 @@ Steps:
         format('CREATE ROLE %I') over live names) comes earlier but failed is created by the master with its live
         attributes (never a password: the scratch server's own auth). Only the role: that file's grants stay a gap.
      b. owner gap: when a dir's X1 ownership-transfer file (transfer_files: CIS 245, bk-014, tp-013) fails, the
-        replay does what it does to ownership, as the master: the dir's schemas to their live owner, every
-        relation / routine / enum the master owns in them to the anchor's live owner (third owners such as
-        catalog_owner keep theirs). Its grants, default privileges and checks stay a gap.
+        replay does what it does to ownership, as the master (ownership_statements, pure): every schema of the
+        dir to the anchor schema's live owner (245 moves all 12 CIS schemas to cis_owner; a later owner change
+        on Dev then shows as drift, it is not copied), and every object the master owns in them, extension
+        members left out, to that owner: relations and composite types, enum / domain / range types, routines,
+        statistics, collations, conversions, text search dictionaries and configurations, the kinds 245 moves.
+        Schemas in TRANSFER_SKIP_OBJECTS keep their objects' owners (CIS: catalog, 245 item 4: its views stay
+        catalog_owner's, only the schema moves). Its grants, default privileges and checks stay a gap.
      The replay targets PostgreSQL 15 (RDS 15.17, the workflow image). On 16 the CREATEROLE rules changed (a role's
      creator gets ADMIN on it and "is a member"), so rl-001 / rl-002 refuse and the owner fill cannot SET ROLE:
-     a run on 16 is not comparable.
+     a run on 16 is not comparable (S251: 64 files differ). prepare() reads server_version_num and refuses any
+     other major version (check_server_version), so an image bump cannot change the counts silently.
   4. The replayed catalog is dumped with db/schema_dump.collect (the same queries as the live dump).
 
 Output: --out results.json (one row per file: key, file, login, run_as, status, error, roles_filled,
@@ -205,8 +211,8 @@ DDL_RES = (
                r"(?:table|view|materialized\s+view|sequence|type|function|procedure|domain|foreign\s+table)\s+"
                r"(?:if\s+(?:not\s+)?exists\s+)?(?:only\s+)?" + _QUAL),
     # indexes, policies and triggers name their table after ON
-    re.compile(r"\bcreate\s+(?:unique\s+)?index\s+(?:concurrently\s+)?(?:if\s+not\s+exists\s+)?(?:\"?[a-z0-9_$]+\"?\s+)?"
-               r"on\s+(?:only\s+)?" + _QUAL),
+    re.compile(r"\bcreate\s+(?:unique\s+)?index\s+(?:concurrently\s+)?(?:if\s+not\s+exists\s+)?"
+               r"(?:\"?[a-z0-9_$]+\"?\s+)?on\s+(?:only\s+)?" + _QUAL),
     re.compile(r"\b(?:create|alter|drop)\s+policy\s+(?:if\s+exists\s+)?\"?[a-z0-9_$]+\"?\s+on\s+" + _QUAL),
     re.compile(r"\b(?:create(?:\s+or\s+replace)?(?:\s+constraint)?|drop)\s+trigger\s+(?:if\s+exists\s+)?"
                r"\"?[a-z0-9_$]+\"?\s+[^;]*?\bon\s+" + _QUAL),
@@ -223,6 +229,53 @@ DDL_SCHEMA_RE = re.compile(r"\b(?:create|alter|drop)\s+schema\s+(?:if\s+(?:not\s
 
 
 WORD_RE = re.compile(r"[a-z_][a-z0-9_$]*")
+# Column DDL on a table: `create table x (…)` defines every column it names; `alter table x <action>, <action>`
+# adds / alters / drops / renames the column each action names. Anything else on the table (an index, a trigger
+# `update of country`, a constraint) does not change a column's type, nullability or default.
+CREATE_TABLE_RE = re.compile(r"\bcreate(?:\s+(?:unlogged|temporary|temp))?\s+table\s+(?:if\s+not\s+exists\s+)?"
+                             + _QUAL)
+ALTER_TABLE_RE = re.compile(r"\balter\s+table\s+(?:if\s+exists\s+)?(?:only\s+)?" + _QUAL + r"\s+(.*)", re.DOTALL)
+COLUMN_ACTION_RE = re.compile(r"^\s*(?:add|alter|drop|rename)\s+(?:column\s+)?(?:if\s+(?:not\s+)?exists\s+)?" + _ID
+                              + r"(?:\s+to\s+" + _ID + r")?")
+NOT_A_COLUMN = frozenset({"constraint", "primary", "foreign", "unique", "check", "exclude", "to", "column"})
+
+
+def _split_actions(rest: str) -> list:
+    """The comma-separated actions of an ALTER TABLE, commas inside parentheses kept."""
+    out, depth, cur = [], 0, []
+    for ch in rest:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        if ch == "," and depth == 0:
+            out.append("".join(cur))
+            cur = []
+            continue
+        cur.append(ch)
+    out.append("".join(cur))
+    return out
+
+
+def column_targets(stmt: str, known_schemas: set) -> dict:
+    """Pure: {'schema.table': column names whose definition one (lower-case) statement sets}. CREATE TABLE: every
+    word of the statement (its column list); ALTER TABLE: the column of each add / alter / drop / rename action
+    (`rename a to b` gives both)."""
+    out: dict = {}
+    for m in CREATE_TABLE_RE.finditer(stmt):
+        if m.group(1) in known_schemas:
+            out.setdefault(f"{m.group(1)}.{m.group(2)}", set()).update(WORD_RE.findall(stmt))
+    for m in ALTER_TABLE_RE.finditer(stmt):
+        if m.group(1) not in known_schemas:
+            continue
+        cols = out.setdefault(f"{m.group(1)}.{m.group(2)}", set())
+        for action in _split_actions(m.group(3)):
+            a = COLUMN_ACTION_RE.match(action)
+            if a and a.group(1) not in NOT_A_COLUMN:
+                cols.add(a.group(1))
+                if a.group(2):
+                    cols.add(a.group(2))
+    return out
 DYNAMIC_KIND_RES = (           # what DDL a format()-built string does, by the drift finding kind it can explain
     ("policy", re.compile(r"\b(?:create|alter|drop)\s+policy\b[^;]*%")),
     ("index", re.compile(r"\b(?:create\s+(?:unique\s+)?index|drop\s+index)\b[^;]*%")),
@@ -244,6 +297,9 @@ def ddl_targets(sql: str, known_schemas: set) -> dict:
       words      {'schema.name': identifiers of the statements that target it} (column, index, constraint, policy,
                  trigger names), so "adds an index to raw_tours" does not explain a raw_tours column type
       recreated  views it creates or replaces and views / tables it drops (every column of theirs is its doing)
+      columns    {'schema.table': column names it defines / adds / alters / drops / renames} (column_targets): a
+                 column finding is this file's doing only when its column is here (S251: CIS 279's trigger
+                 `update of country` on raw_tours named `country` but does not change its type)
       created    schemas and 'schema.name' it CREATEs (or RENAMEs to): gap_roots tells a lost object from a cascade
       dynamic    for a file that builds DDL with format('CREATE POLICY %I ON %I.%I …'): the kinds of DDL its strings do,
                  the objects it names and its words (a broader claim, kind-bound in the report); {} otherwise"""
@@ -251,7 +307,10 @@ def ddl_targets(sql: str, known_schemas: set) -> dict:
     text = (rm._role_view(sql, strings) + " ; " + " ; ".join(strings)).lower()
     names, schemas, recreated, created = set(), set(), set(), set()
     detail: dict = {}
+    columns: dict = {}
     for stmt in text.split(";"):
+        for rel, cols in column_targets(stmt, known_schemas).items():
+            columns.setdefault(rel, set()).update(cols)
         hit = set()
         for m in CREATE_RE.finditer(stmt):
             if m.group(1) in known_schemas:
@@ -286,23 +345,47 @@ def ddl_targets(sql: str, known_schemas: set) -> dict:
         dyn_names, _ = mentioned(sql, known_schemas)
         dynamic = {"kinds": kinds, "names": dyn_names, "words": sorted(set(WORD_RE.findall(text)))}
     return {"names": sorted(names), "schemas": sorted(schemas), "recreated": sorted(recreated),
-            "created": sorted(created), "words": {k: sorted(v) for k, v in sorted(detail.items())}, "dynamic": dynamic}
+            "created": sorted(created), "words": {k: sorted(v) for k, v in sorted(detail.items())},
+            "columns": {k: sorted(v) for k, v in sorted(columns.items())}, "dynamic": dynamic}
 
 
 CREATE_ROLE_RE = re.compile(r"\bCREATE\s+(?:ROLE|USER)\s+\"?([A-Z_][A-Z0-9_$]*)")
 DYNAMIC_CREATE_ROLE_RE = re.compile(r"\bCREATE\s+(?:ROLE|USER)\s+%(?:[0-9]+\$)?[IsL]", re.IGNORECASE)
+# In run_migration's role view a string literal reads '#<n>' (its text is strings[n]).
+_LIT = r"'#(\d+)'"
+FORMAT_LITERAL_ARGS_RE = re.compile(r"\bFORMAT\s*\(\s*" + _LIT + r"((?:\s*,\s*" + _LIT + r")+)\s*\)")
+FOREACH_ARRAY_RE = re.compile(r"\bFOREACH\s+([A-Z_][A-Z0-9_$]*)\s+IN\s+ARRAY\s+ARRAY\s*\[([^\]]*)\]\s*LOOP\b(.*?)"
+                              r"\bEND\s+LOOP\b", re.DOTALL)
+
+
+def _dynamic_role_names(code: str, strings: list) -> set:
+    """The role names a `format('CREATE ROLE %I', …)` really creates, and only those: the literal arguments of that
+    format() call, or the literals of the ARRAY[…] a FOREACH loop iterates when the loop body passes the loop
+    variable to it (rl-004). Other literals of the file (a GRANT target, a check message) do not count."""
+    def creates(n: str) -> bool:
+        return bool(DYNAMIC_CREATE_ROLE_RE.search(strings[int(n)]))
+    out: set = set()
+    for m in FORMAT_LITERAL_ARGS_RE.finditer(code):
+        if creates(m.group(1)):
+            out |= {strings[int(n)] for n in re.findall(_LIT, m.group(2))}
+    for m in FOREACH_ARRAY_RE.finditer(code):
+        var, items, body = m.group(1), m.group(2), m.group(3)
+        call = re.compile(r"\bFORMAT\s*\(\s*" + _LIT + r"\s*,\s*" + re.escape(var) + r"\s*\)")
+        if any(creates(c.group(1)) for c in call.finditer(body)):
+            out |= {strings[int(n)] for n in re.findall(_LIT, items)}
+    return out
 
 
 def roles_created_by(sql: str, live_names: frozenset = frozenset()) -> set:
     """Role names one file creates: a literal `CREATE ROLE x` in its code (comments left out, DO bodies read, IF NOT
-    EXISTS guards included), and, for a file that builds `CREATE ROLE %I` with format(), every live role named by
-    one of its string literals (rl-004: `FOREACH r IN ARRAY ARRAY['crm_ai_reader', …] … format('CREATE ROLE %I', r)`).
-    Read through run_migration's role lint view, so a `CREATE ROLE` inside a comment does not count."""
+    EXISTS guards included), and the live roles a `format('CREATE ROLE %I', …)` builds (_dynamic_role_names; rl-004:
+    `FOREACH r IN ARRAY ARRAY['crm_ai_reader', …] LOOP … format('CREATE ROLE %I NOLOGIN', r)`). Read through
+    run_migration's role lint view, so a `CREATE ROLE` inside a comment does not count."""
     strings: list = []
     code = rm._role_view(sql, strings)
     out = {m.group(1).lower() for m in CREATE_ROLE_RE.finditer(code) if not m.group(1).startswith("%")}
     if any(DYNAMIC_CREATE_ROLE_RE.search(s) for s in strings):
-        out |= {s for s in strings if s in live_names}
+        out |= {s for s in _dynamic_role_names(code, strings) if s in live_names}
     return out
 
 
@@ -381,11 +464,36 @@ async def _connect(dsn: str, attempts: int = 1):
             await asyncio.sleep(2)
 
 
+REPLAY_MAJOR = 15        # RDS aa-cis-dev-db and the workflow's pgvector image
+
+
+class ReplayServerError(RuntimeError):
+    """The scratch server cannot give a comparable replay (main() exits 1)."""
+
+
+def check_server_version(version_num: int, major: int = REPLAY_MAJOR) -> str | None:
+    """Pure: None when server_version_num is of the replay's major version, else why the replay refuses to run.
+    PostgreSQL 16 changed CREATEROLE (the creator gets ADMIN on the role and is a member of it): rl-001 / rl-002
+    refuse there and the owner fill cannot SET ROLE, so a 16 replay differs on 64 files (S251) and its counts would
+    change silently with an image bump."""
+    if version_num // 10000 == major:
+        return None
+    return (f"the scratch server is PostgreSQL {version_num // 10000} (server_version_num {version_num}); the replay "
+            f"needs PostgreSQL {major}, like RDS: role and ownership rules differ between majors, so the drift "
+            f"counts would not be comparable")
+
+
 async def prepare(admin_dsn: str, live: dict, created: set, db_name: str) -> list:
-    """Step 1. Returns notes (bootstrap roles, extensions that could not be created, …)."""
+    """Step 1. Returns notes (server version, bootstrap roles, extensions that could not be created, …). Raises
+    ReplayServerError on a server that is not PostgreSQL REPLAY_MAJOR (check_server_version)."""
     notes = []
     conn = await _connect(admin_dsn, attempts=30)
     try:
+        version_num = int(await conn.fetchval("SELECT current_setting('server_version_num')"))
+        problem = check_server_version(version_num)
+        if problem:
+            raise ReplayServerError(problem)
+        notes.append(f"scratch server version {version_num}")
         await conn.execute(f"DROP DATABASE IF EXISTS {_q(db_name)} WITH (FORCE)")
         await conn.execute("DO $$ BEGIN IF to_regrole('rds_superuser') IS NULL THEN CREATE ROLE rds_superuser NOLOGIN; "
                            "END IF; END $$")
@@ -426,20 +534,26 @@ async def prepare(admin_dsn: str, live: dict, created: set, db_name: str) -> lis
     return notes
 
 
-async def fill_roles(master_dsn: str, index: int, creators: dict, live_roles: dict, items: list) -> list:
+async def fill_roles(master_dsn: str, index: int, creators: dict, live_roles: dict, items: list,
+                     seen: set) -> list:
     """Role gap (step 3a): before the file at `index`, create (as the master, as on Dev) every live role whose
     creating file comes earlier but failed in the replay. Only the role itself, with its live attributes: what else
-    that file did (grants, objects) stays a replay gap and keeps explaining its findings. Returns the names."""
-    if not any(at < index for at in creators.values()):
+    that file did (grants, objects) stays a replay gap and keeps explaining its findings. Returns the names.
+    `seen` caches the creator roles already found on the server (a live role is never dropped by a later file:
+    it exists on Dev), so the server is asked only when a role is due that was not seen yet, not before every
+    file."""
+    if not roles_to_fill(index, creators, seen):
         return []
     conn = await _connect(master_dsn)
     try:
         existing = {r["rolname"] for r in await conn.fetch("SELECT rolname::text FROM pg_catalog.pg_roles")}
+        seen |= existing & set(creators)
         out = []
         for name in roles_to_fill(index, creators, existing):
             try:
                 await conn.execute(f"CREATE ROLE {_q(name)} {role_attributes(live_roles[name])}")
                 out.append(f"{name} (from {items[creators[name]].rel})")
+                seen.add(name)
             except Exception as exc:      # reported, not fatal: the file that needs it then fails and says why
                 out.append(f"FAILED {name} (from {items[creators[name]].rel}): {type(exc).__name__} {exc}")
     finally:
@@ -462,33 +576,101 @@ def transfer_files(items: list, texts: dict) -> dict:
     return out
 
 
-OWNED_SQL = """
-SELECT n.nspname::text AS schema, c.relname::text AS name, c.relkind::text AS kind
-FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-WHERE n.nspname = ANY($1::text[]) AND c.relowner = $2::regrole AND c.relkind IN ('r', 'p', 'v', 'm', 'f', 'S')
-  AND NOT (c.relkind = 'S' AND EXISTS (SELECT 1 FROM pg_catalog.pg_depend d WHERE d.classid = 'pg_class'::regclass
-           AND d.objid = c.oid AND d.deptype IN ('a', 'i')))
-  AND NOT c.relispartition
-ORDER BY 1, 2"""
-OWNED_ROUTINES_SQL = """
-SELECT p.oid::regprocedure::text AS sig, p.prokind::text AS kind
-FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
-WHERE n.nspname = ANY($1::text[]) AND p.proowner = $2::regrole ORDER BY 1"""
-OWNED_TYPES_SQL = """
-SELECT t.oid::regtype::text AS name
-FROM pg_catalog.pg_type t JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
-WHERE n.nspname = ANY($1::text[]) AND t.typowner = $2::regrole AND t.typtype IN ('e', 'd')
-ORDER BY 1"""
-REL_KEYWORD = {"r": "TABLE", "p": "TABLE", "f": "FOREIGN TABLE", "v": "VIEW", "m": "MATERIALIZED VIEW",
-               "S": "SEQUENCE"}
+# Every object `$2` owns in the schemas `$1`, as CIS 245 item 4 reads them at apply time (bk-014 / tp-013 list the
+# same kinds by hand): relations and standalone composite types (indexes, toast, row types and owned / identity
+# sequences follow their table), enum / domain / range types (array types follow), routines, extended statistics,
+# collations, conversions, text search dictionaries and configurations; extension members (pg_depend deptype e)
+# left out. `name` is already quoted (format %I.%I).
+OWNED_OBJECTS_SQL = """
+WITH s AS (SELECT ns.oid, ns.nspname FROM pg_catalog.pg_namespace ns WHERE ns.nspname = ANY($1::text[])),
+ext AS (SELECT d.classid, d.objid FROM pg_catalog.pg_depend d WHERE d.deptype = 'e'),
+objects AS (
+    SELECT 1 AS ord,
+           CASE c.relkind WHEN 'v' THEN 'VIEW' WHEN 'm' THEN 'MATERIALIZED VIEW' WHEN 'f' THEN 'FOREIGN TABLE'
+                          WHEN 'S' THEN 'SEQUENCE' WHEN 'c' THEN 'TYPE' ELSE 'TABLE' END AS kind,
+           pg_catalog.format('%I.%I', s.nspname, c.relname) AS name
+      FROM pg_catalog.pg_class c JOIN s ON s.oid = c.relnamespace
+     WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f', 'S', 'c') AND c.relowner = $2::regrole
+       AND NOT EXISTS (SELECT 1 FROM ext WHERE ext.classid = 'pg_catalog.pg_class'::regclass AND ext.objid = c.oid)
+       AND NOT (c.relkind = 'S' AND EXISTS (
+                SELECT 1 FROM pg_catalog.pg_depend d
+                 WHERE d.classid = 'pg_catalog.pg_class'::regclass AND d.objid = c.oid
+                   AND d.refclassid = 'pg_catalog.pg_class'::regclass AND d.deptype IN ('a', 'i')))
+    UNION ALL
+    SELECT 2, CASE y.typtype WHEN 'd' THEN 'DOMAIN' ELSE 'TYPE' END, pg_catalog.format('%I.%I', s.nspname, y.typname)
+      FROM pg_catalog.pg_type y JOIN s ON s.oid = y.typnamespace
+     WHERE y.typtype IN ('e', 'd', 'r') AND y.typowner = $2::regrole
+       AND NOT EXISTS (SELECT 1 FROM ext WHERE ext.classid = 'pg_catalog.pg_type'::regclass AND ext.objid = y.oid)
+    UNION ALL
+    SELECT 3, CASE f.prokind WHEN 'p' THEN 'PROCEDURE' WHEN 'a' THEN 'AGGREGATE' ELSE 'FUNCTION' END,
+           pg_catalog.format('%I.%I(%s)', s.nspname, f.proname, pg_catalog.pg_get_function_identity_arguments(f.oid))
+      FROM pg_catalog.pg_proc f JOIN s ON s.oid = f.pronamespace
+     WHERE f.proowner = $2::regrole
+       AND NOT EXISTS (SELECT 1 FROM ext WHERE ext.classid = 'pg_catalog.pg_proc'::regclass AND ext.objid = f.oid)
+    UNION ALL
+    SELECT 4, 'STATISTICS', pg_catalog.format('%I.%I', s.nspname, x.stxname)
+      FROM pg_catalog.pg_statistic_ext x JOIN s ON s.oid = x.stxnamespace WHERE x.stxowner = $2::regrole
+    UNION ALL
+    SELECT 5, 'COLLATION', pg_catalog.format('%I.%I', s.nspname, x.collname)
+      FROM pg_catalog.pg_collation x JOIN s ON s.oid = x.collnamespace
+     WHERE x.collowner = $2::regrole
+       AND NOT EXISTS (SELECT 1 FROM ext WHERE ext.classid = 'pg_catalog.pg_collation'::regclass AND ext.objid = x.oid)
+    UNION ALL
+    SELECT 6, 'CONVERSION', pg_catalog.format('%I.%I', s.nspname, x.conname)
+      FROM pg_catalog.pg_conversion x JOIN s ON s.oid = x.connamespace
+     WHERE x.conowner = $2::regrole
+       AND NOT EXISTS (SELECT 1 FROM ext WHERE ext.classid = 'pg_catalog.pg_conversion'::regclass AND ext.objid = x.oid)
+    UNION ALL
+    SELECT 7, 'TEXT SEARCH DICTIONARY', pg_catalog.format('%I.%I', s.nspname, x.dictname)
+      FROM pg_catalog.pg_ts_dict x JOIN s ON s.oid = x.dictnamespace
+     WHERE x.dictowner = $2::regrole
+       AND NOT EXISTS (SELECT 1 FROM ext WHERE ext.classid = 'pg_catalog.pg_ts_dict'::regclass AND ext.objid = x.oid)
+    UNION ALL
+    SELECT 8, 'TEXT SEARCH CONFIGURATION', pg_catalog.format('%I.%I', s.nspname, x.cfgname)
+      FROM pg_catalog.pg_ts_config x JOIN s ON s.oid = x.cfgnamespace
+     WHERE x.cfgowner = $2::regrole
+       AND NOT EXISTS (SELECT 1 FROM ext WHERE ext.classid = 'pg_catalog.pg_ts_config'::regclass AND ext.objid = x.oid))
+SELECT ord, kind, name FROM objects ORDER BY ord, name"""
+OBJECT_KINDS = ("TABLE", "VIEW", "MATERIALIZED VIEW", "FOREIGN TABLE", "SEQUENCE", "TYPE", "DOMAIN", "PROCEDURE",
+                "AGGREGATE", "FUNCTION", "STATISTICS", "COLLATION", "CONVERSION", "TEXT SEARCH DICTIONARY",
+                "TEXT SEARCH CONFIGURATION")
+# Schemas whose objects an X1 transfer file leaves with their owner (only the schema moves): CIS 245 item 4 moves
+# objects in the 11 runtime schemas, not in catalog (its views stay catalog_owner's). Kept here, not on
+# run_migration.OwnerDir: it describes what one historic file did, not how DB Migrate runs files.
+TRANSFER_SKIP_OBJECTS = {"cis": frozenset({"catalog"})}
+
+
+def transfer_scope(owner_dir: str, present: list) -> tuple:
+    """Pure: (schemas whose owner the transfer file changes, schemas whose master-owned objects it moves), both
+    limited to the dir's schemas that exist in the replay, in the dir's order."""
+    od = rm.OWNER_DIRS[owner_dir]
+    have = set(present)
+    schemas = [sc for sc in od.schemas if sc in have]
+    skip = TRANSFER_SKIP_OBJECTS.get(owner_dir, frozenset())
+    return schemas, [sc for sc in schemas if sc not in skip]
+
+
+def ownership_statements(schemas: list, objects: list, new_owner: str) -> list:
+    """Pure: the ALTER … OWNER TO statements of an X1 transfer file. Every schema goes to `new_owner` (the anchor
+    schema's live owner: 245 sets all 12 CIS schemas to cis_owner, so a later owner change of one schema on Dev
+    stays visible as drift), schemas first (the new owner needs CREATE on them), then every object row
+    (kind, quoted name) of OWNED_OBJECTS_SQL in its order."""
+    owner = _q(new_owner)
+    out = [f"ALTER SCHEMA {_q(sc)} OWNER TO {owner}" for sc in schemas]
+    for kind, name in objects:
+        if kind not in OBJECT_KINDS:
+            raise ValueError(f"unexpected object kind {kind!r} for {name}")
+        out.append(f"ALTER {kind} {name} OWNER TO {owner}")
+    return out
 
 
 async def fill_ownership(master_dsn: str, owner_dir: str, live_schema_owner: dict) -> list:
     """Owner gap (step 3b): the dir's transfer file failed in the replay (a replay gap upstream of it), so do what it
-    does to ownership, the way it does it: every schema of the dir that exists goes to its live owner, and every
-    relation, routine and enum/domain in them that the master owns goes to the anchor's live owner (objects of a
-    third owner, e.g. catalog_owner's catalog.* views, stay). Its grants, default privileges and checks are NOT
-    redone: they stay a replay gap (privileges, informational). Returns the statements run, for the report."""
+    does to ownership, the way it does it (transfer_scope + ownership_statements): every schema of the dir that
+    exists goes to the anchor schema's live owner, and every object the master owns in them (TRANSFER_SKIP_OBJECTS
+    left out) goes to that owner too; objects of a third owner (catalog_owner's catalog.* views) stay. Its grants,
+    default privileges and checks are NOT redone: they stay a replay gap (privileges, informational). Returns the
+    statements run, for the report."""
     od = rm.OWNER_DIRS[owner_dir]
     new_owner = live_schema_owner.get(od.anchor_schema)
     if not new_owner or new_owner == MASTER:
@@ -499,15 +681,9 @@ async def fill_ownership(master_dsn: str, owner_dir: str, live_schema_owner: dic
         present = [r["nspname"] for r in await conn.fetch(
             "SELECT nspname::text FROM pg_catalog.pg_namespace WHERE nspname = ANY($1::text[]) ORDER BY 1",
             list(od.schemas))]
-        stmts = [f"ALTER SCHEMA {_q(sc)} OWNER TO {_q(live_schema_owner.get(sc) or new_owner)}" for sc in present]
-        for r in await conn.fetch(OWNED_SQL, present, MASTER):
-            stmts.append(f"ALTER {REL_KEYWORD[r['kind']]} {_q(r['schema'])}.{_q(r['name'])} OWNER TO {_q(new_owner)}")
-        for r in await conn.fetch(OWNED_ROUTINES_SQL, present, MASTER):
-            kw = "PROCEDURE" if r["kind"] == "p" else ("AGGREGATE" if r["kind"] == "a" else "FUNCTION")
-            stmts.append(f"ALTER {kw} {r['sig']} OWNER TO {_q(new_owner)}")
-        for r in await conn.fetch(OWNED_TYPES_SQL, present, MASTER):
-            stmts.append(f"ALTER TYPE {r['name']} OWNER TO {_q(new_owner)}")
-        for st in stmts:              # one by one: a statement the scratch server refuses is reported, not fatal
+        schemas, object_schemas = transfer_scope(owner_dir, present)
+        objects = [(r["kind"], r["name"]) for r in await conn.fetch(OWNED_OBJECTS_SQL, object_schemas, MASTER)]
+        for st in ownership_statements(schemas, objects, new_owner):   # one by one: a refused one is reported
             try:
                 await conn.execute(st)
                 done.append(st)
@@ -706,6 +882,7 @@ async def replay(admin_dsn: str, live: dict, sources: dict, out_dump: str | None
         sc for d in rm.OWNER_DIRS.values() for sc in d.schemas}
     migrator_from = next((i for i, it in enumerate(order["items"]) if it.key == MIGRATOR_LOGIN_FROM), None)
     migrator_ready = False
+    roles_seen: set = set()
     for i, item in enumerate(order["items"]):
         use_migrator = item.owner not in (rm.ROLES_DIR, BASELINE) and migrator_from is not None and i >= migrator_from
         if use_migrator and not migrator_ready:
@@ -716,7 +893,7 @@ async def replay(admin_dsn: str, live: dict, sources: dict, out_dump: str | None
                     migrator_ready = True
             finally:
                 await admin.close()
-        filled = await fill_roles(master_dsn, i, creators, live_roles, order["items"])
+        filled = await fill_roles(master_dsn, i, creators, live_roles, order["items"], roles_seen)
         if filled:
             item.roles_filled = filled
             notes.append(f"role gap before {item.rel}: created {', '.join(filled)} with their live attributes "
@@ -791,8 +968,12 @@ def main(argv: list | None = None) -> int:
     decisions: dict = {}
     if args.decisions and Path(args.decisions).is_file():
         decisions = json.loads(Path(args.decisions).read_text(encoding="utf-8"))
-    result = asyncio.run(replay(args.admin_dsn, live, parse_sources(args.source), args.dump,
-                                decisions.get("baseline", []), decisions.get("replay_order", [])))
+    try:
+        result = asyncio.run(replay(args.admin_dsn, live, parse_sources(args.source), args.dump,
+                                    decisions.get("baseline", []), decisions.get("replay_order", [])))
+    except ReplayServerError as exc:
+        print(f"REPLAY refused: {exc}", file=sys.stderr, flush=True)
+        return 1
     Path(args.out).write_text(json.dumps(result, indent=1, sort_keys=True, default=str), encoding="utf-8")
     c = result["counts"]
     print(f"REPLAY done files={c['files']} ok={c['ok']} partial={c['partial']} failed={c['failed']} "

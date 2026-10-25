@@ -11,7 +11,7 @@
       "before": "149",
       "owner": "tripplanner",
       "ref": "AA-853",
-      "reason": "Back-registered: tp-007 (AA-684) wrote the registry rows of tp-001..tp-006 on 2026-10-11 06:13 UTC with applied_at = now(), after checking their objects exist; the files ran by hand earlier. Placed at the first registry row after the files' first commit (AA-TripPlanner-Web 967c54b, 2026-09-11 03:57 UTC). Proof they ran before 2026-10-01: CIS 198 (applied 2026-10-01 05:36 UTC) has an FK to shared.destinations, which only tp-002 creates. tp-002 first: tp-001's header says apply 002 first (itinerary_components references shared.destinations)."
+      "reason": "Back-registered: tp-007 (AA-684) wrote the registry rows of tp-001..tp-006 on 2026-10-11 06:13 UTC with applied_at = now(), after checking their objects exist; the files ran by hand earlier. Placed at the EARLIEST point they could have run: the first registry row after the files' first commit (AA-TripPlanner-Web 967c54b, 2026-09-11 03:57 UTC); that point is a lower bound, not proven. What is proven is an upper bound, that they ran before 2026-10-01: CIS 198 (applied 2026-10-01 05:36 UTC) has an FK to shared.destinations, which only tp-002 creates. tp-002 first: tp-001's header says apply 002 first (itinerary_components references shared.destinations)."
     },
     {
       "keys": [
@@ -20,7 +20,7 @@
       "before": "179",
       "owner": "tripplanner",
       "ref": "AA-853",
-      "reason": "Back-registered: tp-007 (AA-684) wrote the registry rows of tp-001..tp-006 on 2026-10-11 06:13 UTC with applied_at = now(), after checking their objects exist; the files ran by hand earlier. Placed at the first registry row after its first commit (2026-09-29 05:19 UTC)."
+      "reason": "Back-registered: tp-007 (AA-684) wrote the registry rows of tp-001..tp-006 on 2026-10-11 06:13 UTC with applied_at = now(), after checking their objects exist; the files ran by hand earlier. Placed at the earliest point it could have run, the first registry row after its first commit (a lower bound, not proven; 2026-09-29 05:19 UTC)."
     },
     {
       "keys": [
@@ -29,7 +29,7 @@
       "before": "180",
       "owner": "tripplanner",
       "ref": "AA-853",
-      "reason": "Back-registered: tp-007 (AA-684) wrote the registry rows of tp-001..tp-006 on 2026-10-11 06:13 UTC with applied_at = now(), after checking their objects exist; the files ran by hand earlier. Placed at the first registry row after its first commit (2026-09-29 05:33 UTC)."
+      "reason": "Back-registered: tp-007 (AA-684) wrote the registry rows of tp-001..tp-006 on 2026-10-11 06:13 UTC with applied_at = now(), after checking their objects exist; the files ran by hand earlier. Placed at the earliest point it could have run, the first registry row after its first commit (a lower bound, not proven; 2026-09-29 05:33 UTC)."
     },
     {
       "keys": [
@@ -39,7 +39,7 @@
       "before": "181",
       "owner": "tripplanner",
       "ref": "AA-853",
-      "reason": "Back-registered: tp-007 (AA-684) wrote the registry rows of tp-001..tp-006 on 2026-10-11 06:13 UTC with applied_at = now(), after checking their objects exist; the files ran by hand earlier. Placed at the first registry row after their first commits (2026-09-29 06:15 and 07:45 UTC)."
+      "reason": "Back-registered: tp-007 (AA-684) wrote the registry rows of tp-001..tp-006 on 2026-10-11 06:13 UTC with applied_at = now(), after checking their objects exist; the files ran by hand earlier. Placed at the earliest point they could have run, the first registry row after their first commits (a lower bound, not proven; 2026-09-29 06:15 and 07:45 UTC)."
     }
   ]
 }

@@ -174,8 +174,9 @@ def _explained_by(oid: str, schema: str, gaps: list, strong: bool = True) -> lis
     """Replay files that failed or ran partly and would have made this difference.
 
     strong (the default) reads the replay's `ddl` of each failed file (replay_migrations.ddl_targets): a schema it
-    creates or changes; a relation, routine or enum it creates / alters / drops; a column, index, constraint, policy
-    or trigger named in a DDL statement on its relation, or any child of a view it recreates / a table it drops; DDL
+    creates or changes; a relation, routine or enum it creates / alters / drops; a column it defines / adds / alters
+    / drops / renames (`columns`; results without it fall back to `words`); an index, constraint, policy or trigger
+    named in a DDL statement on its relation, or any child of a view it recreates / a table it drops; DDL
     built with format() when its kind fits and the file names the object. A results file without `ddl` (before S251)
     falls back to every mention. strong=False: the file only names the object or its relation (SELECT, GRANT, a
     check), which does not explain why it differs."""
@@ -207,7 +208,12 @@ def _ddl_explains(ddl: dict, kind: str, schema: str, rel: str, child: str) -> bo
     if kind in CHILD_KINDS:
         if rel in (ddl.get("recreated") or []):
             return True
-        if set((ddl.get("words") or {}).get(rel) or []) & _child_words(kind, rel, child):
+        if kind == "column" and "columns" in ddl:
+            # column DDL only (S251): a trigger `update of country` or an index on the table names the column but
+            # does not set its type / nullability / default (CIS 279 and raw_tours.country)
+            if child in ((ddl.get("columns") or {}).get(rel) or []):
+                return True
+        elif set((ddl.get("words") or {}).get(rel) or []) & _child_words(kind, rel, child):
             return True
     elif rel in (ddl.get("names") or []) or rel in (ddl.get("recreated") or []):
         return True

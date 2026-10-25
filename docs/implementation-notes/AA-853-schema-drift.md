@@ -199,7 +199,7 @@ Drift on Dev that no replay gap explains (to decide; likely origin):
 - missing `acp_shared.unknown_ledger` (+16): 095 creates it, no file drops it: dropped by hand.
 - changed `tenants.is_canary / skip_hitl` (058 says NOT NULL, Dev nullable), `tenant_brand_rules.brand_name` (043 adds it
   nullable, Dev NOT NULL): hand ALTERs or edited files.
-- changed `raw_tours.duration / group_size / period / price_raw / sku / tour_id_external` (and `country`, which 279 is
+- changed `raw_tours.duration / group_size / period / price_raw / sku / tour_id_external` (and `country`, which 279 was
   still credited with because its DDL names `shared.country`): `text` on Dev, `varchar(n)` in 003; the
   `v_pipeline_summary.country`, `chk_raw_tours_country` and `raw_tours_review_status_check` differences are only the
   casts that follow from it.
@@ -221,7 +221,56 @@ Drift on Dev that no replay gap explains (to decide; likely origin):
   nightly after merge opens the root reference PR.
 - Done-when of AA-853 (one green nightly with 0 unmanaged) still needs: (1) an owner decision on the ACP lineage
   (a `db/replay_baseline/` file of the lost schemas and tables, or `decisions` entries "lost lineage, keep" per
-  object), (2) decisions or migrations for the 7 unexplained unmanaged findings above.
+  object), (2) decisions or migrations for the unexplained unmanaged findings above (8 after the review fixes below).
 - Local run: `.tmp/` in the worktree (PGDG 15.17 + pgvector debs extracted, venv with asyncpg 0.30.0), cluster on
   port 55853 with trust auth, owner repos cloned at main (AA-CIS-App b9eab70, AA-Booking 55b8679,
   AA-TripPlanner-Web 63f0aad, AA-Partner 923e206).
+
+### S251 review fixes (independent review of 929ef7f)
+
+Decisions:
+- **Owner fill does what 245 does, not what Dev has now.** Every schema of the dir goes to the anchor schema's live
+  owner (`cis_owner` for all 12 CIS schemas, as 245 item 3), not to each schema's own live owner: copying live state
+  would hide a later owner change of one schema. Objects move in the 11 runtime schemas only
+  (`TRANSFER_SKIP_OBJECTS = {"cis": {"catalog"}}`, 245 item 4), with 245's own catalog query (`OWNED_OBJECTS_SQL`):
+  relations and standalone composite types, enum / domain / range types, routines, statistics, collations,
+  conversions, text search dictionaries and configurations, extension members left out. The skip list lives in
+  `replay_migrations.py`, not on `run_migration.OwnerDir`: it describes one historic file, and DB Migrate's own code
+  should not change for a report. Statement building is pure (`transfer_scope`, `ownership_statements`) and tested.
+- **Version guard.** `prepare()` reads `server_version_num`; `check_server_version` refuses any major but 15 and
+  `main()` exits 1 with the reason (`REPLAY refused: …`). The workflow step is `continue-on-error`, so an image bump
+  shows as a failed drift step, never as silently different counts. The results' `notes` record the version.
+- **Dynamic CREATE ROLE is read precisely.** Only the literal arguments of a `format('CREATE ROLE %I', …)` call, or
+  the literals of the `ARRAY[…]` a `FOREACH` loop passes to it, count (`_dynamic_role_names`). Before, every literal of
+  the file equal to a live role counted: rl-004 also names `crm_app`, `crm_owner` and `aa_cis_admin`.
+- **Fewer connections.** `fill_roles` keeps a `seen` set of creator roles found on the server and connects only when a
+  due role was not seen yet (before: once per file after the first creator, about 300 connects).
+- **Column findings need column DDL.** `ddl_targets` adds `columns` (`column_targets`: CREATE TABLE column lists, and
+  the column of each ALTER TABLE add / alter / drop / rename action). A failed file explains a column finding only
+  when it sets that column; the old bag of words of every statement on the table stays for indexes, constraints,
+  policies and triggers, and for results files without `columns`. Fixes the known over-credit: 279's
+  `UPDATE OF country` trigger no longer explains `raw_tours.country`.
+- **replay_order reasons** now say the placement before 149 / 179 / 180 / 181 is the earliest point (a lower bound);
+  only "before 2026-10-01" (CIS 198's FK) is proven.
+- Docstring line over 120 characters rewrapped (ruff E501 now clean on the three files). The notes stay in this file
+  (`AA-853-schema-drift.md`), the existing AA-853 notes file; there is no `AA-853.md`.
+
+Results after the fixes (same local setup and live dump; `.tmp/final2/`):
+
+| | 929ef7f | after review fixes |
+|---|---|---|
+| replay ok / partly / failed | 215 / 19 / 99 | 215 / 19 / 99 |
+| owner fill after cis/245 | 79 statements, 0 refused | 79 statements, 0 refused |
+| role fill | catalog_owner before booking/004 | same |
+| unmanaged findings (objects) | 157 (1571) | 157 (1571) |
+| missing / changed | 15 / 27 | 15 / 27 |
+| explained by a replay gap | 173 | 171 |
+| not explained (unmanaged) | 26 (7) | 28 (8) |
+| privilege differences | 507 | 507 |
+
+The two findings that moved to "not explained" are real: `raw_tours.country` (the 279 over-credit) and unmanaged
+`silver_aa_internal.raw_sources.file_hash`, which no migration adds (123 only registers its unique index, "already
+live via manual DDL"; the column itself was added by hand). Two more findings lost a second, wrong explainer
+(`shared.destinations.geo_precision` keeps 226, `shared.tenants.cancelled_at` keeps 042). A PostgreSQL 16.15 server
+is now refused with exit 1. Unit tests: 666 (16 new).
+

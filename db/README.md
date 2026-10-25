@@ -333,10 +333,12 @@ role logic (master login, `db_migrator` from the X1 S22 cutover, the live-owner 
 legacy files without a registry row and owner-decided baseline files run like `psql -f`, one statement at a time),
 then `schema_dump.collect` on the result. Gap fills (S251) keep one lost file from failing everything after it:
 a live role whose creating file failed is created (live attributes, no password) before the next file; a failed X1
-ownership transfer (CIS 245, bk-014, tp-013) is followed by its ownership effect (schemas and the master's objects to
-the live owner), so later files still run as the owner like on Dev; back-registered registry rows (`backfill: …`)
+ownership transfer (CIS 245, bk-014, tp-013) is followed by its ownership effect, the kinds and scope 245 uses
+(every schema of the dir and the master's objects to the anchor schema's live owner; CIS `catalog` objects stay
+`catalog_owner`'s), so later files still run as the owner like on Dev; back-registered registry rows (`backfill: …`)
 are moved by `replay_order` decisions to where the evidence says they ran. Every fill is listed in `replay.notes`;
-the failed file's other effects stay a gap. PostgreSQL 15 only (16 changed CREATEROLE: rl-001 / rl-002 refuse). No AWS credential or token exists in that job. `db/schema_drift.py` diffs the two dumps
+the failed file's other effects stay a gap. PostgreSQL 15 only: 16 changed CREATEROLE (rl-001 / rl-002 refuse), so
+`replay_migrations.py` exits 1 on any other major version. No AWS credential or token exists in that job. `db/schema_drift.py` diffs the two dumps
 (schemas, relations, columns, indexes, CHECK/FK constraints, policies, triggers, functions, enums; owners and grants
 separately, informational): **unmanaged** (on Dev, no migration makes it), **missing**, **changed**; children fold into
 their relation, each finding names the failed replay files whose DDL would have made it (`explained_by`; files that
