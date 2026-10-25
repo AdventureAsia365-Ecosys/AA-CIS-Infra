@@ -25,6 +25,18 @@ class _Conn:
         self.sql.append(sql)
         return [{"n": 1}]
 
+    async def execute(self, sql, *args):
+        return "SELECT 1"
+
+    def transaction(self):
+        class _Tx:
+            async def __aenter__(self_inner):
+                return self_inner
+
+            async def __aexit__(self_inner, *exc):
+                return False
+        return _Tx()
+
 
 class ReaderChecksTest(unittest.TestCase):
     def test_declares_read_only(self):
@@ -35,7 +47,7 @@ class ReaderChecksTest(unittest.TestCase):
         self.assertIs(mod.READ_ONLY, True)
 
     def test_no_write_statements(self):
-        for name in ("PINS_SQL", "CRM_STATE_SQL", "CRM_CACHE_SQL", "CRM_COVERAGE_SQL"):
+        for name in [n for n in dir(mod) if n.endswith("_SQL")]:
             sql = getattr(mod, name).upper()
             for verb in ("INSERT ", "UPDATE ", "DELETE ", "TRUNCATE ", "ALTER ", "DROP ", "CREATE "):
                 self.assertNotIn(verb, sql, f"{name} contains {verb.strip()}")
@@ -43,7 +55,21 @@ class ReaderChecksTest(unittest.TestCase):
     def test_main_runs_every_query_and_returns_zero(self):
         conn = _Conn()
         self.assertEqual(asyncio.run(mod.main(conn)), 0)
-        self.assertEqual(len(conn.sql), 4)
+        self.assertEqual(len(conn.sql), 16)
+
+
+
+class FailingCheckTest(unittest.TestCase):
+    def test_one_failing_query_does_not_stop_the_rest(self):
+        class _Bad(_Conn):
+            async def fetchrow(self, sql, *args):
+                self.sql.append(sql)
+                if "trip_events" in sql:
+                    raise RuntimeError("boom")
+                return {"n": 1}
+        conn = _Bad()
+        self.assertEqual(asyncio.run(mod.main(conn)), 0)
+        self.assertEqual(len(conn.sql), 16)
 
 
 if __name__ == "__main__":
