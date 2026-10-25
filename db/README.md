@@ -352,7 +352,8 @@ the AA-ACP-App lineage of `acp_*` and `gold_aa_internal.tenant_tour_versions` (r
 the shape the first CIS file that needs it found (live minus what later files add, dropped tables with only what later
 files need), placed right before that file; and recorded hand DDL a later file's guard checks (S7's RLS on
 `shared.pipeline_runs`, `raw_sources.file_hash`, the archived G3 / AA-603 drops). It is never a migration: each file
-opens with a guard that raises unless the session has `aa_replay.baseline = on` and `application_name = db-replay`
+is one BEGIN … COMMIT block whose first statement is a guard (inside the transaction, so `psql -f` without
+ON_ERROR_STOP rolls the whole file back) that raises unless the session has `aa_replay.baseline = on` and `application_name = db-replay`
 (only the replay sets them, only for these files), `run_migration.lint` refuses any file with its marker, and DB
 Migrate's path rule cannot select it (`db/tests/test_replay_baseline.py`). The replay's master has BYPASSRLS: it
 stands in for what `rds_superuser` gives the RDS master (reading FORCE RLS tables unfiltered, which 239 / 244 check).
@@ -362,7 +363,10 @@ fingerprint opens the root PR like a structural change. Findings a replay gap ex
 the fingerprint, so replay noise alone opens no PR (they stay in the section). The drift job and its steps are
 `continue-on-error`: a failed replay never blocks the dump, the reference or the PR, and the publish job then carries
 master's drift section and marker over unchanged (`--keep-drift-from`), so the section never flaps. Nothing fails
-on a finding: fail-on-unmanaged (MIG-5) is a separate decision now that the baseline and the owner decisions exist. `drift.json`,
+on a finding: fail-on-unmanaged (MIG-5) is a separate decision now that the baseline and the owner decisions exist.
+The report's verdict (`drift.json` `verdict`, first line of the summary and of the section) is **clean** when the
+replay has 0 failed files and no finding is open; a finding with an owner decision (a reasoned exemption) does not
+count, while `unmanaged` still counts it. `drift.json`,
 `replay-results.json`, `replay-schema.json` and `replay.log` are in the run's `db-schema-drift-<run id>` artifact. Local run (a FRESH PostgreSQL 15
 with pgvector; roles are cluster-wide):
 `python3 db/replay_migrations.py --live schema.json --admin-dsn postgresql://postgres:x@localhost:5432/postgres --source roles=db/migrations/roles --source cis=../../apps/AA-CIS-App/api/migrations --source booking=../../apps/AA-Booking/migrations --source tripplanner=../../apps/AA-TripPlanner-Web/migrations --source crm=../../apps/AA-Partner/api/migrations --out results.json --dump replay.json`

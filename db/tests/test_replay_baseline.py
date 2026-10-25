@@ -34,12 +34,16 @@ class CommittedFiles(unittest.TestCase):
     def test_there_are_baseline_files(self):
         self.assertTrue(BASELINE_FILES)
 
-    def test_each_file_carries_the_marker_and_opens_with_the_guard(self):
+    def test_each_file_carries_the_marker_and_the_guard_first_inside_its_transaction(self):
         for path in BASELINE_FILES:
             text = path.read_text(encoding="utf-8")
             self.assertTrue(text.startswith(f"-- {rm.BASELINE_MARKER}: "), path.name)
-            first = rm.split_statements(text)[0].text
-            self.assertIn(gb.GUARD, text, path.name)
+            stmts = rm.split_statements(text)
+            self.assertEqual(stmts[0].code, "BEGIN", path.name)
+            self.assertEqual(stmts[-1].code, "COMMIT", path.name)
+            first = stmts[1].text
+            self.assertIn(gb.GUARD, first, path.name)
+            self.assertEqual(rp.baseline_guard_error(text), "", path.name)
             self.assertIn("RAISE EXCEPTION", first, path.name)
             self.assertIn(f"current_setting('{rp.BASELINE_SETTING}', true) IS DISTINCT FROM 'on'", first, path.name)
             self.assertIn(f"IS DISTINCT FROM '{rp.APPLICATION_NAME}'", first, path.name)
@@ -118,8 +122,19 @@ class ReplayReadsItOnlyThere(unittest.TestCase):
         self.assertIn("no replay guard", problems[0])
         self.assertNotIn("baseline", [it.owner for it in order["items"]])
 
+    def test_a_guard_outside_the_transaction_is_refused(self):
+        # psql -f (no ON_ERROR_STOP) would print the guard's error and still run BEGIN … COMMIT (S251 review B1)
+        for text in (f"-- {rm.BASELINE_MARKER}\n{gb.GUARD}\nBEGIN;\nDROP TABLE x.y;\nCOMMIT;\n",
+                     f"-- {rm.BASELINE_MARKER}\nBEGIN;\nDROP TABLE x.y;\n{gb.GUARD}\nCOMMIT;\n",
+                     f"-- {rm.BASELINE_MARKER}\nBEGIN;\nDROP TABLE x.y;\nCOMMIT;\n-- {rp.BASELINE_SETTING}\n"):
+            order, problems, _ = self._with_files({"001_x.sql": text},
+                                                  [{"file": "replay_baseline/001_x.sql", "before": "011"}])
+            self.assertEqual(len(problems), 1, text)
+            self.assertIn("replay guard", problems[0])
+            self.assertNotIn("baseline", [it.owner for it in order["items"]])
+
     def test_placed_before_a_key_or_an_unregistered_file(self):
-        guarded = f"-- {rm.BASELINE_MARKER}\n{gb.GUARD}\nCREATE SCHEMA x;"
+        guarded = f"-- {rm.BASELINE_MARKER}\nBEGIN;\n{gb.GUARD}\nCREATE SCHEMA x;\nCOMMIT;\n"
         order, problems, _ = self._with_files(
             {"001_x.sql": guarded, "002_y.sql": guarded},
             [{"file": "replay_baseline/001_x.sql", "before": "cis/005_legacy.sql"},
@@ -199,12 +214,14 @@ class Generator(unittest.TestCase):
         empty = "\n".join(gb.table_sql({"table": "s.empty", "why": "w", "columns": []}, live_dump()))
         self.assertIn("CREATE TABLE s.empty ();", empty)
 
-    def test_render_puts_the_guard_before_the_transaction_and_is_deterministic(self):
+    def test_render_puts_the_guard_first_inside_the_transaction_and_is_deterministic(self):
         entry = {"file": "replay_baseline/009_t.sql", "before": "107", "lead": "Lead.", "title": "T",
                  "objects": [{"schema": "x", "why": "w"}, {"sql": ["DROP TABLE x.y;"], "why": "archived script"}]}
         text = gb.render(entry, live_dump())
         self.assertEqual(text, gb.render(entry, live_dump()))
-        self.assertLess(text.index(gb.GUARD), text.index("BEGIN;"))
+        self.assertLess(text.index("BEGIN;"), text.index(gb.GUARD))
+        self.assertEqual(rm.split_statements(text)[1].text.strip(), gb.GUARD)
+        self.assertEqual(rp.baseline_guard_error(text), "")
         self.assertIn("CREATE SCHEMA x;", text)
         self.assertIn("DROP TABLE x.y;", text)
         self.assertTrue(text.rstrip().endswith("COMMIT;"))

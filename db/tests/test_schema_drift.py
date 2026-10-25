@@ -97,9 +97,11 @@ class Baseline(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp) / "replay_baseline"
             base.mkdir()
-            guard = (f"-- {rp.rm.BASELINE_MARKER}\n"
-                     f"DO $g$ BEGIN PERFORM current_setting('{rp.BASELINE_SETTING}'); END $g$;\n")
-            (base / "000_x.sql").write_text(guard + "CREATE SCHEMA acp_shared;", encoding="utf-8")
+            guard = (f"-- {rp.rm.BASELINE_MARKER}\nBEGIN;\n"
+                     f"DO $g$ BEGIN IF current_setting('{rp.BASELINE_SETTING}', true) IS DISTINCT FROM 'on' "
+                     f"OR current_setting('application_name') IS DISTINCT FROM '{rp.APPLICATION_NAME}' "
+                     f"THEN RAISE EXCEPTION 'x'; END IF; END $g$;\n")
+            (base / "000_x.sql").write_text(guard + "CREATE SCHEMA acp_shared;\nCOMMIT;\n", encoding="utf-8")
             old = rp.DB_DIR
             rp.DB_DIR = Path(tmp)
             try:
@@ -184,6 +186,24 @@ class Diff(unittest.TestCase):
         self.assertEqual(after["unmanaged"][0]["decision"]["decision"], "baseline")
         self.assertNotEqual(before["fingerprint"], after["fingerprint"])
         self.assertIsNone(sd.find_decision(dec, "missing", "schema acp_shared"))
+
+    def test_verdict_is_clean_with_only_decided_findings_and_no_failed_file(self):
+        # AA-853 Done-when: "0 unmanaged" read as 0 open findings; a reasoned exemption keeps `unmanaged` at 1
+        live = dump()
+        live["relations"]["booking"]["by_hand"] = copy.deepcopy(live["relations"]["shared"]["job"])
+        ok = {"items": [], "counts": {"files": 3, "ok": 3, "failed": 0}}
+        dec = [{"id": "relation booking.by_hand", "class": "unmanaged", "owner": "booking", "decision": "keep",
+                "ref": "AA-1"}]
+        clean = sd.diff(live, dump(), ok, dec)
+        self.assertEqual((clean["verdict"], clean["counts"]["unmanaged"], clean["counts"]["open"],
+                          clean["counts"]["decided"]), ("clean", 1, 0, 1))
+        self.assertIn("**Drift verdict: clean**", "\n".join(sd.render_markdown(clean)))
+        self.assertIn("Drift verdict: clean", sd.summary_lines(clean)[1])
+        self.assertEqual(sd.diff(live, dump(), ok)["verdict"], "open")                   # undecided finding
+        failed = {"items": [], "counts": {"files": 3, "ok": 2, "failed": 1}}
+        self.assertEqual(sd.diff(live, dump(), failed, dec)["verdict"], "open")          # a file failed
+        self.assertEqual(sd.diff(dump(), dump())["verdict"], "open")                     # no replay counts
+        self.assertEqual(clean["fingerprint"], sd.diff(live, dump(), {"items": []}, dec)["fingerprint"])
 
     def test_replay_gap_explains_a_finding(self):
         live = dump()

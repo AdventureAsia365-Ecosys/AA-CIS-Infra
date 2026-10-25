@@ -282,11 +282,13 @@ def diff(live: dict, replay: dict, results: dict | None = None, decisions: list 
     counts["unmanaged_unexplained"] = sum(1 for f in found["unmanaged"] if not f["explained_by"])
     counts["only_mentioned_by_replay_gap"] = sum(1 for cls in CLASSES for f in found[cls] if f["mentioned_by"])
     counts["privileges"] = len(priv)
+    counts["decided"] = sum(1 for cls in CLASSES for f in found[cls] if f["decision"])
     rc = results.get("counts") or {}
     fp_src = json.dumps({cls: [(f["id"], f.get("diff"), f["decision"]) for f in found[cls] if not f["explained_by"]]
                          for cls in CLASSES}, sort_keys=True, default=str)
     return {
         "format": FORMAT,
+        "verdict": verdict(counts, rc),
         "live_generated_at": live.get("generated_at"),
         "replay_generated_at": results.get("generated_at") or replay.get("generated_at"),
         "fingerprint": hashlib.sha256(fp_src.encode("utf-8")).hexdigest(),
@@ -302,6 +304,15 @@ def diff(live: dict, replay: dict, results: dict | None = None, decisions: list 
     }
 
 
+def verdict(counts: dict, replay_counts: dict) -> str:
+    """Pure: "clean" when the replay ran every file (0 failed) and no finding of any class is open; a finding with an
+    owner decision in db/schema_drift_decisions.json (a reasoned exemption: keep, keep-dropped, …) does not count
+    against it, so `unmanaged` can stay above 0 on a clean run. "open" otherwise. AA-853's Done-when ("0 unmanaged
+    objects") is read as this verdict: every unmanaged object is either created by a migration or decided."""
+    failed = replay_counts.get("failed")
+    return "clean" if counts.get("open") == 0 and failed == 0 else "open"
+
+
 def _cell(text, limit: int = 120) -> str:
     s = str(text if text is not None else "").replace("|", "\\|").replace("\n", " ")
     return s if len(s) <= limit else s[:limit - 1] + "…"
@@ -313,6 +324,8 @@ def render_markdown(d: dict, heading: str = "##") -> list:
     rc = r.get("counts") or {}
     L = [f"{heading} Schema drift against a replay of all migrations (AA-853)", ""]
     L.append(f"<!-- drift-fingerprint: {d['fingerprint']} -->")
+    L.append("")
+    L.append(_verdict_line(d))
     L.append("")
     L.append(f"AA-CIS-Infra `db/replay_migrations.py` replayed every applied migration (live `shared.schema_versions` "
              f"order) into a scratch PostgreSQL {r.get('server_version') or '?'} and `db/schema_drift.py` compared its "
@@ -380,10 +393,18 @@ def render_markdown(d: dict, heading: str = "##") -> list:
     return L
 
 
+def _verdict_line(d: dict) -> str:
+    c, rc = d["counts"], d["replay"].get("counts") or {}
+    v = d.get("verdict") or verdict(c, rc)
+    return (f"**Drift verdict: {v}** ({c['open']} open finding(s), {rc.get('failed', '?')} failed replay file(s); "
+            f"{c.get('decided', 0)} finding(s) carry an owner decision and do not count as open)")
+
+
 def summary_lines(d: dict) -> list:
     c, rc = d["counts"], d["replay"].get("counts") or {}
     return [
         "### Schema drift (AA-853)",
+        f"- {_verdict_line(d)}",
         f"- replay: {rc.get('files', '?')} files, {rc.get('ok', '?')} ok, {rc.get('partial', 0)} partly, "
         f"{rc.get('failed', '?')} failed",
         f"- unmanaged: {c['unmanaged']} finding(s) ({c['unmanaged_objects']} objects), {c['open_unmanaged']} open",

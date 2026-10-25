@@ -48,7 +48,7 @@
       "before": "cis/008_rls_gold_silver.sql",
       "owner": "cis",
       "ref": "AA-853",
-      "reason": "Hand DDL (S251): sprint S7 applied row level security on shared.pipeline_runs by hand (008's header, 21/04/2026: 'S7 applied RLS only on shared.pipeline_runs'); the repo's 004 cannot have run as written (uuid tenant_id compared with text). 239's guard checks that state. Placed before 008, which states it."
+      "reason": "Hand DDL (S251): sprint S7 applied row level security on shared.pipeline_runs by hand (008's header, 21/04/2026: 'S7 applied RLS only on shared.pipeline_runs'); the repo's 004 cannot have run as written (uuid tenant_id compared with text). 239's guard checks that state. Placed before 008, which states it. Not codified by any CIS migration and it cannot be: 239 needs the state before 239 runs, so a later file (282) is too late. A database built from the migration files alone still lacks it and stops at 239 (files-only installs are not supported past 239); this replay stand-in exists only so 239 and 244 can run in the replay."
     },
     {
       "file": "replay_baseline/002_acp_lineage.sql",

@@ -310,10 +310,10 @@ Nghiệp's S251 blanket approval. This section covers the Infra side; CIS 282 ha
   `004_raw_sources_file_hash` (before 123), `005_g3_drop_unknown_ledger` (before 153; root repo
   `docs/archive/2026/audit-cis-g3-execute.sql`, 16/09/2026), `006_aa603_drop_n7n8_tables` (before 160;
   `docs/archive/2026/aa603-drop-n7n8-tables.sql`, 21/09/2026). 282 codifies the same end state for a files-only DB.
-- **Never applied to a real DB, three locks:** (1) every baseline file opens, before its BEGIN, with a guard that
-  RAISEs unless `current_setting('aa_replay.baseline', true) = 'on'` AND `application_name = 'db-replay'`; only
+- **Never applied to a real DB, three locks:** (1) every baseline file's FIRST statement after its BEGIN is a guard
+  that RAISEs unless `current_setting('aa_replay.baseline', true) = 'on'` AND `application_name = 'db-replay'`; only
   `replay_migrations.run_item` sends that SET, only for baseline files (`baseline_statements`), and `add_baseline`
-  refuses a file without the guard; (2) `run_migration.lint` refuses any SQL carrying the marker
+  refuses a file whose first statement after BEGIN is not the guard (`baseline_guard_error`); (2) `run_migration.lint` refuses any SQL carrying the marker
   `aa-853-replay-baseline`, whatever its path (DB Migrate check and apply both lint first); (3) DB Migrate's path rule
   (`^(cis|…|roles)/NNN_x.sql$` under `db/migrations/`) cannot select `db/replay_baseline/`. Tests:
   `db/tests/test_replay_baseline.py`. Local proof on PostgreSQL 15: the G3 file under `application_name` db-migrate
@@ -335,7 +335,7 @@ Nghiệp's S251 blanket approval. This section covers the Infra side; CIS 282 ha
 ### Changed
 
 - New: `db/gen_replay_baseline.py`, `db/replay_baseline/001…006_*.sql` (generated), `db/tests/test_replay_baseline.py`
-  (16 tests), `db/migrations/cis/282_schema_drift_reconcile.sql` (byte copy of AA-CIS-App's).
+  (16 tests), `db/migrations/cis/282_schema_drift_reconcile.sql` (byte copy of AA-CIS-App's; moved to its own PR in the review fixes).
 - `db/replay_migrations.py`: `BASELINE_SETTING`, `baseline_statements` (baseline sent whole after the SET),
   `_position` (key or file anchor) for `add_baseline` and `apply_order_fixes` (`files`), guard check in
   `add_baseline`, master BYPASSRLS, docstring. `db/run_migration.py`: `BASELINE_MARKER` + lint refusal.
@@ -362,7 +362,8 @@ grants of the hand-made `tripplanner` role on its own schema and the owners of t
 
 ### Should know
 
-- Done-when (one green nightly with 0 unmanaged) needs, in order: merge #383, merge this PR, merge the CIS 282 PR,
+- Done-when (one green nightly with drift verdict clean: 0 open findings, decided exemptions allowed; see the review
+  fixes below) needs, in order: merge #383, merge this PR, merge the CIS 282 PR and its Infra copy PR,
   DB Migrate `check` then `apply` cis/282 (destructive header: DB Migrate takes its snapshot; on Dev the file is a
   no-op, its preflight in the header shows it), then one nightly (or a dispatch of DB Schema Dump with publish=true).
 - The first nightly after this PR (before 282) changes the drift fingerprint and opens the root reference PR.
@@ -371,3 +372,36 @@ grants of the hand-made `tripplanner` role on its own schema and the owners of t
 - Not verifiable from the dump: column defaults of the hand-made columns (`tenant_brand_rules.created_at`,
   `pipeline_runs.llm_*` / `step_name`, `raw_sources.file_hash`); 282 adds them without a default. A read-only check of
   `information_schema.columns.column_default` on Dev would settle it (not done: subagent, no ECS exec).
+
+### S251 part 2 review fixes (independent review of edc8246)
+
+- **B1, blocking: the guard ran before BEGIN.** `psql -f` without ON_ERROR_STOP prints a failed statement's error and
+  goes on, so `BEGIN; DROP TABLE …; COMMIT;` still ran after the guard raised (reproduced by the reviewer: G3's file
+  dropped `acp_shared.unknown_ledger` with a row in it). Now the generator writes `BEGIN;` then the guard then the
+  DDL: the guard's error aborts the transaction and the closing COMMIT becomes ROLLBACK. `add_baseline` checks the
+  shape, not a substring: one BEGIN … COMMIT block whose first statement is a DO block with the RAISE and both
+  conditions (`replay_migrations.baseline_guard_error`); tests for a guard before BEGIN, a guard after the DDL and a
+  marker-only file. Proof on PostgreSQL 15 with psql -f of the regenerated G3 file on a table with a row: no
+  settings, db-migrate + setting, db-replay without setting: each "ERROR … / current transaction is aborted /
+  ROLLBACK", table and row kept; db-replay + setting: "BEGIN / DROP TABLE / COMMIT".
+- **S1: "0 unmanaged" vs a decided exemption.** `schema_drift.py` now writes a verdict (drift.json `verdict`, first
+  line of the step summary and of the reference's drift section): **clean** when the replay has 0 failed files and 0
+  open findings of any class; a finding with an owner decision (reasoned exemption) does not count. `unmanaged` keeps
+  counting every unmanaged object, decided ones included, so the exemption stays visible. AA-853's Done-when is read
+  as "the nightly drift verdict is clean" (= open_unmanaged 0, open 0, failed 0); proposed wording for Linear:
+  "one green nightly DB Schema Dump whose drift verdict is clean (0 open findings; decided exemptions listed)".
+  New `counts.decided`. The fingerprint is unchanged by this (it never covered the verdict).
+- **S2: baseline 001 is not lost lineage and is not codified.** Its file lead and its decisions `reason` now say so:
+  239 needs the S7 RLS state before 239 runs, so no later file (282) can supply it; a database built from the files
+  alone still lacks it and stops at 239; the replay stand-in exists only so 239 / 244 can run. Same note in CIS
+  `docs/implementation-notes/AA-853.md`.
+- **N5: the 282 byte copy moved to its own PR** (branch `fix/aa-853-cis-282-copy`, stacked on this one), so this PR's
+  Copy Guard does not wait on the CIS PR.
+- CIS-side fixes (S3 RESTRICT drop of the v1 schemas with a pg_depend check, N2 CHECK loop outside the pending gate,
+  N4 refclassid, N1 assumption, N3 E501): see the CIS notes.
+
+Results after the fixes (same live dump, fresh PostgreSQL 15.17 cluster each run; `.tmp/final-live-r2`,
+`.tmp/final-with-282-r2`): identical counts to the table above. Live as is: 334 / 5 / 0, verdict **open** (41 open:
+the D2 drift). 282 registered: 335 / 5 / 0, unmanaged 1 (decided), open 0, changed 0, missing 4 (decided), verdict
+**clean**.
+

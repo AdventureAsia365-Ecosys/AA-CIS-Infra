@@ -780,6 +780,25 @@ def baseline_statements(sql: str) -> list:
     return [f"SET {BASELINE_SETTING} = 'on'", sql]
 
 
+def baseline_guard_error(sql: str) -> str:
+    """Pure: "" for a baseline file shaped as the generator writes it: the marker, one BEGIN … COMMIT block whose
+    FIRST statement is the guard (raises unless this replay's setting and application_name are both present).
+    The guard must sit inside the transaction: psql -f without ON_ERROR_STOP goes on after a failed statement, so a
+    guard before BEGIN would print its error and let the DDL run; inside, the error aborts the block and the closing
+    COMMIT rolls it back. Otherwise the reason."""
+    if rm.BASELINE_MARKER not in sql:
+        return "has no replay guard (marker missing)"
+    begin, body, _commit, error = rm.transaction_parts(sql)
+    if error:
+        return f"has no replay guard inside its transaction ({error})"
+    guard = body[0].text if body else ""
+    if not (re.match(r"^DO\b", body[0].code if body else "") and "RAISE EXCEPTION" in guard
+            and f"current_setting('{BASELINE_SETTING}', true) IS DISTINCT FROM 'on'" in guard
+            and f"IS DISTINCT FROM '{APPLICATION_NAME}'" in guard):
+        return "has no replay guard as the first statement after BEGIN"
+    return ""
+
+
 def _position(items: list, anchor: str) -> int | None:
     """Index of the item a decision names: a registry key ('107', 'tp-002') or an owner file ('cis/020_x.sql', for an
     unregistered legacy file, which has no key)."""
@@ -792,7 +811,8 @@ def add_baseline(order: dict, baseline: list, texts: dict) -> list:
     """Owner decisions (db/schema_drift_decisions.json `baseline`): SQL files under db/replay_baseline/ that recreate
     what a lost migration made (objects of a repo that no longer exists, db/gen_replay_baseline.py), each run as the
     master right BEFORE the item named in `before`: a registry key, an owner file rel (`cis/020_x.sql`) or "start".
-    A file without the baseline guard is refused (it would run unguarded). Pure apart from reading the files;
+    A file without the baseline guard as the first statement of its one transaction is refused
+    (baseline_guard_error). Pure apart from reading the files;
     returns problems."""
     problems = []
     items = order["items"]
@@ -809,8 +829,9 @@ def add_baseline(order: dict, baseline: list, texts: dict) -> list:
             problems.append(f"baseline {rel}: {before!r} is neither a registry key nor a file of the replay order")
             continue
         text = path.read_text(encoding="utf-8")
-        if BASELINE_SETTING not in text or rm.BASELINE_MARKER not in text:
-            problems.append(f"baseline {rel}: has no replay guard (db/gen_replay_baseline.py writes it)")
+        shape = baseline_guard_error(text)
+        if shape:
+            problems.append(f"baseline {rel}: {shape} (db/gen_replay_baseline.py writes it)")
             continue
         texts[BASELINE][rel] = text
         items.insert(at, Item(BASELINE, rel, f"before {before}", "", False))
