@@ -153,3 +153,9 @@ def cognito_client() -> Any:
     import boto3  # imported lazily so unit tests run without boto3
 
     return boto3.client("cognito-idp")
+
+
+def secrets_client() -> Any:
+    import boto3  # imported lazily so unit tests run without boto3
+
+    return boto3.client("secretsmanager")
