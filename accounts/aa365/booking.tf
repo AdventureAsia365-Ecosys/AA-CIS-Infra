@@ -235,8 +235,10 @@ resource "aws_iam_role_policy" "booking_ecs_execution" {
 # aws_iam_role_policy.booking_ecs_task_ses_send, AA-811), and cloudwatch:PutMetricData into namespace
 # AA/Jobs/Booking only (observability_ecosys.tf aws_iam_role_policy.booking_ecs_task_put_metric_jobs,
 # the job backlog sampler, AA-751), and s3:PutObject / s3:GetObject on supply-media/* of the Booking supply-media
-# bucket (booking_media.tf aws_iam_role_policy.booking_ecs_task_supply_media, supplier photos, AA-835). No Bedrock,
-# no other S3, no CIS secrets: add them only when a feature needs them.
+# bucket (booking_media.tf aws_iam_role_policy.booking_ecs_task_supply_media, supplier photos, AA-835), and
+# s3:PutObject on archive/booking/* of the CIS bronze bucket (aws_iam_role_policy.booking_ecs_task_retention_archive
+# below: the bk_retention_job archive of failed / cancelled jobs before delete, AA-825). No Bedrock, no other S3, no
+# CIS secrets: add them only when a feature needs them.
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "booking_ecs_task" {
   name                 = "${local.bk_name_prefix}-ecs-task-role"
@@ -280,6 +282,29 @@ resource "aws_iam_role_policy" "booking_ecs_task" {
         Effect   = "Allow"
         Action   = ["logs:CreateLogStream", "logs:DescribeLogStreams", "logs:PutLogEvents"]
         Resource = "${module.ecs.exec_session_log_group_arn}:*"
+      },
+    ]
+  })
+}
+
+# AA-825 (S251): Booking retention archive. bk_retention_job writes each batch of failed / cancelled booking.job rows
+# to s3://<bronze>/archive/booking/job/<yyyy>/<mm>/<job>-<run>-failed-b<NNNNN>.jsonl.gz (SSE AES256, the bucket default)
+# in the same transaction as their DELETE, so without this grant a live run with such candidates fails before it
+# deletes them (AA-Booking backend/app/retention/policy.py ARCHIVE_PREFIX). PutObject only, on the Booking-only
+# prefix: the CIS archive (archive/<table>/..., CIS task role) and every other bronze prefix stay out of reach; no
+# read, list or delete (restore is an operator task). Cost: IAM is free; the objects are a few KB a month.
+resource "aws_iam_role_policy" "booking_ecs_task_retention_archive" {
+  name = "${local.bk_name_prefix}-ecs-task-retention-archive"
+  role = aws_iam_role.booking_ecs_task.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "RetentionArchivePut"
+        Effect   = "Allow"
+        Action   = ["s3:PutObject"]
+        Resource = "${module.s3.bronze_bucket_arn}/archive/booking/*"
       },
     ]
   })
