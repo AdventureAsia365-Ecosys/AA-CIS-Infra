@@ -229,6 +229,6 @@ output "custom_domain_urls" {
   value = var.custom_domains_enabled ? {
     booking_api     = "https://${local.cd_booking_api_host}/booking"
     tripplanner_api = "https://${local.cd_tripplanner_api_host}"
-    frontends       = [for label in keys(var.custom_domain_vercel_hosts) : "https://${label}.${var.dns_zone_name}"]
+    frontends       = concat([for label in keys(var.custom_domain_vercel_hosts) : "https://${label}.${var.dns_zone_name}"], ["https://${local.crm_agency_host}"])
   } : null
 }

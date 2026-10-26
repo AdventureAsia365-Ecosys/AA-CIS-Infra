@@ -68,8 +68,10 @@ variable "identity_partner_client_urls" {
   }))
   default = {
     "partner-web" = {
-      callback_urls = ["https://partner-dev.lumiguides.it.com/auth/callback", "http://localhost:3005/auth/callback"]
-      logout_urls   = ["https://partner-dev.lumiguides.it.com/signed-out", "http://localhost:3005/signed-out"]
+      # AA-979 P2b: + the agency host portal. (the web answers both hosts during the window, each host signs in
+      # and out through its own URLs: the OAuth transaction cookie is host-only).
+      callback_urls = ["https://partner-dev.lumiguides.it.com/auth/callback", "https://portal.lumiguides.it.com/auth/callback", "http://localhost:3005/auth/callback"]
+      logout_urls   = ["https://partner-dev.lumiguides.it.com/signed-out", "https://portal.lumiguides.it.com/signed-out", "http://localhost:3005/signed-out"]
     }
   }
 }

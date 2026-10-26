@@ -70,13 +70,17 @@ locals {
   crm_web_env = [
     { name = "ENVIRONMENT", value = var.environment },
     { name = "WEB_PUBLIC_ORIGIN", value = "https://${local.crm_partner_host}" },
-    { name = "WEB_PARTNER_HOSTS", value = local.crm_partner_host },
+    # AA-979 P2b (Q1, Q12): the web answers BOTH agency hosts during the window, each with its own public origin
+    # (AA-Partner web/lib/hosts.ts publicOriginFor), so cutover and rollback are DNS only. WEB_PUBLIC_ORIGIN and
+    # CRM_API_ORIGIN stay on partner-dev. (fallback / server to server) until the clean-up.
+    { name = "WEB_PARTNER_HOSTS", value = join(",", local.crm_edge_on == 1 ? [local.crm_partner_host, local.crm_agency_host] : [local.crm_partner_host]) },
     # AA-936: the client host of crm_client_edge.tf, plus any extra host given here.
     { name = "WEB_CLIENT_HOSTS", value = join(",", distinct(concat(local.crm_client_hosts, var.crm_web_client_hosts))) },
     { name = "CRM_API_ORIGIN", value = "https://${local.crm_partner_host}" },
     { name = "COGNITO_DOMAIN", value = local.crm_web_cognito_domain },
     { name = "COGNITO_CLIENT_ID", value = local.crm_web_client_id },
     # Content studio cross-link (design v3 Fix C10): the tenant portal host (custom_domains_variables.tf `portal`).
+    # AA-979 P2b: same-origin on portal.; on partner-dev. the web turns the path into the portal. URL.
     { name = "CONTENT_STUDIO_URL", value = "https://portal.${var.dns_zone_name}" },
   ]
 }

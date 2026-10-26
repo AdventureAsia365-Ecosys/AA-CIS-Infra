@@ -87,6 +87,10 @@ locals {
   idm2m_tenant_identifier = "cis.tenant"
   idm2m_tenant_scopes = {
     read = "Agency membership snapshot, identity lookup and event feed (CIS /tenant/membership/v1)"
+    # AA-979 P2b (contract tenant.membership.v1 1.1): the CRM binds an accepted studio invitation's partner-pool
+    # identity (POST /tenant/membership/v1/invitations/{id}/activate). Granted to the CRM client only (m2m_crm below
+    # takes every scope of this server; it is the pool's only client).
+    activate = "Bind the partner-pool identity of an accepted Content studio invitation (CIS /tenant/membership/v1)"
   }
 }
 

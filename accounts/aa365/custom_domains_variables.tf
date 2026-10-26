@@ -12,7 +12,8 @@ variable "custom_domain_vercel_hosts" {
   default = {
     tripplanner = "a1520bcb29624260.vercel-dns-017.com" # project-specific target, domain added to aa-tripplanner first
     booking     = "faa59191f1f73e21.vercel-dns-017.com" # S239 AA-818: staff admin, domain added to aa-booking-admin first (verified)
-    portal      = "22ba595c1afe124b.vercel-dns-017.com" # S243 AA-885: tenant portal, domain added to aa-cis-portal first (verified)
+    # portal moved to crm_agency_edge.tf (AA-979 P2b): aws_route53_record.crm_agency, target Vercel
+    # (var.crm_agency_vercel_target) until the cutover switch var.crm_agency_live.
     # S246 AA-911: fixed Preview sign-in hosts. Targets = Vercel recommendedCNAME for each project (read 21/10/2026
     # with get_domain_config). The domain must be added to the project BEFORE this is applied (takeover rule).
     booking-preview = "faa59191f1f73e21.vercel-dns-017.com" # aa-booking-admin
