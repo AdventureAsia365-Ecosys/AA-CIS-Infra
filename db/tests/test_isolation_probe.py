@@ -404,15 +404,15 @@ class BuildCellsTest(unittest.TestCase):
         # AA-858: cis_app reads booking.v_ops_* (bk-017) and tripplanner.v_ops_traffic_daily (tp-015). Merged into
         # the registry before the DB Migrate apply, the views are absent: pending, never FAIL, and the always-expected
         # cell is unaffected.
-        self.assertEqual(p.CONSUMER_GRANT_KEYS, ("bk-017", "bk-023", "tp-015"))  # bk-023: AA-835 supply views
+        # bk-023: AA-835 supply views; bk-025 / tp-020: AA-992 data coverage views.
+        self.assertEqual(p.CONSUMER_GRANT_KEYS, ("bk-017", "bk-023", "bk-025", "tp-015", "tp-020"))
         for k in p.CONSUMER_GRANT_KEYS:
             self.assertIn(k, p.VERSION_KEYS)
             self.assertIn(k, p.KEY_TEXT)
         st, keys = statuses(today_facts())
-        self.assertFalse(keys["bk-017"] or keys["bk-023"] or keys["tp-015"])
-        self.assertEqual(st["consumer.contract_grants.bk-017"], "pending")
-        self.assertEqual(st["consumer.contract_grants.bk-023"], "pending")
-        self.assertEqual(st["consumer.contract_grants.tp-015"], "pending")
+        self.assertFalse(any(keys[k] for k in p.CONSUMER_GRANT_KEYS))
+        for k in p.CONSUMER_GRANT_KEYS:
+            self.assertEqual(st[f"consumer.contract_grants.{k}"], "pending")
         self.assertEqual(st["consumer.contract_grants"], "pass")
 
     def test_keyed_consumer_grants_expected_once_registered(self):
@@ -441,6 +441,27 @@ class BuildCellsTest(unittest.TestCase):
                 c["missing"] = []
         st, _ = statuses(f)
         self.assertEqual(st["consumer.contract_grants.tp-015"], "ready")
+
+    def test_data_coverage_grants_are_their_own_cells(self):
+        # AA-992: the five data coverage views wait for tp-020 / bk-025; registering bk-025 with both views granted
+        # passes its cell and leaves tp-020 pending; a missing SELECT on the keys view fails only bk-025.
+        objs = {c[2] for c in p.CONSUMER_GRANTS if c[3] in ("bk-025", "tp-020")}
+        self.assertEqual(objs, {"booking.v_ops_data_totals", "booking.v_ops_trip_plan_keys",
+                                "tripplanner.v_ops_data_totals", "tripplanner.v_ops_pin_components",
+                                "tripplanner.v_ops_component_id_map"})
+        f = today_facts()
+        f["catalog"]["registered"] = ["bk-025"]
+        for c in f["consumer"]["grants"]:
+            if c["from"] == "bk-025":
+                c["missing"] = []
+        st, _ = statuses(f)
+        self.assertEqual(st["consumer.contract_grants.bk-025"], "pass")
+        self.assertEqual(st["consumer.contract_grants.tp-020"], "pending")
+        next(c for c in f["consumer"]["grants"]
+             if c["object"] == "booking.v_ops_trip_plan_keys")["missing"] = ["SELECT"]
+        st, _ = statuses(f)
+        self.assertEqual(st["consumer.contract_grants.bk-025"], "FAIL")
+        self.assertEqual(st["consumer.contract_grants.bk-017"], "pending")
 
     def test_cis_app_login_waits_for_set_password(self):
         f = today_facts()
