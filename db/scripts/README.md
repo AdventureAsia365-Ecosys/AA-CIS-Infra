@@ -196,6 +196,17 @@ FX row and departures with the fee % the check expects (`SCRIPT verify`) and `SC
 PR `READ_ONLY = False`. No cleanup action: FX rows are append-only (a later real VND row supersedes it); the departures
 go with the AA-973 seed cleanup. Notes: `docs/implementation-notes/AA-974.md`.
 
+`aa682_s1_live_check.py` (AA-682 S1, S252, Dev only; merged `MODE = "dry_run"`): the supplier-bookings live check
+(Booking bk-026; the agent's Dev staff sessions are read-only, so the writes are SQL as `bk_owner`). One transaction: a
+`SYNTHETIC S252 AA-682` supplier (room type + service), a synthetic customer (`…@example.invalid`), a B2C trip case at
+`confirmed` with an approved V1 of two supply items, two supplier bookings generated → requested (the case moves to
+`supplier_confirming` as the system) → confirmed; savepoint checks that the database refuses an illegal edge, a second
+live booking of one item, B2C `pre_departure` and a money status; `SCRIPT verify what=b2c … supply=booked`. With a
+confirmed hold of the AA-973 seed partner whose line is still `on_request`, it also links, requests and confirms a
+supplier booking for it and accepts the line (`line.confirmed` in `booking.outbox`); else `SCRIPT skip what=b2b`.
+`dry_run` rolls everything back after the checks; apply = one-line PR `MODE = "apply"` (commits only when the verdict is
+ok; idempotent per UTC day). Refuses without bk-026. Notes: AA-Booking `docs/implementation-notes/AA-682.md`.
+
 `aa991_freshness_probe.py` (AA-991, S251, read-only): the downstream freshness probe. Inside one read-only snapshot
 it switches to `cis_app` and counts, per layer, the links that did not follow a tour's atoms (`SCRIPT metric name=…
 gate=stale|info n=… aged=… sample=…`; aged = the tour changed more than 24 h before the run), the catalogue size and
