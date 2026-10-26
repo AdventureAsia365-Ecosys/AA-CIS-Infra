@@ -25,6 +25,10 @@ class _Conn:
         self.sql.append(sql)
         return [{"n": 1}]
 
+    async def fetchval(self, sql, *args):
+        self.sql.append(sql)
+        return True
+
     async def execute(self, sql, *args):
         return "SELECT 1"
 
@@ -55,8 +59,21 @@ class ReaderChecksTest(unittest.TestCase):
     def test_main_runs_every_query_and_returns_zero(self):
         conn = _Conn()
         self.assertEqual(asyncio.run(mod.main(conn)), 0)
-        self.assertEqual(len(conn.sql), 16)
+        self.assertEqual(len(conn.sql), 19)   # + redirect probe, 2 chain lines
 
+
+    def test_chain_sql_walks_the_map_then_the_cis_redirects(self):
+        for one_hop in (mod.PINS_SQL, mod.TP_PINS_SERVED_SQL):
+            with_r = mod.chain_sql(one_hop, True)
+            without = mod.chain_sql(one_hop, False)
+            for sql in (with_r, without):
+                self.assertTrue(sql.lstrip().startswith("WITH RECURSIVE pins AS"))
+                self.assertNotIn("LEFT JOIN tripplanner.component_id_map m", sql)
+                self.assertIn("w.depth < 5", sql)
+                self.assertIn("NOT h.n = ANY (w.path)", sql)               # cycle-safe
+                self.assertIn("ORDER BY o, pri", sql)                      # the id map wins on the same id
+            self.assertIn("FROM geo.component_redirect", with_r)
+            self.assertNotIn("geo.component_redirect", without)
 
 
 class FailingCheckTest(unittest.TestCase):
@@ -69,7 +86,7 @@ class FailingCheckTest(unittest.TestCase):
                 return {"n": 1}
         conn = _Bad()
         self.assertEqual(asyncio.run(mod.main(conn)), 0)
-        self.assertEqual(len(conn.sql), 16)
+        self.assertEqual(len(conn.sql), 19)   # + redirect probe, 2 chain lines
 
 
 if __name__ == "__main__":
