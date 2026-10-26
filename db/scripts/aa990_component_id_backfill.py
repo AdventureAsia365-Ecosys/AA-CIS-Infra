@@ -338,7 +338,12 @@ async def main(conn):
     origin, timing, snap = {}, {}, {"with_snapshot": 0, "without_snapshot": 0}
     for p in dangling:
         d = decisions[p["raw"]]
-        o = "pre_flip_mapped" if d["in_map"] else "catalog_id"
+        if d["in_map"]:
+            o = "pre_flip_mapped"            # an old TripPlanner id AA-847 mapped; its catalog id dropped since
+        elif map_from is not None and p["created_at"] < map_from:
+            o = "pre_flip_unmapped"          # an old TripPlanner id AA-847 found no match for (dangling since 22/10)
+        else:
+            o = "catalog_id"                 # a catalog id a later rebuild dropped
         origin[o] = origin.get(o, 0) + 1
         b = _bucket(p, d, map_from, built_at)
         timing[b] = timing.get(b, 0) + 1
