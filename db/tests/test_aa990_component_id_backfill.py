@@ -123,11 +123,55 @@ class PureTest(unittest.TestCase):
         d = mod.plan({"SNAP"}, {}, rows, {}, {}, snap, {"S"})
         self.assertEqual((d["SNAP"]["target"], d["SNAP"]["reason"]), (None, "generic_no_locality"))
 
-    def test_follow_redirect_chain_and_cycle(self):
-        self.assertEqual(mod.follow_redirect("a", {"a": "b", "b": "c"}, {"c": {}}), "c")
-        self.assertIsNone(mod.follow_redirect("a", {"a": "b", "b": "a"}, {}))
+    def test_resolve_chain_like_tripplanner(self):
+        self.assertEqual(mod.resolve_chain("a", {}, {"a": "b", "b": "c"}), ["a", "b", "c"])
+        self.assertEqual(mod.resolve_chain("a", {"a": "m"}, {"a": "b", "m": "n"}), ["a", "m", "n"])  # map wins
+        self.assertEqual(mod.resolve_chain("a", {}, {"a": "b", "b": "a"}), ["a", "b"])               # cycle
+        long = {f"x{i}": f"x{i + 1}" for i in range(9)}
+        self.assertEqual(len(mod.resolve_chain("x0", {}, long)), mod.REDIRECT_HOPS + 1)
 
-    def test_plan_insert_update_and_reasons(self):
+    def _rederive_rows(self):
+        a1 = {"tour_id": "v1", "day": 2, "place": "Night Market", "card_id": "c-cm", "card_name": "CM Bazaar",
+              "card_locality": "Chiang Mai", "destination_id": "d-cm"}
+        a2 = {"tour_id": "v2", "day": 2, "place": "Night Market", "card_id": "c-cr", "card_name": "CR Bazaar",
+              "card_locality": "Chiang Rai", "destination_id": "d-cr"}
+        same = {"tour_id": "v1", "day": 3, "place": "Doi Suthep", "card_id": "c-ds", "card_name": "Doi Suthep",
+                "card_locality": "Chiang Mai", "destination_id": "d-ds"}
+        norm = {k: _norm(k) for k in ("Night Market", "CM Bazaar", "CR Bazaar", "Chiang Mai", "Chiang Rai",
+                                      "Doi Suthep")}
+        return [a1, a2, same], {"v1": "S", "v2": "S"}, {"S": {"thailand"}}, norm
+
+    def test_rederive_is_order_independent_and_conservative_on_disagreeing_versions(self):
+        rows, versions, countries, norm = self._rederive_rows()
+        fwd = mod.rederive_index(rows, versions, countries, norm)
+        rev = mod.rederive_index(list(reversed(rows)), versions, countries, norm)
+        self.assertEqual(fwd, rev)                                      # both row orders: the same index
+        cid = mod.component_uuid("S", 2, "night market", "thailand", "culinary")
+        rec = fwd[cid]
+        # v1 and v2 mint the same id on day 2 but disagree: none of the four fields is guessed
+        self.assertEqual((rec["locality"], rec["card_id"], rec["destination_id"], rec["link"]),
+                         (None, None, None, None))
+        self.assertEqual(set(rec["conflicts"]), {"link", "destination_id", "card_id", "locality"})
+        ok = fwd[mod.component_uuid("S", 3, "doi suthep", "thailand", "culinary")]   # one version: kept
+        self.assertEqual((ok["locality"], ok["card_id"], ok["destination_id"], ok["conflicts"]),
+                         ("chiang mai", "c-ds", "d-ds", ()))
+
+    def test_disagreeing_versions_leave_a_generic_pin_unmatched_whatever_the_row_order(self):
+        rows, versions, countries, norm = self._rederive_rows()
+        cid = mod.component_uuid("S", 2, "night market", "thailand", "culinary")
+        places = [dict(_place("cr", "S", 2, "Night Market", country="thailand", locality="chiang rai"),
+                       spelling="night market"),
+                  dict(_place("cm", "S", 4, "Night Market", country="thailand", locality="chiang mai"),
+                       spelling="night market")]
+        for order in (rows, list(reversed(rows))):
+            idx = mod.rederive_index(order, versions, countries, norm)
+            d = mod.plan({cid}, {}, places, {}, idx, {}, {"S"})
+            self.assertEqual((d[cid]["target"], d[cid]["reason"]), (None, "generic_no_locality"))
+
+    def test_atoms_sql_is_ordered(self):
+        self.assertIn("ORDER BY a.tour_id, a.itinerary_day", mod.ATOMS_SQL)
+
+    def test_plan_inserts_at_the_chain_end_and_reasons(self):
         rebuilt = mod.component_uuid("S", 2, "hoi an ancient town", "vietnam", "local_immersion")
         places = [dict(_place("NEW", "S", 2, "Hoi An Ancient Town"), spelling="hoi an ancient town"),
                   dict(_place("KEEP", "S", 1, "Da Nang"), spelling="da nang")]
@@ -139,17 +183,34 @@ class PureTest(unittest.TestCase):
                      "OFF": {"source_id": "GONE", "day": 1, "spelling": "x", "link": "x", "country_norm": None,
                              "activity": None, "destination_id": None, "card_id": None}}
         id_map = {"TPOLD": rebuilt, "TPFINE": "KEEP"}
-        raw = {rebuilt, "TPOLD", "TPFINE", "KEEP", "SNAP", "OFF", "LOST", "R1"}
-        d = mod.plan(raw, id_map, places, {"R1": "R2", "R2": "NEW"}, rederived, snapshots, {"S"})
+        raw = {rebuilt, "TPOLD", "TPFINE", "KEEP", "SNAP", "OFF", "LOST", "R1", "R9"}
+        redirects = {"R1": "R2", "R2": "NEW", "R9": rebuilt}
+        d = mod.plan(raw, id_map, places, redirects, rederived, snapshots, {"S"})
         self.assertNotIn("TPFINE", d)                                   # resolves already
         self.assertNotIn("KEEP", d)
-        self.assertEqual((d[rebuilt]["target"], d[rebuilt]["in_map"]), ("NEW", False))
-        self.assertEqual((d["TPOLD"]["target"], d["TPOLD"]["in_map"], d["TPOLD"]["cur"]), ("NEW", True, rebuilt))
+        self.assertNotIn("R1", d)                                       # the CIS redirects already serve it
+        self.assertEqual((d[rebuilt]["target"], d[rebuilt]["in_map"], d[rebuilt]["end"]), ("NEW", False, rebuilt))
+        # the pre-flip row is NOT updated (D3): its chain ends at `rebuilt`, which gets the one insert
+        self.assertEqual((d["TPOLD"]["target"], d["TPOLD"]["in_map"], d["TPOLD"]["end"]), ("NEW", True, rebuilt))
+        self.assertEqual((d["R9"]["end"], d["R9"]["target"]), (rebuilt, "NEW"))   # redirect then rederived
         self.assertEqual((d["SNAP"]["target"], d["SNAP"]["recovered_by"]), ("KEEP", "snapshot"))
-        self.assertEqual((d["R1"]["target"], d["R1"]["recovered_by"]), ("NEW", "redirect"))
         self.assertEqual(d["OFF"]["reason"], "source_not_live")
         self.assertEqual(d["LOST"]["reason"], "not_recoverable")
         self.assertTrue(all(x["matched_by"] in (None, "name", "destination") for x in d.values()))   # tp-017 CHECK
+        ins, bad = mod.inserts_of(d)
+        self.assertEqual(ins, [("SNAP", "KEEP", "name"), (rebuilt, "NEW", "name")] if "SNAP" < rebuilt
+                         else [(rebuilt, "NEW", "name"), ("SNAP", "KEEP", "name")])
+        self.assertEqual(bad, set())
+
+    def test_two_chains_to_one_end_with_different_targets_are_left_out(self):
+        decisions = {"a": {"raw": "a", "end": "E", "target": "T1", "matched_by": "name"},
+                     "b": {"raw": "b", "end": "E", "target": "T2", "matched_by": "name"},
+                     "c": {"raw": "c", "end": "F", "target": "T3", "matched_by": "destination"}}
+        self.assertEqual(mod.inserts_of(decisions), ([("F", "T3", "destination")], {"E"}))
+
+    def test_a_chain_stopped_by_a_cycle_through_the_map_is_never_inserted(self):
+        d = mod.plan({"A"}, {"A": "B", "B": "A"}, [], {}, {}, {}, set())
+        self.assertEqual(d["A"]["reason"], "chain_cycle")
 
 
 class _Conn:
@@ -204,7 +265,8 @@ def _fixture():
         "DRAFTS_SQL": [],
         "PLACES_SQL": [_place("NEW", "S", 2, "Hoi An Ancient Town"), _place("KEEP", "S", 1, "Da Nang")],
         "DAYS_SQL": [{"source_id": "S", "day_index": 2, "anchor_norm": "hoi an"}],
-        "BUILDS_SQL": [{"source_id": "S", "country": "Vietnam", "built_at": T3, "redirects": None}],
+        "BUILDS_SQL": [{"source_id": "S", "country": "Vietnam", "built_at": T3}],
+        "REDIRECTS_SQL": [],
         "LIVE_SQL": [{"source_id": "S"}],
         "VERSIONS_SQL": [{"tour_id": "11111111-1111-1111-1111-111111111111", "source_id": "S", "country": "Vietnam"}],
         "ATOMS_SQL": [{"tour_id": "11111111-1111-1111-1111-111111111111", "day": 2, "place": "Hoi An Ancient Town",
@@ -238,12 +300,12 @@ class MainTest(unittest.TestCase):
         self.assertIn("SCRIPT dangling_origin catalog_id=1 pre_flip_mapped=1", text)
         self.assertIn("before_flip=1", text)
         self.assertIn("before_current_build=1", text)
-        self.assertIn("SCRIPT plan insert=1 update=1 unmatched=0", text)
+        self.assertIn("SCRIPT plan insert=1 unmatched=0", text)            # one end fixes both pins (D3)
         self.assertIn("SCRIPT expected_after dangling=0", text)
         self.assertIn("SCRIPT payload_keys event=add_component keys=component_id n=3", text)
         self.assertNotIn("trip1", text)                                  # no trip ids in the log
 
-    def test_apply_inserts_as_tripplanner_updates_as_tp_owner_and_prints_restore(self):
+    def test_apply_only_inserts_as_tripplanner_and_prints_restore(self):
         dropped, data = _fixture()
         conn = _Conn(data)
         mod.READ_ONLY = False
@@ -252,25 +314,32 @@ class MainTest(unittest.TestCase):
         finally:
             mod.READ_ONLY = True
         self.assertEqual(rc, 0)
-        self.assertEqual(conn.roles, ["tripplanner", "tripplanner", "tp_owner", "tp_owner"])
-        self.assertEqual([w[1] for w in conn.writes],
-                         [(dropped, "NEW", "name"), ("TPOLD", dropped, "NEW", "name")])
+        self.assertEqual(conn.roles, ["tripplanner", "tripplanner"])
+        self.assertEqual([w[1] for w in conn.writes], [(dropped, "NEW", "name")])
+        self.assertTrue(all(w[0] == mod.INSERT_SQL for w in conn.writes))     # never an UPDATE (tp-017, D3)
         self.assertIn(f"SCRIPT restore op=insert old_id={dropped}", text)
-        self.assertIn(f"SCRIPT restore op=update old_id=TPOLD prev_new_id={dropped}", text)
-        self.assertIn("SCRIPT apply inserted=1 updated=1 skipped_changed=0", text)
+        self.assertIn("SCRIPT apply inserted=1 skipped_changed=0", text)
 
     def test_second_run_after_apply_plans_nothing(self):
         dropped, data = _fixture()
-        data["MAP_SQL"] = [{"old_id": "TPOLD", "new_id": "NEW", "created_at": T1},
+        data["MAP_SQL"] = [{"old_id": "TPOLD", "new_id": dropped, "created_at": T1},
                            {"old_id": dropped, "new_id": "NEW", "created_at": T3}]
         rc, text = _run(_Conn(data))
-        self.assertIn("SCRIPT plan insert=0 update=0 unmatched=0", text)
+        self.assertIn("SCRIPT plan insert=0 unmatched=0", text)
         self.assertIn("dangling=0", text)
+
+    def test_cis_redirects_are_followed_when_the_table_exists(self):
+        dropped, data = _fixture()
+        data["REDIRECTS_SQL"] = [{"old_id": dropped, "new_id": "NEW"}]       # CIS 285 already redirects it
+        rc, text = _run(_Conn(data))
+        self.assertIn("redirect_table=t redirect_entries=1", text)
+        self.assertIn("SCRIPT pins pins=3 trips=2 dangling=0", text)
+        self.assertIn("SCRIPT plan insert=0 unmatched=0", text)
 
     def test_write_sql_shapes(self):
         self.assertIn("ON CONFLICT (old_id) DO NOTHING", mod.INSERT_SQL)
-        self.assertIn("AND new_id = $2::uuid", mod.UPDATE_SQL)            # guarded on the value the plan saw
-        for name in [n for n in dir(mod) if n.endswith("_SQL") and n not in ("INSERT_SQL", "UPDATE_SQL")]:
+        self.assertFalse(hasattr(mod, "UPDATE_SQL"))                      # insert-only (D3)
+        for name in [n for n in dir(mod) if n.endswith("_SQL") and n != "INSERT_SQL"]:
             sql = getattr(mod, name).upper()
             for verb in ("INSERT ", "UPDATE ", "DELETE ", "TRUNCATE ", "ALTER ", "DROP ", "CREATE "):
                 self.assertNotIn(verb, sql, f"{name} contains {verb.strip()}")

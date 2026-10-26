@@ -2,21 +2,24 @@
 
 Dispatch: DB Migrate, mode=run-script, script=db/scripts/aa990_component_id_backfill.py. Merged with
 `READ_ONLY = True`: a DRY RUN that prints counts only (no write, can run during a wave). The apply is a follow-up PR
-that sets `READ_ONLY = False` (one line). Re-runnable: a pin that resolves is left alone, so a second apply writes 0;
-run it again after every place re-sync wave (CIS keeps its redirects in geo.tour_build.counts.id_redirects).
+that sets `READ_ONLY = False` (one line). Re-runnable: a pin that resolves is left alone, so a second apply writes 0.
 
 Why (S252, live Dev): 322 of 371 pins (add_component events, 99 of 103 trips) had no geo.tour_place row after the
 S1 v2 place re-sync of 123 tours. A component id is uuid5(source, day, itinerary spelling, country, activity) at a
 place's first build; AA-989 keeps an id across a rebuild only on an unambiguous one-to-one pair, so a respelt, retyped,
-moved or merged place dropped the pin. TripPlanner resolves every pinned id through tripplanner.component_id_map
-(tp-017, ONE hop: backend/shared/component_ids.py) before it reads catalog.v_tour_component.
+moved or merged place dropped the pin. One-time: since CIS 285 (decision D1) every rebuild writes its drops to
+geo.component_redirect (catalog.v_component_redirect) and TripPlanner follows them; this script covers the pins
+dropped BEFORE that.
 
-For each pinned id (raw id of the event; `cur` = the map's new_id when the map knows it, else the raw id) whose `cur`
-has no geo.tour_place row, the place it was is recovered from, in order:
-  redirect   geo.tour_build.counts.id_redirects (written by CIS place_extract since AA-990; chains followed);
+Resolution = TripPlanner's (backend/shared/component_ids.id_map, AA-990): from the pinned (raw) id, at each hop
+tripplanner.component_id_map first, else geo.component_redirect (when CIS 285 is applied), at most 5 hops,
+cycle-safe. A pin whose chain ends at an id with no geo.tour_place row (`end`) dangles. The place `end` (or an
+earlier id of its chain) was is recovered from, in order:
   rederived  uuid5 recomputed from every atom ever written for the tour (soft-deleted ones included) of every built
              source: (source, itinerary_day, geo.name_norm(place), country, activity) for the 8 activities and every
-             country spelling the source used — the exact id the build minted from those atoms;
+             country spelling the source used — the exact id the build minted from those atoms. Deterministic: when
+             atoms of different versions mint the same id but disagree on the link name, destination, place card or
+             locality, that field is None (never the first row's value; the locality then counts as unknown);
   snapshot   the trip_drafts projection entry of that id (name, source_tour_id, source_day_index, destination_id;
              AA-986 L6 keeps it for a stop the catalog stopped serving).
 Then the current component of the same source for the same place (the CIS rule, components.redirect_dropped):
@@ -27,20 +30,20 @@ was generic when CIS built it) or the name is the link name of any generic row i
 CIS is_generic_name). The old place's locality: its place card's locality, else the current geo.tour_day.anchor_norm of
 that day (the overnight town CIS used as the locality) ONLY when an atom of the same old version on that day names
 that town (place or card locality) — a rewrite that moved the days must not hand the old stop the new town. With no
-locality the id stays unmatched (reason=generic_no_locality), never guessed by day distance. Writes (apply only):
-  INSERT (raw, target, matched_by) as `tripplanner` (the AA-847 fill path, ON CONFLICT DO NOTHING) for a raw id the
-  map does not know;
-  UPDATE new_id (and matched_by) as `tp_owner` for a raw id the map knows (a pre-flip TripPlanner id whose catalog id
-  the rebuild dropped): `tripplanner` has no UPDATE and the reader follows one hop only. Guarded on the old new_id.
-matched_by keeps the tp-017 CHECK: 'destination' for the destination rule, 'name' otherwise.
+locality the id stays unmatched (reason=generic_no_locality), never guessed by day distance.
+
+Writes (apply only, decision D3): INSERT only, as `tripplanner` (the AA-847 fill path; tp-017 keeps the map
+insert-only): one row (end, target, matched_by) per dangling chain end, ON CONFLICT DO NOTHING. TripPlanner follows
+the chain raw → … → end → target. matched_by keeps the tp-017 CHECK: 'destination' for the destination rule, 'name'
+otherwise.
 
 Output (every line starts with `SCRIPT `; counts, rules and component ids only — no trip, session or person data):
   SCRIPT start / inputs / pins / payload_keys / dangling_origin / dangling_timing / dangling_snapshot / recover /
-  match rule=<r> n=<n> / unmatched reason=<r> n=<n> / plan insert=<n> update=<n> / expected_after dangling=<n>
-  SCRIPT restore op=insert old_id=<id> | op=update old_id=<id> prev_new_id=<id>        (apply only: the undo)
-  SCRIPT apply inserted=<n> updated=<n> skipped_changed=<n> / done
-Undo: DELETE the `op=insert` old_ids; UPDATE each `op=update` row back to prev_new_id (as tp_owner).
-Returns 1 when the map is missing or (apply) a role switch is refused.
+  match rule=<r> n=<n> / unmatched reason=<r> n=<n> / plan insert=<n> unmatched=<n> / expected_after dangling=<n>
+  SCRIPT restore op=insert old_id=<id>        (apply only: the undo)
+  SCRIPT apply inserted=<n> skipped_changed=<n> / done
+Undo: DELETE the `op=insert` old_ids (as tp_owner / master: `tripplanner` has no DELETE).
+Returns 1 when the map is missing or (apply) the role switch is refused.
 """
 
 import json
@@ -71,7 +74,10 @@ PLACES_SQL = """
       FROM geo.tour_place
 """
 DAYS_SQL = "SELECT source_id, day_index, anchor_norm FROM geo.tour_day WHERE anchor_norm IS NOT NULL"
-BUILDS_SQL = "SELECT source_id, country, built_at, counts->'id_redirects' AS redirects FROM geo.tour_build"
+BUILDS_SQL = "SELECT source_id, country, built_at FROM geo.tour_build"
+# CIS 285 (D1): the redirects every rebuild writes since. Read only when the table exists.
+REDIRECTS_EXISTS_SQL = "SELECT to_regclass('geo.component_redirect') IS NOT NULL"
+REDIRECTS_SQL = "SELECT old_id::text AS old_id, new_id::text AS new_id FROM geo.component_redirect"
 LIVE_SQL = "SELECT source_id FROM catalog.v_tour"
 VERSIONS_SQL = """
     SELECT rt.tour_id::text AS tour_id, COALESCE(rt.source_group_id, rt.tour_id)::text AS source_id, rt.country
@@ -88,16 +94,13 @@ ATOMS_SQL = """
       LEFT JOIN acp_shared.place_card pc ON pc.card_id = apc.card_id
      WHERE a.tour_id = ANY($1::uuid[]) AND a.itinerary_day IS NOT NULL
        AND a.place IS NOT NULL AND btrim(a.place) <> ''
+     ORDER BY a.tour_id, a.itinerary_day, btrim(a.place), apc.card_id NULLS FIRST, a.atom_id
 """
 NAME_NORM_SQL = "SELECT x AS name, geo.name_norm(x) AS norm FROM unnest($1::text[]) AS x"
 INSERT_SQL = """
     INSERT INTO tripplanner.component_id_map (old_id, new_id, matched_by)
     VALUES ($1::uuid, $2::uuid, $3)
     ON CONFLICT (old_id) DO NOTHING
-"""
-UPDATE_SQL = """
-    UPDATE tripplanner.component_id_map SET new_id = $3::uuid, matched_by = $4
-     WHERE old_id = $1::uuid AND new_id = $2::uuid
 """
 
 
@@ -169,26 +172,47 @@ def old_locality(atom, sid, norm, anchors, towns):
     return None
 
 
+# Fields of an old place that are not part of the uuid5 key: atoms of different versions (or two atoms of one day)
+# mint the same id and can still disagree on them.
+AMBIGUOUS_FIELDS = ("link", "destination_id", "card_id", "locality")
+
+
 def rederive_index(atoms, versions, countries, norm, anchors=None):
     """{uuid5 id: old place} over every atom of every version of each source, all 8 activities, every country.
 
     atoms: ATOMS_SQL rows; versions: {tour_id: source_id}; countries: {source_id: {country_norm}};
-    norm: {text: name_norm}; anchors: {(source_id, day): geo.tour_day.anchor_norm} (the old place's locality)."""
-    idx = {}
+    norm: {text: name_norm}; anchors: {(source_id, day): geo.tour_day.anchor_norm} (the old place's locality).
+
+    Deterministic and conservative: every atom with the same (source, day, spelling, country, activity) mints the
+    same id, yet two versions (or a card on one atom only) can disagree on the link name, destination, place card or
+    locality. Such a field becomes None (an unknown value counts as a different one) — never the first row's value —
+    so the destination / card / link-name rules skip it and a generic name stays unmatched (generic_no_locality)
+    instead of being guessed. The result does not depend on the row order (ATOMS_SQL is ordered too)."""
+    seen = {}
     towns = day_towns(atoms, norm)
     for a in atoms:
         sid = versions.get(a["tour_id"])
         spelling = norm.get(a["place"]) or ""
         if not sid or not spelling:
             continue
-        locality = old_locality(a, sid, norm, anchors, towns)
+        vals = {"link": norm.get(a.get("card_name")) or spelling, "destination_id": a.get("destination_id"),
+                "card_id": a.get("card_id"), "locality": old_locality(a, sid, norm, anchors, towns)}
         for country in sorted(countries.get(sid) or ()):
             for act in ACTIVITIES:
                 cid = component_uuid(sid, a["day"], spelling, country, act)
-                idx.setdefault(cid, {"source_id": sid, "day": int(a["day"]), "spelling": spelling,
-                                     "link": norm.get(a.get("card_name")) or spelling, "country_norm": country,
-                                     "activity": act, "destination_id": a.get("destination_id"),
-                                     "card_id": a.get("card_id"), "locality": locality})
+                if cid not in seen:
+                    seen[cid] = ({"source_id": sid, "day": int(a["day"]), "spelling": spelling,
+                                  "country_norm": country, "activity": act},
+                                 {f: set() for f in AMBIGUOUS_FIELDS})
+                for f in AMBIGUOUS_FIELDS:
+                    seen[cid][1][f].add(vals[f])
+    idx = {}
+    for cid, (base, fields) in seen.items():
+        rec = dict(base)
+        for f in AMBIGUOUS_FIELDS:
+            rec[f] = next(iter(fields[f])) if len(fields[f]) == 1 else None
+        rec["conflicts"] = tuple(f for f in AMBIGUOUS_FIELDS if len(fields[f]) > 1)
+        idx[cid] = rec
     return idx
 
 
@@ -273,27 +297,26 @@ def pick_target(old, rows, generic=frozenset()):
     return None, None, "generic_no_locality" if skipped_generic else "no_same_place"
 
 
-def follow_redirect(cid, redirects, has_row):
-    """The redirect target of `cid` that has a geo.tour_place row (chains followed), else None."""
-    seen = set()
+def resolve_chain(raw, id_map, redirects):
+    """[raw, …, end]: TripPlanner's resolution (component_ids.id_map): at each hop the id map first, else the CIS
+    redirect; at most REDIRECT_HOPS hops; a cycle stops at the last id before it repeats."""
+    path = [raw]
     for _ in range(REDIRECT_HOPS):
-        nxt = redirects.get(cid)
-        if not nxt or nxt in seen:
-            return None
-        if nxt in has_row:
-            return nxt
-        seen.add(nxt)
-        cid = nxt
-    return None
+        cur = path[-1]
+        nxt = id_map.get(cur) or redirects.get(cur)
+        if not nxt or nxt == cur or nxt in path:
+            break
+        path.append(nxt)
+    return path
 
 
 def plan(raw_ids, id_map, places, redirects, rederived, snapshots, live, generic=None):
-    """Decisions for every raw id whose current id has no tour_place row.
+    """Decisions for every raw id whose chain ends at an id with no tour_place row.
 
-    Returns {raw: decision} where decision = {raw, cur, in_map, source_id, recovered_by, target, rule,
-    matched_by, reason}. Pure: the tests drive it directly. places: PLACES_SQL rows with `spelling` (name_norm of
-    the itinerary name) added; redirects: {old: new} over every source; live: set of live source ids; generic:
-    generic_names() (default: computed from places)."""
+    Returns {raw: decision} where decision = {raw, end, path, in_map, source_id, recovered_by, target, rule,
+    matched_by, reason}. Several raw ids can share one `end` (one insert fixes them all). Pure: the tests drive it
+    directly. places: PLACES_SQL rows with `spelling` (name_norm of the itinerary name) added; redirects: {old: new}
+    of geo.component_redirect; live: set of live source ids; generic: generic_names() (default: from places)."""
     generic = generic_names(places) if generic is None else generic
     by_id = {r["component_id"]: r for r in places}
     by_source = {}
@@ -301,22 +324,28 @@ def plan(raw_ids, id_map, places, redirects, rederived, snapshots, live, generic
         by_source.setdefault(r["source_id"], []).append(r)
     decisions = {}
     for raw in sorted(raw_ids):
-        cur = id_map.get(raw, raw)
-        if cur in by_id:
+        path = resolve_chain(raw, id_map, redirects)
+        end = path[-1]
+        if end in by_id:
             continue
-        d = {"raw": raw, "cur": cur, "in_map": raw in id_map, "source_id": None, "recovered_by": None,
+        d = {"raw": raw, "end": end, "path": path, "in_map": raw in id_map, "source_id": None, "recovered_by": None,
              "target": None, "rule": None, "matched_by": None, "reason": None}
-        t = follow_redirect(cur, redirects, by_id)
-        if t:
-            d.update(source_id=by_id[t]["source_id"], recovered_by="redirect", target=t, rule="redirect",
-                     matched_by="name")
+        if end in id_map:                     # the chain stopped on a cycle: never add a second row for `end`
+            d["reason"] = "chain_cycle"
             decisions[raw] = d
             continue
-        old = rederived.get(cur) or rederived.get(raw)
-        d["recovered_by"] = "rederived" if old else None
+        old = None
+        for cid in reversed(path):            # the id nearest the end that we can recover
+            old = rederived.get(cid)
+            if old is not None:
+                d["recovered_by"] = "rederived"
+                break
         if old is None:
-            old = snapshots.get(cur) or snapshots.get(raw)
-            d["recovered_by"] = "snapshot" if old else None
+            for cid in reversed(path):
+                old = snapshots.get(cid)
+                if old is not None:
+                    d["recovered_by"] = "snapshot"
+                    break
         if old is None:
             d["reason"] = "not_recoverable"
             decisions[raw] = d
@@ -334,6 +363,20 @@ def plan(raw_ids, id_map, places, redirects, rederived, snapshots, live, generic
             d.update(target=target, rule=rule, matched_by="destination" if rule == "destination" else "name")
         decisions[raw] = d
     return decisions
+
+
+def inserts_of(decisions):
+    """(one (end, target, matched_by) per chain end, the ends left out). Raw ids that reach one end agree whenever the
+    end itself is recoverable; when only earlier ids of their chains are and those point at different targets, the
+    end is left out (never guessed; printed as unmatched reason=conflicting_end). Deterministic."""
+    by_end, bad = {}, set()
+    for d in sorted(decisions.values(), key=lambda x: x["raw"]):
+        if not d["target"]:
+            continue
+        got = by_end.setdefault(d["end"], (d["end"], d["target"], d["matched_by"]))
+        if got[1] != d["target"]:
+            bad.add(d["end"])
+    return [v for k, v in sorted(by_end.items()) if k not in bad], bad
 
 
 def _bucket(pin, d, map_from, built_at):
@@ -363,12 +406,14 @@ async def main(conn):
     days = await _pinned_fetch(conn, DAYS_SQL)
     builds = await _pinned_fetch(conn, BUILDS_SQL)
     live = {r["source_id"] for r in await _pinned_fetch(conn, LIVE_SQL)}
+    has_redirects = bool(await conn.fetchval(REDIRECTS_EXISTS_SQL))
+    redirect_rows = await _pinned_fetch(conn, REDIRECTS_SQL) if has_redirects else []
     id_map = {r["old_id"]: r["new_id"] for r in id_rows}
     map_from = min((r["created_at"] for r in id_rows), default=None)
-    redirects, built_at, countries = {}, {}, {}
+    redirects = {r["old_id"]: r["new_id"] for r in redirect_rows}
+    built_at, countries = {}, {}
     for b in builds:
         built_at[b["source_id"]] = b["built_at"]
-        redirects.update(_payload(b["redirects"]) if b["redirects"] else {})
     sources = sorted({b["source_id"] for b in builds} | {r["source_id"] for r in places})
     versions = {r["tour_id"]: r["source_id"] for r in await _pinned_fetch(conn, VERSIONS_SQL, AA_TENANT_ID, sources)}
     atoms = await _pinned_fetch(conn, ATOMS_SQL, [uuid.UUID(t) for t in sorted(versions)]) if versions else []
@@ -393,15 +438,16 @@ async def main(conn):
     snapshots = snapshot_index(drafts, norm)
     out("inputs", events=len(events), pins=len(pins), raw_ids=len(raw_ids), map_rows=len(id_map),
         map_fill_from=map_from, place_rows=len(places), built_sources=len(builds), live_sources=len(live),
-        redirect_entries=len(redirects), versions=len(versions), atoms=len(atoms), rederivable_ids=len(rederived),
-        snapshot_entries=len(snapshots), generic_names=len(generic_names(places)),
-        rederived_with_locality=sum(1 for v in rederived.values() if v.get("locality")))
+        redirect_table=has_redirects, redirect_entries=len(redirects), versions=len(versions), atoms=len(atoms),
+        rederivable_ids=len(rederived), snapshot_entries=len(snapshots), generic_names=len(generic_names(places)),
+        rederived_with_locality=sum(1 for v in rederived.values() if v.get("locality")),
+        rederived_conflicting=sum(1 for v in rederived.values() if v.get("conflicts")))
     for k, n in sorted(keys.items()):
         out("payload_keys", event="add_component", keys=k, n=n)
 
     decisions = plan(raw_ids, id_map, places, redirects, rederived, snapshots, live)
     has_row = {r["component_id"] for r in places}
-    dangling = [p for p in pins if id_map.get(p["raw"], p["raw"]) not in has_row]
+    dangling = [p for p in pins if resolve_chain(p["raw"], id_map, redirects)[-1] not in has_row]
     out("pins", pins=len(pins), trips=len({p["trip_id"] for p in pins}), dangling=len(dangling),
         trips_with_dangling=len({p["trip_id"] for p in dangling}))
     origin, timing, snap = {}, {}, {"with_snapshot": 0, "without_snapshot": 0}
@@ -416,7 +462,7 @@ async def main(conn):
         origin[o] = origin.get(o, 0) + 1
         b = _bucket(p, d, map_from, built_at)
         timing[b] = timing.get(b, 0) + 1
-        has = (d["cur"] in snapshots) or (p["raw"] in snapshots)
+        has = any(c in snapshots for c in d["path"])
         snap["with_snapshot" if has else "without_snapshot"] += 1
     out("dangling_origin", **origin)
     out("dangling_timing", **timing)
@@ -433,16 +479,17 @@ async def main(conn):
         out("match", rule=r, n=n)
     for r, n in sorted(reasons.items()):
         out("unmatched", reason=r, n=n)
-    inserts = [d for d in decisions.values() if d["target"] and not d["in_map"]]
-    updates = [d for d in decisions.values() if d["target"] and d["in_map"]]
-    fixed = {d["raw"] for d in inserts + updates}
-    out("plan", insert=len(inserts), update=len(updates), unmatched=len(decisions) - len(fixed))
-    out("expected_after", dangling=sum(1 for p in dangling if p["raw"] not in fixed))
+    inserts, conflicting = inserts_of(decisions)
+    fixed_ends = {e for e, _, _ in inserts}
+    if conflicting:
+        out("unmatched", reason="conflicting_end", n=len(conflicting))
+    out("plan", insert=len(inserts), unmatched=sum(1 for d in decisions.values() if d["end"] not in fixed_ends))
+    out("expected_after", dangling=sum(1 for p in dangling if decisions[p["raw"]]["end"] not in fixed_ends))
 
-    if READ_ONLY or not fixed:
+    if READ_ONLY or not inserts:
         out("done", read_only=READ_ONLY, written=0)
         return 0
-    inserted = updated = skipped = 0
+    inserted = skipped = 0
     async with conn.transaction():
         try:
             async with conn.transaction():
@@ -451,32 +498,15 @@ async def main(conn):
             out("refuse", what="set_role", role="tripplanner", error=type(e).__name__)
             return 1
         await conn.execute("SET LOCAL ROLE tripplanner")
-        for d in inserts:
-            status = await conn.execute(INSERT_SQL, d["raw"], d["target"], d["matched_by"])
+        for end, target, matched_by in inserts:
+            status = await conn.execute(INSERT_SQL, end, target, matched_by)
             if str(status).endswith(" 1"):
                 inserted += 1
-                out("restore", op="insert", old_id=d["raw"])
+                out("restore", op="insert", old_id=end)
             else:
                 skipped += 1
-    if updates:
-        async with conn.transaction():
-            try:
-                async with conn.transaction():
-                    await conn.execute("SET LOCAL ROLE tp_owner")
-            except Exception as e:  # noqa: BLE001
-                out("refuse", what="set_role", role="tp_owner", error=type(e).__name__, updates_left=len(updates))
-                out("apply", inserted=inserted, updated=0, skipped_changed=skipped)
-                return 1
-            await conn.execute("SET LOCAL ROLE tp_owner")
-            for d in updates:
-                status = await conn.execute(UPDATE_SQL, d["raw"], d["cur"], d["target"], d["matched_by"])
-                if str(status).endswith(" 1"):
-                    updated += 1
-                    out("restore", op="update", old_id=d["raw"], prev_new_id=d["cur"])
-                else:
-                    skipped += 1
-    out("apply", inserted=inserted, updated=updated, skipped_changed=skipped)
-    out("done", read_only=READ_ONLY, written=inserted + updated)
+    out("apply", inserted=inserted, skipped_changed=skipped)
+    out("done", read_only=READ_ONLY, written=inserted)
     return 0
 
 
