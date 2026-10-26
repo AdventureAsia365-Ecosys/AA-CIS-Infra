@@ -32,7 +32,7 @@ Needs bk-026 applied (refuses otherwise). Local test: `python3 db/scripts/aa682_
 
 import json
 
-MODE = "apply"
+MODE = "dry_run"
 
 SCRIPT_NAME = "aa682_s1_live_check"
 ACTOR = f"script:{SCRIPT_NAME}"

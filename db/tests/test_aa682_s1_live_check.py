@@ -25,7 +25,7 @@ class ShapeTest(unittest.TestCase):
         self.assertEqual(rm.script_errors((ROOT / PATH).read_text(encoding="utf-8"), PATH), [])
 
     def test_merged_as_a_dry_run(self):
-        self.assertEqual(script.MODE, "apply")  # one-shot apply PR (S252); the follow-up PR sets it back to dry_run
+        self.assertEqual(script.MODE, "dry_run")
         self.assertFalse(getattr(script, "READ_ONLY", False))  # it writes, then rolls back
 
     def test_no_app_imports(self):
