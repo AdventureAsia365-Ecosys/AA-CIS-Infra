@@ -293,6 +293,39 @@ SELECT (SELECT count(*) FROM tripplanner.sessions) AS sessions,
 """
 
 
+# ── 13. AA-990 (D1/D3): the same two pin checks, resolved the way TripPlanner resolves since AA-990
+# (backend/shared/component_ids.id_map): at each hop tripplanner.component_id_map first, else geo.component_redirect
+# (CIS 285, when applied), at most 5 hops, a cycle stops before the id repeats. Lines `pins_chain` /
+# `tp_pins_served_chain`; the one-hop lines above stay as the S252 baseline.
+_ONE_HOP_R = """r AS (
+  SELECT p.trip_id, COALESCE(m.new_id::text, p.cid) AS cid
+    FROM pins p
+    LEFT JOIN tripplanner.component_id_map m ON m.old_id::text = p.cid)"""
+_REDIRECT_EDGES = """
+  UNION ALL
+  SELECT old_id::text, new_id::text, 2 FROM geo.component_redirect"""
+_CHAIN_R = """edges AS (
+  SELECT old_id::text AS o, new_id::text AS n, 1 AS pri FROM tripplanner.component_id_map{redirects}),
+hop AS (
+  SELECT DISTINCT ON (o) o, n FROM edges ORDER BY o, pri),
+walk AS (
+  SELECT p.trip_id, p.cid AS raw, p.cid, 0 AS depth, ARRAY[p.cid] AS path FROM pins p
+  UNION ALL
+  SELECT w.trip_id, w.raw, h.n, w.depth + 1, w.path || h.n
+    FROM walk w JOIN hop h ON h.o = w.cid
+   WHERE w.depth < 5 AND NOT h.n = ANY (w.path)),
+r AS (
+  SELECT DISTINCT ON (trip_id, raw) trip_id, cid FROM walk ORDER BY trip_id, raw, depth DESC)"""
+REDIRECTS_EXISTS_SQL = "SELECT to_regclass('geo.component_redirect') IS NOT NULL"
+
+
+def chain_sql(one_hop_sql: str, with_redirects: bool) -> str:
+    """PINS_SQL / TP_PINS_SERVED_SQL with the one-hop `r` replaced by the TripPlanner chain walk."""
+    assert _ONE_HOP_R in one_hop_sql
+    chain = _CHAIN_R.format(redirects=_REDIRECT_EDGES if with_redirects else "")
+    return one_hop_sql.replace("WITH pins AS", "WITH RECURSIVE pins AS", 1).replace(_ONE_HOP_R, chain, 1)
+
+
 def _line(tag: str, row) -> None:
     print(f"SCRIPT {tag} {json.dumps(dict(row), default=str, sort_keys=True)}", flush=True)
 
@@ -335,6 +368,10 @@ async def main(conn):
     await _safe("tp_retired", _pinned(conn, TP_RETIRED_SQL))
     await _safe("tp_purge", _pinned(conn, TP_PURGE_SQL, many=True))
     await _safe("tp_own_rows", conn.fetchrow(TP_OWN_ROWS_SQL))
+    with_redirects = bool(await conn.fetchval(REDIRECTS_EXISTS_SQL))
+    print(f"SCRIPT chain_sources component_id_map=t component_redirect={'t' if with_redirects else 'f'}", flush=True)
+    await _safe("pins_chain", conn.fetchrow(chain_sql(PINS_SQL, with_redirects)))
+    await _safe("tp_pins_served_chain", _pinned(conn, chain_sql(TP_PINS_SERVED_SQL, with_redirects)))
     return 0
 
 

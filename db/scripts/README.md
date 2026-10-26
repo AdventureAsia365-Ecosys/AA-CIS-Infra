@@ -238,3 +238,19 @@ so no endpoint is written here. One-off: delete these four files once the drill 
 TripPlanner pins (`add_component` events through `tripplanner.component_id_map`) that no longer resolve to a
 `geo.tour_place` row (`dangling`) or sit on replaced atoms, and the CRM AA catalog cache per served state (live
 `catalog.v_tour.content_hash` matches, tours not cached yet, pass state). Counts and timestamps only; always returns 0.
+
+`aa990_component_id_backfill.py` (AA-990, S252, one-time): re-points TripPlanner saved pins whose component a CIS
+place rebuild dropped BEFORE CIS 285 (since 285 every rebuild writes `geo.component_redirect` and TripPlanner follows
+it). Resolves each pin the way TripPlanner does (`component_id_map` first, else `geo.component_redirect`, ≤ 5 hops,
+cycle-safe); for a chain that ends without a `geo.tour_place` row it recovers the old place by recomputing the uuid5
+component ids from every atom of the tour (soft-deleted ones included; a field the versions disagree on is left
+unknown, never the first row's value), else from the `trip_drafts` projection, then picks the current component of the
+same place (destination → card → spelling + country → link name, nearest day; a generic name such as "Night Market" by
+spelling / link name only in the same locality, else unmatched `generic_no_locality`). INSERT only, as `tripplanner`
+(the AA-847 path; tp-017 keeps the map insert-only): one row per chain end. Merged with `READ_ONLY = True` = DRY RUN
+(counts: dangling by origin, timing, snapshot availability, recovery source, rule, unmatched reason, planned inserts,
+expected dangling after); a one-line PR sets `READ_ONLY = False` to apply, which prints `SCRIPT restore op=insert …`
+lines (component ids only) as the undo. Idempotent.
+
+`aa990_reader_checks.py` also prints `pins_chain` / `tp_pins_served_chain`: the same pin checks resolved the
+TripPlanner way (chain over both sources); compare them with the one-hop `pins` / `tp_pins_served` baseline.
