@@ -274,7 +274,7 @@ jobs:
         run: python -m pip install --quiet asyncpg==0.30.0
 
       - name: Fetch the live dump of this run
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: db-schema-dump-${{ github.run_id }}
           path: .
@@ -358,7 +358,7 @@ jobs:
           python-version: "3.12"
 
       - name: Fetch the dump of this run
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: db-schema-dump-${{ github.run_id }}
           path: .
@@ -366,7 +366,7 @@ jobs:
       - name: Fetch the drift report of this run (absent when the drift job failed)
         if: needs.drift.outputs.fingerprint != ''
         continue-on-error: true
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: db-schema-drift-${{ github.run_id }}
           path: .
