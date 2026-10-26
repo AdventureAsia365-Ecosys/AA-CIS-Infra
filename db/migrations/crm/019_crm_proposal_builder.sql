@@ -31,13 +31,15 @@
 --   2. crm.proposal_day (base template): day_no 0 (Before you go, R38 slot) .. 90, title, place, tz (IANA, R33),
 --      notes_enc (vault DEK, pii:free_text), source_day_id (the copied day).
 --   3. crm.option_block (base template): one choice on a day: title, type (lodging | activity | transport | meal |
---      guide | other), sort_order, client_may_swap (default true, Fix E1), default_option_id (one of its own options).
+--      guide | other), sort_order, client_may_swap (default true, Fix E1), default_option_id (one of its own options),
+--      default_pinned (the agent chose the default by hand: the Stage 2 tier rule no longer moves it).
 --   4. crm.option (base template): source aa | agency; title; tier (lodging: matches the Stage 2 accommodation tier);
 --      sell_amount (the client's price for the party, the proposal currency); net_amount (cost; for an AA item the live
 --      quote's b2b_price; conf:commercial, margin-bearing: never sent to the assistant or a client page); pay_on_arrival
 --      (R25: listed, never charged); choose_later_allowed (agency items only, Fix B9); availability instant |
 --      on_request | sold_out (AA, from the quote) | agency (the agent books); the AA reference (tour, Booking
---      component, departure, quote id and validity, the public "from" price and below_from_price: warn only).
+--      component, departure, nights (a hotel room always has them; re-sent on every re-quote), quote id and validity,
+--      the public "from" price and below_from_price: warn only).
 --   5. crm.option_rule (base template): requires | excludes between two options of the proposal (the Advanced section).
 --   6. crm.selection (base template): the client's current pick per block of a published or sent version (chosen_by
 --      client | agent | carried), choose_later (CRM-21b). Written only while the version is published or sent (CRM36).
@@ -241,6 +243,7 @@ CREATE TABLE IF NOT EXISTS crm.option_block (
     type              TEXT NOT NULL DEFAULT 'other',
     client_may_swap   BOOLEAN NOT NULL DEFAULT true,
     default_option_id UUID,
+    default_pinned    BOOLEAN NOT NULL DEFAULT false,
     source_block_id   UUID,
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
     created_by        TEXT NOT NULL DEFAULT COALESCE(NULLIF(current_setting('app.actor', true), ''), current_user::text),
@@ -265,6 +268,7 @@ CREATE TABLE IF NOT EXISTS crm.option_block (
 );
 CREATE INDEX IF NOT EXISTS option_block_day_idx ON crm.option_block (tenant_id, proposal_day_id, sort_order);
 CREATE INDEX IF NOT EXISTS option_block_trip_idx ON crm.option_block (tenant_id, trip_id);
+COMMENT ON COLUMN crm.option_block.default_pinned IS 'AA-949 (crm-019): true once the agent chose the default by hand; the Stage 2 tier rule (spec rule 5) then never moves it. Cleared with the default';
 COMMENT ON TABLE crm.option_block IS 'AA-949 (crm-019; design v3 group E, WF-4 Fix E1): one choice on a day of a builder proposal: its options, the default (default_option_id, one of its own options; Stage 2 rule 5 sets it from the accommodation tier for lodging), client_may_swap (default true: the client may swap to another option on C-03). A block with one option is a fixed item. Changes only while the proposal is a draft (CRM35)';
 
 -- ── 4. crm.option ────────────────────────────────────────────────────────────────────────────────
@@ -290,6 +294,7 @@ CREATE TABLE IF NOT EXISTS crm.option (
     aa_component_id          TEXT,
     aa_component_kind        TEXT,
     aa_departure_id          TEXT,
+    aa_nights                SMALLINT,
     aa_quote_id              TEXT,
     aa_quote_valid_until     TIMESTAMPTZ,
     aa_from_price            NUMERIC(14, 2),
@@ -318,6 +323,7 @@ CREATE TABLE IF NOT EXISTS crm.option (
         AND sell_amount >= 0 AND (net_amount IS NULL OR net_amount >= 0)
         AND availability IN ('instant', 'on_request', 'sold_out', 'agency')
         AND (aa_from_price IS NULL OR aa_from_price >= 0)
+        AND (aa_nights IS NULL OR aa_nights BETWEEN 1 AND 60)
     ),
     CONSTRAINT option_source_chk CHECK (
         (source = 'aa' AND agency_supplier_id IS NULL AND NOT choose_later_allowed
@@ -327,10 +333,11 @@ CREATE TABLE IF NOT EXISTS crm.option (
          AND aa_component_id ~ '^[A-Za-z0-9:_.-]{1,64}$'
          AND aa_component_kind IN ('trip_plan', 'hotel_room', 'transfer', 'guide', 'activity', 'entrance', 'meal')
          AND coalesce(aa_departure_id, 'x') ~ '^[A-Za-z0-9:_.-]{1,64}$'
+         AND (aa_component_kind <> 'hotel_room' OR aa_nights IS NOT NULL)
          AND coalesce(aa_quote_id, 'x') ~ '^[A-Za-z0-9:_.-]{1,64}$')
         OR (source = 'agency' AND availability = 'agency'
-            AND num_nonnulls(aa_tour_source_id, aa_component_id, aa_component_kind, aa_departure_id, aa_quote_id,
-                             aa_quote_valid_until, aa_from_price, below_from_price) = 0)
+            AND num_nonnulls(aa_tour_source_id, aa_component_id, aa_component_kind, aa_departure_id, aa_nights,
+                             aa_quote_id, aa_quote_valid_until, aa_from_price, below_from_price) = 0)
     ),
     CONSTRAINT option_trash_chk CHECK (
         (deleted_at IS NULL) = (deleted_by IS NULL) AND (deleted_at IS NULL) = (purge_after IS NULL)
@@ -343,6 +350,7 @@ CREATE INDEX IF NOT EXISTS option_supplier_idx ON crm.option (tenant_id, agency_
 COMMENT ON TABLE crm.option IS 'AA-949 (crm-019; design v3 group E, F3, WF-4): one option of a block: an agency item (source agency, optional supplier, availability agency = the agent books; choose later allowed, Fix B9) or an AA item (source aa: an AA tour and Booking component priced by a live Booking quote in the proposal currency: net_amount = the quote''s b2b_price, availability from the quote, the public "from" price and below_from_price: a warning, never a block). sell_amount = the client''s price for the party. pay_on_arrival (R25) is listed and never charged. Changes only while the proposal is a draft, except availability on a published / sent version (CRM35)';
 COMMENT ON COLUMN crm.option.net_amount IS 'conf:commercial — AA-949 (crm-019): the cost of the option for the party in the proposal currency (AA: the live quote''s b2b_price). Margin-bearing (design §4.6): never sent to the assistant role or to a client page';
 COMMENT ON COLUMN crm.option.tier IS 'AA-949 (crm-019; spec rule 5): the accommodation tier of a lodging option; an option whose tier is the lead''s Stage 2 accommodation_tier becomes its block''s default';
+COMMENT ON COLUMN crm.option.aa_nights IS 'AA-949 (crm-019): the nights an AA item was quoted for (required for a hotel_room, as in AA-947 aa_lines); every re-quote (Refresh AA prices) sends them again so the net stays the price of the same stay';
 COMMENT ON COLUMN crm.option.source_option_id IS 'AA-949 (crm-019): the option of the version this one was copied from (lineage: a client pick on that option carries over at publish; no foreign key, the source may be erased)';
 
 DO $$
