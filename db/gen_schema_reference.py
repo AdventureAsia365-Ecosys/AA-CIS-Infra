@@ -358,6 +358,14 @@ def cell(value) -> str:
     return text.replace("|", "\\|").replace("\n", " ")
 
 
+def code_span(text: str) -> str:
+    """Inline Markdown code for any text: a fence one backtick longer than the longest run inside it."""
+    longest = max((len(m) for m in re.findall(r"`+", text)), default=0)
+    fence = "`" * (longest + 1)
+    pad = " " if text.startswith("`") or text.endswith("`") else ""
+    return f"{fence}{pad}{text}{pad}{fence}"
+
+
 def short_index(definition: str) -> str:
     m = INDEX_RE.match(definition)
     return f"{'UNIQUE ' if m.group(1) else ''}{m.group(2)}" if m else definition
@@ -483,7 +491,9 @@ def render(d: dict, source: Optional[str] = None, drift: Optional[dict] = None,
             for c in r["constraints"]:
                 if c["type"] == "c":
                     nv = " NOT VALID" if not c.get("validated", True) else ""
-                    w(f"- check `{c['constraint']}`: {c['definition']}{nv}")
+                    # As a code span: link checkers (lychee) skip code, and a CHECK can hold URL-like text such as
+                    # '^(arn:|s3://)' (CIS 284), which broke Docs lint on the dump PR (S252).
+                    w(f"- check `{c['constraint']}`: {code_span(c['definition'])}{nv}")
             for g in r["grants"]:
                 w(f"- grant `{g['grantee']}`: {g['privileges'].replace(',', ', ')}")
             by_grant: dict = defaultdict(list)
