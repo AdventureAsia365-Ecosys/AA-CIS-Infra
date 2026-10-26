@@ -51,7 +51,7 @@ Returns 1 when the map is missing or (apply) the role switch is refused.
 import json
 import uuid
 
-READ_ONLY = False  # S252 apply after the dry run (insert=6, unmatched=101); revert to True after the run
+READ_ONLY = True
 
 AA_TENANT_ID = "00000000-0000-0000-0000-000000000001"
 # CIS services/places/names.py COMPONENT_NS and components.ACTIVITIES — never change (ids would not match).
