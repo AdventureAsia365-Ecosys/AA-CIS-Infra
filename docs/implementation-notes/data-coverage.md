@@ -34,3 +34,6 @@ over HTTP (`crm.ops.v1` 1.3): nothing here for schema `crm`.
   (tripplanner, booking; every job table idle), then the `bot/db-schema-reference` PR.
 - `db/tests`: 747 passed; `test_schema_reference.py::CodeSpanTest::test_code_span_wraps_backticks_and_url_like_text`
   fails locally on main too (unrelated to this change).
+- Fix round 2: the tripplanner copy re-taken byte-identical after tp-020 gained the UUID shape filter on the pins
+  view and the `pin_events_invalid_id` totals metric (no grant or probe change: same three views); branch rebased on
+  `origin/main` (crm-020 copy, Content studio edge).
