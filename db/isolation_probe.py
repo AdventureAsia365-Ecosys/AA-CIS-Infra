@@ -174,6 +174,11 @@ CONSUMER_GRANTS = (
     ("cis_app", ("USAGE", "SELECT"), "booking.v_supply_media", "bk-023"),
     ("cis_app", ("USAGE", "SELECT"), "booking.v_supply_outbox", "bk-023"),
     ("cis_app", ("USAGE", "SELECT"), "tripplanner.v_ops_traffic_daily", "tp-015"),
+    ("cis_app", ("USAGE", "SELECT"), "booking.v_ops_data_totals", "bk-025"),       # AA-992 data coverage views
+    ("cis_app", ("USAGE", "SELECT"), "booking.v_ops_trip_plan_keys", "bk-025"),
+    ("cis_app", ("USAGE", "SELECT"), "tripplanner.v_ops_data_totals", "tp-020"),
+    ("cis_app", ("USAGE", "SELECT"), "tripplanner.v_ops_pin_components", "tp-020"),
+    ("cis_app", ("USAGE", "SELECT"), "tripplanner.v_ops_component_id_map", "tp-020"),
 )
 CONSUMER_GRANT_KEYS = tuple(sorted({k for *_, k in CONSUMER_GRANTS if k}))
 # DB Migrate mode=set-password (X1 S12) ends with COMMENT ON ROLE <role> IS '<marker> <UTC time> …': a
