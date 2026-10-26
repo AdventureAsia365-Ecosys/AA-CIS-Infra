@@ -103,3 +103,45 @@ def test_client_checks_hit_the_client_host(monkeypatch, capsys):
     )
     assert chk.main(["--cf-domain", "x.cloudfront.net", "--only", "client-root,client-no-api"]) == 0
     assert seen == [("go-dev.lumiguides.it.com", "/"), ("go-dev.lumiguides.it.com", "/crm/health")]
+
+
+# ── AA-979: the agency host (portal.) on its own distribution ────────────────────────────────────────────────────────
+
+AGENCY_TF = (REPO / "accounts" / "aa365" / "crm_agency_edge.tf").read_text(encoding="utf-8")
+
+
+def _agency_rule(name: str) -> str:
+    return AGENCY_TF.split(f'resource "aws_lb_listener_rule" "{name}"', 1)[1].split("\nresource ", 1)[0]
+
+
+def test_agency_rules_forward_to_the_expected_target_groups():
+    assert "aws_lb_target_group.crm_api.arn" in _agency_rule("crm_agency_api")
+    assert "aws_lb_target_group.crm_portal.arn" in _agency_rule("crm_agency_studio")
+    assert "aws_lb_target_group.crm_portal.arn" in _agency_rule("crm_agency_studio_x")
+    assert "aws_lb_target_group.crm_web.arn" in _agency_rule("crm_agency_default")
+    assert '"/portal*"' in _agency_rule("crm_agency_studio")  # also the /portal-assets/ prefix
+
+
+def test_agency_cutover_switch_changes_the_dns_target_only():
+    record = AGENCY_TF.split('resource "aws_route53_record" "crm_agency" {', 1)[1].split("\nresource ", 1)[0]
+    assert 'type    = "CNAME"' in record
+    assert "var.crm_agency_live ?" in record
+    assert 'from = aws_route53_record.vercel_frontend["portal"]' in AGENCY_TF
+    # The certificate is the wildcard (CAA of the Vercel CNAME target does not allow Amazon before the flip).
+    assert "domain_name       = local.crm_agency_wildcard" in AGENCY_TF
+
+
+def test_studio_page_pass_and_fail():
+    assert chk.eval_studio_page(200, b"<html>Sign in</html>", "text/html; charset=utf-8")[0]
+    assert chk.eval_studio_page(503, b"<html>503</html>", "text/html")[0]
+    assert not chk.eval_studio_page(404, b"<html>not found</html>", "text/html")[0]
+    assert not chk.eval_studio_page(307, b"", "text/plain", "/auth/refresh")[0]
+    assert not chk.eval_studio_page(503, b'{"status":"not_ready"}', "application/json")[0]
+
+
+def test_agency_checks_only_with_the_flag():
+    ns = chk.argparse.Namespace(host="h", client_host="c", cf_domain="cf", api_host="a", booking_host="b",
+                                agency_host="portal.example", agency_cf_domain="", agency_direct=False)
+    assert not any(k.startswith("agency-") for k in chk.build_checks(ns))
+    ns.agency_cf_domain = "d111.cloudfront.net"
+    assert {"agency-root", "agency-studio", "agency-legal", "agency-crm", "agency-raw-cf"} <= set(chk.build_checks(ns))

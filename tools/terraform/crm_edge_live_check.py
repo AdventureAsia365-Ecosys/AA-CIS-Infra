@@ -28,6 +28,17 @@ Checks (exit 1 if any fails):
                                                 never the partner 404
   api-plain      https://<api host>/health      200 (CIS unchanged)
   booking        https://<booking host>/booking/health   200 (Booking unchanged)
+
+AA-979 (CRM-P2b), only with --agency-cf-domain: the agency host portal.<zone> on its OWN distribution. Before the
+cutover portal. still resolves to Vercel, so these checks connect to the distribution's *.cloudfront.net name and send
+SNI + Host = the agency host (the `curl --resolve` of the runbook, without a DNS change); after the cutover pass the
+same flag, or --agency-direct to go through DNS.
+  agency-root     https://<agency host>/              the CRM web (crm_agency_default): 307 to /auth/refresh, or 503
+  agency-studio   https://<agency host>/tenant-login  the Content studio (crm_agency_studio): 200 HTML page, or 503
+                                                     (aa-crm-dev-portal at desired 0); never the web's 404 page
+  agency-legal    https://<agency host>/terms         the Content studio (crm_agency_studio_x): 200 HTML, or 503
+  agency-crm      https://<agency host>/crm/health    the CRM API (crm_agency_api): 200, or 503
+  agency-raw-cf   https://<agency cf domain>/         403 "Forbidden" from the deny rule (no Host rule matches)
 """
 from __future__ import annotations
 
@@ -49,6 +60,25 @@ def get(host: str, path: str, headers: dict | None = None, timeout: float = 30.0
     conn = http.client.HTTPSConnection(host, timeout=timeout)
     try:
         conn.request("GET", path, headers={"User-Agent": "aa935-edge-live-check", **(headers or {})})
+        resp = conn.getresponse()
+        return resp.status, resp.read(), resp.getheader("Content-Type", "") or "", resp.getheader("Location", "") or ""
+    finally:
+        conn.close()
+
+
+def get_via(connect_host: str, host: str, path: str, headers: dict | None = None,
+            timeout: float = 30.0) -> tuple[int, bytes, str, str]:
+    """Like :func:`get`, but the TCP / TLS connection goes to ``connect_host`` while SNI, certificate check and the
+    Host header use ``host`` (the agency host before its DNS points at CloudFront: the wildcard certificate covers it)."""
+    import socket
+    import ssl
+
+    ctx = ssl.create_default_context()
+    raw = socket.create_connection((connect_host, 443), timeout=timeout)
+    conn = http.client.HTTPSConnection(host, timeout=timeout, context=ctx)
+    conn.sock = ctx.wrap_socket(raw, server_hostname=host)
+    try:
+        conn.request("GET", path, headers={"User-Agent": "aa979-edge-live-check", "Host": host, **(headers or {})})
         resp = conn.getresponse()
         return resp.status, resp.read(), resp.getheader("Content-Type", "") or "", resp.getheader("Location", "") or ""
     finally:
@@ -111,6 +141,15 @@ def eval_client_public(status: int, body: bytes, ctype: str, location: str = "")
     return False, f"status={status} type={ctype or '-'} body={body[:60]!r}"
 
 
+def eval_studio_page(status: int, body: bytes, ctype: str, location: str = "") -> Result:
+    """AA-979: a studio path on the agency host reaches the Content studio (a 200 HTML page), not the web."""
+    if status == 200 and ctype.split(";")[0].strip() == "text/html" and b"aa-partner-web-404" not in body:
+        return True, "status=200 page (Content studio answers)"
+    if status == 503 and _json(body) is None:
+        return True, "status=503 (rule matched, aa-crm-dev-portal has no healthy task: desired 0?)"
+    return False, f"status={status} type={ctype or '-'} location={location or '-'} body={body[:60]!r}"
+
+
 def eval_raw_cf(status: int, body: bytes, ctype: str, location: str = "") -> Result:
     return status == 403 and body.strip() == b"Forbidden", f"status={status} body={body[:40]!r}"
 
@@ -128,7 +167,7 @@ def build_checks(args: argparse.Namespace) -> dict[str, Callable[[], Result]]:
     def run(evaluate, host, path, headers=None):
         return lambda: evaluate(*get(host, path, headers))
 
-    return {
+    checks = {
         "partner-root": run(eval_web_default, args.host, "/"),
         "partner-path": run(eval_web_default, args.host, "/crmx"),
         "web-healthz": run(eval_web_healthz, args.host, "/healthz"),
@@ -141,6 +180,20 @@ def build_checks(args: argparse.Namespace) -> dict[str, Callable[[], Result]]:
         "api-plain": run(eval_ok, args.api_host, "/health"),
         "booking": run(eval_ok, args.booking_host, "/booking/health"),
     }
+    if args.agency_cf_domain:
+        def agency(evaluate, path):
+            if args.agency_direct:
+                return lambda: evaluate(*get(args.agency_host, path))
+            return lambda: evaluate(*get_via(args.agency_cf_domain, args.agency_host, path))
+
+        checks.update({
+            "agency-root": agency(eval_web_default, "/"),
+            "agency-studio": agency(eval_studio_page, "/tenant-login"),
+            "agency-legal": agency(eval_studio_page, "/terms"),
+            "agency-crm": agency(eval_crm_health, "/crm/health"),
+            "agency-raw-cf": run(eval_raw_cf, args.agency_cf_domain, "/"),
+        })
+    return checks
 
 
 def main(argv=None) -> int:
@@ -150,6 +203,12 @@ def main(argv=None) -> int:
     ap.add_argument("--cf-domain", required=True, help="the distribution's *.cloudfront.net name (terraform output crm_edge)")
     ap.add_argument("--api-host", default="api-cis.lumiguides.it.com")
     ap.add_argument("--booking-host", default="api-booking.lumiguides.it.com")
+    ap.add_argument("--agency-host", default="portal.lumiguides.it.com", help="AA-979 agency host (CRM + studio)")
+    ap.add_argument("--agency-cf-domain", default="",
+                    help="AA-979: the crm_agency distribution's *.cloudfront.net name (terraform output crm_agency_edge); "
+                         "enables the agency checks, connecting to it with SNI / Host = --agency-host")
+    ap.add_argument("--agency-direct", action="store_true",
+                    help="AA-979: after the cutover, reach --agency-host through DNS instead of --agency-cf-domain")
     ap.add_argument("--only", default="", help="comma list of check names")
     args = ap.parse_args(argv)
     only = {c for c in args.only.split(",") if c}

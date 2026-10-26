@@ -223,6 +223,24 @@ accounts/
                                    (AA-935; was a fixed 404 JSON); rule "any X-AA-Origin -> 403"; ACM us-east-1 + alias records.
                                    The AA-931 hello spike service aa-crm-dev-spike was removed in AA-933 (S248
                                    d16); live check tools/terraform/crm_edge_live_check.py)
+    crm_agency_edge.tf            (AA-979 CRM-P2b, the AGENCY host portal.lumiguides.it.com, CRM + Content studio:
+                                   its own CloudFront distribution on the same VPC origin and X-AA-Origin secret, a
+                                   WILDCARD ACM us-east-1 certificate (the Vercel CNAME's CAA forbids a portal.-only
+                                   one before the flip), ALB rules crm_agency_api (/crm, /crm/*) -> CRM API,
+                                   crm_agency_studio (/portal*, /api/*, /tenant-login*) and crm_agency_studio_x
+                                   (/terms, /privacy, /assets/*) -> Content studio, crm_agency_default -> CRM web; the
+                                   portal. CNAME (moved from custom_domains.tf vercel_frontend["portal"], TTL 60 in
+                                   the window) whose target is the ONE cutover switch var.crm_agency_live: false =
+                                   Vercel aa-cis-portal (rollback target), true = this distribution; no ECS deploy)
+    crm_portal.tf                 (AA-979 CRM-P2b, the Content studio runtime: ECR aa-crm-<env>-portal (IMMUTABLE),
+                                   secret shell crm/<env>/portal-sentry-dsn (mapped with crm_portal_sentry_enabled),
+                                   execution role (portal repo, CRM log group stream prefix portal, reads crm/<env>/web
+                                   for the shared session key only + the Sentry DSN), task role (ECS Exec only), task
+                                   definition Fargate ARM64 port 3000 (API_URL = CIS API, PORTAL_HOSTS,
+                                   PORTAL_PUBLIC_ORIGIN, PORTAL_API_KEY_SIGNIN), target group aa-crm-<env>-portal-tg
+                                   (/healthz), service aa-crm-<env>-portal (desired 0, FARGATE_SPOT), three alarms;
+                                   security group sg-crm-portal (ALB -> 3000, egress 443 only); deployed by the CRM
+                                   deploy role (crm_app.tf))
     crm_client_edge.tf            (AA-936 CRM-08, the AA-Partner CLIENT host go-dev.lumiguides.it.com: its own
                                    CloudFront distribution + ACM us-east-1 + alias records on the same VPC origin
                                    and X-AA-Origin secret; ALB rules crm_client_public (Host + secret +
