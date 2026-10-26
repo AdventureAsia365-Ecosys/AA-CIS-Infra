@@ -20,8 +20,10 @@ earlier id of its chain) was is recovered from, in order:
              country spelling the source used — the exact id the build minted from those atoms. Deterministic: when
              atoms of different versions mint the same id but disagree on the link name, destination, place card or
              locality, that field is None (never the first row's value; the locality then counts as unknown);
-  snapshot   the trip_drafts projection entry of that id (name, source_tour_id, source_day_index, destination_id;
-             AA-986 L6 keeps it for a stop the catalog stopped serving).
+  snapshot   the trip_drafts projection entries of that id (name, source_tour_id, source_day_index, destination_id;
+             AA-986 L6 keeps it for a stop the catalog stopped serving). Deterministic the same way: a field the
+             entries of one id disagree on is None; a disagreeing tour makes the id not recoverable from the
+             snapshots (reason=snapshot_conflict when nothing else recovers the chain).
 Then the current component of the same source for the same place (the CIS rule, components.redirect_dropped):
 destination → place card → spelling + country → link name + country, any day, the nearest day first, then the same
 activity, then the smaller id. A generic name ('Night Market', 'Old Quarter': a different place in every town) matches
@@ -67,7 +69,9 @@ EVENTS_SQL = """
      WHERE event_type IN ('add_component', 'remove_component', 'reorder')
 """
 MAP_SQL = "SELECT old_id::text AS old_id, new_id::text AS new_id, created_at FROM tripplanner.component_id_map"
-DRAFTS_SQL = "SELECT itinerary FROM tripplanner.trip_drafts"
+# Ordered (trip_drafts is UPDATEd by the app: the heap order can change between the dry run and the apply).
+# snapshot_index does not depend on the order anyway (disagreeing entries of one id become None).
+DRAFTS_SQL = "SELECT id::text AS id, updated_at, itinerary FROM tripplanner.trip_drafts ORDER BY updated_at, id"
 PLACES_SQL = """
     SELECT component_id::text AS component_id, source_id, day_index, name, name_norm, country_norm, locality_norm,
            activity, destination_id::text AS destination_id, place_card_id::text AS place_card_id
@@ -216,9 +220,19 @@ def rederive_index(atoms, versions, countries, norm, anchors=None):
     return idx
 
 
+SNAPSHOT_FIELDS = ("source_id", "day", "spelling", "destination_id")
+
+
 def snapshot_index(drafts, norm):
-    """{component id: old place} from the trip_drafts projections (the newest entry with a tour key wins)."""
-    idx = {}
+    """{component id: old place} from the trip_drafts projections (DRAFTS_SQL rows).
+
+    Deterministic and conservative, like rederive_index: AA-989 keeps an id across a respelling, so two drafts can
+    hold a different name, day or destination for the same id. Every entry of an id (with a tour key) is gathered;
+    a field the entries disagree on (a missing value counts as a different one) becomes None — never the last row's
+    value. A disagreeing source_id makes the id not recoverable from the snapshots (source_id None; plan() skips it
+    and reports reason=snapshot_conflict when nothing else recovers the chain); a disagreeing spelling turns the
+    spelling / link-name rules off for it ('' → no key). The result does not depend on the row order."""
+    seen = {}
     for d in drafts:
         raw = _payload(d["itinerary"]) if not isinstance(d["itinerary"], list) else d["itinerary"]
         if not isinstance(raw, list):
@@ -226,13 +240,20 @@ def snapshot_index(drafts, norm):
         for e in raw:
             if not isinstance(e, dict) or not e.get("component_id") or not e.get("source_tour_id"):
                 continue
-            spelling = norm.get(e.get("name")) or ""
             day = e.get("source_day_index")
-            idx[str(e["component_id"])] = {
-                "source_id": str(e["source_tour_id"]), "day": int(day) if day is not None else None,
-                "spelling": spelling, "link": spelling, "country_norm": None, "activity": None,
-                "destination_id": str(e["destination_id"]) if e.get("destination_id") else None, "card_id": None,
-                "locality": None}
+            vals = {"source_id": str(e["source_tour_id"]), "day": int(day) if day is not None else None,
+                    "spelling": norm.get(e.get("name")) or "",
+                    "destination_id": str(e["destination_id"]) if e.get("destination_id") else None}
+            fields = seen.setdefault(str(e["component_id"]), {f: set() for f in SNAPSHOT_FIELDS})
+            for f in SNAPSHOT_FIELDS:
+                fields[f].add(vals[f])
+    idx = {}
+    for cid, fields in seen.items():
+        one = {f: next(iter(v)) if len(v) == 1 else None for f, v in fields.items()}
+        spelling = one["spelling"] or ""
+        idx[cid] = {"source_id": one["source_id"], "day": one["day"], "spelling": spelling, "link": spelling,
+                    "country_norm": None, "activity": None, "destination_id": one["destination_id"], "card_id": None,
+                    "locality": None, "conflicts": tuple(f for f in SNAPSHOT_FIELDS if len(fields[f]) > 1)}
     return idx
 
 
@@ -340,14 +361,19 @@ def plan(raw_ids, id_map, places, redirects, rederived, snapshots, live, generic
             if old is not None:
                 d["recovered_by"] = "rederived"
                 break
+        snapshot_conflict = False
         if old is None:
             for cid in reversed(path):
-                old = snapshots.get(cid)
-                if old is not None:
+                snap = snapshots.get(cid)
+                if snap is not None and snap.get("source_id") is None:
+                    snapshot_conflict = True      # drafts disagree on the tour: never pick one of them
+                    continue
+                if snap is not None:
+                    old = snap
                     d["recovered_by"] = "snapshot"
                     break
         if old is None:
-            d["reason"] = "not_recoverable"
+            d["reason"] = "snapshot_conflict" if snapshot_conflict else "not_recoverable"
             decisions[raw] = d
             continue
         d["source_id"] = old["source_id"]
@@ -441,7 +467,8 @@ async def main(conn):
         redirect_table=has_redirects, redirect_entries=len(redirects), versions=len(versions), atoms=len(atoms),
         rederivable_ids=len(rederived), snapshot_entries=len(snapshots), generic_names=len(generic_names(places)),
         rederived_with_locality=sum(1 for v in rederived.values() if v.get("locality")),
-        rederived_conflicting=sum(1 for v in rederived.values() if v.get("conflicts")))
+        rederived_conflicting=sum(1 for v in rederived.values() if v.get("conflicts")),
+        snapshot_conflicting=sum(1 for v in snapshots.values() if v.get("conflicts")))
     for k, n in sorted(keys.items()):
         out("payload_keys", event="add_component", keys=k, n=n)
 

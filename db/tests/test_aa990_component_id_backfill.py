@@ -171,6 +171,57 @@ class PureTest(unittest.TestCase):
     def test_atoms_sql_is_ordered(self):
         self.assertIn("ORDER BY a.tour_id, a.itinerary_day", mod.ATOMS_SQL)
 
+    def test_drafts_sql_is_ordered(self):
+        self.assertIn("ORDER BY updated_at, id", mod.DRAFTS_SQL)
+
+    @staticmethod
+    def _drafts():
+        # AA-989 kept id C across a respelling: an older draft holds the old spelling / day / destination of C, a
+        # newer one the new; id X is held by drafts of two different tours; id K by one draft only.
+        old = {"id": "d1", "updated_at": T0, "itinerary": [
+            {"component_id": "C", "source_tour_id": "S", "source_day_index": 2, "name": "Hoi An Old Town",
+             "destination_id": "d-hoian"},
+            {"component_id": "X", "source_tour_id": "S", "source_day_index": 1, "name": "Da Nang"}]}
+        new = {"id": "d2", "updated_at": T2, "itinerary": json.dumps([
+            {"component_id": "C", "source_tour_id": "S", "source_day_index": 3, "name": "Hoi An Ancient Town"},
+            {"component_id": "X", "source_tour_id": "OTHER", "source_day_index": 1, "name": "Da Nang"},
+            {"component_id": "K", "source_tour_id": "S", "source_day_index": 1, "name": "Da Nang",
+             "destination_id": "d-danang"}])}
+        norm = {k: _norm(k) for k in ("Hoi An Old Town", "Hoi An Ancient Town", "Da Nang")}
+        return [old, new], norm
+
+    def test_snapshot_index_is_order_independent_and_conservative(self):
+        drafts, norm = self._drafts()
+        fwd = mod.snapshot_index(drafts, norm)
+        rev = mod.snapshot_index(list(reversed(drafts)), norm)
+        self.assertEqual(fwd, rev)                                      # both row orders: the same index
+        c = fwd["C"]                                                    # same tour, disagreeing fields: None
+        self.assertEqual((c["source_id"], c["day"], c["spelling"], c["link"], c["destination_id"]),
+                         ("S", None, "", "", None))
+        self.assertEqual(set(c["conflicts"]), {"day", "spelling", "destination_id"})
+        self.assertIsNone(fwd["X"]["source_id"])                        # two tours: not recoverable
+        self.assertEqual(fwd["X"]["conflicts"], ("source_id",))
+        k = fwd["K"]
+        self.assertEqual((k["source_id"], k["day"], k["spelling"], k["destination_id"], k["conflicts"]),
+                         ("S", 1, "da nang", "d-danang", ()))
+
+    def test_snapshot_plan_is_the_same_for_both_draft_orders(self):
+        drafts, norm = self._drafts()
+        places = [dict(_place("NEWC", "S", 3, "Hoi An Ancient Town", dest="d-hoian"), spelling="hoi an ancient town"),
+                  dict(_place("NEWK", "S", 1, "Da Nang", dest="d-danang"), spelling="da nang")]
+        plans = []
+        for order in (drafts, list(reversed(drafts))):
+            idx = mod.snapshot_index(order, norm)
+            plans.append(mod.plan({"C", "X", "K"}, {}, places, {}, {}, idx, {"S", "OTHER"}))
+        self.assertEqual(plans[0], plans[1])
+        d = plans[0]
+        # C: spelling and destination disagree → no key to match on, never the last draft's spelling
+        self.assertEqual((d["C"]["recovered_by"], d["C"]["target"], d["C"]["reason"]),
+                         ("snapshot", None, "no_same_place"))
+        self.assertEqual((d["X"]["recovered_by"], d["X"]["target"], d["X"]["reason"]),
+                         (None, None, "snapshot_conflict"))
+        self.assertEqual((d["K"]["target"], d["K"]["rule"]), ("NEWK", "destination"))
+
     def test_plan_inserts_at_the_chain_end_and_reasons(self):
         rebuilt = mod.component_uuid("S", 2, "hoi an ancient town", "vietnam", "local_immersion")
         places = [dict(_place("NEW", "S", 2, "Hoi An Ancient Town"), spelling="hoi an ancient town"),
