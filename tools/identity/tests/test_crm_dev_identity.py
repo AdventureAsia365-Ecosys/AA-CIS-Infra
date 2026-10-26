@@ -265,3 +265,78 @@ def test_invitee_entries_are_mailbox_recipients():
     users = tool.load_users()
     invitees = [u for u in users if u.invitee]
     assert [(u.agency, u.role) for u in invitees] == [("harbour-lights", "assistant")]
+
+
+# ── AA-979: Content studio invitees (phase 2 re-enrolment E2E) ───────────────────────────────────
+
+STUDIO_VIEWER = "e2e-test-studio-viewer@e2e-mail.lumiguides.it.com"
+STUDIO_EDITOR = "e2e-test-studio-editor@e2e-mail.lumiguides.it.com"
+CRM_INVITEE = "e2e-test-crm-harbour-lights-assistant@e2e-mail.lumiguides.it.com"
+
+
+def test_studio_invitees_are_viewer_and_editor_and_mailbox_recipients():
+    invitees = tool.load_studio_invitees()
+    assert [u.role for u in invitees] == ["viewer", "editor"]
+    assert [u.email("lumiguides.it.com") for u in invitees] == [STUDIO_VIEWER, STUDIO_EDITOR]
+    mailbox = (REPO / "accounts" / "aa365" / "e2e_mailbox.tf").read_text(encoding="utf-8")
+    assert 'for u in local.e2e_crm_file.studio_invitees : "e2e-test-studio-${u.role}@${local.e2e_mail_domain}"' in mailbox
+    # The recipients reach the e2e-cognito rule (prefix inbound/), never the A10b admin rule.
+    rule = re.search(r'resource "aws_ses_receipt_rule" "e2e_cognito" \{.*?\n\}', mailbox, re.S).group(0)
+    assert "local.e2e_studio_invitee_recipients" in rule
+    admin_rule = re.search(r'resource "aws_ses_receipt_rule" "e2e_cognito_admin" \{.*?\n\}', mailbox, re.S)
+    assert admin_rule is None or "studio" not in admin_rule.group(0)
+
+
+def test_studio_invitees_never_collide_with_the_crm_users():
+    zone = "lumiguides.it.com"
+    crm = {u.email(zone) for u in tool.load_users()}
+    studio = {u.email(zone) for u in tool.load_studio_invitees()}
+    assert not crm & studio
+
+
+@pytest.mark.parametrize("entries", [[{"role": "owner"}], [{"role": "viewer"}, {"role": "viewer"}], [{"role": "Viewer"}]])
+def test_bad_studio_invitees_are_refused(tmp_path, entries):
+    bad = tmp_path / "users.json"
+    bad.write_text(json.dumps({"users": [], "studio_invitees": entries}))
+    with pytest.raises(tool.ToolError):
+        tool.load_studio_invitees(bad)
+
+
+def test_a_file_without_studio_invitees_has_none(tmp_path):
+    plain = tmp_path / "users.json"
+    plain.write_text(json.dumps({"users": [{"agency": "x", "role": "owner"}]}))
+    assert tool.load_studio_invitees(plain) == []
+
+
+def test_e2e_users_never_creates_a_studio_invitee(capsys):
+    idp, sm = FakePartnerIdp(), FakeSm()
+    assert run(["--pool", "partner", "e2e-users", "--apply", "--write-secrets"], idp, sm) == 0
+    capsys.readouterr()
+    assert not any("e2e-test-studio-" in c["Username"] for c in idp.created)
+
+
+@pytest.mark.parametrize("target,email", [("studio-viewer", STUDIO_VIEWER), ("studio-editor", STUDIO_EDITOR)])
+def test_invitee_reset_of_one_studio_role_deletes_only_that_one(capsys, target, email):
+    idp = FakePartnerIdp({STUDIO_VIEWER: "sub-v", STUDIO_EDITOR: "sub-e", CRM_INVITEE: "sub-inv"})
+    assert run(["--pool", "partner", "invitee-reset", "--invitee", target], idp) == 0
+    assert lines(capsys) == [{"email": email, "action": "would_delete"}] and idp.deleted == []
+    assert run(["--pool", "partner", "invitee-reset", "--invitee", target, "--apply"], idp) == 0
+    assert lines(capsys) == [{"email": email, "action": "deleted"}]
+    assert idp.deleted == [{"studio-viewer": "sub-v", "studio-editor": "sub-e"}[target]]
+
+
+def test_invitee_reset_default_is_still_the_crm_invitee_only(capsys):
+    idp = FakePartnerIdp({STUDIO_VIEWER: "sub-v", CRM_INVITEE: "sub-inv"})
+    assert run(["--pool", "partner", "invitee-reset", "--apply"], idp) == 0
+    assert lines(capsys) == [{"email": CRM_INVITEE, "action": "deleted"}] and idp.deleted == ["sub-inv"]
+
+
+def test_invitee_reset_of_an_absent_studio_invitee(capsys):
+    assert run(["--pool", "partner", "invitee-reset", "--invitee", "studio-editor", "--apply"], FakePartnerIdp()) == 0
+    assert lines(capsys) == [{"email": STUDIO_EDITOR, "action": "absent"}]
+
+
+def test_invitee_reset_refuses_an_unknown_target(capsys):
+    with pytest.raises(SystemExit):
+        run(["--pool", "partner", "invitee-reset", "--invitee", "studio-owner"], FakePartnerIdp())
+    capsys.readouterr()

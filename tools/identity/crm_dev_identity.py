@@ -29,9 +29,12 @@ Subcommands
       every CRM web user out). Values are never printed: the output is the secret name, the version id and which
       keys changed.
 
-  invitee-reset [--apply]   (AA-939, --pool partner)
-      Deletes the partner-pool account of each "invitee" entry of crm_e2e_users.json (AdminDeleteUser), so the
-      one-off timed E2E "invite -> active" (AA-Partner e2e/tests/invite.spec.ts) starts from no account.
+  invitee-reset [--invitee crm|studio-viewer|studio-editor] [--apply]   (AA-939, --pool partner)
+      Deletes the partner-pool account of an invitee address (AdminDeleteUser) so its next invitation starts from no
+      account. --invitee crm (the default): each "invitee" entry of crm_e2e_users.json, for the one-off timed E2E
+      "invite -> active" (AA-Partner e2e/tests/invite.spec.ts). --invitee studio-<role> (AA-979): the Content studio
+      invitee e2e-test-studio-<role>@ of "studio_invitees", for the phase 2 re-enrolment E2E; one role at a time, so
+      the viewer's account survives the editor's reset.
 
 Account guard: refuses to run unless the credentials are for --expect-account. Pools and clients are found by NAME
 (aa-<pool>-<env>; clients aa-external-<env>-cis-portal / aa-partner-<env>-partner-web), never by a pasted id.
@@ -61,6 +64,9 @@ DEFAULT_ENV = "dev"
 DEFAULT_ZONE = "lumiguides.it.com"
 USERS_FILE = Path(__file__).resolve().parent / "crm_e2e_users.json"
 ROLES = frozenset({"owner", "agent", "assistant"})
+# AA-979: the Content studio roles of the studio invitees (the invitation grants them; never owner).
+STUDIO_ROLES = ("viewer", "editor")
+INVITEE_TARGETS = ("crm", *(f"studio-{r}" for r in STUDIO_ROLES))
 SESSION_SECRET_BYTES = 48
 POOLS = ("external", "partner")
 WEB_CLIENT = {"external": "cis-portal", "partner": "partner-web"}
@@ -83,6 +89,39 @@ class E2eUser:
 
     def secret_name(self, env: str) -> str:
         return f"crm/{env}/e2e-test-crm/{self.agency}-{self.role}"
+
+
+@dataclass(frozen=True)
+class StudioInvitee:
+    """AA-979: a Content studio invitee (a CIS tenant member, no CRM agency): a mailbox recipient only."""
+
+    role: str
+
+    def email(self, zone: str) -> str:
+        return f"e2e-test-studio-{self.role}@e2e-mail.{zone}"
+
+
+def load_studio_invitees(path: Path = USERS_FILE) -> list[StudioInvitee]:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    invitees = [StudioInvitee(u["role"]) for u in data.get("studio_invitees", [])]
+    for u in invitees:
+        if u.role not in STUDIO_ROLES:
+            raise ToolError(f"bad studio invitee in {path.name}: {u}")
+    if len({u.role for u in invitees}) != len(invitees):
+        raise ToolError(f"duplicate studio invitee in {path.name}")
+    return invitees
+
+
+def invitee_emails(target: str, *, zone: str, path: Path = USERS_FILE) -> list[str]:
+    """The invitee address(es) one invitee-reset run deletes: ``crm`` = the "invitee" entries of the CRM users,
+    ``studio-<role>`` = that one studio invitee."""
+    if target == "crm":
+        return [u.email(zone) for u in load_users(path) if u.invitee]
+    role = target.removeprefix("studio-")
+    found = [u.email(zone) for u in load_studio_invitees(path) if u.role == role]
+    if target not in INVITEE_TARGETS or not found:
+        raise ToolError(f"no invitee {target!r} in {path.name}")
+    return found
 
 
 def load_users(path: Path = USERS_FILE) -> list[E2eUser]:
@@ -309,12 +348,9 @@ def e2e_users(
     return rows
 
 
-def invitee_reset(idp: Any, pool_id: str, users: Iterable[E2eUser], *, zone: str, apply: bool) -> list[dict[str, Any]]:
+def invitee_reset(idp: Any, pool_id: str, emails: Iterable[str], *, apply: bool) -> list[dict[str, Any]]:
     rows = []
-    for u in users:
-        if not u.invitee:
-            continue
-        email = u.email(zone)
+    for email in emails:
         found = find_user(idp, pool_id, email)
         if found is None:
             rows.append({"email": email, "action": "absent"})
@@ -413,6 +449,8 @@ def build_parser() -> argparse.ArgumentParser:
     w.add_argument("--apply", action="store_true")
     w.add_argument("--rotate-session", action="store_true")
     r = sub.add_parser("invitee-reset", help="delete the invitee account(s) before the timed invitation E2E (--pool partner)")
+    r.add_argument("--invitee", choices=INVITEE_TARGETS, default="crm",
+                   help="crm (default): the CRM invitation E2E address; studio-<role>: one AA-979 studio invitee")
     r.add_argument("--apply", action="store_true")
     return p
 
@@ -436,7 +474,7 @@ def main(argv: list[str] | None = None, clients: tuple[Any, Any, Any] | None = N
         if args.command == "invitee-reset":
             if args.pool != "partner":
                 raise ToolError("invitee-reset works on the partner pool only (--pool partner)")
-            for row in invitee_reset(idp, pool_id, load_users(), zone=args.zone, apply=args.apply):
+            for row in invitee_reset(idp, pool_id, invitee_emails(args.invitee, zone=args.zone), apply=args.apply):
                 out(row)
             return 0
         if args.command == "e2e-users":
