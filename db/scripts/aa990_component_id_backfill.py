@@ -21,7 +21,13 @@ has no geo.tour_place row, the place it was is recovered from, in order:
              AA-986 L6 keeps it for a stop the catalog stopped serving).
 Then the current component of the same source for the same place (the CIS rule, components.redirect_dropped):
 destination → place card → spelling + country → link name + country, any day, the nearest day first, then the same
-activity, then the smaller id. Writes (apply only):
+activity, then the smaller id. A generic name ('Night Market', 'Old Quarter': a different place in every town) matches
+by spelling or link name only in the same locality: generic = the candidate row's locality_norm is set (its link name
+was generic when CIS built it) or the name is the link name of any generic row in geo.tour_place (Infra has no copy of
+CIS is_generic_name). The old place's locality: its place card's locality, else the current geo.tour_day.anchor_norm of
+that day (the overnight town CIS used as the locality) ONLY when an atom of the same old version on that day names
+that town (place or card locality) — a rewrite that moved the days must not hand the old stop the new town. With no
+locality the id stays unmatched (reason=generic_no_locality), never guessed by day distance. Writes (apply only):
   INSERT (raw, target, matched_by) as `tripplanner` (the AA-847 fill path, ON CONFLICT DO NOTHING) for a raw id the
   map does not know;
   UPDATE new_id (and matched_by) as `tp_owner` for a raw id the map knows (a pre-flip TripPlanner id whose catalog id
@@ -48,6 +54,7 @@ COMPONENT_NS = uuid.UUID("6f1d6a52-0f7c-5a12-9b1e-712a71200000")
 ACTIVITIES = ("trekking", "cultural_heritage", "wildlife_nature", "water_activities", "culinary",
               "wellness_relaxation", "adventure_sport", "local_immersion")
 RULES = ("destination", "card", "spelling", "link_name")
+NO_LOCALITY = "?"          # CIS geo.tour_place.locality_norm of a generic name with no locality
 REDIRECT_HOPS = 5
 
 ID_MAP_EXISTS_SQL = "SELECT to_regclass('tripplanner.component_id_map') IS NOT NULL"
@@ -59,10 +66,11 @@ EVENTS_SQL = """
 MAP_SQL = "SELECT old_id::text AS old_id, new_id::text AS new_id, created_at FROM tripplanner.component_id_map"
 DRAFTS_SQL = "SELECT itinerary FROM tripplanner.trip_drafts"
 PLACES_SQL = """
-    SELECT component_id::text AS component_id, source_id, day_index, name, name_norm, country_norm, activity,
-           destination_id::text AS destination_id, place_card_id::text AS place_card_id
+    SELECT component_id::text AS component_id, source_id, day_index, name, name_norm, country_norm, locality_norm,
+           activity, destination_id::text AS destination_id, place_card_id::text AS place_card_id
       FROM geo.tour_place
 """
+DAYS_SQL = "SELECT source_id, day_index, anchor_norm FROM geo.tour_day WHERE anchor_norm IS NOT NULL"
 BUILDS_SQL = "SELECT source_id, country, built_at, counts->'id_redirects' AS redirects FROM geo.tour_build"
 LIVE_SQL = "SELECT source_id FROM catalog.v_tour"
 VERSIONS_SQL = """
@@ -73,7 +81,8 @@ VERSIONS_SQL = """
 # Every atom ever written for those versions (soft-deleted included): the ids of earlier builds came from them.
 ATOMS_SQL = """
     SELECT a.tour_id::text AS tour_id, a.itinerary_day AS day, btrim(a.place) AS place,
-           apc.card_id::text AS card_id, pc.display_name AS card_name, pc.destination_id::text AS destination_id
+           apc.card_id::text AS card_id, pc.display_name AS card_name, pc.locality AS card_locality,
+           pc.destination_id::text AS destination_id
       FROM acp_contract.tour_atoms a
       LEFT JOIN acp_shared.atom_place_card apc ON apc.atom_id = a.atom_id
       LEFT JOIN acp_shared.place_card pc ON pc.card_id = apc.card_id
@@ -137,24 +146,49 @@ def pins_and_ids(events):
     return list(pins.values()), ids, keys
 
 
-def rederive_index(atoms, versions, countries, norm):
+def day_towns(atoms, norm):
+    """{(tour_id, day): {name_norm of every place and card locality the version's atoms of that day name}}."""
+    towns = {}
+    for a in atoms:
+        got = towns.setdefault((a["tour_id"], int(a["day"])), set())
+        for v in (a.get("place"), a.get("card_locality")):
+            if v and norm.get(v):
+                got.add(norm[v])
+    return towns
+
+
+def old_locality(atom, sid, norm, anchors, towns):
+    """The locality CIS gave this atom's place at the old build, or None when unknown: the card's locality, else the
+    current overnight town of that day (anchors: {(source_id, day): anchor_norm}) when an atom of the SAME old version
+    on that day names it (towns, from day_towns)."""
+    if atom.get("card_locality") and norm.get(atom["card_locality"]):
+        return norm[atom["card_locality"]]
+    town = (anchors or {}).get((sid, int(atom["day"])))
+    if town and town in (towns or {}).get((atom["tour_id"], int(atom["day"])), ()):
+        return town
+    return None
+
+
+def rederive_index(atoms, versions, countries, norm, anchors=None):
     """{uuid5 id: old place} over every atom of every version of each source, all 8 activities, every country.
 
     atoms: ATOMS_SQL rows; versions: {tour_id: source_id}; countries: {source_id: {country_norm}};
-    norm: {text: name_norm}."""
+    norm: {text: name_norm}; anchors: {(source_id, day): geo.tour_day.anchor_norm} (the old place's locality)."""
     idx = {}
+    towns = day_towns(atoms, norm)
     for a in atoms:
         sid = versions.get(a["tour_id"])
         spelling = norm.get(a["place"]) or ""
         if not sid or not spelling:
             continue
+        locality = old_locality(a, sid, norm, anchors, towns)
         for country in sorted(countries.get(sid) or ()):
             for act in ACTIVITIES:
                 cid = component_uuid(sid, a["day"], spelling, country, act)
                 idx.setdefault(cid, {"source_id": sid, "day": int(a["day"]), "spelling": spelling,
                                      "link": norm.get(a.get("card_name")) or spelling, "country_norm": country,
                                      "activity": act, "destination_id": a.get("destination_id"),
-                                     "card_id": a.get("card_id")})
+                                     "card_id": a.get("card_id"), "locality": locality})
     return idx
 
 
@@ -173,7 +207,8 @@ def snapshot_index(drafts, norm):
             idx[str(e["component_id"])] = {
                 "source_id": str(e["source_tour_id"]), "day": int(day) if day is not None else None,
                 "spelling": spelling, "link": spelling, "country_norm": None, "activity": None,
-                "destination_id": str(e["destination_id"]) if e.get("destination_id") else None, "card_id": None}
+                "destination_id": str(e["destination_id"]) if e.get("destination_id") else None, "card_id": None,
+                "locality": None}
     return idx
 
 
@@ -186,10 +221,34 @@ def _key(kind, *, spelling, link, country, destination, card):
     return f"{name}|{country or '*'}" if name else None
 
 
-def pick_target(old, rows):
-    """(component id, rule) of the current component of the same place, or (None, None). rows: the source's
-    geo.tour_place rows. Same rule order and tie-break as CIS components.redirect_dropped."""
+def generic_names(places):
+    """Link names CIS built as generic (locality_norm set) anywhere in the catalog: Infra's stand-in for CIS
+    is_generic_name when it judges an old spelling / link name."""
+    return {r.get("name_norm") for r in places if r.get("locality_norm") and r.get("name_norm")}
+
+
+def _locality_ok(kind, old, row, generic):
+    """(match allowed, skipped because the old locality is unknown). Destination / card: always allowed."""
+    if kind not in ("spelling", "link_name"):
+        return True, False
+    name = old.get("spelling") if kind == "spelling" else old.get("link")
+    is_generic = name in generic or (kind == "link_name" and bool(row.get("locality_norm")))
+    if not is_generic:
+        return True, False
+    loc = old.get("locality")
+    row_loc = row.get("locality_norm") or ""
+    if not loc:
+        return False, True
+    return bool(row_loc) and row_loc != NO_LOCALITY and row_loc == loc, False
+
+
+def pick_target(old, rows, generic=frozenset()):
+    """(component id, rule, reason) of the current component of the same place; (None, None, reason) when none, reason
+    'generic_no_locality' when only a same-named generic component was found and the old locality is unknown, else
+    'no_same_place'. rows: the source's geo.tour_place rows; generic: generic_names(). Same rule order, locality rule
+    and tie-break as CIS components.redirect_dropped."""
     day = old.get("day")
+    skipped_generic = False
     for kind in RULES:
         k = _key(kind, spelling=old.get("spelling"), link=old.get("link"), country=old.get("country_norm"),
                  destination=old.get("destination_id"), card=old.get("card_id"))
@@ -200,14 +259,18 @@ def pick_target(old, rows):
             rk = _key(kind, spelling=r["spelling"], link=r.get("name_norm") or "",
                       country=r.get("country_norm") if old.get("country_norm") else None,
                       destination=r.get("destination_id"), card=r.get("place_card_id"))
-            if rk == k:
+            if rk != k:
+                continue
+            ok, unknown = _locality_ok(kind, old, r, generic)
+            skipped_generic = skipped_generic or unknown
+            if ok:
                 cands.append(r)
         if cands:
             best = min(cands, key=lambda r: (abs(int(r["day_index"]) - day) if day is not None else 0,
                                              r.get("activity") != old.get("activity"), int(r["day_index"]),
                                              r["component_id"]))
-            return best["component_id"], kind
-    return None, None
+            return best["component_id"], kind, None
+    return None, None, "generic_no_locality" if skipped_generic else "no_same_place"
 
 
 def follow_redirect(cid, redirects, has_row):
@@ -224,12 +287,14 @@ def follow_redirect(cid, redirects, has_row):
     return None
 
 
-def plan(raw_ids, id_map, places, redirects, rederived, snapshots, live):
+def plan(raw_ids, id_map, places, redirects, rederived, snapshots, live, generic=None):
     """Decisions for every raw id whose current id has no tour_place row.
 
     Returns {raw: decision} where decision = {raw, cur, in_map, source_id, recovered_by, target, rule,
     matched_by, reason}. Pure: the tests drive it directly. places: PLACES_SQL rows with `spelling` (name_norm of
-    the itinerary name) added; redirects: {old: new} over every source; live: set of live source ids."""
+    the itinerary name) added; redirects: {old: new} over every source; live: set of live source ids; generic:
+    generic_names() (default: computed from places)."""
+    generic = generic_names(places) if generic is None else generic
     by_id = {r["component_id"]: r for r in places}
     by_source = {}
     for r in places:
@@ -262,9 +327,9 @@ def plan(raw_ids, id_map, places, redirects, rederived, snapshots, live):
             d["reason"] = "source_not_live" if old["source_id"] not in live else "source_not_built"
             decisions[raw] = d
             continue
-        target, rule = pick_target(old, rows)
+        target, rule, reason = pick_target(old, rows, generic)
         if target is None:
-            d["reason"] = "no_same_place"
+            d["reason"] = reason
         else:
             d.update(target=target, rule=rule, matched_by="destination" if rule == "destination" else "name")
         decisions[raw] = d
@@ -295,6 +360,7 @@ async def main(conn):
     id_rows = await _pinned_fetch(conn, MAP_SQL)
     drafts = await _pinned_fetch(conn, DRAFTS_SQL)
     places = await _pinned_fetch(conn, PLACES_SQL)
+    days = await _pinned_fetch(conn, DAYS_SQL)
     builds = await _pinned_fetch(conn, BUILDS_SQL)
     live = {r["source_id"] for r in await _pinned_fetch(conn, LIVE_SQL)}
     id_map = {r["old_id"]: r["new_id"] for r in id_rows}
@@ -309,6 +375,7 @@ async def main(conn):
 
     pins, raw_ids, keys = pins_and_ids(events)
     names = {a["place"] for a in atoms} | {a["card_name"] for a in atoms if a.get("card_name")}
+    names |= {a["card_locality"] for a in atoms if a.get("card_locality")}
     names |= {r["name"] for r in places}
     names |= {b["country"] for b in builds if b.get("country")}
     for d in drafts:
@@ -321,12 +388,14 @@ async def main(conn):
     for b in builds:
         if b.get("country") and norm.get(b["country"]):
             countries.setdefault(b["source_id"], set()).add(norm[b["country"]])
-    rederived = rederive_index(atoms, versions, countries, norm)
+    anchors = {(r["source_id"], int(r["day_index"])): r["anchor_norm"] for r in days}
+    rederived = rederive_index(atoms, versions, countries, norm, anchors)
     snapshots = snapshot_index(drafts, norm)
     out("inputs", events=len(events), pins=len(pins), raw_ids=len(raw_ids), map_rows=len(id_map),
         map_fill_from=map_from, place_rows=len(places), built_sources=len(builds), live_sources=len(live),
         redirect_entries=len(redirects), versions=len(versions), atoms=len(atoms), rederivable_ids=len(rederived),
-        snapshot_entries=len(snapshots))
+        snapshot_entries=len(snapshots), generic_names=len(generic_names(places)),
+        rederived_with_locality=sum(1 for v in rederived.values() if v.get("locality")))
     for k, n in sorted(keys.items()):
         out("payload_keys", event="add_component", keys=k, n=n)
 

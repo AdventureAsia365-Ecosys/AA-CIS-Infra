@@ -26,9 +26,11 @@ def _norm(s):
     return " ".join("".join(ch if ch.isalnum() else " " for ch in (s or "").lower()).split())
 
 
-def _place(cid, source, day, name, act="cultural_heritage", dest=None, card=None, link=None, country="vietnam"):
+def _place(cid, source, day, name, act="cultural_heritage", dest=None, card=None, link=None, country="vietnam",
+           locality=""):
     return {"component_id": cid, "source_id": source, "day_index": day, "name": name, "name_norm": _norm(link or name),
-            "country_norm": country, "activity": act, "destination_id": dest, "place_card_id": card}
+            "country_norm": country, "locality_norm": locality, "activity": act, "destination_id": dest,
+            "place_card_id": card}
 
 
 class PureTest(unittest.TestCase):
@@ -64,11 +66,62 @@ class PureTest(unittest.TestCase):
                 dict(_place("pd", "S", 1, "Linh Mu Pagoda", dest="D1"), spelling="linh mu pagoda")]
         old = {"day": 4, "spelling": "hoi an ancient town", "link": "hoi an ancient town", "country_norm": "vietnam",
                "activity": "cultural_heritage", "destination_id": None, "card_id": None}
-        self.assertEqual(mod.pick_target(old, rows), ("p5", "spelling"))
+        self.assertEqual(mod.pick_target(old, rows), ("p5", "spelling", None))
         old_dest = dict(old, spelling="thien mu pagoda", link="thien mu pagoda", destination_id="D1")
-        self.assertEqual(mod.pick_target(old_dest, rows), ("pd", "destination"))
+        self.assertEqual(mod.pick_target(old_dest, rows), ("pd", "destination", None))
         gone = dict(old, spelling="bach ma park", link="bach ma park")
-        self.assertEqual(mod.pick_target(gone, rows), (None, None))
+        self.assertEqual(mod.pick_target(gone, rows), (None, None, "no_same_place"))
+
+    def _markets(self):
+        rows = [dict(_place("cr", "S", 4, "Night Market", country="thailand", locality="chiang rai"),
+                     spelling="night market"),
+                dict(_place("bkk", "S", 1, "Wat Pho", country="thailand"), spelling="wat pho")]
+        return rows, mod.generic_names(rows)
+
+    def test_generic_name_never_matches_the_same_name_in_another_city(self):
+        rows, generic = self._markets()
+        self.assertEqual(generic, {"night market"})
+        old = {"day": 2, "spelling": "night market", "link": "night market", "country_norm": "thailand",
+               "activity": "culinary", "destination_id": None, "card_id": None, "locality": "chiang mai"}
+        self.assertEqual(mod.pick_target(old, rows, generic), (None, None, "no_same_place"))
+        same_city = dict(old, locality="chiang rai")
+        self.assertEqual(mod.pick_target(same_city, rows, generic), ("cr", "spelling", None))
+
+    def test_generic_name_without_a_locality_is_unmatched_not_guessed(self):
+        rows, generic = self._markets()
+        old = {"day": 4, "spelling": "night market", "link": "night market", "country_norm": None,
+               "activity": None, "destination_id": None, "card_id": None, "locality": None}     # e.g. a snapshot
+        self.assertEqual(mod.pick_target(old, rows, generic), (None, None, "generic_no_locality"))
+        # a generic spelling of a card-linked row (locality_norm '') is generic too: still no match without a locality
+        rows.append(dict(_place("cm", "S", 2, "Night Market", link="Chiang Mai Night Bazaar", country="thailand"),
+                         spelling="night market"))
+        self.assertEqual(mod.pick_target(old, rows, generic)[0], None)
+        # an unresolvable generic row ('?') never matches, even a known locality
+        q = [dict(_place("q", "S", 2, "Night Market", country="thailand", locality="?"), spelling="night market")]
+        self.assertEqual(mod.pick_target(dict(old, locality="chiang mai"), q, generic)[0], None)
+
+    def test_old_locality_from_the_card_else_a_day_anchor_the_old_atoms_confirm(self):
+        norm = {"Night Market": "night market", "Chiang Mai": "chiang mai", "Doi Suthep": "doi suthep",
+                "Chiang Rai": "chiang rai"}
+        a_card = {"tour_id": "v1", "day": 2, "place": "Night Market", "card_locality": "Chiang Rai"}
+        self.assertEqual(mod.old_locality(a_card, "S", norm, {}, {}), "chiang rai")
+        a = {"tour_id": "v1", "day": 2, "place": "Night Market", "card_locality": None}
+        confirmed = mod.day_towns([a, {"tour_id": "v1", "day": 2, "place": "Chiang Mai"}], norm)
+        self.assertEqual(mod.old_locality(a, "S", norm, {("S", 2): "chiang mai"}, confirmed), "chiang mai")
+        # the current day 2 sleeps in Chiang Rai, but the old version's day 2 never names it: unknown
+        self.assertIsNone(mod.old_locality(a, "S", norm, {("S", 2): "chiang rai"}, confirmed))
+        idx = mod.rederive_index([a, {"tour_id": "v1", "day": 2, "place": "Chiang Mai"}], {"v1": "S"},
+                                 {"S": {"thailand"}}, norm, {("S", 2): "chiang mai"})
+        cid = mod.component_uuid("S", 2, "night market", "thailand", "culinary")
+        self.assertEqual(idx[cid]["locality"], "chiang mai")
+
+    def test_plan_reports_generic_no_locality(self):
+        rows, _ = self._markets()
+        snap = {"SNAP": {"source_id": "S", "day": 4, "spelling": "night market", "link": "night market",
+                         "country_norm": None, "activity": None, "destination_id": None, "card_id": None,
+                         "locality": None}}
+        d = mod.plan({"SNAP"}, {}, rows, {}, {}, snap, {"S"})
+        self.assertEqual((d["SNAP"]["target"], d["SNAP"]["reason"]), (None, "generic_no_locality"))
 
     def test_follow_redirect_chain_and_cycle(self):
         self.assertEqual(mod.follow_redirect("a", {"a": "b", "b": "c"}, {"c": {}}), "c")
@@ -150,6 +203,7 @@ def _fixture():
         "MAP_SQL": [{"old_id": "TPOLD", "new_id": dropped, "created_at": T1}],
         "DRAFTS_SQL": [],
         "PLACES_SQL": [_place("NEW", "S", 2, "Hoi An Ancient Town"), _place("KEEP", "S", 1, "Da Nang")],
+        "DAYS_SQL": [{"source_id": "S", "day_index": 2, "anchor_norm": "hoi an"}],
         "BUILDS_SQL": [{"source_id": "S", "country": "Vietnam", "built_at": T3, "redirects": None}],
         "LIVE_SQL": [{"source_id": "S"}],
         "VERSIONS_SQL": [{"tour_id": "11111111-1111-1111-1111-111111111111", "source_id": "S", "country": "Vietnam"}],

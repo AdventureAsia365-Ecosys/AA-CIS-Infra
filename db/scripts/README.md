@@ -243,7 +243,8 @@ TripPlanner pins (`add_component` events through `tripplanner.component_id_map`)
 pins whose component a CIS place rebuild dropped. Recovers the old place from the CIS redirects
 (`geo.tour_build.counts.id_redirects`), else by recomputing the uuid5 component ids from every atom of the tour
 (soft-deleted ones included), else from the `trip_drafts` projection, then picks the current component of the same
-place (destination → card → spelling + country → link name, nearest day). Inserts map rows as `tripplanner`
+place (destination → card → spelling + country → link name, nearest day; a generic name such as "Night Market" by
+spelling / link name only in the same locality, else unmatched `generic_no_locality`). Inserts map rows as `tripplanner`
 (AA-847 path) and updates a pre-flip row's `new_id` as `tp_owner` (the reader follows one hop). Merged with
 `READ_ONLY = True` = DRY RUN (counts: dangling by origin, timing, snapshot availability, recovery source, rule,
 unmatched reason, planned writes, expected dangling after); a one-line PR sets `READ_ONLY = False` to apply, which
