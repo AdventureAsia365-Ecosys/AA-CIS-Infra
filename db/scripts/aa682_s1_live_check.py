@@ -153,7 +153,7 @@ async def _b2c(conn, today) -> dict:
             case["id"], f"{TAG} V1",
         )
         for position, (title, day_from, day_to, col, ref, net) in enumerate(
-            (("Two nights", 1, 2, "hotel_room_type_id", room, "400.00"), ("Kayak", 3, 3, "service_id", service, "80.00")),
+            (("Two nights", 1, 3, "hotel_room_type_id", room, "400.00"), ("Kayak", 3, 3, "service_id", service, "80.00")),
             start=1,
         ):
             item = await conn.fetchval(
@@ -174,12 +174,16 @@ async def _b2c(conn, today) -> dict:
         out("write", what="trip_case", code=case["code"], status="confirmed")
 
     # Generate (as app/ops/supplier_bookings.generate): one pending booking per supply item without a live one.
+    # Room nights follow app/ops/supplier_bookings._nights: B2B day_to - day_from + 1 (holds._open_case), B2C the
+    # pricing rule supply_rates.quantity('room_night') = max(day_to - day_from, 1). The B2C room item spans days 1-3
+    # (check in day 1, out day 3): 2 nights, the nights its 400.00 net was costed for.
     created = await conn.fetch(
         "INSERT INTO booking.supplier_bookings (trip_case_id, version_item_id, supplier_id, hotel_room_type_id,"
         " service_id, item_description, service_date, nights, pax, net_amount, net_currency)"
         " SELECT tc.id, i.id, coalesce(h.supplier_id, sv.supplier_id), i.hotel_room_type_id, i.service_id, i.title,"
-        "        tc.start_date + (i.day_from - 1), CASE WHEN i.hotel_room_type_id IS NOT NULL"
-        "        THEN i.day_to - i.day_from + 1 END, tc.pax,"
+        "        tc.start_date + (i.day_from - 1), CASE WHEN i.hotel_room_type_id IS NULL THEN NULL"
+        "        WHEN tc.channel = 'b2b' THEN i.day_to - i.day_from + 1"
+        "        ELSE greatest(i.day_to - i.day_from, 1) END, tc.pax,"
         "        (SELECT sum(c.net_amount) FROM booking.version_item_costs c WHERE c.version_item_id = i.id), 'USD'"
         " FROM booking.trip_cases tc"
         " JOIN booking.trip_case_versions v ON v.trip_case_id = tc.id AND v.is_approved AND v.deleted_at IS NULL"
@@ -193,6 +197,11 @@ async def _b2c(conn, today) -> dict:
         case["id"],
     )
     out("write", what="supplier_bookings_generated", case=case["code"], created=len(created))
+    room_nights = await conn.fetchval(
+        "SELECT nights FROM booking.supplier_bookings WHERE trip_case_id = $1::uuid AND hotel_room_type_id IS NOT NULL"
+        " AND status IN ('pending', 'requested', 'confirmed') LIMIT 1", case["id"],
+    )
+    out("verify", what="b2c_room_nights", case=case["code"], nights=room_nights, expected=2)
     rows = await conn.fetch(
         "SELECT id::text AS id, code, status, version_item_id::text AS item FROM booking.supplier_bookings"
         " WHERE trip_case_id = $1::uuid AND status IN ('pending', 'requested', 'confirmed') ORDER BY code",
