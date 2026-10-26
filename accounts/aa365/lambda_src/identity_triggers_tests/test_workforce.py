@@ -245,6 +245,7 @@ def test_booking_e2e_address_may_be_admin_created(email, capsys):
     "booking@e2e-mail.lumiguides.it.com",
     "e2e-booking-admin@e2e-mail.lumiguides.it.com",
     "e2e-test-crm-atlas-owner@e2e-mail.lumiguides.it.com",  # CRM e2e users are EXTERNAL/partner-pool only
+    "e2e-test-studio-viewer@e2e-mail.lumiguides.it.com",  # AA-979 studio invitees are partner-pool only
     # Non-ASCII look-alikes. U+212A KELVIN SIGN lower-cases to ASCII 'k' (the fold that would alias the entry);
     # zero-width space and fullwidth 'k' do not fold but must not match either.
     "e2e-boo\u212aing@e2e-mail.lumiguides.it.com",
