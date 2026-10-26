@@ -237,7 +237,7 @@ class RenderTest(unittest.TestCase):
         md = self.md
         self.assertIn("- index `job_pkey` PRIMARY KEY: UNIQUE btree (id)", md)
         self.assertIn("- index `job_status_idx`: btree (status) **INVALID**", md)
-        self.assertIn("- check `job_kind_check`: CHECK ((kind ~ '^[a-z]'::text))", md)
+        self.assertIn("- check `job_kind_check`: `CHECK ((kind ~ '^[a-z]'::text))`", md)
         self.assertIn("booking.legs.(a,b) -> booking.trip_cases.(a,b)  NOT VALID", md)
         self.assertIn("- trigger `legs_touch`: BEFORE UPDATE ON booking.legs", md)
         self.assertIn("- `shared.job_status_idx` on `job` (8 kB)", md)
@@ -624,3 +624,11 @@ class CrmTagClassesTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CodeSpanTest(unittest.TestCase):
+    def test_code_span_wraps_backticks_and_url_like_text(self):
+        from db import gen_schema_reference as g  # noqa: E402
+        self.assertEqual(g.code_span("CHECK (x !~* '^(arn:|s3://)')"), "`CHECK (x !~* '^(arn:|s3://)')`")
+        self.assertEqual(g.code_span("a `b` c"), "``a `b` c``")
+        self.assertEqual(g.code_span("`x"), "`` `x ``")
