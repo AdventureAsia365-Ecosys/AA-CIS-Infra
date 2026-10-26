@@ -578,7 +578,7 @@ resource "aws_ecs_service" "crm_api" {
 
 # -----------------------------------------------------------------------------
 # App deploy role — assumed via GitHub OIDC by AA-Partner's Deploy Dev workflows ONLY (API: deploy-dev.yml; web:
-# deploy-web-dev.yml, AA-935). Least privilege (booking.tf booking_app_deploy): push to the two CRM repos, register
+# deploy-web-dev.yml, AA-935; Content studio: deploy-portal-dev.yml, AA-979 — repo, family and service of the portal). Least privilege (booking.tf booking_app_deploy): push to the two CRM repos, register
 # revisions of the two CRM families, point the two CRM services at them, read their task counts (the API deploy job
 # guard) and the running image.
 # -----------------------------------------------------------------------------
@@ -635,7 +635,7 @@ resource "aws_iam_role_policy" "crm_app_deploy" {
           "ecr:DescribeImages",
           "ecr:DescribeRepositories",
         ]
-        Resource = [aws_ecr_repository.crm_api.arn, aws_ecr_repository.crm_web.arn]
+        Resource = [aws_ecr_repository.crm_api.arn, aws_ecr_repository.crm_web.arn, aws_ecr_repository.crm_portal.arn]
       },
       {
         Sid      = "EcsDescribeTaskDefinition" # read-only, no resource-level scoping
@@ -649,13 +649,13 @@ resource "aws_iam_role_policy" "crm_app_deploy" {
         Sid      = "EcsRegisterCrmTaskDefinition"
         Effect   = "Allow"
         Action   = ["ecs:RegisterTaskDefinition"]
-        Resource = [local.crm_task_def_pattern, local.crm_web_task_def_pattern]
+        Resource = [local.crm_task_def_pattern, local.crm_web_task_def_pattern, local.crm_portal_task_def_pattern]
       },
       {
         Sid      = "EcsTagOnRegister"
         Effect   = "Allow"
         Action   = ["ecs:TagResource"]
-        Resource = [local.crm_task_def_pattern, local.crm_web_task_def_pattern]
+        Resource = [local.crm_task_def_pattern, local.crm_web_task_def_pattern, local.crm_portal_task_def_pattern]
         Condition = {
           StringEquals = { "ecs:CreateAction" = "RegisterTaskDefinition" }
         }
@@ -665,7 +665,7 @@ resource "aws_iam_role_policy" "crm_app_deploy" {
         Sid      = "EcsDescribeCrmService"
         Effect   = "Allow"
         Action   = ["ecs:DescribeServices"]
-        Resource = [local.crm_service_arn, local.crm_web_service_arn]
+        Resource = [local.crm_service_arn, local.crm_web_service_arn, local.crm_portal_service_arn]
       },
       {
         # Only a CRM task definition. IfExists: a desired-count-only call carries none (the workflow never makes one).
@@ -688,6 +688,18 @@ resource "aws_iam_role_policy" "crm_app_deploy" {
         Condition = {
           StringLikeIfExists = {
             "ecs:task-definition" = [local.crm_web_task_def_pattern, "${local.crm_web_service}:*"]
+          }
+        }
+      },
+      {
+        # AA-979: the Content studio service takes only a portal revision (deploy-portal-dev.yml).
+        Sid      = "EcsUpdateCrmPortalService"
+        Effect   = "Allow"
+        Action   = ["ecs:UpdateService"]
+        Resource = local.crm_portal_service_arn
+        Condition = {
+          StringLikeIfExists = {
+            "ecs:task-definition" = [local.crm_portal_task_def_pattern, "${local.crm_portal_service}:*"]
           }
         }
       },
@@ -715,6 +727,8 @@ resource "aws_iam_role_policy" "crm_app_deploy" {
           aws_iam_role.crm_ecs_task.arn,
           aws_iam_role.crm_web_ecs_execution.arn,
           aws_iam_role.crm_web_ecs_task.arn,
+          aws_iam_role.crm_portal_ecs_execution.arn,
+          aws_iam_role.crm_portal_ecs_task.arn,
         ]
         Condition = {
           StringEquals = { "iam:PassedToService" = "ecs-tasks.amazonaws.com" }

@@ -157,6 +157,33 @@ resource "aws_security_group" "crm_web" {
   tags = merge(local.crm_web_tags, { Name = "${local.name_prefix}-sg-crm-web" })
 }
 
+# ── AA-Partner Content studio (ECS service aa-crm-dev-portal, crm_portal.tf, AA-979) ──
+# Ingress only from the ALB on 3000 (the agency host's studio rules). Not in rds_ingress_sg_ids: the studio has no
+# database access (it calls the CIS API over HTTPS).
+resource "aws_security_group" "crm_portal" {
+  name        = "${local.name_prefix}-sg-crm-portal"
+  description = "AA-Partner Content studio service (ADR 0004b)"
+  vpc_id      = module.vpc.vpc_id
+
+  ingress {
+    description     = "Studio port from the ALB (agency host studio rules behind CloudFront)"
+    from_port       = local.crm_portal_port
+    to_port         = local.crm_portal_port
+    protocol        = "tcp"
+    security_groups = [module.vpc.sg_alb_id]
+  }
+
+  egress {
+    description = "HTTPS out (NAT: the CIS API custom domain, Sentry)"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = merge(local.crm_portal_tags, { Name = "${local.name_prefix}-sg-crm-portal" })
+}
+
 # ── TripPlanner Lambdas (browse + assembly, tripplanner.tf): no ingress ─────────
 resource "aws_security_group" "tp_lambda" {
   name        = "${local.name_prefix}-sg-tp-lambda"
