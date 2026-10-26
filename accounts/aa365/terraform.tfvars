@@ -83,3 +83,6 @@ identity_waf_enabled = true
 # ValidationData (identity.tf identity_traveller_signup_proof): a direct public-API SignUp with a password and the
 # managed-login /signup page are refused.
 identity_external_native_signup_enabled = true
+
+# AA-945 (S252): Google OAuth client stored in crm/dev/mail-oauth; map it into the CRM task as MAIL_OAUTH.
+crm_mail_oauth_enabled = true
