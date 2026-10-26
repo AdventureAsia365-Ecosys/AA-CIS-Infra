@@ -31,7 +31,9 @@
 #     e2e-test-crm-<agency>-<role>@; EXTERNAL-pool users, email-code sign-in to the CRM web on Dev), and,
 #     since AA-908, three synthetic travellers e2e-test-traveller@ / -2@ / -3@ (EXTERNAL pool,
 #     TripPlanner sign-up and email-code sign-in on Dev; -3 is a never-signed-up address for the first-session
-#     email_verified check).
+#     email_verified check), and, since AA-979 (S252), two Content studio invitees e2e-test-studio-viewer@ /
+#     -editor@ (crm_e2e_users.json studio_invitees; partner-pool accounts created by the invitation claim, deleted by
+#     crm_dev_identity.py invitee-reset --invitee studio-<role>; synthetic CIS tenants only, ADR 0006a A10b-1).
 #     Anything else to the sub-domain is bounced by SES (no matching rule). Their codes land under the
 #     same prefix; the CIS reader role can read them too, which is acceptable for synthetic Dev agency
 #     users (no real person, no real agency data). Spam/virus scan on; SES only tags the verdict, the reader must not
@@ -70,9 +72,15 @@ locals {
   # AA-910 (S250): Booking staff admin E2E user; must equal workforce.py E2E_BOOKING_TEST_STAFF_EMAIL.
   e2e_mail_booking_recipient = "e2e-booking@${local.e2e_mail_domain}"
   # AA-935: e2e users of the synthetic CRM agencies (one source with tools/identity/crm_dev_identity.py).
-  e2e_crm_users = jsondecode(file("${path.module}/../../tools/identity/crm_e2e_users.json")).users
+  e2e_crm_file  = jsondecode(file("${path.module}/../../tools/identity/crm_e2e_users.json"))
+  e2e_crm_users = local.e2e_crm_file.users
   e2e_crm_recipients = [
     for u in local.e2e_crm_users : "e2e-test-crm-${u.agency}-${u.role}@${local.e2e_mail_domain}"
+  ]
+  # AA-979 (S252, root ADR 0006a A10b-1): the Content studio invitees of the phase 2 re-enrolment E2E (viewer, editor;
+  # a CIS tenant member, no CRM agency). Same file, key studio_invitees; partner-pool accounts made by the claim.
+  e2e_studio_invitee_recipients = [
+    for u in local.e2e_crm_file.studio_invitees : "e2e-test-studio-${u.role}@${local.e2e_mail_domain}"
   ]
   # AA-908: synthetic travellers (EXTERNAL pool, tripplanner client, native email sign-up) for the
   # TripPlanner sign-in / My Trips check: one owns the trip, the other must see an empty list and a 404; the third
@@ -301,7 +309,7 @@ resource "aws_ses_active_receipt_rule_set" "e2e" {
 resource "aws_ses_receipt_rule" "e2e_cognito" {
   name          = local.e2e_mail_rule
   rule_set_name = aws_ses_receipt_rule_set.e2e.rule_set_name
-  recipients    = concat([local.e2e_mail_recipient, local.e2e_mail_booking_recipient], local.e2e_crm_recipients, local.e2e_traveller_recipients)
+  recipients    = concat([local.e2e_mail_recipient, local.e2e_mail_booking_recipient], local.e2e_crm_recipients, local.e2e_traveller_recipients, local.e2e_studio_invitee_recipients)
   enabled       = true
   scan_enabled  = true
   # Require (S243 option B): the code mail now comes straight from Cognito/SES, which delivers over

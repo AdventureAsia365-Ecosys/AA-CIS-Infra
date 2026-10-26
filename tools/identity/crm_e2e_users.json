@@ -8,5 +8,10 @@
     {"agency": "southern-cross", "role": "agent"},
     {"agency": "harbour-lights", "role": "owner"},
     {"agency": "harbour-lights", "role": "assistant", "invitee": true}
+  ],
+  "_comment_studio": "AA-979 (S252, root ADR 0006a A10b-1): the Content studio invitees of the phase 2 re-enrolment E2E (a CIS tenant, not a CRM agency). Mail e2e-test-studio-<role>@e2e-mail.<zone>, role = the Content studio role the invitation grants (viewer / editor). Mailbox recipients only: never created by e2e-users; invitee-reset --invitee studio-<role> deletes the partner-pool account.",
+  "studio_invitees": [
+    {"role": "viewer"},
+    {"role": "editor"}
   ]
 }
