@@ -24,7 +24,10 @@
 --      of this version (Fix A3): hold_set_ref (= 'crm-proposal:' || proposal_id, the Booking proposal_ref; UNIQUE),
 --      hold_id, hold_quote_id, hold_expires_at, hold_selection_sha256 (the picks the hold covers), hold_placed_at,
 --      hold_count (holds placed for this version: the first one and every re-hold); recheck_day / recheck_count_day
---      (re-holds used on that UTC day, 0..3); the acceptance of a builder version: accepted_selection_sha256 (the
+--      (re-holds used on that UTC day, 0..3); hold_attempt (the counter in the Booking Idempotency-Key, one per
+--      new hold request) and the in-flight attempt hold_pending_key / _at / _quote_id / _price_hash /
+--      _selection_sha256 (written before POST /holds, so a hold Booking made but whose answer was lost is replayed
+--      with the same key and quote and recovered, never orphaned); the acceptance of a builder version: accepted_selection_sha256 (the
 --      picks the client accepted), accepted_total_amount / accepted_deposit_amount (the amounts of those picks: the
 --      published total is the defaults'), accepted_hold_id. The acceptance seal (crm-016 proposal_acceptance_sealed)
 --      gains the four accepted_* columns.
@@ -79,6 +82,12 @@ ALTER TABLE crm.proposal
     ADD COLUMN IF NOT EXISTS hold_count                SMALLINT NOT NULL DEFAULT 0,
     ADD COLUMN IF NOT EXISTS recheck_day               DATE,
     ADD COLUMN IF NOT EXISTS recheck_count_day         SMALLINT NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS hold_attempt              SMALLINT NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS hold_pending_key          TEXT,
+    ADD COLUMN IF NOT EXISTS hold_pending_at           TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS hold_pending_quote_id     TEXT,
+    ADD COLUMN IF NOT EXISTS hold_pending_price_hash   TEXT,
+    ADD COLUMN IF NOT EXISTS hold_pending_selection_sha256 BYTEA,
     ADD COLUMN IF NOT EXISTS accepted_selection_sha256 BYTEA,
     ADD COLUMN IF NOT EXISTS accepted_total_amount     NUMERIC(14, 2),
     ADD COLUMN IF NOT EXISTS accepted_deposit_amount   NUMERIC(14, 2),
@@ -108,6 +117,21 @@ ALTER TABLE crm.proposal ADD CONSTRAINT proposal_hold_chk CHECK (
     AND (recheck_count_day = 0 OR recheck_day IS NOT NULL)
     AND (kind = 'builder' OR (hold_set_ref IS NULL AND hold_id IS NULL AND hold_count = 0 AND recheck_day IS NULL
                               AND recheck_count_day = 0))
+);
+-- The in-flight hold request (one at a time per version): its key and start, then the quote it presents once quoted.
+-- Cleared when Booking answered (held or refused); kept when the answer was lost, so the next request replays it.
+ALTER TABLE crm.proposal DROP CONSTRAINT IF EXISTS proposal_hold_pending_chk;
+ALTER TABLE crm.proposal ADD CONSTRAINT proposal_hold_pending_chk CHECK (
+    hold_attempt BETWEEN 0 AND 10000
+    AND (hold_pending_key IS NULL OR hold_pending_key ~ '^crm-proposal:[0-9a-f-]{36}:v[0-9]{1,5}:a[0-9]{1,5}$')
+    AND (hold_pending_key IS NULL) = (hold_pending_at IS NULL)
+    AND (hold_pending_key IS NULL OR hold_attempt >= 1)
+    AND num_nonnulls(hold_pending_quote_id, hold_pending_price_hash, hold_pending_selection_sha256) IN (0, 3)
+    AND (hold_pending_quote_id IS NULL OR hold_pending_key IS NOT NULL)
+    AND (hold_pending_quote_id IS NULL OR hold_pending_quote_id ~ '^[A-Za-z0-9:_.-]{1,64}$')
+    AND (hold_pending_price_hash IS NULL OR hold_pending_price_hash ~ '^[a-f0-9]{64}$')
+    AND coalesce(octet_length(hold_pending_selection_sha256), 32) = 32
+    AND (kind = 'builder' OR (hold_attempt = 0 AND hold_pending_key IS NULL))
 );
 -- The acceptance of a builder version carries the picks and their amounts; a text version has none of them.
 ALTER TABLE crm.proposal DROP CONSTRAINT IF EXISTS proposal_accepted_choice_chk;
@@ -140,6 +164,8 @@ COMMENT ON COLUMN crm.proposal.nudged_at IS 'AA-950 (crm-021; R4): when the hour
 COMMENT ON COLUMN crm.proposal.hold_set_ref IS 'AA-950 (crm-021; Fix A3): the Booking proposal_ref of this version''s hold set (crm-proposal:<proposal_id>; proposal_version = version): one hold set per (proposal, version), UNIQUE';
 COMMENT ON COLUMN crm.proposal.hold_selection_sha256 IS 'AA-950 (crm-021): SHA-256 of the AA picks the current hold covers; a pick that changes them needs a new hold (a re-hold) before accept';
 COMMENT ON COLUMN crm.proposal.hold_count IS 'AA-950 (crm-021; Fix A3): holds placed for this version, the first one included; every one after the first is a re-hold (a bell to the trip owner)';
+COMMENT ON COLUMN crm.proposal.hold_attempt IS 'AA-950 (crm-021): new hold requests made for this version; the Booking Idempotency-Key is <hold_set_ref>:v<version>:a<hold_attempt>, so every new quote gets a fresh key (Booking refuses a used key with another quote)';
+COMMENT ON COLUMN crm.proposal.hold_pending_key IS 'AA-950 (crm-021): the hold request in flight (set before Booking is asked, with hold_pending_at; the quote columns once quoted). Cleared when Booking answered; kept when the answer was lost, so the next request replays the same key and quote and recovers the hold Booking made';
 COMMENT ON COLUMN crm.proposal.recheck_count_day IS 'AA-950 (crm-021; Fix A3, C-12): re-holds used on recheck_day (UTC, as Booking''s limit): at most 3; the 4th is refused before Booking is asked ("Ask your agent")';
 COMMENT ON COLUMN crm.proposal.accepted_selection_sha256 IS 'AA-950 (crm-021): builder versions: SHA-256 of the picks the client accepted (block -> option, choose later); sealed with the acceptance';
 COMMENT ON COLUMN crm.proposal.accepted_total_amount IS 'AA-950 (crm-021): builder versions: the charged total of the accepted picks (the published total_amount is the defaults''); the payment schedule follows it';
