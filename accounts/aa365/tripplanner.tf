@@ -229,7 +229,8 @@ resource "aws_s3_object" "tripplanner_browse_zip" {
   # The App deploy workflow overwrites this object with the real build; do not
   # let Terraform revert it back to the placeholder on later applies.
   lifecycle {
-    ignore_changes = [etag, source]
+    # metadata: deploy-lambdas.yml writes git-sha / app-version / code-sha256 on upload (AA-993 V4 verify).
+    ignore_changes = [etag, source, metadata]
   }
 
   # AA-846: the App deploy workflow uploads with `aws s3 cp`, which replaces the object and drops
@@ -251,7 +252,8 @@ resource "aws_s3_object" "tripplanner_assembly_zip" {
   etag   = filemd5(local.tp_placeholder_zip)
 
   lifecycle {
-    ignore_changes = [etag, source]
+    # metadata: deploy-lambdas.yml writes git-sha / app-version / code-sha256 on upload (AA-993 V4 verify).
+    ignore_changes = [etag, source, metadata]
   }
 
   # AA-846: same as tripplanner_browse_zip (no object tags; `aws s3 cp` drops them).
@@ -629,10 +631,12 @@ resource "aws_iam_role" "tripplanner_app_deploy" {
         # GET /repos/AdventureAsia365-Ecosys/AA-TripPlanner-Web/actions/oidc/customization/sub:
         # use_immutable_subject=true, sub_claim_prefix below; repo id 1365222661, org id 276539096).
         #
-        # Only ONE workflow assumes this role: .github/workflows/deploy-lambdas.yml, job `deploy`,
-        # triggered by push to main (paths backend/**) or workflow_dispatch. The job has no
-        # `environment:`, so its sub context is the ref -> `ref:refs/heads/main`. A dispatch from any
-        # other branch, a pull_request run or a tag is denied. ci.yml has no id-token permission.
+        # Two workflows assume this role, both with no `environment:`, so the sub context is the ref ->
+        # `ref:refs/heads/main`: .github/workflows/deploy-lambdas.yml job `deploy` (push to main, paths
+        # backend/**, or workflow_dispatch), and the read-only post-deploy-verify.yml job `lambdas`
+        # (AA-993 V4: GetFunctionConfiguration + GetObject/HeadObject, called by deploy-lambdas.yml or
+        # dispatched from main). A dispatch from any other branch, a pull_request run or a tag is
+        # denied. ci.yml has no id-token permission.
         #
         # History: AA-588 used "repo:AdventureAsia365-Ecosys*/AA-TripPlanner-Web*:*" (any branch,
         # any id). S235 Phase 0 replaces it with the exact subject (StringEquals, fail closed): if the
