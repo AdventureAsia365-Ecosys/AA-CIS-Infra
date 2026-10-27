@@ -327,6 +327,8 @@ resource "aws_iam_role_policy" "booking_ecs_task_retention_archive" {
 # SUPPLY_MEDIA_BUCKET (booking_media.tf), where the supplier photo upload writes. AA-825 (S251):
 # RETENTION_OVERRIDE_ENABLED, the explicit opt-in for the retention manual_override proof run; the app refuses an
 # override unless ENVIRONMENT is dev / test / local AND this is "true" (fail closed, no default), so only dev sets it.
+# AA-993 G4: JOB_TEST_KINDS ("1" on dev only) registers the test job kind bk_noop_sleep for the worker-drain proof;
+# it stays on dev after the proof, like the CIS one (harmless: exempt, never deploy-blocking; reused by later proofs).
 #
 # A change here registers a new revision that the service ignores (ignore_changes below); the next
 # AA-Booking deploy copies the family's LATEST revision (deploy-dev.yml, AA-811) and carries it to the task.
@@ -360,6 +362,10 @@ resource "aws_ecs_task_definition" "booking" {
       { name = "SUPPLY_MEDIA_BUCKET", value = aws_s3_bucket.booking_supply_media.bucket },
       # AA-825: the retention manual_override (explicit-cutoff proof run) is Dev only; any other environment gets false.
       { name = "RETENTION_OVERRIDE_ENABLED", value = var.environment == "dev" ? "true" : "false" },
+      # AA-993 G4 proof: the Dev-only test job kind bk_noop_sleep (AA-Booking app/jobs/noop_sleep.py, deploy-gate
+      # exempt, never deploy-blocking), registered only when JOB_TEST_KINDS is truthy. Same rule as the CIS api/worker
+      # (modules/ecs local.job_test_kinds_env): kept on dev after the proof. Any other environment gets "0".
+      { name = "JOB_TEST_KINDS", value = var.environment == "dev" ? "1" : "0" },
       ], var.booking_sentry_enabled ? [
       { name = "SENTRY_REQUIRED", value = "true" },
     ] : [])
