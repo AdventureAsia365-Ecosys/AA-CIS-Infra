@@ -91,4 +91,4 @@ crm_mail_oauth_enabled = true
 # the crm_agency CloudFront distribution (Fargate portal + CRM web/api). One in-place CNAME update; rollback = false.
 # Pre-cutover checks (root docs/audits/2026-10-27-S253-aa979-cutover/): curl through the distribution, the edge live
 # check, partner sign-in + MFA on portal. through the distribution, UI Smoke (portal) target=fargate.
-crm_agency_live = false  # S253 rollback drill (runbook §4.2): back to true right after
+crm_agency_live = true
