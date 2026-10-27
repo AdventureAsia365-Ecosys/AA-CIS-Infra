@@ -260,8 +260,11 @@ MIGRATE ERROR: refusing apply — busy: booking.job (queued=1). Wait until every
   (`shared.job` CIS, `booking.job` Booking, a future `tripplanner.job` without a code change), plus
   `shared.rerun_wave` rows with `status = 'open'`. `shared.job` or `booking.job` missing, or no
   `shared.rerun_wave`, is a WARNING, not busy. A table the runner cannot read counts as busy.
-- **Busy** = any queued row (any `run_after`; `due` counts the ones already claimable) or running
-  row of a kind that is not exempt, or an open wave. Same meaning as the deploy gate.
+- **Busy** = any running row, or queued row due within `BUSY_HORIZON_S` (1 h; no lower bound, so
+  overdue rows count; `due` counts the ones already claimable), of a kind that is not exempt, or an open
+  wave. Same meaning as the deploy gate. AA-990: a queued row due further ahead (the CIS `place_geocode`
+  run queued for the next Geoapify credit reset, up to ~24 h) is reported as `later=<n>` and does not
+  block; the horizon mirrors AA-CIS-App `shared/jobs/queue.py` `DEPLOY_GATE_HORIZON_S`.
 - **Exempt kinds** (`IDLE_EXEMPT_KINDS` in `run_migration.py`, per owner): `booking.job`
   `crm.job` `crm_heartbeat` (AA-932: the AA-Partner worker's always-queued liveness kind, so no CRM job blocks a
   CIS / Booking / TripPlanner apply; AA-933 registers it under this name) and `crm_membership_pull` (AA-978: the
