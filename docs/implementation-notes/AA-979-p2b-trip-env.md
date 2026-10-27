@@ -16,6 +16,7 @@ client-host page `web/app/trip/[tourId]`), AA-CIS-App `feat/aa-979-trip-redirect
 ## Changed
 
 - `accounts/aa365/crm_web.tf`: `crm_web_env` gains `CIS_API_URL`.
+- `CONTEXT.md`: the `crm_web.tf` entry lists `CIS_API_URL` in the web env (review follow-up).
 
 ## Tradeoffs
 
