@@ -130,11 +130,13 @@ GRANT SELECT ON ALL TABLES IN SCHEMA gold_aa_internal, acp_contract, acp_shared,
 # T4 paused 2 days ago with ranking left behind; T5 active with no atoms. Times are relative to now().
 T = {n: f"00000000-0000-0000-0000-00000000000{n}" for n in range(1, 6)}
 G = {n: f"10000000-0000-0000-0000-00000000000{n}" for n in range(1, 6)}
+T7 = "00000000-0000-0000-0000-000000000007"  # S253: an active tour whose place atoms are all segment-ineligible
 SEED = f"""
 INSERT INTO gold_aa_internal.published_tours (tour_id, master_status, updated_at) VALUES
  ('{T[1]}', 'active', now() - interval '3 days'), ('{T[2]}', 'active', now() - interval '2 days'),
  ('{T[3]}', 'active', now() - interval '1 hour'), ('{T[4]}', 'inactive', now() - interval '10 days'),
- ('{T[5]}', 'active', now() - interval '5 days');
+ ('{T[5]}', 'active', now() - interval '5 days'),
+ ('{T7}', 'active', now() - interval '5 days');
 INSERT INTO gold_aa_internal.v_tour_liveness (source_id, tour_id, state, changed_at) VALUES
  ('k1', '{T[1]}', 'served', now() - interval '30 days'), ('k2', '{T[2]}', 'served', now() - interval '30 days'),
  ('k3', '{T[3]}', 'served', now() - interval '30 days'), ('k4', '{T[4]}', 'paused', now() - interval '2 days'),
@@ -148,6 +150,11 @@ INSERT INTO acp_contract.tour_atoms (atom_id, tour_id, place, itinerary_day, del
  ('a6', '{T[3]}', 'Nara', 2, false, now() - interval '30 minutes', now() - interval '30 minutes'),
  ('a7', '{T[4]}', 'Seoul', 1, false, now() - interval '10 days', now() - interval '10 days'),
  ('a5old', '{T[3]}', 'Kyoto old', 1, true, now() - interval '5 days', now() - interval '30 minutes');
+-- S253: T7's place atoms never form a Segment (a transit move, a place that names nowhere): not counted by
+-- tours_with_place_atoms_but_no_segment.
+INSERT INTO acp_contract.tour_atoms (atom_id, tour_id, place, activity_type, created_at, updated_at) VALUES
+ ('a71', '{T7}', 'the hotel in Hue', 'transit', now() - interval '5 days', now() - interval '5 days'),
+ ('a72', '{T7}', 'tea gardens', 'bike', now() - interval '5 days', now() - interval '5 days');
 INSERT INTO acp_contract.tour_atoms (atom_id, tour_id, place, is_empty_marker, created_at, updated_at) VALUES
  ('a1m', '{T[1]}', NULL, true, now() - interval '3 days', now() - interval '3 days');
 INSERT INTO acp_contract.atom_segment (segment_id, canonical_place, canonical_action, created_at) VALUES
@@ -205,14 +212,14 @@ INSERT INTO shared.job (kind, status) VALUES ('recompute', 'queued'), ('a3_atomi
 
 # metric -> (n, aged) for the seed above (worked out by hand in docs/implementation-notes/AA-991.md, Should know).
 EXPECTED = {
-    "atoms_older_than_master": (1, 1), "active_tours_without_atoms": (1, 1), "active_atoms_without_segment": (1, 1),
+    "atoms_older_than_master": (1, 1), "active_tours_without_atoms": (1, 1), "active_atoms_without_segment": (3, 3),
     "tours_with_place_atoms_but_no_segment": (1, 1), "orphan_segments": (1, 1),
     "orphan_segments_kept_referenced": (2, 2), "ranking_missing": (1, 0),
-    "ranking_off_active_pairs": (2, 2), "active_tours_without_ranking": (1, 1), "routes_missing": (1, 0),
-    "routes_differ": (1, 1), "active_tours_without_route": (2, 1), "current_routes_older_than_atoms": (1, 1),
+    "ranking_off_active_pairs": (2, 2), "active_tours_without_ranking": (2, 2), "routes_missing": (1, 0),
+    "routes_differ": (1, 1), "active_tours_without_route": (3, 2), "current_routes_older_than_atoms": (1, 1),
     "routes_with_dead_segment": (1, 1), "geo_tour_place_rows_on_inactive_atoms": (2, 2),
     "geo_tour_place_stale_rows": (1, 1), "place_card_links_missing": (1, 1),
-    "active_place_atoms_without_card_link": (3, 1), "tenant_versions_older_than_master": (1, 1),
+    "active_place_atoms_without_card_link": (5, 3), "tenant_versions_older_than_master": (1, 1),
     "angle_gate_requests_on_inactive_atoms": (2, 1), "seo_context_expired": (4, 3),
     "seo_context_expired_active_tours": (1, 1),
     "dead_member_rows": (3, 2), "live_sources_without_place_build": (2, 1), "live_sources_place_build_failed": (1, 1),
@@ -314,22 +321,22 @@ class ProbeOnPostgresTest(unittest.TestCase):
 
     def test_totals_jobs_and_route_parity(self):
         t = self.res["totals"]
-        self.assertEqual((t["active_tours"], t["active_atoms"], t["tours_changed_within_window"]), (4, 5, 1))
+        self.assertEqual((t["active_tours"], t["active_atoms"], t["tours_changed_within_window"]), (5, 7, 1))
         self.assertEqual((t["segment_member_rows"], t["active_place_atoms"], t["live_sources"], t["live_sources_built"]),
-                         (10, 5, 4, 2))
+                         (10, 7, 4, 2))
         self.assertEqual(self.res["jobs_in_flight"], [{"kind": "recompute", "status": "queued", "n": 1}])
         self.assertEqual(self.res["route_parity"], {"expected_routes": 2, "current_routes_compared": 2})
 
     def test_verdict_and_gate(self):
         v = self.res["verdict"]
-        self.assertEqual((v["stale"], v["stale_aged"], v["errors"]), (14, 14, 0))
+        self.assertEqual((v["stale"], v["stale_aged"], v["errors"]), (13, 13, 0))
         log = [RAN_AS] + self.lines
         report = gate.evaluate(log, "0", enforce=False)
         self.assertTrue(report["green"], report["failures"])
-        self.assertEqual(len(report["would_fail"]), 12)
+        self.assertEqual(len(report["would_fail"]), 11)
         enforced = gate.evaluate(log, "0", enforce=True)
         self.assertFalse(enforced["green"])
-        self.assertEqual(sum(f.startswith("stale: ") for f in enforced["failures"]), 12)
+        self.assertEqual(sum(f.startswith("stale: ") for f in enforced["failures"]), 11)
 
     def test_role_switch_refused_is_an_error_not_a_master_read(self):
         async def run():
