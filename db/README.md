@@ -543,7 +543,7 @@ delta, sample) and keeps `task.log` + `gate.json` as the artifact (30 days).
 | `atoms_older_than_master` | stale | active tours whose newest active atom is older than the Master text | 0 |
 | `active_tours_without_atoms` | stale | active tours with no active atom | 0 |
 | `active_atoms_without_segment` | info | active atoms in no segment (incl. transit / unnamed places, which never form one) | 9,004 (25,877 − 16,873) |
-| `tours_with_place_atoms_but_no_segment` | stale | active tours with place atoms and not one atom in a segment (the AA-695 failure) | first run |
+| `tours_with_place_atoms_but_no_segment` | stale | active tours with segment-eligible place atoms (not typed `transit`, a capital letter in the place: an upper bound of CIS `forms_segment`) and not one atom in a segment (the AA-695 failure); S253: the 9 red tours were all-transit / unnamed, by design | first run |
 | `orphan_segments` | stale | segments with no active atom, no current ranking row and in no current route, and (AA-988) no reference of any kind: what the CIS `segment_gc` recompute stage deletes (`ORPHAN_SETS` mirrors its `ORPHANS_SQL`) | 8,578 (18,978 − 10,400; S251 did not test the references, so ≤) |
 | `orphan_segments_kept_referenced` | info | the same orphans that a reference keeps: member on a live atom of a paused / trashed tour, ranking row, alias row (old or canonical), Subject, brand-fit cache row, route a Subject names, angle-request route list | first run |
 | `ranking_missing` | stale | tours with an active (tour, segment) pair and no current ranking row | first run |
@@ -559,7 +559,7 @@ delta, sample) and keeps `task.log` + `gate.json` as the artifact (30 days).
 | `place_card_links_missing` | stale | active place atoms without an `atom_place_card` row in tours carded before | first run |
 | `active_place_atoms_without_card_link` | info | every active place atom without a link (coverage: AA-784) | first run (105 active atoms linked) |
 | `tenant_versions_older_than_master` | info | tenant versions created before their Master's update; by design (AA-990 / AA-986: the tenant is told, nothing is overwritten) | 2 of 55 |
-| `angle_gate_requests_on_inactive_atoms` | stale | T8 angle requests on an atom that is not active | 14 of 25 |
+| `angle_gate_requests_on_inactive_atoms` | info | T8 angle requests on an atom that is not active; by design since AA-990 D2 (S252): the portal shows `atom_replaced` + the replacement, T8/T9 answer the typed 409, the tenant decides (S253: 5 repointed once, 3 with no replacement left) | 14 of 25 |
 | `seo_context_expired` | info | S251 query: `seo_context` past `expires_at`, all tours | 76 of 918 |
 | `seo_context_expired_active_tours` | stale | active tours whose newest `seo_context` row is past `expires_at` and not reusable by S1 (an `ideas_v3` row fetched within 180 days is reused whatever its `expires_at`: AA-CIS-App `s1_prefetch.py`; 25/10 all 75 expired rows were such rows) | first run |
 | `dead_member_rows` | stale | `atom_segment_member` rows on a dead atom (`tour_atoms.deleted` or `is_empty_marker`); aged by the later of the tour's change and the atom's own update | 10,547 of 27,712 (S252 audit, before the one-time cleanup) |
