@@ -82,6 +82,9 @@ locals {
     # Content studio cross-link (design v3 Fix C10): the tenant portal host (custom_domains_variables.tf `portal`).
     # AA-979 P2b: same-origin on portal.; on partner-dev. the web turns the path into the portal. URL.
     { name = "CONTENT_STUDIO_URL", value = "https://portal.${var.dns_zone_name}" },
+    # AA-979 P2b runbook 4.3: the client-host trip page /trip/<id> (AA-Partner web/lib/tripPage.ts) reads the public
+    # CIS GET /v1/trip/{id} from here; the same CIS API origin the CRM API pulls the membership feed from (crm_app.tf).
+    { name = "CIS_API_URL", value = var.crm_cis_api_url },
   ]
 }
 
