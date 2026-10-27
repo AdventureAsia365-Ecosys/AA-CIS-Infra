@@ -9,12 +9,14 @@ Session S254, agent Claude Code. Branch `feat/aa-979-remove-cis-portal-bridge-en
   EXTERNAL pool, its `cis-portal` client and that client's callback URLs on the partner host stay: the pool serves
   TripPlanner / Booking travellers, and the callback list is P2b clean-up material (design §4.5), not this change.
 - `crm_partner_signin_enabled` stays as a variable; its description now says `false` is no longer a working rollback
-  (the API would refuse the web's cis-portal tokens).
+  (the API would refuse the web's cis-portal tokens). Review follow-up: its default is now `true` and a `validation`
+  block refuses `false`, so a root or workspace that leaves out the tfvars line cannot point the CRM web at the
+  cis-portal client by accident. Dev's `terraform.tfvars` already sets `true`, so the plan is unchanged by this.
 
 ## Changed
 
 - `accounts/aa365/crm_app.tf`: two env entries removed, comment updated.
-- `accounts/aa365/crm_web.tf`: `crm_partner_signin_enabled` description.
+- `accounts/aa365/crm_web.tf`: `crm_partner_signin_enabled` description, default `true`, validation refusing `false`.
 - `CONTEXT.md`: the crm_web / identity_partner line.
 
 ## Tradeoffs
