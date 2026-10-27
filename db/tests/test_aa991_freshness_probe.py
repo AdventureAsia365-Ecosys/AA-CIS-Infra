@@ -175,6 +175,26 @@ class ProbeShapeTest(unittest.TestCase):
         self.assertIn("LIKE '%:ideas_v3'", sql)
         self.assertIn("make_interval(days => 180)", sql)
 
+    def test_coverage_metrics_mirror_the_cis_rules_and_only_dead_members_are_stale(self):
+        # S252 propagation audit item 14: dead members = segment_matching._DEAD_MEMBERS_OF_TOUR_SQL over every tour;
+        # live sources = places/store._LIVE_SQL keyed like geo.tour_build (enqueue._BUILT_SQL: built = not retired)
+        gates = {n: probe.METRICS[n][0] for n in ("dead_member_rows", "live_sources_without_place_build",
+                                                   "live_sources_place_build_failed", "active_place_atoms_card_miss")}
+        self.assertEqual(gates, {"dead_member_rows": "stale", "live_sources_without_place_build": "info",
+                                 "live_sources_place_build_failed": "info", "active_place_atoms_card_miss": "info"})
+        self.assertIn("WHERE t.deleted OR t.is_empty_marker", " ".join(probe.METRICS["dead_member_rows"][2].split()))
+        live = " ".join(probe.LIVE_SOURCES.split())
+        for frag in ("COALESCE(rt.source_group_id, rt.tour_id)::text AS source_id",
+                     "pt.tenant_id = '00000000-0000-0000-0000-000000000001'::uuid",
+                     "pt.master_status = 'active' AND pt.deleted_at IS NULL",
+                     "rt.source_status = 'active' AND rt.deleted_at IS NULL"):
+            self.assertIn(frag, live)
+        self.assertIn("b.status <> 'retired'", probe.METRICS["live_sources_without_place_build"][2])
+        self.assertIn("b.status = 'failed'", probe.METRICS["live_sources_place_build_failed"][2])
+        self.assertIn("k.card_id IS NULL", probe.METRICS["active_place_atoms_card_miss"][2])
+        for k in ("segment_member_rows", "active_place_atoms", "live_sources", "live_sources_built"):
+            self.assertIn(f" AS {k}", probe.TOTALS_SQL)
+
     def test_every_metric_returns_id_and_aged_and_uses_the_cutoff(self):
         for name, (_g, _u, inner) in probe.METRICS.items():
             with self.subTest(metric=name):

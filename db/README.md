@@ -523,7 +523,15 @@ delta, sample) and keeps `task.log` + `gate.json` as the artifact (30 days).
   metrics that would be red once enforced.
 - **Enforce:** a one-line PR sets `ENFORCE = True` once AA-988, AA-989 and AA-990 are Done and a report night shows
   `stale_aged=0`; from then on any `stale` metric with aged > 0 is red. For one run (the red → green alarm test):
-  dispatch with `enforce=true`.
+  dispatch with `enforce=true`. `dead_member_rows` keeps an enforced run red until the one-time cleanup of the member
+  rows left from before CIS #1020 (S252 propagation audit §6 item 4); flip after a green `enforce=true` run.
+- **Coverage metrics (S252 propagation audit §6 item 14).** Cheap SQL ($0) that replaces the audit's hand-run
+  `coverage.py`: dead member rows (`stale`: the per-tour rule of AA-CIS-App `segment_matching`
+  `_DEAD_MEMBERS_OF_TOUR_SQL`, CIS #1020, so every re-matched tour keeps none), place-build coverage of live sources
+  and place-card coverage (`info`: they grow by paid backfills, AA-905 / AA-784, not by the job chain). A live source
+  follows AA-CIS-App `services/places/store.py` `_LIVE_SQL` keyed like `geo.tour_build.source_id`
+  (`COALESCE(source_group_id, tour_id)`); built = a `geo.tour_build` row other than `retired` (`enqueue._BUILT_SQL`).
+  Change them together.
 - **Parity, not timestamps, for ranking and routes.** Route detection never rewrites an unchanged route and ranking
   is a platform-wide versioned swap, so "older than atoms" is only `info`. The probe re-derives what the jobs would
   build: every (tour, segment) pair of active atoms has a current `atom_ranking` row and no current row sits on a gone
@@ -554,11 +562,17 @@ delta, sample) and keeps `task.log` + `gate.json` as the artifact (30 days).
 | `angle_gate_requests_on_inactive_atoms` | stale | T8 angle requests on an atom that is not active | 14 of 25 |
 | `seo_context_expired` | info | S251 query: `seo_context` past `expires_at`, all tours | 76 of 918 |
 | `seo_context_expired_active_tours` | stale | active tours whose newest `seo_context` row is past `expires_at` and not reusable by S1 (an `ideas_v3` row fetched within 180 days is reused whatever its `expires_at`: AA-CIS-App `s1_prefetch.py`; 25/10 all 75 expired rows were such rows) | first run |
+| `dead_member_rows` | stale | `atom_segment_member` rows on a dead atom (`tour_atoms.deleted` or `is_empty_marker`); aged by the later of the tour's change and the atom's own update | 10,547 of 27,712 (S252 audit, before the one-time cleanup) |
+| `live_sources_without_place_build` | info | live sources with no `geo.tour_build` row other than `retired` (AA-905 coverage; `totals.live_sources` / `live_sources_built` give the ratio) | first run (S252 audit: 769 before the AA-905 backfill) |
+| `live_sources_place_build_failed` | info | live sources whose build row is `failed` | first run |
+| `active_place_atoms_card_miss` | info | active place atoms whose `atom_place_card` row has no card (a resolved miss); with `active_place_atoms_without_card_link` (no row) and `totals.active_place_atoms` this is the card coverage (AA-784) | first run |
 
 Baselines live in `freshness_gate.BASELINE`; "first run" rows get their number from the first nightly report (record
 it here in the follow-up PR that sets them). Not in the probe: atom embeddings and `published_tours.content_embedding`
 (AA-989 decides whether they are read at all), the catalog views (the master and `cis_app` have no catalog grant; the
-tour liveness gate reads them as `booking` / `tripplanner`). The auto-sync proof (one tour re-written, one paused and
+tour liveness gate reads them as `booking` / `tripplanner`), TripPlanner saved-trip pins (`tripplanner.*`: no `cis_app`
+grant; the S252 audit's dangling pins belong to AA-990), the CRM cache hash (S252 audit §5.2: different hashes by
+design) and photo coverage (not a link that follows atoms). The auto-sync proof (one tour re-written, one paused and
 restored, per-layer timeline) is an orchestrator harness, not a workflow: root `.tmp-session/s251/aa991/`, results
 in the root repo's `docs/audits/`. Cost: one Fargate task of about two minutes a night (under $0.10 a month); no new
 resource.

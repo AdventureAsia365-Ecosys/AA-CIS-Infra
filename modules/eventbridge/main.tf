@@ -81,106 +81,15 @@ resource "aws_scheduler_schedule_group" "acp" {
   })
 }
 
-# ── Schedule: Daily ACP Ingest — 06:00 UTC ───────────────────
-# Puts ACP.DailyIngest event on the bus; EventBridge rules
-# (added when ingest Lambda is provisioned) route it downstream.
-
-resource "aws_scheduler_schedule" "acp_daily_ingest" {
-  name       = "${local.name_prefix}-acp-daily-ingest"
-  group_name = aws_scheduler_schedule_group.acp.name
-
-  schedule_expression          = "cron(0 6 * * ? *)"
-  schedule_expression_timezone = "UTC"
-
-  flexible_time_window {
-    mode                      = "FLEXIBLE"
-    maximum_window_in_minutes = 30
-  }
-
-  target {
-    arn      = aws_cloudwatch_event_bus.acp_events.arn
-    role_arn = aws_iam_role.scheduler.arn
-
-    eventbridge_parameters {
-      detail_type = "ACP.DailyIngest"
-      source      = "acp.scheduler"
-    }
-
-    retry_policy {
-      maximum_retry_attempts       = 3
-      maximum_event_age_in_seconds = 3600
-    }
-  }
-
-  state = "ENABLED"
-}
-
-# ── Schedule: Weekly Content Export — Sun 23:00 UTC ──────────
-
-resource "aws_scheduler_schedule" "acp_weekly_export" {
-  name       = "${local.name_prefix}-acp-weekly-export"
-  group_name = aws_scheduler_schedule_group.acp.name
-
-  schedule_expression          = "cron(0 23 ? * SUN *)"
-  schedule_expression_timezone = "UTC"
-
-  flexible_time_window {
-    mode = "OFF"
-  }
-
-  target {
-    arn      = aws_cloudwatch_event_bus.acp_events.arn
-    role_arn = aws_iam_role.scheduler.arn
-
-    eventbridge_parameters {
-      detail_type = "ACP.WeeklyExport"
-      source      = "acp.scheduler"
-    }
-
-    retry_policy {
-      maximum_retry_attempts       = 2
-      maximum_event_age_in_seconds = 1800
-    }
-  }
-
-  state = "ENABLED"
-}
-
-# ── Schedule: Veto Window Close — Wed 18:00 UTC ──────────────
-# AA-365 [N8-5]: puts ACP.VetoWindowClose event on the bus. Mirrors
-# acp_daily_ingest/acp_weekly_export exactly -- no aws_cloudwatch_event_rule
-# consumes this event yet (same as those two schedules today; a rule gets
-# added when the veto-window-close handler is provisioned), so this
-# resource alone has no runtime effect on its own until that follow-up.
-
-resource "aws_scheduler_schedule" "acp_veto_window_close" {
-  name       = "${local.name_prefix}-acp-veto-window-close"
-  group_name = aws_scheduler_schedule_group.acp.name
-
-  schedule_expression          = "cron(0 18 ? * WED *)"
-  schedule_expression_timezone = "UTC"
-
-  flexible_time_window {
-    mode = "OFF"
-  }
-
-  target {
-    arn      = aws_cloudwatch_event_bus.acp_events.arn
-    role_arn = aws_iam_role.scheduler.arn
-
-    eventbridge_parameters {
-      detail_type = "ACP.VetoWindowClose"
-      source      = "acp.scheduler"
-    }
-
-    retry_policy {
-      maximum_retry_attempts       = 2
-      maximum_event_age_in_seconds = 1800
-    }
-  }
-
-  state = "ENABLED"
-}
+# ── ACP schedules removed (AA-989, audit S252 §5.5 / §6 item 15) ──
+# aws_scheduler_schedule.acp_daily_ingest (ACP.DailyIngest, daily 06:00 UTC), acp_weekly_export (ACP.WeeklyExport,
+# Sun 23:00 UTC) and acp_veto_window_close (ACP.VetoWindowClose, Wed 18:00 UTC, AA-365) put events on the ACP bus
+# with no aws_cloudwatch_event_rule matching them anywhere (this module had none; every rule in accounts/aa365 is a
+# CloudTrail/default-bus alert), and AA-CIS-App has no handler for those detail types (AA-492 traced 0 rules /
+# 0 targets on this bus). They fired into nothing and suggested a daily ingest/export that does not exist; the
+# CIS pipeline is job-driven (shared.job on the worker). The bus, the scheduler role, the schedule group (used
+# by the dfs_balance / retention / photo_sync / booking_uptime / rds_snapshot_expiry schedules in accounts/aa365)
+# and the DLQ stay.
 
 # ============================================================
 # AA-61 — ACP Events FIFO DLQ + Monitoring
