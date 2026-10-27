@@ -46,7 +46,7 @@ applied (refuses otherwise). Local test: `python3 aa682_s3_live_check.py <DSN> [
 import asyncio
 import json
 
-MODE = "apply"
+MODE = "dry_run"
 
 SCRIPT_NAME = "aa682_s3_live_check"
 ACTOR = f"script:{SCRIPT_NAME}"
