@@ -69,6 +69,10 @@ locals {
     # The CRM web's refresh route on the same host (it renews the partner session or falls back to managed login).
     { name = "CRM_WEB_SIGN_IN_PATH", value = "/auth/refresh" },
     { name = "CRM_WEB_SIGN_OUT_PATH", value = "/auth/sign-out" },
+    # S253: the web's sign-out answers 303 to the managed-login logout page and browsers apply the CSP form-action to
+    # that redirect, so the studio's CSP (AA-Partner portal/lib/csp.ts) must name the same origin as the web's
+    # COGNITO_DOMAIN.
+    { name = "CRM_SIGN_OUT_FORM_ORIGIN", value = local.crm_web_cognito_domain },
   ]
 }
 
