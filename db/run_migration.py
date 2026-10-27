@@ -53,8 +53,10 @@ Safety defaults (AA-807 N5; data standards MIG-9, MIG-10, MIG-12):
 
 Idle check (AA-751, ADR 0003a decision 5, data standards C6.3b): every run reports, per owner job
 table (every `<schema>.job` with a `status` column, found in the catalog) and for open
-`shared.rerun_wave` rows, whether it is busy. Busy = any queued (any run_after) or running row of a
-kind not in IDLE_EXEMPT_KINDS, or an open wave. check only reports. apply (once the version is known
+`shared.rerun_wave` rows, whether it is busy. Busy = any running row, or queued row due within
+BUSY_HORIZON_S (no lower time bound: overdue rows count), of a kind not in IDLE_EXEMPT_KINDS, or an open
+wave. A queued row due later is reported as `later` and does not block (AA-990: the place_geocode run
+queued for the next Geoapify credit reset sits up to ~24 h ahead). check only reports. apply (once the version is known
 to be unapplied) re-checks up to IDLE_WAITS times, IDLE_WAIT_S apart, and refuses with exit 7 while
 anything is still busy, unless MIGRATION_IDLE_OVERRIDE carries a reason (workflow input
 override_busy_jobs, Nghiệp only). lock_timeout stays the backstop for the check-then-apply race.
@@ -181,6 +183,10 @@ IDLE_EXEMPT_KINDS = {
     # AA-947: the AA outage queue + Booking feed (crm_booking_sync), every 60 s
     "crm": frozenset({"crm_heartbeat", "crm_membership_pull", "crm_booking_sync"}),
 }
+# AA-990: mirrors the CIS deploy gate (AA-CIS-App shared/jobs/queue.py DEPLOY_GATE_HORIZON_S). A queued row due
+# more than this far ahead is not touched by a migration that takes minutes; whichever schema it then meets is the one
+# its claim sees. Every scheduled run_after in the owners' runners is <= 20 min except that credit-reset row.
+BUSY_HORIZON_S = 3600
 IDLE_WAITS = 3          # apply re-checks this many times before it refuses …
 IDLE_WAIT_S = 20        # … this many seconds apart
 JOB_TABLES_SQL = """
@@ -190,8 +196,10 @@ SELECT n.nspname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
                 WHERE a.attrelid = c.oid AND a.attname = 'status' AND NOT a.attisdropped)
  ORDER BY n.nspname"""
 JOB_BUSY_SQL = """
-SELECT kind, status, count(*)::int AS n,
-       count(*) FILTER (WHERE status = 'queued' AND run_after <= now())::int AS due
+SELECT kind, status,
+       count(*) FILTER (WHERE status = 'running' OR run_after <= now() + make_interval(secs => $2))::int AS n,
+       count(*) FILTER (WHERE status = 'queued' AND run_after <= now())::int AS due,
+       count(*) FILTER (WHERE status = 'queued' AND run_after > now() + make_interval(secs => $2))::int AS later
   FROM {table} WHERE status IN ('queued', 'running') AND NOT (kind = ANY($1::text[]))
  GROUP BY kind, status ORDER BY kind, status"""
 WAVE_TABLE_SQL = "SELECT to_regclass('shared.rerun_wave') IS NOT NULL"
@@ -905,6 +913,7 @@ class BusyState:
     running: int = 0
     queued: int = 0
     due: int = 0
+    later: int = 0                      # queued rows due beyond BUSY_HORIZON_S: reported, never busy
     kinds: list = field(default_factory=list)       # "kind:status=n", non-exempt only
     exempt: tuple = ()
     open_waves: int = 0
@@ -925,9 +934,10 @@ class BusyState:
         if self.is_wave:
             return f"{'busy' if self.busy else 'idle'}: {self.name} open={self.open_waves}"
         exempt = f" (exempt: {', '.join(self.exempt)})" if self.exempt else ""
+        later = f" later={self.later}" if self.later else ""
         if not self.busy:
-            return f"idle: {self.name} running=0 queued=0{exempt}"
-        return (f"busy: {self.name} running={self.running} queued={self.queued} due={self.due} "
+            return f"idle: {self.name} running=0 queued=0{later}{exempt}"
+        return (f"busy: {self.name} running={self.running} queued={self.queued} due={self.due}{later} "
                 f"kinds=[{', '.join(self.kinds)}]")
 
     def short(self) -> str:
@@ -960,7 +970,8 @@ async def job_tables_busy(conn) -> list:
         exempt = tuple(sorted(IDLE_EXEMPT_KINDS.get(schema, ())))
         st = BusyState(f"{schema}.job", exempt=exempt)
         try:
-            rows = await conn.fetch(JOB_BUSY_SQL.format(table=f"{_quote_ident(schema)}.job"), list(exempt))
+            rows = await conn.fetch(JOB_BUSY_SQL.format(table=f"{_quote_ident(schema)}.job"), list(exempt),
+                                    BUSY_HORIZON_S)
         except Exception as e:
             st.error = _err(e)
         else:
@@ -970,7 +981,9 @@ async def job_tables_busy(conn) -> list:
                 else:
                     st.queued += r["n"]
                     st.due += r["due"]
-                st.kinds.append(f"{r['kind']}:{r['status']}={r['n']}")
+                    st.later += r["later"]
+                if r["n"]:
+                    st.kinds.append(f"{r['kind']}:{r['status']}={r['n']}")
         report.append(st)
     wave = BusyState("shared.rerun_wave", is_wave=True)
     try:

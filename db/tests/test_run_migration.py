@@ -198,8 +198,9 @@ class LintTest(unittest.TestCase):
         self.assertEqual(rm.version_pattern("tp-010"), "^tp\\-[0-9]{3}$")
 
 
-def job(kind, status="queued", due=True):
-    return {"kind": kind, "status": status, "due": due}
+def job(kind, status="queued", due=True, later=False):
+    """later: a queued row due beyond rm.BUSY_HORIZON_S (AA-990)."""
+    return {"kind": kind, "status": status, "due": due and not later, "later": later}
 
 
 TODAY_OWNERS = {"shared": "aa_cis_admin", "booking": "aa_cis_admin", "tripplanner": "aa_cis_admin"}
@@ -255,6 +256,7 @@ class FakeConn:
         # The rows below are filtered in Python, so pin the SQL text: an edit to JOB_BUSY_SQL must
         # come with a test change (IdleCheckTest.test_busy_sql_predicates_are_pinned).
         assert query == rm.JOB_BUSY_SQL.format(table=f'"{schema}".job'), query
+        assert args[1:] == (rm.BUSY_HORIZON_S,), args
         self.busy_queries.append((schema, list(args[0])))
         rows = self.state()[0][schema]
         if isinstance(rows, Exception):
@@ -264,8 +266,10 @@ class FakeConn:
             if r["kind"] in args[0] or r["status"] not in ("queued", "running"):
                 continue
             g = groups.setdefault((r["kind"], r["status"]), {"kind": r["kind"], "status": r["status"],
-                                                             "n": 0, "due": 0})
-            g["n"] += 1
+                                                             "n": 0, "due": 0, "later": 0})
+            later = r["status"] == "queued" and r.get("later", False)
+            g["n"] += int(not later)
+            g["later"] += int(later)
             g["due"] += int(r["status"] == "queued" and r["due"])
         return [groups[k] for k in sorted(groups)]
 
@@ -441,6 +445,24 @@ class IdleCheckTest(unittest.TestCase):
         self.assertIn(REFUSAL.format("shared.job (running=1, queued=2)"), log)
         self.assertIn("MIGRATE idle: booking.job running=0 queued=0 (exempt: bk_inquiry_pull)", log)
 
+    def test_a_row_queued_beyond_the_horizon_does_not_block_apply(self):
+        # AA-990: the place_geocode run queued for the next Geoapify credit reset (up to ~24 h ahead)
+        state = ({"booking": [], "shared": [job("place_geocode", later=True)]}, 0)
+        code, conn, _, log = self.run_task(PLAIN, conn=FakeConn(states=[state]))
+        self.assertEqual(code, 0)
+        self.assertTrue(conn.ran)
+        self.assertEqual(self.sleeps, [])
+        self.assertIn("MIGRATE idle: shared.job running=0 queued=0 later=1\n", log)
+
+    def test_rows_within_the_horizon_still_block_and_later_ones_are_reported(self):
+        state = ({"booking": [], "shared": [job("place_geocode", later=True), job("place_extract", due=False),
+                                            job("place_geocode", "running")]}, 0)
+        code, conn, _, log = self.run_task(PLAIN, conn=FakeConn(states=[state]))
+        self.assertEqual((code, conn.executed), (7, []))
+        self.assertIn("MIGRATE busy: shared.job running=1 queued=1 due=0 later=1 "
+                      "kinds=[place_extract:queued=1, place_geocode:running=1]", log)
+        self.assertIn(REFUSAL.format("shared.job (running=1, queued=1)"), log)
+
     def test_check_mode_reports_busy_and_returns_0(self):
         code, conn, _, log = self.run_task(PLAIN, mode="check", conn=FakeConn(states=[BUSY_BOOKING]))
         self.assertEqual((code, conn.executed, self.sleeps), (0, [], []))
@@ -553,8 +575,14 @@ class IdleCheckTest(unittest.TestCase):
         # open: apply would go ahead while jobs are queued).
         where = rm.JOB_BUSY_SQL.split("FROM {table}", 1)[1]
         self.assertIn("WHERE status IN ('queued', 'running') AND NOT (kind = ANY($1::text[]))", where)
-        self.assertNotIn("run_after", where)       # every queued row counts, due or not
-        self.assertIn("count(*) FILTER (WHERE status = 'queued' AND run_after <= now())", rm.JOB_BUSY_SQL)
+        self.assertNotIn("run_after", where)       # no lower time bound: overdue queued rows count
+        self.assertIn("count(*) FILTER (WHERE status = 'queued' AND run_after <= now())::int AS due", rm.JOB_BUSY_SQL)
+        # AA-990: running rows always count; queued ones only when due within the horizon ($2)
+        self.assertIn("count(*) FILTER (WHERE status = 'running' OR run_after <= now() + make_interval(secs => $2))"
+                      "::int AS n", rm.JOB_BUSY_SQL)
+        self.assertIn("count(*) FILTER (WHERE status = 'queued' AND run_after > now() + make_interval(secs => $2))"
+                      "::int AS later", rm.JOB_BUSY_SQL)
+        self.assertEqual(rm.BUSY_HORIZON_S, 3600)   # = AA-CIS-App queue.DEPLOY_GATE_HORIZON_S
         for part in ("c.relname = 'job'", "c.relkind IN ('r', 'p')", "a.attname = 'status'",
                      "NOT a.attisdropped"):
             self.assertIn(part, rm.JOB_TABLES_SQL)
