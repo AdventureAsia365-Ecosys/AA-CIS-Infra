@@ -291,7 +291,9 @@ accounts/
                                    (web repo, CRM log group stream prefix web, that secret only; never the DSN) and task
                                    role (ECS Exec only), task definition Fargate ARM64 port 3000 (env: public origin,
                                    partner/client hosts, CRM_API_ORIGIN = the public partner host, the EXTERNAL
-                                   cis-portal client until AA-939, CONTENT_STUDIO_URL), target group aa-crm-<env>-web-tg
+                                   cis-portal client until AA-939, CONTENT_STUDIO_URL, CIS_API_URL = var.crm_cis_api_url
+                                   for the client-host trip page's CIS GET /v1/trip/{id}, AA-979 P2b), target group
+                                   aa-crm-<env>-web-tg
                                    (/healthz) behind crm_partner_default, service aa-crm-<env>-web (desired 0,
                                    FARGATE_SPOT), two target-group alarms; security group sg-crm-web (ALB -> 3000, not
                                    admitted by RDS); the API deploy role also deploys it (crm_app.tf). The cis-portal
