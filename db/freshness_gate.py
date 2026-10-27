@@ -4,13 +4,13 @@ The workflow `.github/workflows/db-freshness-probe.yml` runs `db/scripts/aa991_f
 Migrate run-script mechanism (one-off ECS task of the migrator task definition, `db/run_migration.py`, master login,
 READ_ONLY; the probe reads as `cis_app`) and saves the task's log. This script reads that log and decides.
 
-Two modes. **Report** (`ENFORCE = False`, the default until AA-988 / AA-989 / AA-990 close): red only when the probe
+Two modes. **Report** (`ENFORCE = False`, the default until S253): red only when the probe
 itself failed — the task did not exit 0, the runner logged no READ_ONLY run, no single `SCRIPT verdict` line, a
 `SCRIPT json[i/n]` part missing or cut short, the verdict line and the JSON disagree, a metric failed to run or the
 visibility floor tripped (`errors > 0`), the probe did not read as `cis_app`, or a metric of BASELINE is missing from
 the JSON (a renamed metric must not drop out silently). Counts are compared with the S251 baseline: a count above
 its baseline is a warning, and the stale metrics that would be red once enforced are listed.
-**Enforce** (`ENFORCE = True`, or `--enforce` / the workflow input `enforce=true` for one run): additionally red on
+**Enforce** (`ENFORCE = True`, the default since S253, or `--enforce` / the workflow input `enforce=true` for one run): additionally red on
 every `stale` metric whose `aged` count (links of tours changed more than 24 h before the probe) is above zero.
 
 It writes a Markdown report to the step summary (`--summary`), one `::error::` / `::warning::` annotation per finding,
@@ -24,9 +24,10 @@ import sys
 
 from tour_liveness_gate import READ_ONLY_MARK, TASK_EXIT, _cell, _int, kv, read_json
 
-# The switch (AA-991 Done-when: "after the other S1 propagation issues close, the probe shows 0 stale links").
-# A one-line PR sets it to True once AA-988, AA-989 and AA-990 are Done and a report-only night shows stale_aged=0.
-ENFORCE = False
+# The switch (AA-991 Done-when: "the probe shows 0 stale links"). On since S253 (27/10/2026): after the cleanup window
+# (10,495 dead member rows deleted, 5 angle requests repointed) and the probe fix (#426), the dispatched enforce run
+# 40456962884 was green with stale_aged = 0 on every stale metric.
+ENFORCE = True
 READ_ROLE = "cis_app"
 
 # S251 baseline (25/10/2026, Dev, read as cis_app over ECS exec; root .tmp-session/s251/audit-s1prop/coverage*.txt
