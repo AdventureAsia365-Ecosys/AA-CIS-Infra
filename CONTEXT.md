@@ -157,7 +157,9 @@ accounts/
                                    task role's pool allow-list (AdminCreateUser, ListUsers, AdminDisableUser,
                                    AdminUserGlobalSignOut) + ses_send; alerts: pool config change outside
                                    Terraform, admin calls outside the invitation model. crm_web.tf
-                                   crm_partner_signin_enabled switches the CRM web from cis-portal to partner-web.
+                                   crm_partner_signin_enabled switches the CRM web from cis-portal to partner-web
+                                   (keep it true: since AA-979 P2b the CRM API no longer gets the EXTERNAL issuer /
+                                   cis-portal client id, so /crm/v1 refuses cis-portal tokens).
                                    identity.tf adds the crm-platform-admin / crm-ops / crm-support groups and the
                                    crm-staff WORKFORCE client)
     identity_iam.tf               (AA-816: CIS task role (api + worker) allow-list on the WORKFORCE pool
