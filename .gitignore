@@ -4,6 +4,11 @@ scripts/
 # X1 S12 (AA-852): reviewed DB Migrate run-script files and the workflow helper are tracked.
 !/db/scripts/
 !/.github/scripts/
+# AA-993 H1: the pre-push hook scripts are tracked; the rest of the root scripts/ (old one-off patches) stays ignored.
+!/scripts/
+/scripts/*
+!/scripts/pre-push.sh
+!/scripts/install-hooks.sh
 
 *.tfstate
 *.tfstate.backup
@@ -40,6 +45,9 @@ Thumbs.db
 
 # Terraform archive_file outputs (built at plan/apply time)
 accounts/*/lambda_src/*.zip
+
+# Local venv for the pre-push checks (scripts/install-hooks.sh --venv)
+.venv/
 
 # Python bytecode (db/ scripts, tests, identity triggers)
 __pycache__/
