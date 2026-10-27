@@ -25,8 +25,10 @@ enforces; `info` = coverage or by-design number, reported against the S251 basel
   active_tours_without_atoms           stale  active tours with no active atom
   active_atoms_without_segment         info   active atoms in no segment (incl. transit / unnamed places, which
                                               never form one: services/acp_contract/segment_matching.forms_segment)
-  tours_with_place_atoms_but_no_segment stale active tours with place atoms but not one atom in a segment
-                                              (segment match never ran for the tour: the AA-695 failure)
+  tours_with_place_atoms_but_no_segment stale active tours with segment-eligible place atoms (SEGMENT_ELIGIBLE) but
+                                              not one atom in a segment (segment match never ran for the tour: the
+                                              AA-695 failure); tours whose place atoms are all transit / unnamed never
+                                              form a Segment by design (S253: 9 such tours were false positives)
   orphan_segments                      stale  segments with no active atom, no current ranking row, no current route
                                               AND no reference of any kind (AA-988: what the CIS `segment_gc`
                                               recompute stage deletes; ORPHAN_SETS mirrors its ORPHANS_SQL)
@@ -51,7 +53,10 @@ enforces; `info` = coverage or by-design number, reported against the S251 basel
   active_place_atoms_without_card_link info   every active place atom without an atom_place_card row (AA-784)
   tenant_versions_older_than_master    info   S251 query: tenant versions created before their Master's update
                                               (by design: AA-990 / AA-986, the tenant is told, nothing overwritten)
-  angle_gate_requests_on_inactive_atoms stale acp_shared.angle_gate_request rows on an atom that is not active
+  angle_gate_requests_on_inactive_atoms info  acp_shared.angle_gate_request rows on an atom that is not active; by
+                                              design (AA-990 D2, S252): a request never follows a re-atomize on its
+                                              own, the portal shows `atom_replaced` + the replacement and T8/T9 answer
+                                              the typed 409, so the tenant decides (S253: 3 left with no replacement)
   seo_context_expired                  info   S251 query: seo_context rows past expires_at (all tours)
   seo_context_expired_active_tours     stale  active tours whose NEWEST seo_context row is past expires_at and is
                                               not reusable by S1 (AA-CIS-App services/seo_intelligence/s1_prefetch:
@@ -116,6 +121,11 @@ ACTIVE_PT = "pt.master_status = 'active' AND pt.deleted_at IS NULL"
 SEGMENTED = """SELECT 1 FROM acp_contract.atom_segment_member m
                  JOIN acp_contract.v_active_tour_atoms a ON a.atom_id = m.atom_id"""
 PLACE_ATOM = "a.place IS NOT NULL AND btrim(a.place) <> ''"
+# S253: an atom segment matching may put in a Segment (AA-CIS-App segment_matching.forms_segment, which excludes
+# transit moments and places that name nowhere — ranking_reference.is_transit / names_somewhere). SQL keeps a
+# generous upper bound of that rule: not typed `transit` and at least one capital letter in the place. It errs
+# towards red (a rule-transit atom with no type still counts), never hides a tour the matcher would segment.
+SEGMENT_ELIGIBLE = PLACE_ATOM + " AND a.activity_type IS DISTINCT FROM 'transit' AND a.place ~ '[[:upper:]]'"
 # AA-988: orphan segments split by reference, mirroring AA-CIS-App services/acp_contract/segment_gc.py ORPHANS_SQL
 # (change both together). Sets first, joined once (no correlated subplan per segment: ~19k segments, ~96k ranking
 # rows). `o` = the AA-991 orphan rule (no active member, no current ranking row, not in a current route) with
@@ -207,7 +217,7 @@ METRICS = {
           FROM acp_contract.v_active_tour_atoms a
           JOIN chg c ON c.tour_id = a.tour_id
           LEFT JOIN (SELECT DISTINCT atom_id FROM acp_contract.atom_segment_member) m ON m.atom_id = a.atom_id
-         WHERE {PLACE_ATOM}
+         WHERE {SEGMENT_ELIGIBLE}
          GROUP BY a.tour_id, c.changed_at
         HAVING count(m.atom_id) = 0"""),
     "orphan_segments": ("stale", "segments", ORPHAN_SETS + """
@@ -290,7 +300,7 @@ METRICS = {
           FROM gold_aa_internal.tenant_tour_versions v
           JOIN gold_aa_internal.published_tours p ON p.id = v.published_tour_id
          WHERE v.created_at < p.updated_at"""),
-    "angle_gate_requests_on_inactive_atoms": ("stale", "requests", """
+    "angle_gate_requests_on_inactive_atoms": ("info", "requests", """
         SELECT r.request_id::text AS id,
                coalesce(GREATEST(c.changed_at, t.updated_at), r.updated_at) < $1 AS aged
           FROM acp_shared.angle_gate_request r

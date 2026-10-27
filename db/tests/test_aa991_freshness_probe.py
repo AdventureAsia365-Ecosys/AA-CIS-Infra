@@ -385,7 +385,7 @@ class GateTest(unittest.TestCase):
                       g["failures"])
 
     def test_markdown_and_files(self):
-        lines = log(metrics={"angle_gate_requests_on_inactive_atoms": m(14, 14, ["r1"])},
+        lines = log(metrics={"dead_member_rows": m(14, 14, ["r1"])},
                     jobs=[{"kind": "a3_atomize", "status": "running", "n": 1}])
         with tempfile.TemporaryDirectory() as d:
             p = Path(d)
@@ -397,7 +397,7 @@ class GateTest(unittest.TestCase):
             self.assertEqual(rc, 0)
             md = (p / "s.md").read_text()
             self.assertIn("### Downstream freshness probe (nightly, mode report)", md)
-            self.assertIn("| `angle_gate_requests_on_inactive_atoms` | stale | 14 | 14 | 14 | +0 | r1 |", md)
+            self.assertIn("| `dead_member_rows` | stale | 14 | 14 | 10547 | -10533 | r1 |", md)
             self.assertIn("| `routes_missing` | stale | 0 | 0 | first run | - | - |", md)
             self.assertIn("propagation jobs in flight: a3_atomize running 1", md)
             saved = json.loads((p / "g.json").read_text())
