@@ -43,7 +43,7 @@ another one "go_live". Needs bk-027 applied (refuses otherwise). Local test:
 import asyncio
 import json
 
-MODE = "dry_run"
+MODE = "apply"
 
 SCRIPT_NAME = "aa682_s2_live_check"
 ACTOR = f"script:{SCRIPT_NAME}"
