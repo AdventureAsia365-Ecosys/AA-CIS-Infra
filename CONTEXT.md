@@ -358,8 +358,9 @@ there; a new environment gets its own `accounts/<name>/` root. Only the aa365 ro
 ### Main stack modules (accounts/aa365)
 
 The aa365 root composes the standard modules into the running CIS platform: **VPC → RDS → ECS +
-ALB + API Gateway → S3 / Secrets / WAF**, plus **EventBridge** (ACPv2 schedules: daily ingest,
-weekly export, Gate C veto window — not the dead AA-180 orchestration), the ops-probe Lambda
+ALB + API Gateway → S3 / Secrets / WAF**, plus **EventBridge** (`modules/eventbridge`: the ACP bus, its DLQ and the
+`aa-cis-dev-acp` schedule group that holds the `accounts/aa365` schedules; the three ACPv2 schedules daily ingest,
+weekly export and Gate C veto window fired into a bus with no rule and were removed in AA-989), the ops-probe Lambda
 (`dfs_balance.tf`) and observability
 (`observability.tf`, `observability_ecosys.tf`, `diagnostics.tf`, langfuse/monitoring modules).
 `observability_ecosys.tf` (S235 Phase 0) covers what is not CIS: NAT status check, Booking target
@@ -382,7 +383,7 @@ from `modules/ecs/main.tf` (e.g. AA-847 `PLACE_SHAPES_ENABLED` from `place_shape
 the latest revision and swaps the image, so a Terraform env change ships with the next CIS deploy. The reverse also
 holds: an env set by hand on a running revision is lost when any apply touching `module.ecs` registers a new
 template revision, so every runtime switch lives in the module (AA-645 `S1_WRITER_V2` from `s1_writer_v2_enabled`,
-added after the S250 near miss); after such an apply, diff the env names of the newest revision against the running
+added after the S250 near miss; AA-905 / AA-989 `PLACE_PIPELINE_AUTO` from `place_pipeline_auto`, on since S252); after such an apply, diff the env names of the newest revision against the running
 one before the next deploy. Redis (AA-874 S5): api and worker get `REDIS_HOST` = the TLS primary endpoint of
 `aws_elasticache_replication_group.main` (`aa-cis-dev-cache`, Valkey, AUTH + TLS + at-rest), `REDIS_TLS=true`,
 `REDIS_CLUSTER_ID` = its member node and the secret `REDIS_AUTH_TOKEN` (`aa-cis/dev/redis-auth`, write-only, never
@@ -650,7 +651,8 @@ makes CI Terraform Plan fail with 403.
   probe are not in the gate yet (follow-up slice under AA-986). **DB Freshness Probe** (`db-freshness-probe.yml`,
   AA-991; nightly 05:13 UTC and manual) runs `db/scripts/aa991_freshness_probe.py` the same way, reads as `cis_app`, and
   counts per layer the links that did not follow a tour's atoms (segments, ranking, routes by parity with route
-  detection, `geo.tour_place`, place-card links, T8 angle requests, SEO context); `db/freshness_gate.py` is report-only
+  detection, `geo.tour_place`, place-card links, T8 angle requests, SEO context) plus, since the S252 propagation
+  audit, dead segment member rows (stale) and place-build / place-card coverage (info); `db/freshness_gate.py` is report-only
   (`ENFORCE = False`, red only when the probe itself fails) until AA-988/989/990 close, then red on stale links of tours
   changed more than 24 h ago. The S251 baseline is in `db/README.md`. The CIS
   migration freeze and the `catalog.*` view freeze (XD9) ended with CIS 246 (S22, 19/10/2026).

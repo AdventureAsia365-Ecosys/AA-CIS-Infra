@@ -107,6 +107,18 @@ CREATE POLICY angle_gate_request_cis_app_all ON acp_shared.angle_gate_request TO
 CREATE TABLE silver_aa_internal.seo_context (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), tour_id uuid NOT NULL,
     tenant_id uuid NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001', expires_at timestamptz,
     cache_key character varying(500), fetched_at timestamptz NOT NULL DEFAULT now());
+-- S252 audit item 14: the place-build coverage metrics read the live-source rule (raw_tours FORCE RLS) and geo.tour_build.
+CREATE TYPE silver_aa_internal.source_status_enum AS ENUM ('active', 'superseded', 'trashed');
+CREATE TABLE silver_aa_internal.raw_tours (tour_id uuid PRIMARY KEY,
+    tenant_id uuid NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001', source_group_id uuid,
+    source_status silver_aa_internal.source_status_enum NOT NULL, deleted_at timestamptz);
+ALTER TABLE silver_aa_internal.raw_tours ENABLE ROW LEVEL SECURITY;
+ALTER TABLE silver_aa_internal.raw_tours FORCE ROW LEVEL SECURITY;
+CREATE POLICY raw_tours_cis_app_all ON silver_aa_internal.raw_tours TO cis_app USING (true) WITH CHECK (true);
+CREATE TABLE geo.tour_build (source_id text PRIMARY KEY, tour_id uuid NOT NULL, rule_version integer NOT NULL DEFAULT 1,
+    status text NOT NULL CHECK (status IN ('pending', 'ok', 'partial', 'failed', 'retired')),
+    counts jsonb NOT NULL DEFAULT '{}', cost_usd numeric(10,6) NOT NULL DEFAULT 0,
+    created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now());
 CREATE TABLE shared.job (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), kind text NOT NULL, status text NOT NULL,
     created_at timestamptz NOT NULL DEFAULT now());
 GRANT USAGE ON SCHEMA gold_aa_internal, acp_contract, acp_shared, geo, silver_aa_internal, shared TO cis_app;
@@ -117,6 +129,7 @@ GRANT SELECT ON ALL TABLES IN SCHEMA gold_aa_internal, acp_contract, acp_shared,
 # T1 healthy; T2 re-published 2 days ago and nothing followed; T3 re-published 1 hour ago (inside the window);
 # T4 paused 2 days ago with ranking left behind; T5 active with no atoms. Times are relative to now().
 T = {n: f"00000000-0000-0000-0000-00000000000{n}" for n in range(1, 6)}
+G = {n: f"10000000-0000-0000-0000-00000000000{n}" for n in range(1, 6)}
 SEED = f"""
 INSERT INTO gold_aa_internal.published_tours (tour_id, master_status, updated_at) VALUES
  ('{T[1]}', 'active', now() - interval '3 days'), ('{T[2]}', 'active', now() - interval '2 days'),
@@ -133,7 +146,10 @@ INSERT INTO acp_contract.tour_atoms (atom_id, tour_id, place, itinerary_day, del
  ('a3old', '{T[2]}', 'Hue old', 1, true, now() - interval '9 days', now() - interval '9 days'),
  ('a5', '{T[3]}', 'Kyoto', 1, false, now() - interval '30 minutes', now() - interval '30 minutes'),
  ('a6', '{T[3]}', 'Nara', 2, false, now() - interval '30 minutes', now() - interval '30 minutes'),
- ('a7', '{T[4]}', 'Seoul', 1, false, now() - interval '10 days', now() - interval '10 days');
+ ('a7', '{T[4]}', 'Seoul', 1, false, now() - interval '10 days', now() - interval '10 days'),
+ ('a5old', '{T[3]}', 'Kyoto old', 1, true, now() - interval '5 days', now() - interval '30 minutes');
+INSERT INTO acp_contract.tour_atoms (atom_id, tour_id, place, is_empty_marker, created_at, updated_at) VALUES
+ ('a1m', '{T[1]}', NULL, true, now() - interval '3 days', now() - interval '3 days');
 INSERT INTO acp_contract.atom_segment (segment_id, canonical_place, canonical_action, created_at) VALUES
  ('S1', 'Hanoi', 'visit', now() - interval '10 days'), ('S2', 'Halong', 'cruise', now() - interval '10 days'),
  ('S3', 'Hue old', 'visit', now() - interval '10 days'), ('S5', 'Kyoto', 'visit', now() - interval '10 days'),
@@ -143,7 +159,9 @@ INSERT INTO acp_contract.atom_segment (segment_id, canonical_place, canonical_ac
  ('S12', 'Seoul', 'walk', now() - interval '10 days');
 INSERT INTO acp_contract.atom_segment_member (segment_id, atom_id) VALUES
  ('S1', 'a1'), ('S2', 'a2'), ('S3', 'a3old'), ('S5', 'a5'), ('S6', 'a6'), ('S7', 'a7'), ('S10', 'a5'),
- ('S12', 'a7');
+ ('S12', 'a7'), ('S5', 'a5old'), ('S1', 'a1m');
+-- S252 audit item 14: S3/a3old (T2, aged), S5/a5old (T3 re-atomized 30 minutes ago, inside the window) and S1/a1m (an
+-- empty-day marker of T1, aged) are dead members; the segments keep a live member or a reference, so no metric above moves.
 -- AA-988: S11 gave way to S1 (alias row keeps it); S12's only member is an atom of the paused T4 (kept for a restore)
 INSERT INTO acp_contract.atom_segment_alias (segment_id_old, segment_id_canonical) VALUES ('S11', 'S1');
 INSERT INTO acp_contract.atom_ranking (tour_id, segment_id, market, computed_at, superseded_at) VALUES
@@ -173,6 +191,15 @@ INSERT INTO silver_aa_internal.seo_context (tour_id, expires_at, cache_key, fetc
  ('{T[3]}', now() - interval '20 days', NULL, now() - interval '300 days');
 -- AA-990/991: T3's newest row expired but is an ideas_v3 row S1 still reuses (fetched 30 days ago) → not stale;
 -- T3's older row never counts (newest row per tour only).
+-- Sources: G1 (T1) built ok; T2 (no group) build failed; G3 (T3, changed 1 hour ago) only a retired build; T4 not live
+-- (Master inactive); G5 (T5) never built; a superseded raw
+-- row of G1 with no Master row (not live).
+INSERT INTO silver_aa_internal.raw_tours (tour_id, source_group_id, source_status) VALUES
+ ('{T[1]}', '{G[1]}', 'active'), ('{T[2]}', NULL, 'active'), ('{T[3]}', '{G[3]}', 'active'),
+ ('{T[4]}', '{G[4]}', 'active'), ('{T[5]}', '{G[5]}', 'active'),
+ ('00000000-0000-0000-0000-000000000006', '{G[1]}', 'superseded');
+INSERT INTO geo.tour_build (source_id, tour_id, status) VALUES
+ ('{G[1]}', '{T[1]}', 'ok'), ('{T[2]}', '{T[2]}', 'failed'), ('{G[3]}', '{T[3]}', 'retired');
 INSERT INTO shared.job (kind, status) VALUES ('recompute', 'queued'), ('a3_atomize', 'succeeded');
 """
 
@@ -188,6 +215,8 @@ EXPECTED = {
     "active_place_atoms_without_card_link": (3, 1), "tenant_versions_older_than_master": (1, 1),
     "angle_gate_requests_on_inactive_atoms": (2, 1), "seo_context_expired": (4, 3),
     "seo_context_expired_active_tours": (1, 1),
+    "dead_member_rows": (3, 2), "live_sources_without_place_build": (2, 1), "live_sources_place_build_failed": (1, 1),
+    "active_place_atoms_card_miss": (1, 1),
 }
 
 
@@ -277,23 +306,30 @@ class ProbeOnPostgresTest(unittest.TestCase):
         self.assertEqual(m["routes_differ"]["sample_aged"], [T[2]])
         self.assertEqual(sorted(m["ranking_off_active_pairs"]["sample"]), sorted([T[2], T[4]]))
         self.assertEqual(m["place_card_links_missing"]["sample"], ["a3"])
+        self.assertEqual(m["dead_member_rows"]["sample"], ["S1:a1m", "S3:a3old", "S5:a5old"])
+        self.assertEqual(m["dead_member_rows"]["sample_aged"], ["S1:a1m", "S3:a3old"])
+        self.assertEqual(m["live_sources_without_place_build"]["sample"], [G[3], G[5]])
+        self.assertEqual(m["live_sources_place_build_failed"]["sample"], [T[2]])
+        self.assertEqual(m["active_place_atoms_card_miss"]["sample"], ["a2"])
 
     def test_totals_jobs_and_route_parity(self):
         t = self.res["totals"]
         self.assertEqual((t["active_tours"], t["active_atoms"], t["tours_changed_within_window"]), (4, 5, 1))
+        self.assertEqual((t["segment_member_rows"], t["active_place_atoms"], t["live_sources"], t["live_sources_built"]),
+                         (10, 5, 4, 2))
         self.assertEqual(self.res["jobs_in_flight"], [{"kind": "recompute", "status": "queued", "n": 1}])
         self.assertEqual(self.res["route_parity"], {"expected_routes": 2, "current_routes_compared": 2})
 
     def test_verdict_and_gate(self):
         v = self.res["verdict"]
-        self.assertEqual((v["stale"], v["stale_aged"], v["errors"]), (13, 12, 0))
+        self.assertEqual((v["stale"], v["stale_aged"], v["errors"]), (14, 14, 0))
         log = [RAN_AS] + self.lines
         report = gate.evaluate(log, "0", enforce=False)
         self.assertTrue(report["green"], report["failures"])
-        self.assertEqual(len(report["would_fail"]), 11)
+        self.assertEqual(len(report["would_fail"]), 12)
         enforced = gate.evaluate(log, "0", enforce=True)
         self.assertFalse(enforced["green"])
-        self.assertEqual(sum(f.startswith("stale: ") for f in enforced["failures"]), 11)
+        self.assertEqual(sum(f.startswith("stale: ") for f in enforced["failures"]), 12)
 
     def test_role_switch_refused_is_an_error_not_a_master_read(self):
         async def run():
