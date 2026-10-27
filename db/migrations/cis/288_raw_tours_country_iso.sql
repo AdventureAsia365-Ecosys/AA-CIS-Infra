@@ -15,8 +15,13 @@
 --   2. Aliases: the S0 spellings shared/country_resolver.py knew that shared.countries lacked (japanese, srilanka,
 --      sri landka, thai, khmer, bali, phil, prc) are appended to aliases (sorted, distinct; re-runnable). The list
 --      sits between the two aa990:aliases markers: scripts/aa990_country_data.py reads it into the in-code mirror
---      shared/countries/data/countries.json (tests/unit/test_aa990_country_mirror.py). Then 279's guard 2 again:
+--      shared/countries/countries.json (tests/unit/test_aa990_country_mirror.py). Then 279's guard 2 again:
 --      every lookup key (lower name, iso_name, alias, iso2, iso3) names exactly one country.
+--   2b. 279's backfill again for the new aliases: a shared.destinations row whose country text is one of them and
+--      whose country_iso2 is NULL gets its code, so 279's invariant holds (no NULL country_iso2 while
+--      shared.country_iso2(country) resolves; nothing left in shared.v_country_unmapped for these spellings). Only
+--      country_iso2 is SET, so the UPDATE OF country trigger does not fire and no place's country text changes.
+--      raw_tours needs none: guard 1 already proved every tour country is a name with its country_iso2.
 --   3. raw_tours_country_fkey: FOREIGN KEY (country) REFERENCES shared.countries (name), NOT VALID then VALIDATE
 --      (~1k rows; countries_name_key is the UNIQUE it needs; idx_aa_internal_raw_tours_country indexes the
 --      referencing side). It enforces both "a real ISO country" and "the one canonical spelling" (never 'INDIA',
@@ -26,7 +31,8 @@
 --      BEFORE trigger raw_tours_country_iso2 (279) fills country_iso2 from country before the check runs.
 --   5. DROP CONSTRAINT IF EXISTS chk_raw_tours_country (the 20-name list).
 --   6. Guard after: both constraints present and validated, chk_raw_tours_country gone, the trigger still there,
---      every lookup key unique. NOTICE: tours per country.
+--      every lookup key unique, no raw_tours / shared.destinations row with a NULL country_iso2 whose country
+--      resolves. NOTICE: tours per country.
 --   7. Register 288.
 --
 -- Not changed: shared.destinations.country (a place's own country, any text; its trigger resolves any ISO name), the
@@ -43,8 +49,11 @@
 -- CHECK / DROP, held until COMMIT; the VALIDATEs read ~1k rows. Seconds; lock_timeout 5s. Apply through AA-CIS-Infra
 -- DB Migrate (byte copy in db/migrations/cis/) with the job tables idle (DM-11.4), after 287.
 --
--- Order with the code. Apply BEFORE the S0 change of the same PR (shared/country_resolver.py through shared/countries)
--- is deployed: from then on S0 may write any ISO name, which only this file allows. The places change (guards from
+-- Order with the code. Either order is safe. The CIS code deploys on its merge to main (deploy-dev.yml), and the Infra
+-- copy can merge only once this file is on CIS main (Migration Copy Guard, D8), so in practice the code goes live
+-- first. On the old 20-name CHECK it still refuses a non-AA country per row, as today (insert_batch isolates the
+-- error; Tibet now maps to China, which passes); PATCH /admin/tours/{id}/country answers 500 for a non-AA country
+-- until apply. Apply 288 right after the CIS merge, with no S0 upload in between. The places change (guards from
 -- shared/countries) does not depend on this file.
 --
 -- conftest skips 288 (the replay's tests drop and recreate shared.countries, which the FK would pin);
@@ -106,6 +115,10 @@ UPDATE shared.countries c
        ) AS v (iso2, extra)
  WHERE c.iso2 = v.iso2
    AND NOT (c.aliases @> v.extra);
+
+-- ── 2b. 279's backfill for the new aliases (country_iso2 only: the UPDATE OF country trigger does not fire) ──────────
+UPDATE shared.destinations SET country_iso2 = shared.country_iso2(country)
+ WHERE country_iso2 IS NULL AND country IS NOT NULL AND shared.country_iso2(country) IS NOT NULL;
 
 -- ── 3 and 4. The foreign key on the canonical name, and country / country_iso2 set together ───────────────────────
 DO $$
@@ -173,6 +186,13 @@ BEGIN
      WHERE shared.country_iso2(n) IS NULL;
     IF bad IS NOT NULL THEN
         RAISE EXCEPTION 'migration 288: S0 spellings that do not resolve: %', bad;
+    END IF;
+    IF EXISTS (SELECT 1 FROM silver_aa_internal.raw_tours
+                WHERE country_iso2 IS NULL AND country IS NOT NULL AND shared.country_iso2(country) IS NOT NULL)
+       OR EXISTS (SELECT 1 FROM shared.destinations
+                   WHERE country_iso2 IS NULL AND country IS NOT NULL AND shared.country_iso2(country) IS NOT NULL) THEN
+        RAISE EXCEPTION 'migration 288: a raw_tours / shared.destinations row has a NULL country_iso2 while its '
+                        'country resolves';
     END IF;
     SELECT string_agg(format('%s %s', coalesce(country, '(none)'), n), ', ' ORDER BY country) INTO per
       FROM (SELECT country, count(*) AS n FROM silver_aa_internal.raw_tours GROUP BY country) x;
