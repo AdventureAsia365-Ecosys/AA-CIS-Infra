@@ -11,11 +11,10 @@ name: DB Freshness Probe (shared RDS)
 # report-only). The probe switches to `cis_app` inside its read-only snapshot and prints ids and counts only.
 # db/freshness_gate.py then reads the task log.
 #
-# Mode: REPORT until AA-988 / AA-989 / AA-990 close (db/freshness_gate.py ENFORCE = False): red only when the probe
-# itself failed (task exit, not READ_ONLY, no verdict, JSON cut, a metric that failed to run, the visibility floor, not
-# read as cis_app); counts are compared with the S251 baseline in the step summary and a rise above it is a warning.
-# ENFORCE = True (one-line PR), or the dispatch input enforce=true for one run, also fails on every stale metric
-# with aged > 0.
+# Mode: ENFORCE since S253 (db/freshness_gate.py ENFORCE = True): red on every stale metric with aged > 0, and when the
+# probe itself failed (task exit, not READ_ONLY, no verdict, JSON cut, a metric that failed to run, the visibility
+# floor, not read as cis_app); counts are compared with the S251 baseline in the step summary and a rise above it is a
+# warning. The dispatch input enforce=true is now the default behaviour.
 #
 # Triggers: nightly 05:13 UTC (schema dump 03:43, isolation probe 04:13, tour liveness gate 04:43: never two migrator
 # tasks at once, and the isolation probe cell sessions.master_break_glass_only fails on any master session but its

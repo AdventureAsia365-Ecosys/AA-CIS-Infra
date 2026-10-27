@@ -13,6 +13,7 @@ import re
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -201,8 +202,8 @@ class ProbeShapeTest(unittest.TestCase):
                 self.assertIn(" AS id", inner)
                 self.assertIn("< $1 AS aged", inner)
 
-    def test_shipped_in_report_mode_and_reads_as_cis_app(self):
-        self.assertIs(gate.ENFORCE, False)
+    def test_shipped_in_enforce_mode_and_reads_as_cis_app(self):
+        self.assertIs(gate.ENFORCE, True)  # on since S253 (enforce run 40456962884 green)
         self.assertEqual((probe.READ_ROLE, gate.READ_ROLE), ("cis_app", "cis_app"))
         self.assertEqual(probe.STALE_AFTER_HOURS, 24)
 
@@ -391,7 +392,7 @@ class GateTest(unittest.TestCase):
             p = Path(d)
             (p / "task.log").write_text("\n".join(lines) + "\n")
             buf = io.StringIO()
-            with contextlib.redirect_stdout(buf):
+            with contextlib.redirect_stdout(buf), mock.patch.object(gate, "ENFORCE", False):
                 rc = gate.main(["--log", str(p / "task.log"), "--exit-code", "0", "--summary", str(p / "s.md"),
                                 "--out", str(p / "g.json"), "--reason", "nightly"])
             self.assertEqual(rc, 0)
@@ -404,6 +405,7 @@ class GateTest(unittest.TestCase):
             self.assertEqual((saved["mode"], saved["baseline_as_of"]), ("report", "S251 2026-10-25"))
             with contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(gate.main(["--log", str(p / "task.log"), "--exit-code", "0", "--enforce"]), 1)
+                self.assertEqual(gate.main(["--log", str(p / "task.log"), "--exit-code", "0"]), 1)  # ENFORCE default
 
 
 class WorkflowTest(unittest.TestCase):

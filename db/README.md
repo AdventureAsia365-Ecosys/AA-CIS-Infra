@@ -516,15 +516,14 @@ delta, sample) and keeps `task.log` + `gate.json` as the artifact (30 days).
   the only grace (Dev has no traffic: AA-991 scope 2).
 - **Gate classes** (`METRICS` in the probe): `stale` = a link the job chain must keep in step, counted when enforced;
   `info` = coverage or a by-design number, reported against the baseline, never red.
-- **Report mode (shipped):** `freshness_gate.ENFORCE = False`. Red only when the probe itself failed: task exit,
-  no READ_ONLY run, no single verdict line, a JSON part missing or cut, verdict and JSON disagree, a metric that failed
-  to run, the visibility floor (`cis_app` sees no active Master or no active atom), not read as `cis_app`, or a
-  baseline metric missing from the probe. A count above its S251 baseline is a warning; the summary lists the stale
-  metrics that would be red once enforced.
-- **Enforce:** a one-line PR sets `ENFORCE = True` once AA-988, AA-989 and AA-990 are Done and a report night shows
-  `stale_aged=0`; from then on any `stale` metric with aged > 0 is red. For one run (the red → green alarm test):
-  dispatch with `enforce=true`. `dead_member_rows` keeps an enforced run red until the one-time cleanup of the member
-  rows left from before CIS #1020 (S252 propagation audit §6 item 4); flip after a green `enforce=true` run.
+- **Enforce (shipped since S253, 27/10/2026):** `freshness_gate.ENFORCE = True`: any `stale` metric with aged > 0
+  is red, on top of the probe failures below. Flipped after the S253 cleanup window (10,495 dead member rows from
+  before CIS #1020 deleted, 5 angle requests repointed) and the probe fix (#426); the dispatched enforce run
+  40456962884 was green with `stale_aged = 0`.
+- **Probe failures (red in every mode):** task exit, no READ_ONLY run, no single verdict line, a JSON part missing or
+  cut, verdict and JSON disagree, a metric that failed to run, the visibility floor (`cis_app` sees no active Master or
+  no active atom), not read as `cis_app`, or a baseline metric missing from the probe. A count above its S251
+  baseline is a warning. Report mode (`ENFORCE = False`) keeps only these and lists the stale metrics that would be red.
 - **Coverage metrics (S252 propagation audit §6 item 14).** Cheap SQL ($0) that replaces the audit's hand-run
   `coverage.py`: dead member rows (`stale`: the per-tour rule of AA-CIS-App `segment_matching`
   `_DEAD_MEMBERS_OF_TOUR_SQL`, CIS #1020, so every re-matched tour keeps none), place-build coverage of live sources
