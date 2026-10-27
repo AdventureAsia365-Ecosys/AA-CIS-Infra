@@ -108,9 +108,9 @@ locals {
   # Identity values of the route classes (AA-Partner api/app/settings.py; ADR 0006b decision 6). Public values
   # (issuer URLs, client ids, pool id), never secrets. The repo is public, so they live only here (DM-6.10). AA-939:
   # the PARTNER pool and its partner-web client (identity_partner.tf) and the crm-staff WORKFORCE client (identity.tf)
-  # are wired. The EXTERNAL cis-portal bridge stays accepted on Dev while the CRM web still signs in with it
-  # (crm_web.tf crm_partner_signin_enabled; the app refuses it outside dev / test / local); it is removed in the P2b
-  # clean-up (AA-979).
+  # are wired. AA-979 P2b runbook 4.4: the Dev EXTERNAL cis-portal bridge onto /crm/v1 is removed (AA-Partner no longer
+  # reads COGNITO_EXTERNAL_ISSUER / COGNITO_CIS_PORTAL_CLIENT_ID; the CRM web signs in with the partner pool since
+  # crm_partner_signin_enabled), so the two values are no longer passed.
   # AA-939 also passes the team values (app.members): the partner pool id for the invitation claim and member sign-out
   # (IAM allow-list in identity_partner.tf), the partner host origin (join links), and AA system mail (ses.tf sender +
   # transactional configuration set, IAM ses_send attached to the task role in identity_partner.tf).
@@ -122,8 +122,6 @@ locals {
     { name = "COGNITO_PARTNER_ISSUER", value = local.idpartner_issuer },
     { name = "COGNITO_PARTNER_WEB_CLIENT_ID", value = aws_cognito_user_pool_client.partner["partner-web"].id },
     { name = "COGNITO_PARTNER_POOL_ID", value = aws_cognito_user_pool.partner.id },
-    { name = "COGNITO_EXTERNAL_ISSUER", value = "https://${aws_cognito_user_pool.external.endpoint}" },
-    { name = "COGNITO_CIS_PORTAL_CLIENT_ID", value = aws_cognito_user_pool_client.external["cis-portal"].id },
     { name = "PARTNER_WEB_ORIGIN", value = "https://${local.crm_partner_host}" },
     { name = "SES_FROM_ADDRESS", value = var.ses_from_address },
     { name = "SES_CONFIGURATION_SET", value = aws_sesv2_configuration_set.stream["transactional"].configuration_set_name },

@@ -36,7 +36,7 @@
 # =============================================================================
 
 variable "crm_partner_signin_enabled" {
-  description = "AA-939 (ADR 0006b): the CRM web signs in with the partner pool (partner-web client, MFA required) instead of the EXTERNAL cis-portal client. Flip only after the e2e users exist on the partner pool; then write the web secret for the partner client (crm_dev_identity.py web-secret --pool partner) and deploy the web."
+  description = "AA-939 (ADR 0006b): the CRM web signs in with the partner pool (partner-web client, MFA required) instead of the EXTERNAL cis-portal client. Flip only after the e2e users exist on the partner pool; then write the web secret for the partner client (crm_dev_identity.py web-secret --pool partner) and deploy the web. Since AA-979 P2b the CRM API no longer accepts cis-portal tokens on /crm/v1, so false is NOT a working rollback any more: keep it true."
   type        = bool
   default     = false
 }
