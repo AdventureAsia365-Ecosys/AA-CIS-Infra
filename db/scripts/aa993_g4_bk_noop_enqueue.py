@@ -26,7 +26,7 @@ it back), `created_by` = the script. Prints ids, statuses and numbers only. Loca
 import asyncio
 import json
 
-MODE = "dry_run"
+MODE = "apply"
 
 SCRIPT_NAME = "aa993_g4_bk_noop_enqueue"
 ACTOR = f"script:{SCRIPT_NAME}"
