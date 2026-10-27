@@ -39,6 +39,15 @@ locals {
     { name = "SEGMENT_GC_MODE", value = var.segment_gc_mode },
   ]
 
+  # AA-905 / AA-989 (S236 paid-run gate, flipped S252 after the AA-905 place backfill): automatic place_extract
+  # triggers (end of A3 atomize, place-card relink) also for a source with no place build yet (AA-CIS-App
+  # services/places/enqueue.py auto_allowed; "on" is one of 1/true/on/yes). Off = only already-built sources are
+  # kept in step (set-active / restore never checked it, audit S252 §5.4). The triggers run on the worker and in
+  # api requests, so api and worker carry the same value.
+  place_pipeline_auto_env = [
+    { name = "PLACE_PIPELINE_AUTO", value = var.place_pipeline_auto ? "on" : "off" },
+  ]
+
   # AA-839: the data_erasure job's apply switch and the tenant retention window (AA-CIS-App
   # services/jobs/erasure_job.py). The api checks the flag before it enqueues an apply (403) and the job
   # re-checks both on the worker, so api and worker carry the same values. Apply is on only for the
@@ -558,6 +567,7 @@ resource "aws_ecs_task_definition" "api" {
       local.bedrock_satellite_env,
       local.place_shapes_env,
       local.segment_gc_env,
+      local.place_pipeline_auto_env,
       local.erasure_env,
       local.redis_env,
     )
@@ -766,6 +776,7 @@ resource "aws_ecs_task_definition" "worker" {
       local.bedrock_satellite_env,
       local.place_shapes_env,
       local.segment_gc_env,
+      local.place_pipeline_auto_env,
       local.erasure_env,
       local.t9_faq_filter_env,
       local.supply_photo_purge_env,

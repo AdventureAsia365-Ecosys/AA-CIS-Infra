@@ -57,6 +57,19 @@ enforces; `info` = coverage or by-design number, reported against the S251 basel
                                               not reusable by S1 (AA-CIS-App services/seo_intelligence/s1_prefetch:
                                               an `ideas_v3` row fetched within S1_REUSE_DAYS is reused whatever its
                                               expires_at; 25/10: all 75 expired rows were such rows)
+Coverage metrics (S252 propagation audit §6 item 14; the audit's hand-run coverage.py, now nightly, $0 SQL):
+  dead_member_rows                     stale  atom_segment_member rows on a dead atom (tour_atoms.deleted or
+                                              is_empty_marker), the rule AA-CIS-App segment_matching applies per tour
+                                              (_DEAD_MEMBERS_OF_TOUR_SQL, CIS #1020): a re-matched tour keeps none.
+                                              Rows from before #1020 stay until the one-time cleanup (audit item 4)
+  live_sources_without_place_build     info   live sources (catalog liveness rule of AA-CIS-App services/places/
+                                              store._LIVE_SQL) with no geo.tour_build row other than `retired`
+                                              (enqueue.source_is_built false: AA-905 coverage)
+  live_sources_place_build_failed      info   live sources whose place build row has status `failed`
+  active_place_atoms_card_miss         info   active place atoms whose atom_place_card row has no card (card_id
+                                              NULL, a resolved miss); with active_place_atoms_without_card_link
+                                              (no row at all) and totals.active_place_atoms this is the card
+                                              coverage (AA-784)
 
 Routes and ranking are checked by parity, not timestamps: derive_routes() below is a verbatim port of
 AA-CIS-App services/acp_contract/route_detection.py (derive_routes / _runs / _spans and LEAST_DAYS, LEAST_PLACES,
@@ -154,6 +167,16 @@ o AS (
       LEFT JOIN agr ag ON ag.segment_id = s.segment_id
      WHERE am.segment_id IS NULL AND cr.segment_id IS NULL AND ct.segment_id IS NULL)
 """
+# AA-CIS-App services/places/store.py _LIVE_SQL (liveness rule of catalog.v_tour, migration 225) and
+# services/places/enqueue.py _BUILT_SQL: a live source, keyed like geo.tour_build.source_id. Change with them.
+MASTER_TENANT_ID = "00000000-0000-0000-0000-000000000001"
+LIVE_SOURCES = f"""
+        SELECT COALESCE(rt.source_group_id, rt.tour_id)::text AS source_id, c.changed_at
+          FROM gold_aa_internal.published_tours pt
+          JOIN silver_aa_internal.raw_tours rt ON rt.tour_id = pt.tour_id
+          JOIN chg c ON c.tour_id = pt.tour_id
+         WHERE pt.tenant_id = '{MASTER_TENANT_ID}'::uuid AND {ACTIVE_PT}
+           AND rt.source_status = 'active' AND rt.deleted_at IS NULL"""
 # AA-CIS-App services/seo_intelligence/s1_prefetch.py: SEO_FORMAT and REUSE_DAYS (env S1_SEO_REUSE_DAYS, default 180).
 SEO_FORMAT = "ideas_v3"
 S1_REUSE_DAYS = 180
@@ -287,6 +310,30 @@ METRICS = {
          WHERE s.expires_at < now()
            AND NOT (coalesce(s.cache_key, '') LIKE '%:{SEO_FORMAT}'
                     AND s.fetched_at > now() - make_interval(days => {S1_REUSE_DAYS}))"""),
+    # S252 audit item 14: coverage. Dead members = AA-CIS-App segment_matching _DEAD_MEMBERS_OF_TOUR_SQL (CIS #1020)
+    # over every tour; aged by the later of the tour's change and the atom's own update (its soft delete).
+    "dead_member_rows": ("stale", "rows", """
+        SELECT m.segment_id || ':' || m.atom_id AS id, GREATEST(c.changed_at, t.updated_at) < $1 AS aged
+          FROM acp_contract.atom_segment_member m
+          JOIN acp_contract.tour_atoms t ON t.atom_id = m.atom_id
+          LEFT JOIN chg c ON c.tour_id = t.tour_id
+         WHERE t.deleted OR t.is_empty_marker"""),
+    "live_sources_without_place_build": ("info", "sources", f"""
+        SELECT l.source_id AS id, l.changed_at < $1 AS aged
+          FROM ({LIVE_SOURCES}) l
+         WHERE NOT EXISTS (SELECT 1 FROM geo.tour_build b
+                            WHERE b.source_id = l.source_id AND b.status <> 'retired')"""),
+    "live_sources_place_build_failed": ("info", "sources", f"""
+        SELECT l.source_id AS id, l.changed_at < $1 AS aged
+          FROM ({LIVE_SOURCES}) l
+          JOIN geo.tour_build b ON b.source_id = l.source_id
+         WHERE b.status = 'failed'"""),
+    "active_place_atoms_card_miss": ("info", "atoms", f"""
+        SELECT a.atom_id AS id, c.changed_at < $1 AS aged
+          FROM acp_contract.v_active_tour_atoms a
+          JOIN chg c ON c.tour_id = a.tour_id
+          JOIN acp_shared.atom_place_card k ON k.atom_id = a.atom_id
+         WHERE {PLACE_ATOM} AND k.card_id IS NULL"""),
 }
 # Computed in Python from MOMENTS_SQL + CURRENT_ROUTES_SQL (route parity); listed here for the order and the gate.
 ROUTE_METRICS = {"routes_missing": ("stale", "tours"), "routes_differ": ("stale", "tours")}
@@ -297,7 +344,8 @@ ORDER = ["atoms_older_than_master", "active_tours_without_atoms", "active_atoms_
          "current_routes_older_than_atoms", "routes_with_dead_segment", "geo_tour_place_rows_on_inactive_atoms",
          "geo_tour_place_stale_rows", "place_card_links_missing", "active_place_atoms_without_card_link",
          "tenant_versions_older_than_master", "angle_gate_requests_on_inactive_atoms", "seo_context_expired",
-         "seo_context_expired_active_tours"]
+         "seo_context_expired_active_tours", "dead_member_rows", "live_sources_without_place_build",
+         "live_sources_place_build_failed", "active_place_atoms_card_miss"]
 
 WRAP = """WITH {chg}, x AS ({inner})
 SELECT count(DISTINCT x.id)::bigint AS n,
@@ -324,6 +372,7 @@ SELECT route_id, tour_id::text AS tour_id, ordered_segment_ids::text AS segs, fi
 CHG_SQL = "WITH " + CHG + " SELECT tour_id::text AS tour_id, active, changed_at FROM chg"
 
 TOTALS_SQL = f"""
+WITH {CHG}
 SELECT (SELECT count(*) FROM gold_aa_internal.published_tours pt WHERE {ACTIVE_PT})::bigint AS active_tours,
        (SELECT count(*) FROM acp_contract.v_active_tour_atoms)::bigint AS active_atoms,
        (SELECT count(*) FROM acp_contract.atom_segment)::bigint AS segments,
@@ -333,7 +382,13 @@ SELECT (SELECT count(*) FROM gold_aa_internal.published_tours pt WHERE {ACTIVE_P
        (SELECT count(*) FROM acp_shared.atom_place_card)::bigint AS place_card_links,
        (SELECT count(*) FROM gold_aa_internal.tenant_tour_versions)::bigint AS tenant_versions,
        (SELECT count(*) FROM acp_shared.angle_gate_request)::bigint AS angle_gate_requests,
-       (SELECT count(*) FROM silver_aa_internal.seo_context)::bigint AS seo_context_rows
+       (SELECT count(*) FROM silver_aa_internal.seo_context)::bigint AS seo_context_rows,
+       (SELECT count(*) FROM acp_contract.atom_segment_member)::bigint AS segment_member_rows,
+       (SELECT count(*) FROM acp_contract.v_active_tour_atoms a WHERE {PLACE_ATOM})::bigint AS active_place_atoms,
+       (SELECT count(DISTINCT l.source_id) FROM ({LIVE_SOURCES}) l)::bigint AS live_sources,
+       (SELECT count(DISTINCT l.source_id) FROM ({LIVE_SOURCES}) l
+         WHERE EXISTS (SELECT 1 FROM geo.tour_build b
+                        WHERE b.source_id = l.source_id AND b.status <> 'retired'))::bigint AS live_sources_built
 """
 JOBS_SQL = """
 SELECT kind, status, count(*)::bigint AS n

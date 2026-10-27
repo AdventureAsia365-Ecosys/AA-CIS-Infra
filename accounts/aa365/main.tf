@@ -210,6 +210,9 @@ module "ecs" {
   # AA-988: delete zero-reference orphan segments in every platform recompute (S252: backfill of 7,671 done by the
   # runbook with a snapshot + restore file; DRY RUN after = 0 deletable). Rollback: "report".
   segment_gc_mode = "apply"
+  # AA-905 / AA-989: automatic place pipeline for new sources (audit S252 §6 item 8, approved after the AA-905 place
+  # backfill finished at $4.31). About $0.006-0.019 per new tour (S252 re-sync + 30-day stage costs). Rollback: false.
+  place_pipeline_auto = true
   # AA-779: on since S247 (shadow verdicts read on real blogs first; ADR 0011 in AA-CIS-App). Rollback: "shadow".
   t9_faq_llm_filter = "on"
   # AA-645: S1 writer v2 on the worker, on since S248 (set by hand until S250, now carried here so a template

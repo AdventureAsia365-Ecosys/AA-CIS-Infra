@@ -30,8 +30,10 @@ ENFORCE = False
 READ_ROLE = "cis_app"
 
 # S251 baseline (25/10/2026, Dev, read as cis_app over ECS exec; root .tmp-session/s251/audit-s1prop/coverage*.txt
-# and the Linear text of AA-988 / AA-989 / AA-990 / AA-991). None = the metric is sharper than any S251 query: its
-# baseline is the first nightly run (recorded in db/README.md). Approximate entries are marked in db/README.md.
+# and the Linear text of AA-988 / AA-989 / AA-990 / AA-991); the coverage metrics added after the S252 propagation
+# audit (root docs/audits/2026-10-26-S252-propagation-audit) take that audit's numbers. None = the metric is sharper
+# than any S251 query: its baseline is the first nightly run (recorded in db/README.md). Approximate entries are
+# marked in db/README.md.
 BASELINE_AS_OF = "S251 2026-10-25"
 BASELINE = {
     "atoms_older_than_master": 0,
@@ -57,6 +59,11 @@ BASELINE = {
     "angle_gate_requests_on_inactive_atoms": 14,    # of 25 requests
     "seo_context_expired": 76,                      # of 918 rows
     "seo_context_expired_active_tours": None,
+    # S252 propagation audit §6 item 14 (26/10/2026, its hand-run coverage.py, not the S251 queries):
+    "dead_member_rows": 10547,                      # stale: of 27,712 member rows, before the one-time cleanup
+    "live_sources_without_place_build": None,       # info: 769 before the AA-905 backfill; first run = after it
+    "live_sources_place_build_failed": None,        # info
+    "active_place_atoms_card_miss": None,           # info: the `no_row` twin is active_place_atoms_without_card_link
 }
 
 

@@ -395,9 +395,10 @@ locals {
       Resource = "arn:aws:scheduler:${var.aws_region}:${var.account_id}:schedule-group/${local.name_prefix}-acp"
     },
     {
-      # AA-402 — module.eventbridge's 3 named schedules (acp_daily_ingest,
-      # acp_weekly_export, acp_veto_window_close), all created under the
-      # aa-cis-dev-acp schedule group above. Scheduler schedule ARNs are
+      # AA-402 — schedules in the aa-cis-dev-acp schedule group above (the
+      # module.eventbridge ACP schedules were removed in AA-989; the group now
+      # holds the accounts/aa365 schedules: dfs_balance, retention, photo_sync,
+      # booking_uptime, rds_snapshot_expiry). Scheduler schedule ARNs are
       # always schedule/{group-name}/{schedule-name} (confirmed against
       # AWS's own botocore service model regex for the scheduler service,
       # not assumed) — the /* here covers only schedule names under this

@@ -261,6 +261,12 @@ variable "place_shapes_enabled" {
   default     = false
 }
 
+variable "place_pipeline_auto" {
+  description = "AA-905/AA-989: env PLACE_PIPELINE_AUTO (on/off) on api and worker. On = automatic place_extract also for sources with no place build (paid, cents per tour); off (default) = only already-built sources are re-synced."
+  type        = bool
+  default     = false
+}
+
 variable "segment_gc_mode" {
   description = "AA-988: env SEGMENT_GC_MODE on api and worker for the recompute job's segment_gc stage: report (default), apply or off."
   type        = string
