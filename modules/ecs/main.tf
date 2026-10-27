@@ -6,6 +6,13 @@
 locals {
   name_prefix = "${var.project}-${var.environment}"
 
+  # AA-993 G1: the test-only job kind noop_sleep (AA-CIS-App services/jobs/noop_sleep_job.py, deploy-gate exempt) for
+  # the worker-drain live proof. Registered only when JOB_TEST_KINDS=1; Dev only, on api AND worker (the verify's
+  # worker-kinds row compares both sides, and the api's deploy gate must see the kind as exempt).
+  job_test_kinds_env = [
+    { name = "JOB_TEST_KINDS", value = var.environment == "dev" ? "1" : "0" },
+  ]
+
   # AA-828: operator alert e-mail (spend budget crossings, job ops_alert_email) for the api and the
   # worker. Empty values are fine: the app logs and sends nothing (shared/ops_alerts.py).
   # AA-913: ALERTS_TOPIC_ARN + ALERT_BOOTSTRAP_EMAIL let the admin page (Platform > Alert recipients)
@@ -570,6 +577,7 @@ resource "aws_ecs_task_definition" "api" {
       local.place_pipeline_auto_env,
       local.erasure_env,
       local.redis_env,
+      local.job_test_kinds_env,
     )
     secrets = concat([
       { name = "DATABASE_URL", valueFrom = var.secret_rds_arn },
@@ -771,6 +779,9 @@ resource "aws_ecs_task_definition" "worker" {
       # centuries, elevations) instead of flagging them; never tour activities, services or times
       # the source lacks (writer source-fidelity policy). Best draft wins + targeted repair default on.
       { name = "T3_BACKGROUND_FACTS", value = "on" },
+      # AA-993 G1: the drain window on SIGTERM (shared/jobs/worker.py). It must leave 15 s of the 120 s stopTimeout
+      # below; a running job that does not finish in time is released (not counted while a newer revision is alive).
+      { name = "JOB_WORKER_GRACE_SECONDS", value = "100" },
       ],
       local.ops_alert_mail_env,
       local.bedrock_satellite_env,
@@ -782,6 +793,7 @@ resource "aws_ecs_task_definition" "worker" {
       local.supply_photo_purge_env,
       local.s1_writer_env,
       local.redis_env,
+      local.job_test_kinds_env,
     )
     secrets = concat([
       { name = "DATABASE_URL", valueFrom = var.secret_rds_arn },
