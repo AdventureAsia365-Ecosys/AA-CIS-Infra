@@ -13,6 +13,15 @@ Each row is synthetic and inert:
 While the rows exist (≤ LEASE_MINUTES), DB Migrate apply / run-script of every owner waits on them (idle check): run
 the two dispatches, then let the lease expire. `aa993_g4_bk_noop_report.py` (READ_ONLY) shows them ending `cancelled`.
 
+Preconditions (or the proof passes falsely): `aa-booking-dev-api` and `aa-crm-dev-api` each run ≥ 1 task. With 0
+tasks running, pending or desired, both preflight scripts skip the gate ("no task running, pending or desired — gate
+skipped") and the Deploy Dev goes green. Check `runningCount` before dispatching, and read the preflight log: it must
+show the `GET .../deploy-gate -> 200` line and `blocked_by`, not the "gate skipped" notice.
+
+Side effect: the seeded `bk_retention_job` row shows in the Booking retention status (`/booking/retention`, failed
+bucket, status `cancelled`) as the newest run until the next real retention run replaces it. It is test data, marked
+by its payload and `created_by`.
+
 Modes: MODE = "dry_run" (this file as merged) inserts both rows, prints them and rolls back; "apply" (one-line
 follow-up PR) commits. Refuses when a proof row of either kind is still running. Writes as each schema's owner role
 (`bk_owner`, `crm_owner`), one transaction per schema. Prints ids and statuses only. Local test:
