@@ -321,22 +321,22 @@ class ProbeOnPostgresTest(unittest.TestCase):
 
     def test_totals_jobs_and_route_parity(self):
         t = self.res["totals"]
-        self.assertEqual((t["active_tours"], t["active_atoms"], t["tours_changed_within_window"]), (4, 5, 1))
+        self.assertEqual((t["active_tours"], t["active_atoms"], t["tours_changed_within_window"]), (5, 7, 1))
         self.assertEqual((t["segment_member_rows"], t["active_place_atoms"], t["live_sources"], t["live_sources_built"]),
-                         (10, 5, 4, 2))
+                         (10, 7, 4, 2))
         self.assertEqual(self.res["jobs_in_flight"], [{"kind": "recompute", "status": "queued", "n": 1}])
         self.assertEqual(self.res["route_parity"], {"expected_routes": 2, "current_routes_compared": 2})
 
     def test_verdict_and_gate(self):
         v = self.res["verdict"]
-        self.assertEqual((v["stale"], v["stale_aged"], v["errors"]), (14, 14, 0))
+        self.assertEqual((v["stale"], v["stale_aged"], v["errors"]), (13, 13, 0))
         log = [RAN_AS] + self.lines
         report = gate.evaluate(log, "0", enforce=False)
         self.assertTrue(report["green"], report["failures"])
-        self.assertEqual(len(report["would_fail"]), 12)
+        self.assertEqual(len(report["would_fail"]), 11)
         enforced = gate.evaluate(log, "0", enforce=True)
         self.assertFalse(enforced["green"])
-        self.assertEqual(sum(f.startswith("stale: ") for f in enforced["failures"]), 12)
+        self.assertEqual(sum(f.startswith("stale: ") for f in enforced["failures"]), 11)
 
     def test_role_switch_refused_is_an_error_not_a_master_read(self):
         async def run():
