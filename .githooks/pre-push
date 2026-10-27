@@ -15,20 +15,22 @@ fi
 
 head=$(git rev-parse HEAD 2>/dev/null || true)
 pushes=0
-other=""
 while read -r _local_ref local_sha _remote_ref _remote_sha; do
   [ -n "${local_sha:-}" ] || continue
   # A delete (all-zero local sha, SHA-1 or SHA-256) pushes no code.
   [[ "$local_sha" =~ ^0+$ ]] && continue
   pushes=$((pushes + 1))
-  [ "$local_sha" = "$head" ] || other="$local_sha"
+  [ "$local_sha" = "$head" ] && continue
+  # The checks run on the working tree at HEAD. That covers an ancestor of HEAD (HEAD holds all of it), not another
+  # branch: fail closed rather than check the wrong tree.
+  if [ -z "$head" ] || ! git merge-base --is-ancestor "$local_sha" HEAD 2>/dev/null; then
+    echo "pre-push: pushing ${local_sha:0:12}, which is not HEAD or an ancestor of it; check out that branch and push again, or use git push --no-verify" >&2
+    exit 1
+  fi
 done
 
 if [ "$pushes" -eq 0 ]; then
   exit 0
-fi
-if [ -n "$other" ]; then
-  echo "pre-push hook: pushing ${other:0:12}, which is not HEAD (${head:0:12}); the checks run on the working tree at HEAD." >&2
 fi
 
 exec bash "$script"
