@@ -58,6 +58,14 @@ migrator_member_of: [bk_owner, catalog_owner, cis_app, cis_owner, crm_owner, pg_
 # (accounts/aa365/crm_data.tf) that Nghiệp fills in the Console before set-password.
 password_roles: {cis_app: aa-cis/dev/rds-cis-app, crm_app: crm/dev/database-url, db_migrator: aa-cis/dev/db-migrator}
 
+# AA-993 M2a (root ADR 0017 d3, design Q17): tables an expand migration file must not name (only a non-unique
+# CREATE INDEX CONCURRENTLY may, and it waits for an open rerun wave). Running code reads them with SELECT * /
+# RETURNING * inside transactions, so a changed row type breaks its prepared statements (critic 6). Plus every
+# catalog.* object (views over CIS base tables that every app reads). Mirrored by db/run_migration.py
+# EXPAND_HOT_TABLES / EXPAND_HOT_SCHEMAS. The list shrinks when the star queries on a table are replaced (Q17).
+expand_hot_tables: [acp_shared.acp_quota_ledger, booking.job, crm.job, shared.job, shared.job_worker]
+expand_hot_schemas: [catalog]
+
 owners:
   cis:
     repo: AA-CIS-App

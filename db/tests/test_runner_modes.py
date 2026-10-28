@@ -167,6 +167,9 @@ class PwConn:
             return self.login
         if query == rm.ROLE_LOGIN_SQL:
             return self.can_login
+        if query == rm.APPLY_LOCK_SQL:              # AA-993 M2a: set-password takes the apply lock
+            self.locked = True
+            return True
         raise AssertionError(query)
 
     async def execute(self, sql):

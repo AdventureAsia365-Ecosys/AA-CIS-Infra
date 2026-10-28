@@ -121,6 +121,18 @@ is not a member of) · 9 ownership post-check failed (rolled
 back; for a no-transaction file the statements before the registration stay committed and the
 version is not registered), or the check after COMMIT found something that ran at COMMIT (committed
 and registered: clean up by hand).
+Exit codes (AA-993 M2a, root ADR 0017): 14 reserved for the expand runtime post-check (M2b) · 15 lock risk: an expand
+file would lock an existing table above EXPAND_MAX_ROWS or of unknown size (non-concurrent CREATE INDEX, ALTER TABLE),
+or creates with IF NOT EXISTS a relation that already exists — nothing ran, make it a contract file (or use
+CONCURRENTLY) · 16 an expand CREATE INDEX CONCURRENTLY left a missing or INVALID index —
+the statements ran, the version is NOT registered, drop the index named in the log and re-run · 17 the apply lock
+(session advisory lock shared by every applying mode) stayed taken by another run for APPLY_LOCK_WAIT_S — nothing ran.
+
+`-- migrate: expand` (AA-993 M2a): the file only adds (new objects; on an existing table a nullable column or one with
+a non-volatile default, or a non-unique index). It runs with statement_timeout 30s (CIC files keep the default), skips
+the job-table idle wait (it still waits for an open wave when it names a hot table, Q5), is size-checked before any
+statement (exit 15) and, for a CIC file, index-validity-checked before its registration (exit 16). The static lint
+(expand_lint) refuses what the text shows; no header = contract, DB Migrate behaves exactly as before.
 
 Local, no database and no asyncpg needed (CI lint and the DB Migrate "Validate input" step):
   python3 db/run_migration.py --inspect db/migrations/cis/230_x.sql
@@ -144,7 +156,7 @@ from datetime import datetime, timezone
 
 DEFAULT_SETTINGS = {"lock_timeout": "5s", "statement_timeout": "15min", "application_name": "db-migrate"}
 OVERRIDABLE = ("lock_timeout", "statement_timeout")
-FLAGS = ("no-transaction", "destructive")
+FLAGS = ("no-transaction", "destructive", "expand")
 
 DIRECTIVE_RE = re.compile(r"^\s*--\s*migrate:\s*(.*?)\s*$", re.IGNORECASE)
 DURATION_RE = re.compile(r"^[0-9]+(us|ms|s|min|h|d)?$")
@@ -230,6 +242,8 @@ class OwnerDir:
     role_lint_from: int           # first file number the role lint applies to (> today's head)
     view_owner_roles: frozenset = frozenset()   # may own objects a switched file creates, besides the owner
     dropped_schemas: tuple = ()   # schemas the owner dropped (owners.yaml dropped_schemas): lint only, never live
+    # AA-993 M2a: owners.yaml runtime_roles + nologin_roles, the only grantees an expand file may name.
+    grant_roles: frozenset = frozenset()
 
 
 OWNER_DIRS = {
@@ -239,10 +253,14 @@ OWNER_DIRS = {
                      "shared", "silver_aa_internal"),
                     frozenset({"catalog_owner", "cis_owner", "cis_app"}), 243, frozenset({"catalog_owner"}),
                     # AA-850 (CIS 299): the four empty ACP v1 stage schemas, dropped
-                    ("acp_gold_output", "acp_silver_s2", "acp_silver_s3", "acp_silver_s4")),
-    "booking": OwnerDir("booking", ("booking",), frozenset(), 14),
-    "tripplanner": OwnerDir("tripplanner", ("tripplanner",), frozenset(), 13),
-    "crm": OwnerDir("crm", ("crm",), frozenset(), 1),     # AA-932: born under crm_owner (rl-003), lint from crm-001
+                    ("acp_gold_output", "acp_silver_s2", "acp_silver_s3", "acp_silver_s4"),
+                    grant_roles=frozenset({"cis_app", "aa_app_user"})),
+    "booking": OwnerDir("booking", ("booking",), frozenset(), 14, grant_roles=frozenset({"booking"})),
+    "tripplanner": OwnerDir("tripplanner", ("tripplanner",), frozenset(), 13, grant_roles=frozenset({"tripplanner"})),
+    # AA-932: born under crm_owner (rl-003), lint from crm-001
+    "crm": OwnerDir("crm", ("crm",), frozenset(), 1,
+                    grant_roles=frozenset({"crm_app", "crm_ai_reader", "crm_eraser", "crm_insights",
+                                           "crm_support_reader"})),
 }
 OWNER_SCHEMAS = tuple(sorted({s for o in OWNER_DIRS.values() for s in o.schemas}))
 MIGRATION_PATH_RE = re.compile(r"(?:^|/)([a-z]+)/([0-9]{3})_[^/]*\.sql$")
@@ -444,11 +462,13 @@ def log(msg: str) -> None:
 class Directives:
     no_transaction: bool = False
     destructive: bool = False
+    expand: bool = False                                    # AA-993 M2a: `-- migrate: expand`
     settings: dict = field(default_factory=lambda: dict(DEFAULT_SETTINGS))
     errors: list = field(default_factory=list)
+    explicit: set = field(default_factory=set)              # settings the header set
 
     def as_json(self) -> dict:
-        return {"no_transaction": self.no_transaction, "destructive": self.destructive,
+        return {"no_transaction": self.no_transaction, "destructive": self.destructive, "expand": self.expand,
                 "settings": self.settings}
 
 
@@ -480,6 +500,8 @@ def parse_directives(sql: str) -> Directives:
         if flag in FLAGS:
             if flag == "no-transaction":
                 d.no_transaction = True
+            elif flag == "expand":
+                d.expand = True
             else:
                 d.destructive = True
             continue
@@ -500,6 +522,11 @@ def parse_directives(sql: str) -> Directives:
             continue
         d.errors.append(f"line {lineno}: unknown directive {value!r} (known: {', '.join(FLAGS)}, "
                         f"{'=…, '.join(OVERRIDABLE)}=…)")
+    d.explicit = set(seen)
+    # AA-993 M2a (ADR 0017 d4): an expand file in a transaction runs with a 30 s statement_timeout unless its header
+    # sets a lower one (expand_lint refuses a higher one); a CIC (no-transaction) file keeps the default.
+    if d.expand and not d.no_transaction and "statement_timeout" not in seen:
+        d.settings["statement_timeout"] = EXPAND_STATEMENT_TIMEOUT
     return d
 
 
@@ -899,7 +926,397 @@ def lint(sql: str, d: Directives, path: str = None) -> tuple:
         elif "SHARED.SCHEMA_VERSIONS" not in stmts[-1].code:
             errors.append("no-transaction file must register its version in shared.schema_versions as "
                           "its LAST statement, so a failed run is retried instead of marked applied")
+    if d.expand:
+        errors.extend(expand_lint(sql, d, owner_dir))
     return errors, warnings
+
+
+# ── AA-993 Phase E slice M2a: expand files (root ADR 0017 decisions 3-5) ──
+# `-- migrate: expand` marks a file that only ADDS: new objects, a new nullable column (or one with a non-volatile,
+# non-generated default) or a new non-unique index on an existing table. No header = contract (manual DB Migrate,
+# MIG-4 unchanged). The static lint below refuses what the text shows; the runtime post-check (M2b, exit 14) will be
+# the authority. Until M2b ships nothing applies expand files automatically (migration-apply.yml is M3).
+EXPAND_STATEMENT_TIMEOUT = "30s"            # ADR 0017 d4: expand files, CREATE INDEX CONCURRENTLY excepted
+EXPAND_MAX_STATEMENT_TIMEOUT_MS = 30_000
+EXPAND_MAX_ROWS = 100_000                   # MIG-10: above this, a lock-taking statement is "lock risk -> contract"
+# owners.yaml expand_hot_tables (db/tests/test_owners_registry.py keeps them equal). Running code reads these with
+# SELECT * / RETURNING * inside transactions (critic 6): a changed row type breaks its prepared statements, so any
+# statement naming one is contract, except a non-unique CREATE INDEX CONCURRENTLY (which waits for an open wave).
+EXPAND_HOT_TABLES = ("acp_shared.acp_quota_ledger", "booking.job", "crm.job", "shared.job", "shared.job_worker")
+EXPAND_HOT_SCHEMAS = ("catalog",)           # catalog.* (views over CIS base tables, consumed by every app)
+EXPAND_VOLATILE_DEFAULT_RE = re.compile(
+    r"\bDEFAULT\b.*\b(RANDOM|GEN_RANDOM_UUID|UUID_GENERATE_V[1-5]|CLOCK_TIMESTAMP|TIMEOFDAY|NEXTVAL|SETSEED)\s*\(")
+EXPAND_ALLOWED_HEAD_RE = re.compile(
+    r"^(BEGIN|START TRANSACTION|COMMIT|END|CREATE|ALTER TABLE|ALTER (FUNCTION|PROCEDURE|SEQUENCE|VIEW|TYPE|INDEX|"
+    r"MATERIALIZED VIEW|DOMAIN)\b|GRANT|COMMENT ON|INSERT INTO|SET)\b")
+CREATED_RE = re.compile(
+    r"^CREATE (?:UNLOGGED |TEMP |TEMPORARY )?(?:UNIQUE )?(TABLE|VIEW|MATERIALIZED VIEW|SEQUENCE|TYPE|DOMAIN|FUNCTION|"
+    r"PROCEDURE|INDEX|SCHEMA)(?: CONCURRENTLY)?(?: IF NOT EXISTS)? ([^\s(]+)")
+CIC_RE = re.compile(r"^CREATE INDEX CONCURRENTLY IF NOT EXISTS ([^\s(]+) ON (?:ONLY )?([^\s(]+)")
+INDEX_TARGET_RE = re.compile(r"^CREATE (UNIQUE )?INDEX (?:CONCURRENTLY )?(?:IF NOT EXISTS )?(?:[^\s(]+ )?ON (?:ONLY )?"
+                             r"([^\s(]+)")
+ALTER_TABLE_RE = re.compile(r"^ALTER TABLE (?:IF EXISTS )?(?:ONLY )?([^\s(*]+)\*? (.+)$")
+ALTER_OTHER_RE = re.compile(r"^ALTER (?:FUNCTION|PROCEDURE|SEQUENCE|VIEW|TYPE|INDEX|MATERIALIZED VIEW|DOMAIN) "
+                            r"(?:IF EXISTS )?([^\s(]+)")
+ON_TARGET_RE = re.compile(r"^CREATE (?:OR REPLACE )?(?:CONSTRAINT )?(TRIGGER|POLICY|RULE) \S+ .*?\bON ([^\s(]+)")
+WRITE_TARGET_RE = re.compile(r"^(?:WITH\b.*?\b)?(?:INSERT INTO|UPDATE(?: ONLY)?|DELETE FROM(?: ONLY)?|MERGE INTO) "
+                             r"([^\s(]+)")
+GRANT_ON_RE = re.compile(r"^GRANT .*? ON (?:(TABLE|SEQUENCE|FUNCTION|PROCEDURE|ROUTINE|TYPE|DOMAIN|SCHEMA|"
+                         r"ALL TABLES IN SCHEMA|ALL SEQUENCES IN SCHEMA|ALL FUNCTIONS IN SCHEMA|ALL ROUTINES IN SCHEMA"
+                         r"|DATABASE|LANGUAGE|FOREIGN [A-Z ]+?|LARGE OBJECT|TABLESPACE|PARAMETER) )?(.+?) TO (.+)$")
+EXPAND_FORBIDDEN_RES = (
+    (re.compile(r"\bCREATE OR REPLACE\b"), "CREATE OR REPLACE changes an existing definition when the object exists: "
+     "use plain CREATE in an expand file (a replaced view or function is contract)"),
+    (re.compile(r"\bALTER DEFAULT PRIVILEGES\b"), "ALTER DEFAULT PRIVILEGES changes grants of objects created later "
+     "(contract)"),
+    (re.compile(r"^REVOKE\b"), "REVOKE changes existing grants (contract)"),
+    (re.compile(r"\bSET (?:LOCAL |SESSION )?ROLE (?:TO |= )?\"?CATALOG_OWNER\b"), "SET ROLE catalog_owner is the "
+     "catalog.* recipe (contract)"),
+    (re.compile(r"^CREATE EXTENSION\b"), "extensions belong to roles/ files (master), never an expand file"),
+)
+
+
+def _ident(tok: str) -> str:
+    """Normalised object name from statement code (already upper case): quotes and a trailing `(` removed."""
+    return tok.strip().rstrip("(").replace('"', "")
+
+
+def _same_object(a: str, b: str) -> bool:
+    if a == b:
+        return True
+    if "." in a and "." in b:
+        return False
+    return a.rsplit(".", 1)[-1] == b.rsplit(".", 1)[-1]
+
+
+def _created(stmts: list) -> list:
+    out = []
+    for s in stmts:
+        m = CREATED_RE.match(s.code)
+        if m:
+            out.append(_ident(m.group(2)))
+    return out
+
+
+def _is_new(name: str, created: list) -> bool:
+    return any(_same_object(_ident(name), c) for c in created)
+
+
+def _split_actions(text: str) -> list:
+    """ALTER TABLE actions, split on top-level commas (numeric(10,2) stays one action)."""
+    parts, depth, cur = [], 0, []
+    for ch in text:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        if ch == "," and depth == 0:
+            parts.append("".join(cur).strip())
+            cur = []
+        else:
+            cur.append(ch)
+    parts.append("".join(cur).strip())
+    return [p for p in parts if p]
+
+
+def _add_column_error(action: str) -> str:
+    """'' when `action` is an expand-safe ADD COLUMN on an existing table, else why it is not."""
+    if re.match(r"^ADD (CONSTRAINT|PRIMARY|UNIQUE|CHECK|FOREIGN|EXCLUDE)\b", action) or not action.startswith("ADD "):
+        return "only ADD COLUMN is expand on an existing table (constraints, RLS flags, owners, defaults, types, " \
+               "renames and drops are contract)"
+    for word, why in (("GENERATED", "a GENERATED column rewrites the table"),
+                      ("REFERENCES", "an FK added to an existing table is contract (validation scans and locks)"),
+                      ("PRIMARY KEY", "a key on an existing table is contract"),
+                      ("UNIQUE", "a unique column on an existing table is contract"),
+                      ("CHECK", "a CHECK on an existing table is contract"),
+                      ("COLLATE", "a collated column add is reviewed as contract")):
+        if re.search(rf"\b{word}\b", action):
+            return why
+    if re.search(r"\bNOT NULL\b", action) and not re.search(r"\bDEFAULT\b", action):
+        return "a NOT NULL column without a default fails on existing rows (contract)"
+    if re.search(r"\b(SMALL|BIG)?SERIAL[248]?\b", action):
+        return "a serial column adds a nextval() default, which rewrites the table (contract)"
+    if EXPAND_VOLATILE_DEFAULT_RE.search(action):
+        return "a volatile default rewrites the table (contract)"
+    return ""
+
+
+EXPAND_SET_RE = re.compile(r"^SET (?:LOCAL |SESSION )?([A-Z_]+)\b")
+
+
+def _expand_set_error(s) -> str:
+    """'' when a SET in a transactional expand file is allowed: ROLE (catalog_owner is refused separately),
+    search_path, and lock_timeout / statement_timeout between 1 ms and EXPAND_STATEMENT_TIMEOUT. A body SET must not
+    undo the 30 s cap (ADR 0017 d4) or disable a timeout (0), and nothing else is set (session_replication_role …)."""
+    m = EXPAND_SET_RE.match(s.code)
+    name = m.group(1) if m else ""
+    if name in ("ROLE", "SEARCH_PATH"):
+        return ""
+    if name in ("LOCK_TIMEOUT", "STATEMENT_TIMEOUT"):
+        v = re.search(rf"(?i)\b{name}\s*(?:=|\bTO\b)\s*'?\s*([0-9]+\s*[a-z]*)\s*'?", s.text)
+        ms = _duration_ms(v.group(1).replace(" ", "").lower()) if v else float("inf")
+        if 0 < ms <= EXPAND_MAX_STATEMENT_TIMEOUT_MS:
+            return ""
+        return (f"SET {name.lower()} in an expand file must be between 1ms and {EXPAND_STATEMENT_TIMEOUT} "
+                f"(0 disables it; a slower statement is contract)")
+    return (f"SET {name.lower() or '…'} is not allowed in an expand file (allowed: SET [LOCAL] ROLE, search_path, "
+            f"lock_timeout / statement_timeout up to {EXPAND_STATEMENT_TIMEOUT})")
+
+
+def names_hot_table(code: str) -> str:
+    """The first hot table (or hot schema) a statement names, '' when none."""
+    for t in EXPAND_HOT_TABLES:
+        sch, rel = t.upper().split(".")
+        if re.search(rf'(?<![A-Z0-9_$."]){sch}"?\s*\.\s*"?{rel}(?![A-Z0-9_$"])', code):
+            return t
+    for sch in EXPAND_HOT_SCHEMAS:
+        if re.search(rf'(?<![A-Z0-9_$."]){sch.upper()}"?\s*\.', code):
+            return f"{sch}.*"
+    return ""
+
+
+def _duration_ms(raw: str) -> float:
+    m = re.match(r"^([0-9]+)(us|ms|s|min|h|d)?$", raw)
+    if not m:
+        return float("inf")
+    n, unit = int(m.group(1)), m.group(2) or "ms"
+    return n * {"us": 0.001, "ms": 1, "s": 1000, "min": 60_000, "h": 3_600_000, "d": 86_400_000}[unit]
+
+
+def expand_lint(sql: str, d: "Directives", owner_dir: str = None) -> list:
+    """Errors for a `-- migrate: expand` file (ADR 0017 d3 static part). The file still passes every normal lint."""
+    errors = []
+    if d.destructive:
+        errors.append("`-- migrate: expand` and `-- migrate: destructive` exclude each other")
+    if owner_dir not in OWNER_DIRS:
+        errors.append(f"`-- migrate: expand` is only for owner dirs ({', '.join(sorted(OWNER_DIRS))}); "
+                      f"{owner_dir or 'this path'} files are applied by hand")
+    stmts = split_statements(sql)
+    created = _created(stmts)
+    grant_roles = OWNER_DIRS[owner_dir].grant_roles if owner_dir in OWNER_DIRS else frozenset()
+    reg = len(stmts) - 1 if stmts and "SHARED.SCHEMA_VERSIONS" in stmts[-1].code else None
+    if reg is None:
+        # A transactional file registers before COMMIT.
+        for k in range(len(stmts) - 1, -1, -1):
+            if "SHARED.SCHEMA_VERSIONS" in stmts[k].code:
+                reg = k
+                break
+    for k, s in enumerate(stmts):
+        code, here = s.code, f"line {s.line}"
+        if k == reg or TX_CONTROL_RE.search(code):
+            continue
+        if d.no_transaction:
+            m = CIC_RE.match(code)
+            if not m:
+                errors.append(f"{here}: an expand no-transaction file holds only non-unique `CREATE INDEX CONCURRENTLY "
+                              f"IF NOT EXISTS` statements and its registration")
+            continue
+        if not EXPAND_ALLOWED_HEAD_RE.match(code):
+            head = " ".join(code.split()[:2])
+            errors.append(f"{here}: `{head}` is not allowed in an expand file (allowed: CREATE, ALTER TABLE … ADD "
+                          f"COLUMN, GRANT and COMMENT on new objects, INSERT into a table the file creates, SET); "
+                          f"DO blocks and SELECT calls are opaque to the lint: drop the expand header")
+            continue
+        for rx, why in EXPAND_FORBIDDEN_RES:
+            if rx.search(code):
+                errors.append(f"{here}: {why}")
+        if code.startswith("SET "):
+            why = _expand_set_error(s)
+            if why:
+                errors.append(f"{here}: {why}")
+            continue
+        hot = names_hot_table(code)
+        if hot:
+            errors.append(f"{here}: names hot table {hot} (owners.yaml expand_hot_tables: running code reads it with "
+                          f"SELECT * / RETURNING * inside transactions); only a non-unique CREATE INDEX CONCURRENTLY "
+                          f"may name it, in its own no-transaction file")
+            continue
+        m = WRITE_TARGET_RE.match(code)
+        if m and not _is_new(m.group(1), created):
+            errors.append(f"{here}: writes rows of {_ident(m.group(1)).lower()}, a table this file does not create "
+                          f"(config and routing rows included: contract)")
+            continue
+        m = ALTER_TABLE_RE.match(code)
+        if m:
+            if not _is_new(m.group(1), created):
+                for action in _split_actions(m.group(2)):
+                    why = _add_column_error(action)
+                    if why:
+                        errors.append(f"{here}: ALTER TABLE {_ident(m.group(1)).lower()}: {why}")
+            continue
+        m = ALTER_OTHER_RE.match(code)
+        if m and not _is_new(m.group(1), created):
+            errors.append(f"{here}: alters {_ident(m.group(1)).lower()}, an object this file does not create (contract)")
+            continue
+        m = INDEX_TARGET_RE.match(code)
+        if m and m.group(1) and not _is_new(m.group(2), created):
+            errors.append(f"{here}: a UNIQUE index on an existing table breaks old-code writes (contract)")
+            continue
+        m = ON_TARGET_RE.match(code)
+        if m and not _is_new(m.group(2), created):
+            errors.append(f"{here}: a new {m.group(1).lower()} on {_ident(m.group(2)).lower()}, a table this file does "
+                          f"not create, changes how existing rows are read or written (contract)")
+            continue
+        if code.startswith("GRANT "):
+            g = GRANT_ON_RE.match(code)
+            if not g:
+                errors.append(f"{here}: role membership grants belong to roles/ files (contract)")
+                continue
+            kind, objs, grantees = g.group(1) or "", g.group(2), g.group(3)
+            if "SCHEMA" in kind or kind in ("DATABASE", "LANGUAGE", "TABLESPACE", "PARAMETER", "LARGE OBJECT") \
+                    or kind.startswith("FOREIGN"):
+                errors.append(f"{here}: GRANT ON {kind} changes an existing object's grants (contract)")
+                continue
+            for o in _split_actions(objs):
+                if not _is_new(o, created):
+                    errors.append(f"{here}: GRANT on {_ident(o).lower()}, an object this file does not create (contract)")
+            roles = [r.strip().replace('"', "").lower() for r in
+                     re.split(r",", re.sub(r"\s+WITH GRANT OPTION.*$|\s+GRANTED BY .*$", "", grantees))]
+            for r in roles:
+                if r not in grant_roles:
+                    errors.append(f"{here}: GRANT TO {r}: an expand file grants only to the {owner_dir or '?'} owner's "
+                                  f"runtime / nologin roles in owners.yaml ({', '.join(sorted(grant_roles)) or 'none'})")
+    for key in ("statement_timeout", "lock_timeout"):
+        # 0 disables the timeout (an ACCESS EXCLUSIVE wait without lock_timeout queues every reader behind it).
+        if not d.no_transaction and key in d.explicit \
+                and not 0 < _duration_ms(d.settings[key]) <= EXPAND_MAX_STATEMENT_TIMEOUT_MS:
+            errors.append(f"{key}={d.settings[key]}: an expand file runs with a {key} between 1ms and "
+                          f"{EXPAND_STATEMENT_TIMEOUT} (ADR 0017 d4); a slower statement is contract")
+    return errors
+
+
+def lock_risk_targets(sql: str, d: "Directives") -> list:
+    """(table, what) pairs the pre-execution size check reads: every existing table an expand file takes a lock on
+    by ALTER TABLE (ACCESS EXCLUSIVE) or a non-concurrent CREATE INDEX (SHARE). Tables the file creates are empty."""
+    stmts = split_statements(sql)
+    created = _created(stmts)
+    out = []
+    for s in stmts:
+        m = ALTER_TABLE_RE.match(s.code)
+        if m and not _is_new(m.group(1), created):
+            out.append((_ident(m.group(1)).lower(), "ALTER TABLE (ACCESS EXCLUSIVE lock)"))
+            continue
+        m = INDEX_TARGET_RE.match(s.code)
+        if m and not CIC_RE.match(s.code) and "CONCURRENTLY" not in s.code.split(" ON ", 1)[0] \
+                and not _is_new(m.group(2), created):
+            out.append((_ident(m.group(2)).lower(), "CREATE INDEX without CONCURRENTLY (SHARE lock for the build)"))
+    return out
+
+
+# reltuples is -1 until the first VACUUM / ANALYZE (PostgreSQL 14+), and a partitioned parent has no rows of its own
+# (autovacuum never analyzes it): -1 = unknown and not empty (lock risk), a parent = the sum of its leaf partitions.
+RELTUPLES_SQL = (
+    "SELECT CASE WHEN c.relkind = 'p' THEN ("
+    "SELECT CASE WHEN bool_or(l.reltuples < 0 AND pg_catalog.pg_relation_size(l.oid) > 0) THEN -1 "
+    "ELSE COALESCE(sum(GREATEST(l.reltuples, 0)), 0) END::bigint "
+    "FROM pg_catalog.pg_partition_tree(c.oid) t JOIN pg_catalog.pg_class l ON l.oid = t.relid WHERE t.isleaf) "
+    "WHEN c.reltuples >= 0 THEN c.reltuples::bigint "
+    "WHEN pg_catalog.pg_relation_size(c.oid) = 0 THEN 0 ELSE -1 END "
+    "FROM pg_catalog.pg_class c "
+    "WHERE c.oid = pg_catalog.to_regclass($1) AND c.relkind IN ('r', 'p', 'm')")
+REL_EXISTS_SQL = "SELECT pg_catalog.to_regclass($1) IS NOT NULL"
+IFNE_REL_RE = re.compile(r"^CREATE (?:UNLOGGED |TEMP |TEMPORARY )?(?:TABLE|SEQUENCE|MATERIALIZED VIEW) IF NOT EXISTS "
+                         r"([^\s(]+)")
+IFNE_INDEX_RE = re.compile(r"^CREATE (?:UNIQUE )?INDEX IF NOT EXISTS ([^\s(]+) ON (?:ONLY )?([^\s(]+)")
+
+
+def if_not_exists_relations(sql: str, d: "Directives") -> list:
+    """Relations a transactional expand file creates with IF NOT EXISTS (lower case; an index qualified with its
+    table's schema). The lint treats them as new, so ALTER / GRANT / INSERT / policies on them pass; if one already
+    exists the CREATE is a no-op and those statements change an existing object."""
+    if d.no_transaction:
+        return []               # CIC files: the index validity check covers IF NOT EXISTS (exit 16)
+    out = []
+    for s in split_statements(sql):
+        m = IFNE_REL_RE.match(s.code)
+        if m:
+            out.append(_ident(m.group(1)).lower())
+            continue
+        m = IFNE_INDEX_RE.match(s.code)
+        if m:
+            index, table = _ident(m.group(1)).lower(), _ident(m.group(2)).lower()
+            out.append(f"{table.rsplit('.', 1)[0]}.{index}" if "." not in index and "." in table else index)
+    return out
+
+
+async def lock_risk_findings(conn, sql: str, d: "Directives") -> list:
+    """ADR 0017 d4: read the size of every table an expand file locks, BEFORE any statement runs. A table above
+    EXPAND_MAX_ROWS (pg_class.reltuples, the planner estimate) is lock risk -> contract (exit 15)."""
+    found = []
+    for table, what in lock_risk_targets(sql, d):
+        rows = await conn.fetchval(RELTUPLES_SQL, table)
+        if rows is not None and rows < 0:
+            found.append(f"{table}: row count unknown (never vacuumed or analyzed; ANALYZE it first), {what}")
+        elif rows is not None and rows > EXPAND_MAX_ROWS:
+            found.append(f"{table}: ~{rows} rows > {EXPAND_MAX_ROWS}, {what}")
+    for rel in if_not_exists_relations(sql, d):
+        if await conn.fetchval(REL_EXISTS_SQL, rel):
+            found.append(f"{rel} already exists: its CREATE … IF NOT EXISTS is a no-op, so the file's later statements "
+                         f"on it would change an existing object (contract)")
+    return found
+
+
+INDEX_VALID_SQL = ("SELECT i.indisvalid FROM pg_catalog.pg_index i "
+                   "WHERE i.indexrelid = pg_catalog.to_regclass($1)")
+
+
+def cic_index_names(stmts: list) -> list:
+    """schema-qualified (when the table is) lower-case names of the indexes the CIC statements build."""
+    out = []
+    for s in stmts:
+        m = CIC_RE.match(s.code)
+        if m:
+            index, table = _ident(m.group(1)).lower(), _ident(m.group(2)).lower()
+            if "." not in index and "." in table:
+                index = f"{table.rsplit('.', 1)[0]}.{index}"
+            out.append(index)
+    return out
+
+
+async def invalid_cic_indexes(conn, stmts: list) -> list:
+    """ADR 0017 d4: after the CIC statements of an expand no-transaction file, every index they name must exist and be
+    valid; `IF NOT EXISTS` silently skips an INVALID index left by an earlier failed build (critic 5)."""
+    bad = []
+    for name in cic_index_names(stmts):
+        valid = await conn.fetchval(INDEX_VALID_SQL, name)
+        if valid is not True:
+            bad.append(f"{name} ({'missing' if valid is None else 'INVALID'})")
+    return bad
+
+
+# One session-level advisory lock for every applying mode (apply, roles/ files, set-password, run-script that is not
+# READ_ONLY): an auto-apply (M3) and a person's DB Migrate run never overlap (ADR 0017 d5, critic 11). Two-int form,
+# so it cannot collide with the single-bigint advisory keys the apps use. Released when the task's connection closes.
+APPLY_LOCK_SQL = "SELECT pg_catalog.pg_try_advisory_lock(993, 1)"
+APPLY_LOCK_WAIT_S = 25 * 60                 # under DB Migrate's 30-minute task wait
+APPLY_LOCK_POLL_S = 15
+
+
+async def take_apply_lock(conn, sleep, what: str) -> bool:
+    waited = 0
+    while True:
+        if await conn.fetchval(APPLY_LOCK_SQL):
+            log(f"apply lock: taken ({what}{f', after {waited} s' if waited else ''})")
+            return True
+        if waited >= APPLY_LOCK_WAIT_S:
+            log(f"ERROR: apply lock: another DB Migrate or auto-apply run still holds it after {waited} s; nothing "
+                f"ran. Re-run when that run has finished")
+            return False
+        if not waited:
+            log(f"apply lock: held by another DB Migrate or auto-apply run; waiting up to {APPLY_LOCK_WAIT_S} s")
+        await sleep(APPLY_LOCK_POLL_S)
+        waited += APPLY_LOCK_POLL_S
+
+
+async def wait_for_waves(conn, sleep, attempts=IDLE_WAITS, interval_s=IDLE_WAIT_S) -> list:
+    """Q5: an expand file that names a hot table waits only for open waves (job tables do not matter)."""
+    report = await job_tables_busy(conn)
+    for _ in range(attempts):
+        if not any(st.is_wave and st.busy for st in report):
+            break
+        await sleep(interval_s)
+        report = await job_tables_busy(conn)
+    return [st for st in report if st.is_wave and st.busy]
 
 
 def version_pattern(version: str) -> str:
@@ -1184,6 +1601,11 @@ def _log_post_commit(found: list, plan: RolePlan) -> None:
         f"by hand and fix the migration (no deferred triggers / WITH HOLD cursors under the switch)")
 
 
+def _log_invalid_cic(bad: list) -> None:
+    log(f"ERROR: expand: index build left {', '.join(bad)}; the version is NOT registered. Drop the index "
+        f"(DROP INDEX CONCURRENTLY IF EXISTS <name>, a run-script or a follow-up file) and re-run the file")
+
+
 async def run_switched(conn, sql: str, d: Directives, plan: RolePlan, owner_dir: str) -> int:
     """Runs the file as plan.run_as; returns 0, or 9 when the ownership post-check fails.
 
@@ -1205,6 +1627,11 @@ async def run_switched(conn, sql: str, d: Directives, plan: RolePlan, owner_dir:
             log(f"statement {k}/{len(stmts)} (line {s.line}) …")
             await conn.execute(s.text)
         await conn.execute("RESET ROLE")
+        if d.expand:
+            bad = await invalid_cic_indexes(conn, stmts[:-1])
+            if bad:
+                _log_invalid_cic(bad)
+                return 16
         log(f"statement {len(stmts)}/{len(stmts)} (line {stmts[-1].line}) … (registration, as {plan.run_as}, "
             f"in a transaction with the post-check)")
         await conn.execute("BEGIN")
@@ -1468,7 +1895,7 @@ async def connect_master(env, settings: dict, connect, get_secret, purpose: str)
     return MasterLogin(conn, master_dsn, f"in-task DSN from {MASTER_SECRET}")
 
 
-async def run_set_password(env, role: str, connect, get_secret) -> int:
+async def run_set_password(env, role: str, connect, get_secret, sleep=asyncio.sleep) -> int:
     """XD2: the DSN Nghiệp wrote in the Console (S17 / S20) becomes the role's password; only a SCRAM
     verifier leaves the task. Order: checks (master login, role exists + LOGIN, secret readable, DSN user
     = role, password shape) → ALTER ROLE … PASSWORD '<verifier>' as the master → test login with the
@@ -1492,6 +1919,8 @@ async def run_set_password(env, role: str, connect, get_secret) -> int:
                 f"ALTER ROLE … PASSWORD needs CREATEROLE")
             return 8
         log(f"master login: {login} ({master.how})")
+        if not await take_apply_lock(conn, sleep, f"set-password {role}"):
+            return 17
         can_login = await conn.fetchval(ROLE_LOGIN_SQL, role)
         if can_login is None:
             log(f"ERROR: role {role} does not exist (rl-001 creates cis_app, rl-002 db_migrator, rl-003 crm_app): "
@@ -1666,6 +2095,8 @@ async def run_script(env, path: str, fetch, connect, sleep, get_secret=_get_secr
             return 8
         log(f"master login: {login} ({master.how})")
         log(f"ran as: {login} (run-script{', READ_ONLY: default_transaction_read_only=on' if read_only else ''})")
+        if not read_only and not await take_apply_lock(conn, sleep, f"run-script {path}"):
+            return 17
         report = await job_tables_busy(conn)
         log_report(report)
         override = (env.get("MIGRATION_IDLE_OVERRIDE") or "").strip()
@@ -1721,7 +2152,7 @@ async def run_task(env=None, fetch=_fetch, connect=_connect, sleep=asyncio.sleep
         log(f"ERROR: {e}")
         return 10
     if m.kind == SET_PASSWORD:
-        return await run_set_password(env, m.arg, connect=connect, get_secret=get_secret)
+        return await run_set_password(env, m.arg, connect=connect, get_secret=get_secret, sleep=sleep)
     if m.kind == RUN_SCRIPT:
         return await run_script(env, m.arg, fetch=fetch, connect=connect, sleep=sleep, get_secret=get_secret)
     raw = fetch(env["MIGRATION_URL"])
@@ -1773,6 +2204,20 @@ async def run_task(env=None, fetch=_fetch, connect=_connect, sleep=asyncio.sleep
             log(f"ERROR: role: {reach_error}")
             return 8
         log(f"ran as: {plan.run_as}{' (check mode: the role apply uses)' if mode != 'apply' else ''} — {plan.why}")
+        if d.expand and await conn.fetchval("SELECT applied_at FROM shared.schema_versions WHERE version = $1",
+                                            version):
+            log("expand: version already registered, lock-risk check skipped")
+        elif d.expand:
+            # ADR 0017 d4: sizes are read before any statement (check mode too, so a check predicts the apply).
+            risk = await lock_risk_findings(conn, sql, d)
+            if risk:
+                log(f"ERROR: expand: lock risk -> contract: {'; '.join(risk)}. Nothing ran: use CREATE INDEX "
+                    f"CONCURRENTLY in a no-transaction file, or drop the expand header and apply it by hand")
+                return 15
+            log(f"expand: lock-risk check ok ({len(lock_risk_targets(sql, d))} existing table(s) locked, each "
+                f"<= {EXPAND_MAX_ROWS} rows); statement_timeout {d.settings['statement_timeout']}")
+        if mode == "apply" and not await take_apply_lock(conn, sleep, f"apply {file}"):
+            return 17
         latest = await conn.fetchval(
             "SELECT version FROM shared.schema_versions WHERE version ~ $1 ORDER BY version DESC LIMIT 1",
             version_pattern(version))
@@ -1797,6 +2242,17 @@ async def run_task(env=None, fetch=_fetch, connect=_connect, sleep=asyncio.sleep
                 log(f"WARNING: idle check OVERRIDDEN ({override}), busy: {busy_summary(report)}")
             else:
                 log(f"note: idle-check override set ({override}) but nothing is busy")
+        elif d.expand:
+            # ADR 0017 d5 / Q5: expand files skip the all-job-tables-idle wait; one that names a hot table (only a
+            # non-unique CIC may, by the lint) still waits for an open rerun wave to close.
+            hot = [h for h in (names_hot_table(st.code) for st in split_statements(sql)) if h]
+            if hot:
+                waves = await wait_for_waves(conn, sleep)
+                if waves:
+                    log(f"ERROR: refusing expand apply — it names hot table {hot[0]} and a rerun wave is open "
+                        f"({busy_summary(waves)}). Re-run after the wave closes")
+                    return 7
+            log(f"expand: job-table idle wait skipped (ADR 0017 d5){'; no open wave' if hot else ''}")
         else:
             report = await wait_until_idle(conn, first=report, sleep=sleep)
             if any(st.busy for st in report):
@@ -1818,6 +2274,11 @@ async def run_task(env=None, fetch=_fetch, connect=_connect, sleep=asyncio.sleep
             elif d.no_transaction:
                 stmts = split_statements(sql)
                 for k, s in enumerate(stmts, 1):
+                    if d.expand and k == len(stmts):
+                        bad = await invalid_cic_indexes(conn, stmts[:-1])
+                        if bad:
+                            _log_invalid_cic(bad)
+                            return 16
                     log(f"statement {k}/{len(stmts)} (line {s.line}) …")
                     await conn.execute(s.text)          # one statement per message: autocommit
             else:
