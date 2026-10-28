@@ -32,7 +32,7 @@
 variable "guardduty_enabled" {
   description = "AA-873: create the GuardDuty detector (paid, ~15-20 USD/month at Dev volume; root audit S255 §7)"
   type        = bool
-  default     = true
+  default     = false
 }
 
 locals {
