@@ -109,6 +109,10 @@ accounts/
     booking_media.tf              (AA-835: bucket aa-booking-<env>-supply-media-<account> for supplier photos,
                                    SSE-S3, versioned (noncurrent 30 d), TLS only, CIS task role denied writes;
                                    Booking task role Put/Get on supply-media/*; env SUPPLY_MEDIA_BUCKET)
+    booking_ops_docs.tf           (AA-682: bucket aa-booking-<env>-ops-docs-<account> for operations documents
+                                   (vouchers, payment evidence, bills; PII), SSE-S3 (no CMK), versioned
+                                   (noncurrent 30 d), TLS only, object verbs denied to every principal but the
+                                   Booking task role; Booking task role Put/Get on ops-docs/*; env OPS_DOCS_BUCKET)
     bedrock_satellite_assume.tf   (cross-account Bedrock assume-role trust)
     cost_explorer_satellite_assume.tf (acc2 → acc3 Cost Explorer read role, AA-623; acc1 removed, AA-998)
     dfs_balance.tf                (ops-probe Lambda: 06:15 UTC schedule POSTs the admin probes, AA-627/720/727,
@@ -467,7 +471,8 @@ ALB and RDS: ECS service `aa-booking-dev-api` (created at `desired_count = 0`, s
 `ignore_changes` on count and task definition), ECR `aa-booking-dev-api` (immutable git-SHA tags),
 own execution/task roles, secret `booking/dev/database-url` (container only, value set out-of-band),
 supplier-photo bucket `aa-booking-dev-supply-media-<account>` (`booking_media.tf`, AA-835; CIS reads it to copy
-rights-cleared photos, never writes).
+rights-cleared photos, never writes), operations-document bucket `aa-booking-dev-ops-docs-<account>`
+(`booking_ops_docs.tf`, AA-682; PII, only the Booking task role touches its objects).
 Routing: its own REST API `aa-booking-dev-api` on the existing VPC link → NLB → ALB HTTP listener
 rule `/booking`, `/booking/*` (priority 100) → target group `aa-booking-dev-api-tg` (health
 `/booking/health`). That listener rule is the only object attached to a CIS resource. Dev uses
