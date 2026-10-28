@@ -655,10 +655,11 @@ TRANSFER_SKIP_OBJECTS = {"cis": frozenset({"catalog"})}
 
 def transfer_scope(owner_dir: str, present: list) -> tuple:
     """Pure: (schemas whose owner the transfer file changes, schemas whose master-owned objects it moves), both
-    limited to the dir's schemas that exist in the replay, in the dir's order."""
+    limited to the dir's schemas that exist in the replay, in the dir's order. The dir's dropped schemas count too
+    (AA-850: 245 moved the four CIS 299 drops later, and 299 runs as their owner)."""
     od = rm.OWNER_DIRS[owner_dir]
     have = set(present)
-    schemas = [sc for sc in od.schemas if sc in have]
+    schemas = [sc for sc in od.schemas + od.dropped_schemas if sc in have]
     skip = TRANSFER_SKIP_OBJECTS.get(owner_dir, frozenset())
     return schemas, [sc for sc in schemas if sc not in skip]
 
@@ -693,7 +694,7 @@ async def fill_ownership(master_dsn: str, owner_dir: str, live_schema_owner: dic
     try:
         present = [r["nspname"] for r in await conn.fetch(
             "SELECT nspname::text FROM pg_catalog.pg_namespace WHERE nspname = ANY($1::text[]) ORDER BY 1",
-            list(od.schemas))]
+            list(od.schemas + od.dropped_schemas))]
         schemas, object_schemas = transfer_scope(owner_dir, present)
         objects = [(r["kind"], r["name"]) for r in await conn.fetch(OWNED_OBJECTS_SQL, object_schemas, MASTER)]
         for st in ownership_statements(schemas, objects, new_owner):   # one by one: a refused one is reported
@@ -942,7 +943,7 @@ async def replay(admin_dsn: str, live: dict, sources: dict, out_dump: str | None
     master_dsn = _dsn(admin_dsn, MASTER, SCRATCH_PASSWORD, db_name)
     migrator_dsn = _dsn(admin_dsn, MIGRATOR, SCRATCH_PASSWORD, db_name)
     known_schemas = {x["schema"] for x in live.get("schemas", [])} | {
-        sc for d in rm.OWNER_DIRS.values() for sc in d.schemas}
+        sc for d in rm.OWNER_DIRS.values() for sc in d.schemas + d.dropped_schemas}
     migrator_from = next((i for i, it in enumerate(order["items"]) if it.key == MIGRATOR_LOGIN_FROM), None)
     migrator_ready = False
     roles_seen: set = set()

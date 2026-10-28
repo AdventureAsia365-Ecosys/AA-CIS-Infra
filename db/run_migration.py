@@ -229,15 +229,17 @@ class OwnerDir:
     set_local_roles: frozenset    # the only `SET LOCAL ROLE` targets the lint allows in the dir
     role_lint_from: int           # first file number the role lint applies to (> today's head)
     view_owner_roles: frozenset = frozenset()   # may own objects a switched file creates, besides the owner
+    dropped_schemas: tuple = ()   # schemas the owner dropped (owners.yaml dropped_schemas): lint only, never live
 
 
 OWNER_DIRS = {
     "cis": OwnerDir("shared",
-                    ("acp_contract", "acp_deliver", "acp_gold_output", "acp_shared", "acp_silver_s2",
-                     "acp_silver_s3", "acp_silver_s4", "catalog", "geo", "gold_aa_internal",
+                    ("acp_contract", "acp_deliver", "acp_shared", "catalog", "geo", "gold_aa_internal",
                      "retired",            # AA-850 (CIS 294): DM-3.9 quarantine schema, no runtime grant
                      "shared", "silver_aa_internal"),
-                    frozenset({"catalog_owner", "cis_owner", "cis_app"}), 243, frozenset({"catalog_owner"})),
+                    frozenset({"catalog_owner", "cis_owner", "cis_app"}), 243, frozenset({"catalog_owner"}),
+                    # AA-850 (CIS 299): the four empty ACP v1 stage schemas, dropped
+                    ("acp_gold_output", "acp_silver_s2", "acp_silver_s3", "acp_silver_s4")),
     "booking": OwnerDir("booking", ("booking",), frozenset(), 14),
     "tripplanner": OwnerDir("tripplanner", ("tripplanner",), frozenset(), 13),
     "crm": OwnerDir("crm", ("crm",), frozenset(), 1),     # AA-932: born under crm_owner (rl-003), lint from crm-001
