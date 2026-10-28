@@ -712,8 +712,16 @@ resource "aws_ecs_service" "api" {
 # task (AA-CIS-App api/core/aa544_tenant_pool.py TENANT_POOL_MAX_SIZE), and 2 x 7 = 14 stays under the
 # aa_app_user CONNECTION LIMIT 15 (CIS migration 234). Data standard C2.2/C2.3c: change this value only
 # together with the tenant pool size and the C2.2 budget table. Dev runs 1 task, so the cap costs nothing.
+# AA-838 D2 (first C8 capacity review, S256): 7 -> 3. With 7 tasks x the 10-connection main pool the C2.2
+# worst case was 168 of the 135 ceiling (cis_app 100 of its limit 90), carried as an accepted overage. The
+# review proposed shrinking the main pool to 5 instead, but its own gauge baseline (aa859_main_pool_gauge,
+# 16-28/10/2026) shows one task's pool at 6-10 in use about ten times a day on ordinary admin traffic and at
+# 10 with 3.9 s waits in the AA-859 burst: a pool of 5 would queue those and time the burst out (5 s
+# acquire timeout). Autoscaling never went above 3 tasks since late September (scaling activity history),
+# so capping the task count keeps today's per-task behaviour and brings the budget to 120 of 135
+# (cis_app 60 of 90, aa_app_user 6 of 15); the two accepted overages are gone. Raise it again only with the C2.2 table and connection_budget.json.
 resource "aws_appautoscaling_target" "api" {
-  max_capacity       = 7
+  max_capacity       = 3
   min_capacity       = var.service_desired_count
   resource_id        = "service/${aws_ecs_cluster.main.name}/${aws_ecs_service.api.name}"
   scalable_dimension = "ecs:service:DesiredCount"
