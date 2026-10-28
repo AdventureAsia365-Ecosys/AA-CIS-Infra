@@ -24,7 +24,7 @@ the root repo, never in an app repo.
 |---|---|---|---|---|
 | acc2 | 005097885195 | us-west-1 | `aa365-admin` | all app infrastructure (only account with infra) |
 | acc3 | 786888028788 | us-west-1 | `nghiep_aa365` | Bedrock satellite (the only one) |
-| acc1 | 867490540162 | us-west-1 | `pqnghiep-admin` | retired (AA-998), destroy of `accounts/acc1-bedrock` pending |
+| acc1 | 867490540162 | us-west-1 | `pqnghiep-admin` | retired (AA-998): resources destroyed 28/10/2026, root folder removed |
 
 Always check first: `aws sts get-caller-identity --profile aa365-admin --region us-west-1`.
 
