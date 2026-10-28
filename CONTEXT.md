@@ -39,7 +39,7 @@ Secrets, Lambda plumbing, OIDC deploy roles, cross-account Bedrock trust — is 
 
 | Account | ID | Role in ecosystem | Managed here |
 |---------|----|-------------------|--------------|
-| acc1 | 867490540162 | **Retired (AA-998)**: former Bedrock fallback; no grant from acc2, root destroyed and removed 28/10/2026 | `accounts/acc1-bedrock/` (destroy only) |
+| acc1 | 867490540162 | **Retired (AA-998)**: former Bedrock fallback; no grant from acc2, root destroyed and removed 28/10/2026 | (root removed) |
 | acc2 (aa365) | 005097885195 | **Main dev stack** (VPC/RDS/ECS/ALB/API GW/…) + CI/CD OIDC | `accounts/aa365/` |
 | acc3 | 786888028788 | `AA3-Bedrock-Invoker`, the **only** LLM satellite | `accounts/acc3-bedrock/` |
 
