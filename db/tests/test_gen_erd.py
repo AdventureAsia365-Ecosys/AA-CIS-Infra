@@ -54,10 +54,10 @@ def fixture():
         "database": {"server_version": "15.17", "size_bytes": 1, "stats_reset": None},
         "connections": [{"application_name": "x", "role": "r", "state": "idle", "sessions": 1}],
         "schemas": [{"schema": s, "owner": o, "grants": []} for s, o in (
-            ("acp_silver_s2", "cis_owner"), ("booking", "bk_owner"), ("catalog", "cis_owner"),
+            ("retired", "cis_owner"), ("booking", "bk_owner"), ("catalog", "cis_owner"),
             ("shared", "cis_owner"), ("tripplanner", "tp_owner"))],
         "relations": {
-            "acp_silver_s2": {},
+            "retired": {},
             "booking": {
                 "trip_cases": rel([col("id"), col("code", "character varying(32)"),
                                    col("total", "numeric(12,2)", False),
@@ -219,7 +219,7 @@ class ModelTest(unittest.TestCase):
 
     def test_owners_and_edges(self):
         self.assertEqual({s: (v["owner_app"], v["owner_role"]) for s, v in self.schemas.items()},
-                         {"acp_silver_s2": ("cis", "cis_owner"), "booking": ("booking", "bk_owner"),
+                         {"retired": ("cis", "cis_owner"), "booking": ("booking", "bk_owner"),
                           "catalog": ("cis", "cis_owner"), "shared": ("cis", "cis_owner"),
                           "tripplanner": ("tripplanner", "tp_owner")})
         self.assertEqual([(e["from"], e["name"], e["to"], e["validated"], e["cross_schema"], e["cross_owner"])
@@ -274,7 +274,7 @@ class PagesTest(unittest.TestCase):
     def test_one_page_per_non_empty_schema_plus_index(self):
         self.assertEqual(sorted(self.pages),
                          ["README.md", "booking.md", "catalog.md", "shared.md", "tripplanner.md"])
-        self.assertIn("Empty schemas (no page): `acp_silver_s2`.", self.pages["README.md"])
+        self.assertIn("Empty schemas (no page): `retired`.", self.pages["README.md"])
 
     def test_booking_diagram(self):
         block = mermaid_block(self.pages["booking.md"])

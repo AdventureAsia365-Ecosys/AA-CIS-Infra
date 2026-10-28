@@ -1,7 +1,8 @@
 """Migration ownership lint (AA-853, data standards DM-1.2 / DM-8.1): a file in db/migrations/<owner>/ may
 create, alter, drop, comment on, grant on or write to objects in its owner's schemas only.
 
-The owner's schemas come from run_migration.OWNER_DIRS, the runner's mirror of db/owners.yaml `schemas`
+The owner's schemas come from run_migration.OWNER_DIRS, the runner's mirror of db/owners.yaml `schemas` plus
+`dropped_schemas` (schemas the owner dropped, which its older files and the drop file still name; AA-850)
 (db/tests/test_owners_registry.py keeps them equal). roles/ is Infra-native (roles, extensions, public.*
 leftovers, undo files of the X1 transfers) and is not checked here.
 
@@ -362,7 +363,10 @@ def touches(sql: str) -> tuple:
 
 
 def owner_schemas(owner_dir: str) -> tuple:
-    return run_migration.OWNER_DIRS[owner_dir].schemas
+    """The schemas a file of the dir may touch: its live schemas and the ones it dropped (owners.yaml dropped_schemas,
+    AA-850: its older files grant on them, the drop file drops them)."""
+    d = run_migration.OWNER_DIRS[owner_dir]
+    return d.schemas + d.dropped_schemas
 
 
 def lint(sql: str, rel_path: str) -> tuple:
@@ -408,7 +412,8 @@ def lint(sql: str, rel_path: str) -> tuple:
                           f"`SET search_path`, so it resolves to the session's default schema (public), outside "
                           f"{owner_dir}/'s schemas; {qualify}")
             continue
-        other = next((o for o, d in run_migration.OWNER_DIRS.items() if t.schema in d.schemas), None)
+        other = next((o for o, d in run_migration.OWNER_DIRS.items()
+                      if t.schema in d.schemas + d.dropped_schemas), None)
         whose = f"owner {other}" if other else "no owner in db/owners.yaml"
         errors.append(f"line {t.line}: {t.action} {what}: schema {t.schema} belongs to {whose}; a {owner_dir}/ "
                       f"migration touches only {', '.join(sorted(mine))} (db/owners.yaml schemas, AA-853)")

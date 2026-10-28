@@ -206,6 +206,17 @@ class OtherOwnersFail(unittest.TestCase):
                                 path), [])
         self.assertTrue(errors(wrap("ALTER TABLE booking.trip_case ADD COLUMN x int;", "299"), path))
 
+    def test_cis_may_still_name_the_schemas_it_dropped(self):
+        # AA-850: CIS 299 dropped four empty schemas (owners.yaml dropped_schemas). 244 / 245 grant on them and 299
+        # drops them, so cis/ files may name them; they belong to no other owner, which may not.
+        path = "db/migrations/cis/299_x.sql"
+        sql = wrap("DROP SCHEMA IF EXISTS acp_silver_s4 RESTRICT; GRANT USAGE ON SCHEMA acp_gold_output TO cis_app;",
+                   "299")
+        self.assertEqual(errors(sql, path), [])
+        errs = errors(wrap("CREATE TABLE acp_silver_s2.x (id int);"))
+        self.assertTrue(errs)
+        self.assertIn("belongs to owner cis", errs[0])
+
     def test_historical_tripplanner_destinations_file_fails(self):
         # TripPlanner migrations/002_shared_destinations.sql (2026) created a CIS table: the case the lint exists for.
         sql = ("CREATE TABLE IF NOT EXISTS shared.destinations (id uuid PRIMARY KEY);\n"

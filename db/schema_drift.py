@@ -64,7 +64,7 @@ SECTION_LIMIT = 100          # rows listed per table in the rendered section (ev
 
 def schema_owner(schema: str) -> str:
     for owner, d in run_migration.OWNER_DIRS.items():
-        if schema in d.schemas:
+        if schema in d.schemas + d.dropped_schemas:     # a dropped schema found again is still its owner's drift
             return owner
     return "-"
 

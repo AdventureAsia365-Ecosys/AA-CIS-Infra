@@ -382,13 +382,13 @@ class BuildCellsTest(unittest.TestCase):
                           "FOR ROLE bk_owner IN SCHEMA booking ON FUNCTIONS: booking lacks EXECUTE"])
         cis = p.OWNERS["cis"]
         found = p.default_acl_findings([], cis.runtime_privileges[0], cis, "aa_cis_admin")
-        self.assertEqual(len(found), 11 * 3)                            # 11 schemas (no catalog) x 3 object types
+        self.assertEqual(len(found), 7 * 3)          # 7 schemas (no catalog, not the four CIS 299 dropped) x 3 kinds
 
     def test_cis_app_grants_keyed_on_244(self):
         f = today_facts()
         f["catalog"]["registered"] = ["rl-001", "244"]
         f["roles"]["cis_app"] = role("cis_app", connlimit=90)
-        f["runtime_grants"]["cis"]["cis_app"] = {"missing": [{"kind": "schema", "name": "acp_silver_s4",
+        f["runtime_grants"]["cis"]["cis_app"] = {"missing": [{"kind": "schema", "name": "geo",
                                                               "missing": "USAGE"}]}
         f["default_acl"]["cis"]["cis_app"] = {"rows": []}
         st, _ = statuses(f)
