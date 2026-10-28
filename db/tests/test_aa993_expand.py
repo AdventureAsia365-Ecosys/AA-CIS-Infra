@@ -117,6 +117,36 @@ class StaticLintTests(unittest.TestCase):
             with self.subTest(case=name):
                 self.assertNotEqual(errors(tx(stmt, version="bk-099")), [], stmt)
 
+    def test_body_set_cannot_lift_or_disable_a_timeout(self):
+        """Review S255: a body SET must not undo the 30 s cap of the header lint, nor set anything else."""
+        refused = {
+            "statement 15min": "SET LOCAL statement_timeout = '15min';",
+            "statement 0": "SET statement_timeout TO 0;",
+            "lock 0": "SET LOCAL lock_timeout = 0;",
+            "lock 2min": "SET LOCAL lock_timeout = '2min';",
+            "replication role": "SET LOCAL session_replication_role = replica;",
+            "session authorization": "SET SESSION AUTHORIZATION booking;",
+        }
+        for name, stmt in refused.items():
+            with self.subTest(case=name):
+                self.assertNotEqual(errors(tx(stmt + "\nCREATE TABLE booking.t (id int);", version="bk-099")), [])
+        for stmt in ("SET LOCAL lock_timeout = '5s';", "SET LOCAL statement_timeout = '20s';",
+                     "SET LOCAL search_path = booking, public;"):
+            with self.subTest(ok=stmt):
+                self.assertEqual(errors(tx(stmt + "\nCREATE TABLE booking.t (id int);", version="bk-099")), [])
+
+    def test_header_timeout_zero_is_refused(self):
+        for hdr in ("statement_timeout=0", "lock_timeout=0", "lock_timeout=1min"):
+            sql = tx("CREATE TABLE booking.t (id int);", header=f"-- migrate: expand\n-- migrate: {hdr}\n")
+            with self.subTest(header=hdr):
+                self.assertNotEqual(errors(sql), [])
+
+    def test_serial_column_on_an_existing_table_is_refused(self):
+        for t in ("serial", "bigserial", "smallserial", "serial8"):
+            with self.subTest(type=t):
+                self.assertNotEqual(errors(tx(f"ALTER TABLE booking.trip ADD COLUMN y {t};", version="bk-099")), [])
+        self.assertEqual(errors(tx("CREATE TABLE booking.t (id bigserial PRIMARY KEY);", version="bk-099")), [])
+
     def test_expand_only_in_owner_dirs(self):
         sql = tx("CREATE TABLE shared.t (id int);", version="rl-009")
         self.assertTrue(any("only for owner dirs" in e for e in errors(sql, "roles/009_x.sql")))
@@ -199,6 +229,39 @@ class RunTaskExpandTests(unittest.TestCase):
         code, _, log = self.run_task(EXPAND_OK, conn=conn)
         self.assertEqual(code, 0, log)
         self.assertIn("lock-risk check ok (1 existing table(s)", log)
+
+    def test_unknown_row_count_is_lock_risk(self):
+        """Review S255: reltuples -1 (never analyzed, not empty) must not read as a small table."""
+        conn = FakeConn()
+        conn.reltuples = {"booking.trip": -1}
+        code, conn, log = self.run_task(EXPAND_OK, conn=conn)
+        self.assertEqual((code, conn.executed), (15, []), log)
+        self.assertIn("booking.trip: row count unknown", log)
+
+    def test_if_not_exists_of_an_existing_relation_is_lock_risk(self):
+        """Review S255: CREATE TABLE IF NOT EXISTS of an existing table makes the lint treat it as new."""
+        sql = tx("CREATE TABLE IF NOT EXISTS booking.trip (id int);\n"
+                 "ALTER TABLE booking.trip ADD CONSTRAINT c CHECK (id > 0);", version="bk-099")
+        self.assertEqual(errors(sql), [])          # the static lint cannot know: the runtime check does
+        conn = FakeConn()
+        conn.existing = {"booking.trip"}
+        code, conn, log = self.run_task(sql, conn=conn)
+        self.assertEqual((code, conn.executed), (15, []), log)
+        self.assertIn("booking.trip already exists", log)
+        code, _, log = self.run_task(sql, conn=FakeConn())
+        self.assertEqual(code, 0, log)
+
+    def test_if_not_exists_index_is_qualified_with_the_table_schema(self):
+        sql = tx("CREATE INDEX IF NOT EXISTS ix_new ON booking.trip (note);", version="bk-099")
+        self.assertEqual(rm.if_not_exists_relations(sql, rm.parse_directives(sql)), ["booking.ix_new"])
+        self.assertEqual(rm.if_not_exists_relations(CIC, rm.parse_directives(CIC)), [])
+
+    def test_already_applied_expand_file_skips_the_pre_check(self):
+        conn = FakeConn(applied="2026-10-01 00:00:00+00")
+        conn.reltuples = {"booking.trip": 500_000}
+        code, conn, log = self.run_task(EXPAND_OK, conn=conn)
+        self.assertEqual((code, conn.executed), (0, []), log)
+        self.assertIn("already applied", log)
 
     def test_invalid_cic_exits_16_and_does_not_register(self):
         conn = FakeConn()

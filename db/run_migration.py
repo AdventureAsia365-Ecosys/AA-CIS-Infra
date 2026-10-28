@@ -122,8 +122,9 @@ back; for a no-transaction file the statements before the registration stay comm
 version is not registered), or the check after COMMIT found something that ran at COMMIT (committed
 and registered: clean up by hand).
 Exit codes (AA-993 M2a, root ADR 0017): 14 reserved for the expand runtime post-check (M2b) · 15 lock risk: an expand
-file would lock an existing table above EXPAND_MAX_ROWS (non-concurrent CREATE INDEX, ALTER TABLE) — nothing ran, make
-it a contract file (or use CONCURRENTLY) · 16 an expand CREATE INDEX CONCURRENTLY left a missing or INVALID index —
+file would lock an existing table above EXPAND_MAX_ROWS or of unknown size (non-concurrent CREATE INDEX, ALTER TABLE),
+or creates with IF NOT EXISTS a relation that already exists — nothing ran, make it a contract file (or use
+CONCURRENTLY) · 16 an expand CREATE INDEX CONCURRENTLY left a missing or INVALID index —
 the statements ran, the version is NOT registered, drop the index named in the log and re-run · 17 the apply lock
 (session advisory lock shared by every applying mode) stayed taken by another run for APPLY_LOCK_WAIT_S — nothing ran.
 
@@ -1033,9 +1034,33 @@ def _add_column_error(action: str) -> str:
             return why
     if re.search(r"\bNOT NULL\b", action) and not re.search(r"\bDEFAULT\b", action):
         return "a NOT NULL column without a default fails on existing rows (contract)"
+    if re.search(r"\b(SMALL|BIG)?SERIAL[248]?\b", action):
+        return "a serial column adds a nextval() default, which rewrites the table (contract)"
     if EXPAND_VOLATILE_DEFAULT_RE.search(action):
         return "a volatile default rewrites the table (contract)"
     return ""
+
+
+EXPAND_SET_RE = re.compile(r"^SET (?:LOCAL |SESSION )?([A-Z_]+)\b")
+
+
+def _expand_set_error(s) -> str:
+    """'' when a SET in a transactional expand file is allowed: ROLE (catalog_owner is refused separately),
+    search_path, and lock_timeout / statement_timeout between 1 ms and EXPAND_STATEMENT_TIMEOUT. A body SET must not
+    undo the 30 s cap (ADR 0017 d4) or disable a timeout (0), and nothing else is set (session_replication_role …)."""
+    m = EXPAND_SET_RE.match(s.code)
+    name = m.group(1) if m else ""
+    if name in ("ROLE", "SEARCH_PATH"):
+        return ""
+    if name in ("LOCK_TIMEOUT", "STATEMENT_TIMEOUT"):
+        v = re.search(rf"(?i)\b{name}\s*(?:=|\bTO\b)\s*'?\s*([0-9]+\s*[a-z]*)\s*'?", s.text)
+        ms = _duration_ms(v.group(1).replace(" ", "").lower()) if v else float("inf")
+        if 0 < ms <= EXPAND_MAX_STATEMENT_TIMEOUT_MS:
+            return ""
+        return (f"SET {name.lower()} in an expand file must be between 1ms and {EXPAND_STATEMENT_TIMEOUT} "
+                f"(0 disables it; a slower statement is contract)")
+    return (f"SET {name.lower() or '…'} is not allowed in an expand file (allowed: SET [LOCAL] ROLE, search_path, "
+            f"lock_timeout / statement_timeout up to {EXPAND_STATEMENT_TIMEOUT})")
 
 
 def names_hot_table(code: str) -> str:
@@ -1095,6 +1120,11 @@ def expand_lint(sql: str, d: "Directives", owner_dir: str = None) -> list:
         for rx, why in EXPAND_FORBIDDEN_RES:
             if rx.search(code):
                 errors.append(f"{here}: {why}")
+        if code.startswith("SET "):
+            why = _expand_set_error(s)
+            if why:
+                errors.append(f"{here}: {why}")
+            continue
         hot = names_hot_table(code)
         if hot:
             errors.append(f"{here}: names hot table {hot} (owners.yaml expand_hot_tables: running code reads it with "
@@ -1146,10 +1176,12 @@ def expand_lint(sql: str, d: "Directives", owner_dir: str = None) -> list:
                 if r not in grant_roles:
                     errors.append(f"{here}: GRANT TO {r}: an expand file grants only to the {owner_dir or '?'} owner's "
                                   f"runtime / nologin roles in owners.yaml ({', '.join(sorted(grant_roles)) or 'none'})")
-    if not d.no_transaction and "statement_timeout" in d.explicit \
-            and _duration_ms(d.settings["statement_timeout"]) > EXPAND_MAX_STATEMENT_TIMEOUT_MS:
-        errors.append(f"statement_timeout={d.settings['statement_timeout']}: an expand file runs with at most "
-                      f"{EXPAND_STATEMENT_TIMEOUT} (ADR 0017 d4); a slower statement is contract")
+    for key in ("statement_timeout", "lock_timeout"):
+        # 0 disables the timeout (an ACCESS EXCLUSIVE wait without lock_timeout queues every reader behind it).
+        if not d.no_transaction and key in d.explicit \
+                and not 0 < _duration_ms(d.settings[key]) <= EXPAND_MAX_STATEMENT_TIMEOUT_MS:
+            errors.append(f"{key}={d.settings[key]}: an expand file runs with a {key} between 1ms and "
+                          f"{EXPAND_STATEMENT_TIMEOUT} (ADR 0017 d4); a slower statement is contract")
     return errors
 
 
@@ -1171,8 +1203,40 @@ def lock_risk_targets(sql: str, d: "Directives") -> list:
     return out
 
 
-RELTUPLES_SQL = ("SELECT c.reltuples::bigint FROM pg_catalog.pg_class c "
-                 "WHERE c.oid = pg_catalog.to_regclass($1) AND c.relkind IN ('r', 'p', 'm')")
+# reltuples is -1 until the first VACUUM / ANALYZE (PostgreSQL 14+), and a partitioned parent has no rows of its own
+# (autovacuum never analyzes it): -1 = unknown and not empty (lock risk), a parent = the sum of its leaf partitions.
+RELTUPLES_SQL = (
+    "SELECT CASE WHEN c.relkind = 'p' THEN ("
+    "SELECT CASE WHEN bool_or(l.reltuples < 0 AND pg_catalog.pg_relation_size(l.oid) > 0) THEN -1 "
+    "ELSE COALESCE(sum(GREATEST(l.reltuples, 0)), 0) END::bigint "
+    "FROM pg_catalog.pg_partition_tree(c.oid) t JOIN pg_catalog.pg_class l ON l.oid = t.relid WHERE t.isleaf) "
+    "WHEN c.reltuples >= 0 THEN c.reltuples::bigint "
+    "WHEN pg_catalog.pg_relation_size(c.oid) = 0 THEN 0 ELSE -1 END "
+    "FROM pg_catalog.pg_class c "
+    "WHERE c.oid = pg_catalog.to_regclass($1) AND c.relkind IN ('r', 'p', 'm')")
+REL_EXISTS_SQL = "SELECT pg_catalog.to_regclass($1) IS NOT NULL"
+IFNE_REL_RE = re.compile(r"^CREATE (?:UNLOGGED |TEMP |TEMPORARY )?(?:TABLE|SEQUENCE|MATERIALIZED VIEW) IF NOT EXISTS "
+                         r"([^\s(]+)")
+IFNE_INDEX_RE = re.compile(r"^CREATE (?:UNIQUE )?INDEX IF NOT EXISTS ([^\s(]+) ON (?:ONLY )?([^\s(]+)")
+
+
+def if_not_exists_relations(sql: str, d: "Directives") -> list:
+    """Relations a transactional expand file creates with IF NOT EXISTS (lower case; an index qualified with its
+    table's schema). The lint treats them as new, so ALTER / GRANT / INSERT / policies on them pass; if one already
+    exists the CREATE is a no-op and those statements change an existing object."""
+    if d.no_transaction:
+        return []               # CIC files: the index validity check covers IF NOT EXISTS (exit 16)
+    out = []
+    for s in split_statements(sql):
+        m = IFNE_REL_RE.match(s.code)
+        if m:
+            out.append(_ident(m.group(1)).lower())
+            continue
+        m = IFNE_INDEX_RE.match(s.code)
+        if m:
+            index, table = _ident(m.group(1)).lower(), _ident(m.group(2)).lower()
+            out.append(f"{table.rsplit('.', 1)[0]}.{index}" if "." not in index and "." in table else index)
+    return out
 
 
 async def lock_risk_findings(conn, sql: str, d: "Directives") -> list:
@@ -1181,8 +1245,14 @@ async def lock_risk_findings(conn, sql: str, d: "Directives") -> list:
     found = []
     for table, what in lock_risk_targets(sql, d):
         rows = await conn.fetchval(RELTUPLES_SQL, table)
-        if rows is not None and rows > EXPAND_MAX_ROWS:
+        if rows is not None and rows < 0:
+            found.append(f"{table}: row count unknown (never vacuumed or analyzed; ANALYZE it first), {what}")
+        elif rows is not None and rows > EXPAND_MAX_ROWS:
             found.append(f"{table}: ~{rows} rows > {EXPAND_MAX_ROWS}, {what}")
+    for rel in if_not_exists_relations(sql, d):
+        if await conn.fetchval(REL_EXISTS_SQL, rel):
+            found.append(f"{rel} already exists: its CREATE … IF NOT EXISTS is a no-op, so the file's later statements "
+                         f"on it would change an existing object (contract)")
     return found
 
 
@@ -2134,7 +2204,10 @@ async def run_task(env=None, fetch=_fetch, connect=_connect, sleep=asyncio.sleep
             log(f"ERROR: role: {reach_error}")
             return 8
         log(f"ran as: {plan.run_as}{' (check mode: the role apply uses)' if mode != 'apply' else ''} — {plan.why}")
-        if d.expand:
+        if d.expand and await conn.fetchval("SELECT applied_at FROM shared.schema_versions WHERE version = $1",
+                                            version):
+            log("expand: version already registered, lock-risk check skipped")
+        elif d.expand:
             # ADR 0017 d4: sizes are read before any statement (check mode too, so a check predicts the apply).
             risk = await lock_risk_findings(conn, sql, d)
             if risk:
