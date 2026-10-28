@@ -240,6 +240,10 @@ class FakeConn:
         return self.states[min(self.checks, len(self.states)) - 1]
 
     async def fetch(self, query, *args):
+        if query == rm.EXPAND_SNAPSHOT_SQL:         # AA-993 M2b: expand_before on the first read, then expand_after
+            self.expand_reads = getattr(self, "expand_reads", 0) + 1
+            first = self.expand_reads == 1
+            return list(getattr(self, "expand_before" if first else "expand_after", []))
         if query == rm.SET_ROLE_REACH_SQL:
             self.reach_queries = getattr(self, "reach_queries", []) + [list(args[0])]
             return [{"role": r} for r in args[0] if r not in self.members and r != self.login]

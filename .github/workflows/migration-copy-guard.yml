@@ -232,3 +232,130 @@ jobs:
           cat retention.log
           { echo '### Retention rows (DM-7.1)'; echo '```'; grep -v '^::' retention.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           exit "$status"
+
+  # AA-993 M2b (root ADR 0017 d3, design §2 M2b): the expand runtime post-check as evidence on the PR, on a throw-away
+  # PostgreSQL 15 container on this runner (no AWS, no secret; the same pinned image as the DB Schema Dump replay).
+  #   1. the M2b PostgreSQL tests (db/tests/test_aa993_expand_check_pg.py: the exit-14 and pass cases, the classify
+  #      run, the RETURNING * proof of the hot-table rule);
+  #   2. db/expand_check.py --classify on a fresh container: every applied migration replayed in the order of the live
+  #      dump (schema.json of the latest successful DB Schema Dump run on main, retention 14 days; number order when
+  #      there is none, critic 19), then every pending file rehearsed with the post-check and applied, in number order.
+  #      On a pull request the exit is set by the owner-dir copies the PR adds or changes: 14 when one with the
+  #      `-- migrate: expand` header changes an existing object. A file without the header is contract by definition;
+  #      the summary only says whether the evidence would allow expand.
+  # A required check of the ruleset on main (tools/github/infra-main-ruleset.json, context "Expand classify").
+  classify:
+    name: Expand classify
+    needs: scope
+    # Fail closed (review S255): skip only on an explicit relevant=false.
+    if: ${{ !cancelled() && needs.scope.outputs.relevant != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      actions: read          # gh run download of the DB Schema Dump artifact (this repo only)
+    env:
+      # pgvector/pgvector:0.8.1-pg15 (PostgreSQL 15 + vector 0.8.1, as RDS), pinned to its image index digest.
+      REPLAY_IMAGE: pgvector/pgvector@sha256:94aee7e88f98125114657cab98e28c5dfa8dd517a6bf83fd98b503439f1e3de6
+      OWNER_REPOS: AA-CIS-App AA-Booking AA-TripPlanner-Web AA-Partner
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install asyncpg (post-check driver)
+        run: python -m pip install --quiet asyncpg==0.30.0 pyyaml==6.0.2
+
+      - name: Expand post-check tests on PostgreSQL 15
+        run: |
+          PW="$(openssl rand -hex 16)"
+          docker run -d --name pg-tests -e POSTGRES_PASSWORD="$PW" -p 127.0.0.1:55433:5432 "$REPLAY_IMAGE" >/dev/null
+          for i in $(seq 1 60); do docker exec pg-tests pg_isready -h 127.0.0.1 -U postgres -q && break; sleep 2; done
+          AA993_TEST_PG_DSN="postgresql://postgres:${PW}@127.0.0.1:55433/postgres" \
+            python -m unittest db.tests.test_aa993_expand_check_pg -v
+          docker rm -f pg-tests >/dev/null
+
+      - name: Copies to classify
+        id: files
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ "$EVENT" = "pull_request" ]; then
+            git diff --name-only --diff-filter=ACMR "$BASE_SHA"...HEAD -- \
+              'db/migrations/cis/*.sql' 'db/migrations/booking/*.sql' 'db/migrations/tripplanner/*.sql' \
+              'db/migrations/crm/*.sql' | sed 's#^db/migrations/##' > targets.txt
+            echo "mode=$([ -s targets.txt ] && echo targets || echo none)" >> "$GITHUB_OUTPUT"
+          else
+            : > targets.txt
+            echo "mode=all" >> "$GITHUB_OUTPUT"
+          fi
+          echo "copies to classify:"; cat targets.txt
+
+      - name: Replay order (latest DB Schema Dump artifact)
+        id: live
+        if: steps.files.outputs.mode != 'none'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RUN=$(gh run list -R "$GITHUB_REPOSITORY" --workflow db-schema-dump.yml --branch main --status success \
+            --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+          if [ -n "$RUN" ] && gh run download "$RUN" -R "$GITHUB_REPOSITORY" -n "db-schema-dump-$RUN" -D dump \
+              && [ -s dump/schema.json ]; then
+            echo "path=dump/schema.json" >> "$GITHUB_OUTPUT"
+            echo "replay order: the live dump of DB Schema Dump run $RUN"
+          else
+            echo "::warning::no DB Schema Dump artifact on main (expired or none): the replay falls back to number order"
+          fi
+
+      - name: Classify (expand post-check on a replay)
+        if: steps.files.outputs.mode != 'none' && (steps.live.outputs.path != '' || steps.files.outputs.mode == 'targets')
+        run: |
+          PW="$(openssl rand -hex 16)"
+          docker run -d --name classify-db -e POSTGRES_PASSWORD="$PW" -p 127.0.0.1:55432:5432 "$REPLAY_IMAGE" >/dev/null
+          for r in $OWNER_REPOS; do
+            git clone --quiet --depth 1 "https://github.com/AdventureAsia365-Ecosys/$r.git" "owners/$r"
+            echo "$r main: $(git -C "owners/$r" rev-parse --short HEAD)"
+          done
+          # The copies here go over the owner folders: byte-identical once the Copy Guard is green, and a copy not on
+          # the owner's main yet is still classified (the Copy Guard fails that PR on its own).
+          cp db/migrations/cis/*.sql owners/AA-CIS-App/api/migrations/
+          cp db/migrations/booking/*.sql owners/AA-Booking/migrations/
+          cp db/migrations/tripplanner/*.sql owners/AA-TripPlanner-Web/migrations/
+          cp db/migrations/crm/*.sql owners/AA-Partner/api/migrations/
+          for i in $(seq 1 60); do docker exec classify-db pg_isready -h 127.0.0.1 -U postgres -q && break; sleep 2; done
+          ARGS=()
+          [ -n "${{ steps.live.outputs.path }}" ] && ARGS+=(--live "${{ steps.live.outputs.path }}")
+          if [ -s targets.txt ]; then ARGS+=(--files); while read -r f; do ARGS+=("$f"); done < targets.txt; fi
+          set +e
+          python3 db/expand_check.py --classify "${ARGS[@]}" \
+            --admin-dsn "postgresql://postgres:${PW}@127.0.0.1:55432/postgres" \
+            --source roles=db/migrations/roles --source cis=owners/AA-CIS-App/api/migrations \
+            --source booking=owners/AA-Booking/migrations --source tripplanner=owners/AA-TripPlanner-Web/migrations \
+            --source crm=owners/AA-Partner/api/migrations \
+            --out classify.json --summary "$GITHUB_STEP_SUMMARY" > classify.log 2>&1
+          status=$?
+          grep -v '^REPLAY ok' classify.log
+          if [ "$status" = "14" ]; then
+            echo "::error::an expand file changes an existing object (CLASSIFY lines above): change it, or drop the \`-- migrate: expand\` header and ship it as a contract file (migration-only PR, manual DB Migrate apply)"
+          fi
+          exit "$status"
+
+      - name: Keep the classify result as an artifact
+        if: always() && steps.files.outputs.mode != 'none'
+        uses: actions/upload-artifact@v7
+        with:
+          name: expand-classify-${{ github.run_id }}
+          path: |
+            classify.json
+            classify.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Remove the scratch containers
+        if: always()
+        run: docker rm -f pg-tests classify-db >/dev/null 2>&1 || true
