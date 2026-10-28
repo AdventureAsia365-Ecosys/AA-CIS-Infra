@@ -5,6 +5,7 @@
 # EventBridge alert rules + us-east-1 forwarder), security_cloudtrail.tf (PR 2: CloudTrail KMS key, multi-region
 # trail, trail bucket versioning / Object Lock) and security_guardduty.tf (PR 3: GuardDuty behind
 # var.guardduty_enabled), plus the public AMI parameter read of the NAT AMI fix (modules/vpc).
+# S256: the Access Analyzer archive rules of security_access_analyzer_archive.tf (same bootstrap steps below).
 #
 # Why a customer managed policy and not more inline statements: the apply role's inline policy renders to 8,963 of
 # the 10,240 characters every inline policy of a role shares (terraform console on main 82400b9, 28/10/2026); these
@@ -47,9 +48,14 @@ data "aws_iam_policy_document" "tf_apply_sec" {
   }
 
   # PR 1: IAM Access Analyzer (Create/Get/Update/DeleteAnalyzer, Tag/Untag/ListTagsForResource).
+  # S256 triage: its archive rules (security_access_analyzer_archive.tf; Create/Get/Update/Delete/ApplyArchiveRule,
+  # ListArchiveRules). An archive-rule ARN is analyzer/<name>/archive-rule/<rule>, inside analyzer/*.
   statement {
-    sid       = "AccessAnalyzerManage"
-    actions   = ["access-analyzer:*Analyzer", "access-analyzer:*Resource"]
+    sid = "AccessAnalyzerManage"
+    actions = [
+      "access-analyzer:*Analyzer", "access-analyzer:*Resource", "access-analyzer:*ArchiveRule",
+      "access-analyzer:ListArchiveRules",
+    ]
     resources = ["arn:aws:access-analyzer:${var.aws_region}:${var.account_id}:analyzer/*"]
   }
 

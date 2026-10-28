@@ -39,6 +39,8 @@
 # external access, so about one "[aa-sec] access_analyzer" e-mail per such role arrives within ~30 minutes. Check
 # that each finding's condition pins the repo subject (token.actions.githubusercontent.com:sub), then archive it with
 # a reason (or add an archive rule); a finding without that pin is a real trust bug.
+# S256 triage: 11 findings, all intended; archived by security_access_analyzer_archive.tf (live pattern check:
+# tools/terraform/sec_alert_check.py).
 # =============================================================================
 
 locals {
@@ -144,7 +146,11 @@ resource "aws_cloudwatch_event_rule" "sec_iam_change" {
       eventName = [
         { prefix = "Create" }, { prefix = "Delete" }, { prefix = "Attach" }, { prefix = "Detach" },
         { prefix = "Put" }, { prefix = "Update" }, { prefix = "Add" }, { prefix = "Remove" },
-        "DeactivateMFADevice", "EnableMFADevice", "ResyncMFADevice", "SetDefaultPolicyVersion",
+        # S256 triage: tags drive access here (the CRM break-glass key policy reads aws:PrincipalTag/tenant_id, the
+        # apply boundary keys on App), so Tag*/Untag* alert too; Upload* (signing / SSH / server certificates),
+        # Set*, Reset*, Change*, Enable*, Deactivate* and Resync* cover the remaining IAM write verbs.
+        { prefix = "Tag" }, { prefix = "Untag" }, { prefix = "Upload" }, { prefix = "Set" }, { prefix = "Reset" },
+        { prefix = "Change" }, { prefix = "Enable" }, { prefix = "Deactivate" }, { prefix = "Resync" },
       ]
       "$or" = local.sec_unexpected_principal
     }
