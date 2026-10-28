@@ -189,6 +189,10 @@ accounts/
                                    replacement: provider probe). observability.tf: aws_cloudtrail.main multi-region +
                                    kms_key_id; bucket lifecycle = noncurrent 400 d + multipart cleanup (the old Deep
                                    Archive rule never ran: files < 128 KB). ~1.25 USD/month)
+    security_guardduty.tf         (AA-873 PR 3, S255: GuardDuty detector behind var.guardduty_enabled (default false;
+                                   ~15-20 USD/month when on): features RDS_LOGIN_EVENTS + S3_DATA_EVENTS on, EBS malware /
+                                   EKS audit / Lambda network / Runtime Monitoring explicitly off; rule
+                                   aa-sec-<env>-guardduty-finding (severity >= 4) -> SNS alerts)
     cicd_sec.tf                   (AA-873, bootstrap: customer managed policy aa-cis-infra-tf-apply-sec on the apply
                                    role — Access Analyzer, events rules aa-sec-* (both regions), the Access Analyzer /
                                    GuardDuty service-linked roles, GuardDuty detector + features, KMS create/admin only
