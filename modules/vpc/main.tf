@@ -68,17 +68,16 @@ resource "aws_subnet" "db" {
 }
 
 # ── NAT Instance (t4g.nano) ──────────────────────────────────
-data "aws_ami" "nat_al2023" {
-  most_recent = true
-  owners      = ["amazon"]
-  filter {
-    name   = "name"
-    values = ["al2023-ami-*-arm64"]
-  }
-  filter {
-    name   = "virtualization-type"
-    values = ["hvm"]
-  }
+# S255 (AA-873 audit finding F-4): the old aws_ami filter "al2023-ami-*-arm64" + most_recent also matched the
+# ECS-optimized image (al2023-ami-ecs-hvm-...-kernel-6.1-arm64), and that is what the running NAT instance was
+# built from: its ECS agent calls ecs:RegisterContainerInstance in a loop (3,586 CloudTrail events on 26/10/2026,
+# management-event noise GuardDuty would bill). The public SSM parameter names exactly the plain AL2023 kernel 6.1
+# arm64 image. aws_instance.nat ignores ami and user_data changes (lifecycle below), so this only applies to the
+# next deliberate replacement; the running instance is fixed by an SSM Run Command (systemctl disable --now ecs).
+# Reading the parameter needs ssm:GetParameter on /aws/service/ami-amazon-linux-latest/* (plan role:
+# ReadOnlyAccess; apply role: accounts/aa365/cicd_sec.tf Sid PublicAmiParameterRead).
+data "aws_ssm_parameter" "nat_al2023_arm64" {
+  name = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-arm64"
 }
 
 resource "aws_eip" "nat_instance" {
@@ -150,7 +149,7 @@ resource "aws_iam_instance_profile" "nat_instance" {
 }
 
 resource "aws_instance" "nat" {
-  ami                    = data.aws_ami.nat_al2023.id
+  ami                    = data.aws_ssm_parameter.nat_al2023_arm64.insecure_value # an AMI id is not secret
   instance_type          = "t4g.nano"
   subnet_id              = aws_subnet.public[0].id
   vpc_security_group_ids = [aws_security_group.nat.id]
@@ -166,6 +165,8 @@ resource "aws_instance" "nat" {
     iptables -F FORWARD
     service iptables save
     systemctl enable iptables
+    # S255: no ECS agent on the NAT host (only present if the image is ECS-optimized; harmless otherwise).
+    systemctl disable --now ecs || true
   EOT
 
   tags = merge(var.tags, {
@@ -180,8 +181,13 @@ resource "aws_instance" "nat" {
     Name = "${local.name_prefix}-nat-instance-root"
   })
 
+  # ami: a newer image must never replace the NAT instance on its own (outage for every private subnet).
+  # user_data (S255): changing it is an in-place update that STOPS and starts the instance (user_data_replace_on_change
+  # is false), i.e. the same outage. The script only runs at first boot, so the new one takes effect at the next
+  # deliberate replacement of module.vpc.aws_instance.nat (plan with -replace), and the running instance gets the
+  # same change through SSM Run Command.
   lifecycle {
-    ignore_changes = [ami]
+    ignore_changes = [ami, user_data]
   }
 }
 
