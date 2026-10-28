@@ -265,3 +265,23 @@ lines (component ids only) as the undo. Idempotent.
 
 `aa990_reader_checks.py` also prints `pins_chain` / `tp_pins_served_chain`: the same pin checks resolved the
 TripPlanner way (chain over both sources); compare them with the one-hop `pins` / `tp_pins_served` baseline.
+
+`aa838_capacity_probe.py` (AA-838, S255, monthly C8 capacity review; read-only, `READ_ONLY = True`): database size and
+cache hit, size per schema, top tables (heap / index / toast, estimated rows, dead tuples), unused indexes, ledger row
+counts and age against the C5.4 / DM-7 retention windows, job durations per kind (30 days), connections per role and
+`application_name`, locks, `pg_stat_statements` top statements per role and the C1.2 SLI approximations
+(`mean + 2 x stddev`). Prints `PROBE ` lines: aggregates, object names and normalised statement text only (constants
+are `$n`), never row values; never calls `pg_stat_statements_reset()` (C4.3a). Through run-script it sees every
+role's statement text (master); the same file also runs by S3-mediated ECS exec as `cis_app` (other roles' text
+hidden). `PROBE_TOP` (default 20) and `PROBE_QTEXT` (default 160) size the output. Report: root
+`docs/audits/2026-10-28-S255-aa838-capacity/`.
+
+`aa850_dead_table_dry_run.py` (AA-850, S255; read-only DRY RUN, step 1 of `skill/aa-cis-schema/references/
+destructive-ops.md`, data standards DM-3.8 / DM-3.9): Dead Table Registry census (rows, size, last write, scan and
+write counters, vacuum/analyze times per table) and wave-1 quarantine readiness (existence, dependent views /
+functions / triggers / policies / FKs, grants, `pg_stat_statements` calls per role, tenant rows), ending with
+`SCRIPT verdict quarantine_ready=<true|false> reasons=<...>`. Counts, names, timestamps and roles only. Dispatch it
+twice: T0, then T1 >= 14 days later or right before the quarantine migration; the wave-1 counters must not move
+between the two (same `stats_reset`). The ECS-exec fallback sets the session read-only with `SET SESSION
+CHARACTERISTICS AS TRANSACTION READ ONLY` (the runner's shape check refuses a literal naming
+`default_transaction_read_only`).

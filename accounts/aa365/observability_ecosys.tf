@@ -70,6 +70,12 @@ locals {
     # set-password test login uses it, so the alarm stays OK (notBreaching). At 5 the alarm fires only at
     # 5/5 sessions (> 80 %), i.e. when the next workflow task would be refused.
     db_migrator = 5
+    # AA-838 (S255, first C8 capacity review): crm_app (rl-003, AA-932), the AA-Partner API + in-process crm.job
+    # worker. C4.1 wants one alarm per limited role and it had none, although it reached 5/6 (83 %) on 24/10/2026.
+    # The sampler already publishes RoleConnectionLimitPct{Role=crm_app}; only the alarm was missing. Its pool is
+    # 3 x 2 tasks = 6 = the limit (db/connection_budget.json), so a CRM rolling deploy can alarm (> 4 sessions):
+    # that is the signal to size the pool, not to raise the threshold.
+    crm_app = 6
   }
 }
 
