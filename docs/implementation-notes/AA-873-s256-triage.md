@@ -59,3 +59,10 @@ Root audit: `docs/audits/2026-10-28-S256-aa873-triage/README.md` (triage table).
   `aws accessanalyzer apply-archive-rule` once per rule (archive rules only act on NEW findings) → `list-findings-v2`
   with status ACTIVE = 0 → `python3 tools/terraform/sec_alert_check.py` = 0 failed → root `alert_test.sh`.
 - Before the apply, `sec_alert_check.py --skip-after-s256` = 0 failed (the 7 new verbs are the known gap).
+
+## Review follow-up (S256)
+
+- Rebased on main fd39cc4: main gained a 10th GitHub OIDC role, `aa-cis-infra-db-auto-apply` (AA-993 I1, PR #477;
+  live finding created 28/10 14:48 UTC). Its trust pins aud, the immutable-id AA-CIS-Infra subject with
+  `environment:dev-db-auto` and `ref = refs/heads/main`, so it is intended; added to `local.sec_aa_github_oidc_roles`.
+  The guard test caught it (failed on the rebased branch before the addition). Live filter dry run: 10 + 1 + 1.

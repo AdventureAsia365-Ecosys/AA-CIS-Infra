@@ -4,7 +4,8 @@
 # The external-access analyzer (security_baseline.tf) reported 11 ACTIVE findings on its first scan (28/10/2026,
 # read with list-findings-v2 / get-finding-v2, root audit docs/audits/2026-10-28-S256-aa873-triage/). All 11 are
 # intended; none is a real exposure:
-#   - 9 IAM roles trusted by the GitHub Actions OIDC provider. Access Analyzer drops the token claims from the
+#   - 9 IAM roles trusted by the GitHub Actions OIDC provider (a 10th, aa-cis-infra-db-auto-apply of AA-993 I1,
+#     appeared at 14:48 UTC the same day: environment dev-db-auto + ref main, same pins, triaged in review). Access Analyzer drops the token claims from the
 #     finding ("condition": {}), so each trust policy was read in this repo: every one pins the audience
 #     (sts.amazonaws.com) AND an exact subject of one repo by immutable owner/repo ids (no wildcard: the Booking and
 #     CRM repo-id variables are set in terraform.tfvars), most also the ref (refs/heads/main or master).
@@ -19,7 +20,7 @@
 # therefore raises one "[aa-sec] access_analyzer" e-mail; review its trust, then add it below. The guard test
 # tools/terraform/tests/test_sec_access_analyzer.py fails when an OIDC role is missing here or its trust is loose.
 #
-# Archive rules act on NEW findings only. After the first apply the orchestrator archives the 11 existing findings
+# Archive rules act on NEW findings only. After the first apply the orchestrator archives the existing findings (11 + the AA-993 role)
 # once with `aws accessanalyzer apply-archive-rule` (one call per rule, MFA admin; root .tmp-session/S256/aa873/).
 #
 # Cost: 0 USD (archive rules are free; the external-access analyzer is free).
@@ -39,6 +40,7 @@ locals {
       aws_iam_role.booking_app_deploy.arn,     # AA-Booking, environment dev or ref main
       aws_iam_role.tripplanner_app_deploy.arn, # AA-TripPlanner-Web, ref main
       aws_iam_role.crm_app_deploy.arn,         # AA-Partner, environment dev
+      aws_iam_role.db_auto_apply.arn,          # AA-CIS-Infra, environment dev-db-auto, ref main (AA-993 I1)
     ],
     aws_iam_role.crm_scrub_corpus[*].arn, # AA-Partner, environment scrub-corpus (only when the guardrail is on)
   )
