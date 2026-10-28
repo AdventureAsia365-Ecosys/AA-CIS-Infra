@@ -159,38 +159,13 @@ resource "aws_s3_bucket_policy" "bronze" {
           Bool = { "aws:SecureTransport" = "false" }
         }
       },
-      # AA-302 — cross-account access for the Bedrock Batch inference service
-      # role (account 1, accounts/acc1-bedrock). Scoped to the two batch
-      # prefixes only, not the whole bucket.
-      {
-        Sid       = "AllowBedrockBatchCrossAccountAccess"
-        Effect    = "Allow"
-        Principal = { AWS = "arn:aws:iam::867490540162:role/aa-bedrock-batch-inference-role" }
-        Action    = ["s3:GetObject", "s3:PutObject"]
-        Resource = [
-          "${aws_s3_bucket.bronze.arn}/batch-input/atom-decompose/*",
-          "${aws_s3_bucket.bronze.arn}/batch-output/atom-decompose/*",
-          # AA-606 — S1-rewrite writer batch prefixes, alongside the atom-decompose ones.
-          "${aws_s3_bucket.bronze.arn}/batch-input/s1-rewrite/*",
-          "${aws_s3_bucket.bronze.arn}/batch-output/s1-rewrite/*"
-        ]
-      },
-      {
-        Sid       = "AllowBedrockBatchListBucket"
-        Effect    = "Allow"
-        Principal = { AWS = "arn:aws:iam::867490540162:role/aa-bedrock-batch-inference-role" }
-        Action    = ["s3:ListBucket"]
-        Resource  = aws_s3_bucket.bronze.arn
-        Condition = {
-          StringLike = { "s3:prefix" = [
-            "batch-input/atom-decompose/*", "batch-output/atom-decompose/*",
-            "batch-input/s1-rewrite/*", "batch-output/s1-rewrite/*"
-          ] }
-        }
-      },
-      # AA-399 — same grant, parallel, for the acc3 Batch inference service
-      # role (account 786888028788, accounts/acc3-bedrock/batch.tf). acc1's
-      # statements above are UNCHANGED — acc3 is added alongside, not instead.
+      # AA-399 — cross-account access for the acc3 Bedrock Batch inference
+      # service role (account 786888028788, accounts/acc3-bedrock/batch.tf),
+      # scoped to the batch prefixes only. AA-998: the acc1 statements
+      # (AllowBedrockBatchCrossAccountAccess / AllowBedrockBatchListBucket,
+      # principal acc1 aa-bedrock-batch-inference-role) are removed; they
+      # must be gone before that role is destroyed (S3 rejects a later
+      # PutBucketPolicy that names a principal which no longer exists).
       {
         Sid       = "AllowBedrockBatchCrossAccountAccessAcc3"
         Effect    = "Allow"

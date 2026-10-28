@@ -28,7 +28,7 @@ name: Docs Gen (generated infra docs)
 #    does not hold back the Terraform pages: the run turns red at the end instead.
 # Public repos (AA-981, S248 d15): every page goes through tools/docs/aws_mask.py (gen_docs.page): account ids become
 #    labels ({acc2}), ARNs lose partition + account (and the Secrets Manager suffix), EC2/VPC ids become <prefix>-{masked};
-#    a page that still holds one is refused. The label table is env AWS_ACCOUNT_ALIASES ("acc1=<id>,acc2=<id>,..."):
+#    a page that still holds one is refused. The label table is env AWS_ACCOUNT_ALIASES ("acc2=<id>,acc3=<id>,..."):
 #    the optional repo SECRET AWS_ACCOUNT_ALIASES (a secret, not a variable: a variable is printed in this public
 #    repo's logs) plus acc2 read from sts at run time, both ::add-mask::ed. Without the secret only acc2 is
 #    named; any other id renders as {aws-account}.

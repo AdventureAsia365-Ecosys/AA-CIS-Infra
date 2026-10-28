@@ -18,12 +18,11 @@
 #   Bedrock model access mirrors AA-CIS/ACPv2 exactly (verified live):
 #     - Claude (compose/renarrate): acc2 is a channel-program account and
 #       CANNOT invoke Claude, so the Lambda assumes the satellite invoker
-#       roles — acc3 AA3-Bedrock-Invoker (primary) / acc1 AA-Bedrock-Invoker
-#       (fallback) — same pattern as module.ecs's task role
+#       role acc3 AA3-Bedrock-Invoker (the only LLM satellite since AA-998;
+#       the acc1 fallback is retired) — same pattern as module.ecs's task role
 #       (see bedrock_satellite_assume.tf). The TRUST side (adding this Lambda
-#       role as a principal on those roles) lives in accounts/acc3-bedrock and
-#       accounts/acc1-bedrock and is applied via their own workflow — see the
-#       companion change there; this file only grants the caller-side
+#       role as a principal on that role) lives in accounts/acc3-bedrock and
+#       is applied by a human; this file only grants the caller-side
 #       sts:AssumeRole.
 #     - Embeddings (Cohere Embed v4): acc2 CAN invoke Cohere directly, so no
 #       satellite — a direct bedrock:InvokeModel grant on the inference
@@ -74,10 +73,9 @@ locals {
     "arn:aws:bedrock:::foundation-model/cohere.embed-v4:0",
   ]
 
-  # Satellite invoker roles (Claude). Same ARNs AA-CIS uses.
+  # Satellite invoker role (Claude). Same ARN AA-CIS uses; acc3 only (AA-998).
   tp_satellite_invoker_arns = [
-    "arn:aws:iam::786888028788:role/AA3-Bedrock-Invoker", # acc3 primary
-    "arn:aws:iam::867490540162:role/AA-Bedrock-Invoker",  # acc1 fallback
+    "arn:aws:iam::786888028788:role/AA3-Bedrock-Invoker", # acc3
   ]
 }
 
@@ -384,9 +382,9 @@ resource "aws_lambda_function" "tripplanner_browse" {
       ENVIRONMENT                  = var.environment
       TRIPPLANNER_DATABASE_URL_ARN = aws_secretsmanager_secret.tripplanner_db.arn
       BEDROCK_REGION               = var.aws_region
-      # AA-902: account IDs left the public TripPlanner repo; browse embeds through the same satellites.
-      BEDROCK_ACCT_PRIMARY  = local.bedrock_acct_primary
-      BEDROCK_ACCT_FALLBACK = local.bedrock_acct_fallback
+      # AA-902: account IDs left the public TripPlanner repo; browse embeds through the same satellite
+      # (acc3 only, AA-998).
+      BEDROCK_ACCT_PRIMARY = local.bedrock_acct_primary
     }
   }
 
@@ -427,13 +425,9 @@ resource "aws_lambda_function" "tripplanner_assembly" {
       TRIPPLANNER_DATABASE_URL_ARN = aws_secretsmanager_secret.tripplanner_db.arn
       BEDROCK_REGION               = var.aws_region
       BEDROCK_ACCT_PRIMARY         = local.bedrock_acct_primary
-      BEDROCK_ACCT_FALLBACK        = local.bedrock_acct_fallback
-      # acc3 and acc1 use DIFFERENT invoker role names — pass both (a single
-      # name breaks the fallback path).
-      BEDROCK_ROLE_NAME_PRIMARY    = "AA3-Bedrock-Invoker"
-      BEDROCK_ROLE_NAME_FALLBACK   = "AA-Bedrock-Invoker"
-      BEDROCK_EXTERNAL_ID_PRIMARY  = "aa296-satellite-bedrock-acc3"
-      BEDROCK_EXTERNAL_ID_FALLBACK = "aa296-satellite-bedrock"
+      # acc3 is the only satellite (AA-998: the acc1 fallback env is gone).
+      BEDROCK_ROLE_NAME_PRIMARY   = "AA3-Bedrock-Invoker"
+      BEDROCK_EXTERNAL_ID_PRIMARY = "aa296-satellite-bedrock-acc3"
       # No ADVISOR_NOTIFY_EMAIL: the advisor e-mail is sent by AA-Booking (bk_notify_email, AA-811 S238).
       REQUIRE_REGISTRATION_BEFORE_HANDOFF = "true"
       # AA-878: no TRIPPLANNER_API_KEY here (read by name from Secrets Manager, see browse) and no

@@ -41,9 +41,8 @@ variable "vpc_link_id" {
 }
 
 variable "acm_cert_arn_us_east1" {
-  description = "ACM certificate ARN (must be in same region as API — us-west-1 for REGIONAL endpoint)"
+  description = "ACM certificate ARN (must be in same region as API — us-west-1 for REGIONAL endpoint). No default: the old default named a cert in acc1 that no caller used (AA-998)."
   type        = string
-  default     = "arn:aws:acm:us-west-1:867490540162:certificate/260ab2f0-06f6-456b-b5d7-a4d0af96d405"
 }
 
 variable "domain_name" {

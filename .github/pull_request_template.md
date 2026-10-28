@@ -14,7 +14,7 @@ Refs AA-
 
 ## Plan summary
 
-- Root(s): `accounts/aa365` / `accounts/acc3-bedrock` / `accounts/acc1-bedrock`
+- Root(s): `accounts/aa365` / `accounts/acc3-bedrock`
 - Terraform Plan: <n> to add, <n> to change, <n> to destroy (link the plan run). Every destroy or replace is explained here:
 
 ## Risk and rollback
