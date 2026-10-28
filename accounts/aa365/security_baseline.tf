@@ -26,12 +26,19 @@
 #
 # Apply: the apply role needs the AA-873 bootstrap grants in cicd_sec.tf (Access Analyzer, the events rule
 # pattern aa-sec-*, the service-linked roles). They are a bootstrap object: apply them locally with the MFA admin
-# profile first (targeted aws_iam_role_policy.tf_apply), then let CI apply the rest. The alerts topic policy gains
+# profile first (targeted apply of aws_iam_policy.tf_apply_sec and its attachment, the AmazonSQSFullAccess
+# detach and the boundary: steps in the cicd_sec.tf header), then let CI apply the rest. The alerts topic policy gains
 # the statement AllowSecurityEventBridgeRules (identity_alerts.tf), applied by CI with this file.
 #
 # Done-when test (orchestrator, after PR 2 is applied too): create and delete a throwaway IAM policy with the MFA
 # admin session -> one "[aa-sec] iam_change" e-mail per call within a few minutes; run
 # `aws ec2 describe-security-groups` (no alert: read-only) and add + revoke a rule on a throwaway SG -> "sg_change".
+#
+# Expected on the first apply (not an incident): the analyzer's first scan reports every role that trusts the GitHub
+# OIDC provider (the CI / deploy roles of cicd_split.tf, booking.tf, tripplanner.tf, crm_*.tf, e2e_mailbox.tf) as
+# external access, so about one "[aa-sec] access_analyzer" e-mail per such role arrives within ~30 minutes. Check
+# that each finding's condition pins the repo subject (token.actions.githubusercontent.com:sub), then archive it with
+# a reason (or add an archive rule); a finding without that pin is a real trust bug.
 # =============================================================================
 
 locals {

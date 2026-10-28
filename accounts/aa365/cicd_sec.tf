@@ -24,11 +24,12 @@
 # policy change or a key deletion is a local MFA apply.
 #
 # Apply (orchestrator, local, MFA admin profile, from main after merge):
-#   1. terraform plan -target=aws_iam_policy.tf_apply_sec -target=aws_iam_role_policy_attachment.tf_apply_managed
-#        -target=aws_iam_role_policy_attachment.tf_apply_sec -target=aws_iam_policy.tf_apply_boundary
+#   1. terraform plan, then apply, with -target=aws_iam_policy.tf_apply_sec
+#        -target=aws_iam_role_policy_attachment.tf_apply_managed -target=aws_iam_role_policy_attachment.tf_apply_sec
+#        -target=aws_iam_policy.tf_apply_boundary
 #      Expect: 1 policy + 1 attachment to add, 1 attachment (AmazonSQSFullAccess) to destroy, the boundary in place.
 #   2. If the attach fails with LimitExceeded (11 attachments for a moment: create and destroy run in parallel),
-#      run the same targeted apply again: the detach has finished by then.
+#      run the same targeted apply again: the detach has finished by then. Then the same targeted plan: No changes.
 # Cost: 0 USD (IAM).
 # =============================================================================
 
