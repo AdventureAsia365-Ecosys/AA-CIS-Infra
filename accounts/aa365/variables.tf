@@ -150,38 +150,52 @@ variable "alert_email" {
   default     = "nghieppham@adventure.asia"
 }
 
+# AA-896 (S255): monthly USD limit of the whole-account budget (aws_budgets_budget.total_monthly,
+# observability.tf). It also covers untagged spend (~50 USD/month: CloudWatch, public IPv4, some
+# secrets), which no per-App budget sees. 250 (AA-287) -> 300: the run-rate 20-27/10/2026 is ~8.6
+# USD/day (~261 USD/month) after the CRM api/web/portal services (23-26/10) and the identity WAF
+# (25/10), plus ~18 USD/month for the AA-873 security baseline. Root audit
+# docs/audits/2026-10-28-S255-finops-security/ (decision D1).
+variable "total_monthly_budget_usd" {
+  description = "Monthly USD budget for the whole acc2 account (AA-287; AA-896 S255: 250 -> 300)"
+  type        = number
+  default     = 300
+
+  validation {
+    condition     = var.total_monthly_budget_usd > 0
+    error_message = "The account budget must be > 0 USD."
+  }
+}
+
 # AA-828: monthly USD limit per `App` cost allocation tag value (one aws_budgets_budget each,
-# observability.tf). Keys must be App tag values (DM-10.1). Defaults split the $250 account total
-# (aws_budgets_budget.total_monthly) by expected footprint and give ~$50 to shared infrastructure
-# (RDS, NAT, ALB, VPC); untagged spend is covered only by the total budget:
-#   cis         150 — ECS api + worker (Fargate), ElastiCache, S3 medallion buckets, REST API; most of the account.
-#   tripplanner  25 — 2 Lambdas + REST API + Cohere embed calls in acc2.
-#   booking      25 — Fargate service (desired_count 0 today) + REST API + SES.
-#   crm          25 — AA-Partner (AA-932): KMS keys, CloudFront edge, ECR, secrets, buckets; Fargate once it runs.
-#   shared       50 — shared RDS, NAT instance + EIP, ALB + VPC-link NLB, WAF, CloudTrail (App =
-#                     "shared", DM-10.1/10.3; added with the tag coverage, AA-828).
-# Starting points only: tune after one full month of Cost Explorer data grouped by App.
+# observability.tf). Keys must be App tag values (DM-10.1); untagged spend is covered only by the
+# total budget. History of the defaults:
+#   AA-828 (S238): cis 150, tripplanner 25, booking 25, shared 50 (split of the 250 USD total).
+#   AA-896 (S248): rebalanced from the run-rate 16-22/10/2026 (Cost Explorer by App tag, x 30.4 days):
+#     cis ~58, shared ~84 (RDS db.t4g.small since ~15/10, ALB + NLB, WAF, NAT instance), booking ~10,
+#     tripplanner ~1 USD/month. shared at 50 would alarm every month; cis at 150 never would.
+#   AA-932 (S248): crm 25 for the AA-Partner Dev stack (design v3 §7); tripplanner 25 -> 10.
+#   AA-896 (S255): run-rate 20-27/10/2026 x 30.4 (CRM and identity from their last 3 days): shared ~100,
+#     cis ~66, crm ~23 (portal since 26/10), booking ~11, identity ~10, tripplanner ~1.5. shared 100 -> 120
+#     (100 = the run-rate, so FORECASTED 100 % would fire every month), crm 25 -> 35, new identity 10
+#     (Cognito WAF web ACL + identity secrets carry App = "identity", identity.tf, and had no budget).
+#     Sum 290 <= the 300 USD account budget.
+# Starting points only: tune after each monthly FinOps review (root docs/ops/finops.md).
 variable "per_app_monthly_budgets" {
   description = "Monthly USD budget per App cost allocation tag value (AA-828)"
   type        = map(number)
-  # AA-896 (S248): rebalanced from the run-rate 16-22/10/2026 (Cost Explorer by App tag, x 30.4 days):
-  # cis ~58, shared ~84 (RDS db.t4g.small since ~15/10, ALB + NLB, WAF, NAT instance), booking ~10,
-  # tripplanner ~1 USD/month. shared at 50 would alarm every month; cis at 150 never would. Sum stays
-  # within the 250 USD account budget (untagged spend, ~37 USD/month, only counts there).
-  # AA-932 (S248): crm 25 for the AA-Partner Dev stack (design v3 §7: Dev $13-22, worst $26-33; KMS keys, the CloudFront
-  # edge, ECR, secrets now, Fargate once the service runs). tripplanner 25 -> 10 (run-rate ~1 USD/month) keeps the sum
-  # at the 250 USD account budget.
   default = {
     cis         = 90
     tripplanner = 10
     booking     = 25
-    crm         = 25
-    shared      = 100 # shared RDS/NAT/ALB/NLB/WAF
+    crm         = 35
+    identity    = 10
+    shared      = 120 # shared RDS/NAT/ALB/NLB/WAF
   }
 
   validation {
-    condition     = alltrue([for k, v in var.per_app_monthly_budgets : contains(["cis", "tripplanner", "booking", "crm", "shared"], k) && v > 0])
-    error_message = "Keys must be App tag values (cis, tripplanner, booking, crm, shared) and amounts must be > 0."
+    condition     = alltrue([for k, v in var.per_app_monthly_budgets : contains(["cis", "tripplanner", "booking", "crm", "identity", "shared"], k) && v > 0])
+    error_message = "Keys must be App tag values (cis, tripplanner, booking, crm, identity, shared) and amounts must be > 0."
   }
 }
 

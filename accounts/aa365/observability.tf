@@ -238,8 +238,9 @@ resource "aws_cloudwatch_metric_alarm" "acp_repair_count_high" {
 
 # -----------------------------------------------------------------------------
 # AA-287 — AWS Budgets
-# Single $250/mo total-account budget (Execute Plan program-level number,
-# locked already — not re-litigated here). A tag-based split into ACP $180 +
+# Single total-account budget: $250/mo at AA-287 (Execute Plan program-level number),
+# var.total_monthly_budget_usd = $300/mo since AA-896 S255 (CRM api/web/portal and the
+# identity WAF raised the base run-rate to ~261 USD/month). A tag-based split into ACP $180 +
 # total $250 is possible but this account has no cost-allocation tags applied
 # per project yet, so a per-project budget would silently cover $0 today —
 # noted here rather than built, since it'd just be misleading.
@@ -257,7 +258,7 @@ resource "aws_cloudwatch_metric_alarm" "acp_repair_count_high" {
 resource "aws_budgets_budget" "total_monthly" {
   name         = "${local.name_prefix}-monthly-total"
   budget_type  = "COST"
-  limit_amount = "250"
+  limit_amount = tostring(var.total_monthly_budget_usd) # AA-896 (S255): was the literal "250"
   limit_unit   = "USD"
   time_unit    = "MONTHLY"
 
@@ -275,6 +276,26 @@ resource "aws_budgets_budget" "total_monthly" {
     threshold_type            = "PERCENTAGE"
     notification_type         = "ACTUAL"
     subscriber_sns_topic_arns = [aws_sns_topic.alerts.arn]
+  }
+
+  # AA-896 (S255): warn before the month ends, like the per-App budgets below. Without it the November
+  # overrun forecast in the S255 FinOps audit (~255-265 USD at the 20-27/10 run-rate) would only be
+  # e-mailed after it had happened (ACTUAL 80 % / 100 %).
+  notification {
+    comparison_operator       = "GREATER_THAN"
+    threshold                 = 100
+    threshold_type            = "PERCENTAGE"
+    notification_type         = "FORECASTED"
+    subscriber_sns_topic_arns = [aws_sns_topic.alerts.arn]
+  }
+
+  # AA-896 (S255): the per-App budgets must fit inside the account budget, or a per-App FORECASTED
+  # alert could never come before the account one and the split stops meaning anything.
+  lifecycle {
+    precondition {
+      condition     = sum(values(var.per_app_monthly_budgets)) <= var.total_monthly_budget_usd
+      error_message = "The per-App budgets (var.per_app_monthly_budgets) add up to more than var.total_monthly_budget_usd."
+    }
   }
 
   # AA-913: Budgets checks its publish right on the topic when the SNS subscriber is set.
@@ -298,6 +319,8 @@ resource "aws_budgets_budget" "total_monthly" {
 #     get it through their tags input. The api/worker services propagate their
 #     tags to each Fargate task (propagate_tags = "SERVICE"); tasks started
 #     before that apply stay untagged until the next CIS deploy.
+#   - identity: the Cognito pools, their WAF web ACL and the identity secrets
+#     (identity.tf local.id_tags, App = "identity"); own budget since AA-896 S255.
 #   - shared: VPC/NAT/EIP, RDS, ALB + VPC-link NLB, WAF, ECS cluster, the alert
 #     topic, CloudTrail and the AA-272 diagnostics carry App = "shared"
 #     (local.shared_tags / local.shared_app_tags, DM-10.1/10.3).
