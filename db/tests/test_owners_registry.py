@@ -40,7 +40,7 @@ OWNER_KEYS = {"repo", "path", "key_prefix", "anchor_schema", "schemas", "owner_r
               "runtime_privileges", "job_table", "job_kind_prefix", "idle_exempt_kinds", "set_local_roles",
               "role_lint_from", "consumer_grants"}
 OPTIONAL_KEYS = {"view_owner_roles", "rls_enable_only_allowlist", "runtime_privileges_from", "owner_grants",
-                 "rls_parity_tables", "nologin_roles"}
+                 "rls_parity_tables", "nologin_roles", "dropped_schemas"}
 
 
 def validate_step():
@@ -103,11 +103,17 @@ class RegistryShapeTest(unittest.TestCase):
                 self.assertFalse(set(nl) & {o["owner_role"], *o["runtime_roles"]})
                 for r in nl:
                     self.assertRegex(r, ROLE_RE)
+                # Schemas the owner dropped (AA-850, CIS 299): sorted, distinct, never live at the same time.
+                dropped = o.get("dropped_schemas", [])
+                self.assertEqual(dropped, sorted(set(dropped)))
+                self.assertFalse(set(dropped) & set(o["schemas"]))
+                for role, rp in o["runtime_privileges"].items():
+                    self.assertFalse(set(dropped) & set(rp["schemas"]), role)
 
     def test_schemas_belong_to_one_owner(self):
         seen = {}
         for name, o in SCHEMA_OWNERS.items():
-            for s in o["schemas"]:
+            for s in o["schemas"] + o.get("dropped_schemas", []):
                 self.assertNotIn(s, seen, f"{s} listed by {seen.get(s)} and {name}")
                 seen[s] = name
         self.assertNotIn("public", seen)        # public.* leftovers belong to roles/ (master)
@@ -174,6 +180,7 @@ class MirrorsAgreeTest(unittest.TestCase):
                 self.assertEqual(d.set_local_roles, frozenset(o["set_local_roles"]))
                 self.assertEqual(d.role_lint_from, o["role_lint_from"])
                 self.assertEqual(d.view_owner_roles, frozenset(o.get("view_owner_roles", [])))
+                self.assertEqual(list(d.dropped_schemas), o.get("dropped_schemas", []))
         self.assertEqual(set(rm.OWNER_SCHEMAS), {s for o in SCHEMA_OWNERS.values() for s in o["schemas"]})
 
     def test_isolation_probe_constants(self):

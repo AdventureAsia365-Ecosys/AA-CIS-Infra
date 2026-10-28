@@ -66,8 +66,13 @@ owners:
     anchor_schema: shared
     # retired: the quarantine schema of DM-3.9 (CIS 294, AA-850): dead CIS objects wait there for their drop with no
     # grant to any role, so it is NOT in runtime_privileges.cis_app.schemas below.
-    schemas: [acp_contract, acp_deliver, acp_gold_output, acp_shared, acp_silver_s2, acp_silver_s3,
-              acp_silver_s4, catalog, geo, gold_aa_internal, retired, shared, silver_aa_internal]
+    schemas: [acp_contract, acp_deliver, acp_shared, catalog, geo, gold_aa_internal, retired, shared,
+              silver_aa_internal]
+    # Schemas the owner dropped (AA-850: CIS 299 dropped the four empty ACP v1 stage schemas). Not live: the isolation
+    # probe, the ownership post-check and the RLS catalogue do not look for them. The ownership lint still lets this
+    # dir's files name them (244 / 245 grant on them, 299 drops them), and the drift replay keeps 245's transfer of
+    # them. Mirrored by run_migration.OwnerDir.dropped_schemas.
+    dropped_schemas: [acp_gold_output, acp_silver_s2, acp_silver_s3, acp_silver_s4]
     owner_role: cis_owner                # X1 S20 (rl-002) + S21 (245)
     owner_role_today: cis_owner          # since CIS 245 (X1 S21, applied 19/10/2026)
     owner_transfer_key: "245"            # schema_versions key that moves the objects to owner_role (probe state key)
@@ -84,8 +89,8 @@ owners:
     # aa_app_user has no schema-wide rights (per table + RLS, CIS 241), so only cis_app is listed.
     runtime_privileges:
       cis_app:
-        schemas: [acp_contract, acp_deliver, acp_gold_output, acp_shared, acp_silver_s2, acp_silver_s3,
-                  acp_silver_s4, geo, gold_aa_internal, shared, silver_aa_internal]   # catalog: no grant (244)
+        schemas: [acp_contract, acp_deliver, acp_shared, geo, gold_aa_internal, shared,
+                  silver_aa_internal]   # catalog: no grant (244); the four schemas CIS 299 dropped left the list
         objects: {relation: [SELECT], sequence: [USAGE], function: [EXECUTE]}
         default_acl: {tables: [DELETE, INSERT, SELECT, UPDATE], sequences: [SELECT, UPDATE, USAGE],
                       functions: [EXECUTE]}

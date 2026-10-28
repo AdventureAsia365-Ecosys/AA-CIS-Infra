@@ -374,6 +374,9 @@ class OwnerTransfer(unittest.TestCase):
         self.assertEqual(objects, ["geo", "shared"])
         self.assertEqual(rp.transfer_scope("booking", ["booking"]), (["booking"], ["booking"]))
         self.assertEqual(rp.transfer_scope("tripplanner", []), ([], []))
+        # AA-850: a schema CIS 299 dropped still moves with 245 when the replay has it (299 drops it as cis_owner)
+        schemas, objects = rp.transfer_scope("cis", ["shared", "acp_silver_s4"])
+        self.assertEqual((schemas, objects), (["shared", "acp_silver_s4"], ["shared", "acp_silver_s4"]))
 
     def test_every_schema_goes_to_the_new_owner_not_its_live_owner(self):
         # review S251 #1: 245 sets all 12 CIS schemas to cis_owner; a later owner change on Dev must stay drift
