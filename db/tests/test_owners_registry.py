@@ -185,6 +185,7 @@ class MirrorsAgreeTest(unittest.TestCase):
                 self.assertEqual(d.grant_roles, frozenset(o.get("runtime_roles", []) + o.get("nologin_roles", [])))
         self.assertEqual(list(rm.EXPAND_HOT_TABLES), REGISTRY["expand_hot_tables"])
         self.assertEqual(list(rm.EXPAND_HOT_SCHEMAS), REGISTRY["expand_hot_schemas"])
+        self.assertEqual(list(rm.EXPAND_RLS_SCHEMAS), REGISTRY["expand_rls_schemas"])
         self.assertEqual(set(rm.OWNER_SCHEMAS), {s for o in SCHEMA_OWNERS.values() for s in o["schemas"]})
 
     def test_isolation_probe_constants(self):

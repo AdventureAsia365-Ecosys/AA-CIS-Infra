@@ -144,12 +144,39 @@ reports the same; skipped for a version already registered); runs with
 `statement_timeout = 30s` (a header may set less; CIC files keep 15 min); skips the job-table idle wait (it still waits
 for an open rerun wave when it names a hot table, exit 7 after the usual three waits); after its CIC statements every
 index named must exist and be valid before the registration runs (exit 16, version not registered). No header =
-contract: DB Migrate behaves exactly as before. The runtime catalog post-check (exit 14) comes with M2b; until then
-nothing applies expand files automatically.
+contract: DB Migrate behaves exactly as before.
 
-**Apply lock.** Every applying mode (apply, roles/ files, set-password, a run-script that is not `READ_ONLY`) takes
+**Runtime post-check (M2b, exit 14).** A transactional expand file is one `BEGIN … COMMIT` block (lint). Right after
+its `BEGIN` and again after its body (role switch and ownership post-check included) the runner snapshots the catalog
+of every non-system schema, objects owned by the owner role included (`expand_snapshot`): schemas, relations (owner,
+grants, RLS flags, relfilenode, options, sequence parameters, view definition), columns, indexes, constraints,
+policies, non-internal triggers, rules, functions per signature, types, `pg_default_acl`, and the transaction's
+`pg_stat_xact_user_tables` row counters. `expand_findings` allows only: new objects; on an existing table a new column
+that is nullable or has a default and is neither generated nor identity (a volatile default rewrites the table and
+shows as a changed relfilenode), a non-unique index; rows written to `shared.schema_versions` and to tables the file
+creates. Contract (ROLLBACK, exit 14, each object named): any change to or removal of an existing object, a new
+policy / trigger / constraint / rule / unique index on an existing table, an overload of an existing function name, a
+new partition of an existing table, default privileges, a column on an `expand_hot_tables` table, anything new in an
+`expand_hot_schemas` schema, rows inserted / updated / deleted in an existing table, and a new table without
+`ENABLE` + `FORCE ROW LEVEL SECURITY` in an `owners.yaml` `expand_rls_schemas` schema (crm) or with a `tenant_id`
+column. A CIC file gets the same diff before its registration. `check` rehearses a transactional expand file (body
+and post-check, then `ROLLBACK`; it takes the apply lock). A concurrent DDL on another table (another session's
+TRUNCATE, say) can show up as a change: the file is rolled back and can be re-run.
+
+**Classify (`db/expand_check.py --classify`).** The same code on a CI PostgreSQL 15: every applied migration is
+replayed in the order of the latest DB Schema Dump artifact (`db/replay_migrations.py`; number order when there is no
+artifact), then every pending file, in number order, is rehearsed (expand post-check, rolled back) and then applied so
+the next file sees it. It prints one `CLASSIFY` line per file and writes JSON (`class` expand / contract, the
+findings). Exit 14 when a file with the expand header has a finding or a lint error. The Migration Copy Guard job
+"Expand classify" runs it on every PR that changes a copy (a required check of the ruleset on `main`), and the M2b
+PostgreSQL tests (`db/tests/test_aa993_expand_check_pg.py`) on the same container. Nothing applies expand files
+automatically until M3.
+
+**Apply lock.** Every applying mode (apply, roles/ files, set-password, a run-script that is not `READ_ONLY`, and the
+`check` rehearsal of an expand file) takes
 the session advisory lock `pg_try_advisory_lock(993, 1)` (polled every 15 s, up to 25 min, then exit 17), so a
-person's DB Migrate run and the coming auto-apply (M3) never overlap. `check` and READ_ONLY scripts take no lock.
+person's DB Migrate run and the coming auto-apply (M3) never overlap. `check` of any other file and READ_ONLY
+scripts take no lock.
 
 - **no-transaction** (MIG-10): for `CREATE INDEX CONCURRENTLY`, `REINDEX CONCURRENTLY`, `VACUUM`.
   No `BEGIN`/`COMMIT` in the file, every statement idempotent (`IF NOT EXISTS`), and the

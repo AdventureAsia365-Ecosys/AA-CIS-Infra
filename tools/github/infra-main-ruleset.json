@@ -38,7 +38,8 @@
           { "context": "Terraform Plan (dev)", "integration_id": 15368 },
           { "context": "gitleaks", "integration_id": 15368 },
           { "context": "Copies match owner main", "integration_id": 15368 },
-          { "context": "Migration lint and unique numbers", "integration_id": 15368 }
+          { "context": "Migration lint and unique numbers", "integration_id": 15368 },
+          { "context": "Expand classify", "integration_id": 15368 }
         ]
       }
     }

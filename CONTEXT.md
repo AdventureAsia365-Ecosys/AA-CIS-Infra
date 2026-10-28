@@ -362,7 +362,8 @@ modules/          ← reusable building blocks, consumed by the account roots
 tools/
   github/         ← db_auto_apply_gate.sh + infra-main-ruleset.json (AA-993 I1): environment dev-db-auto (main only),
                     its AWS_ROLE_ARN secret and the ruleset on main (PR required, no direct push or force push, required
-                    checks Terraform Plan / gitleaks / the two Migration Copy Guard jobs, org-admin bypass only through
+                    checks Terraform Plan / gitleaks / the Migration Copy Guard jobs (copies, lint, Expand classify since
+                    AA-993 M2b), org-admin bypass only through
                     a PR). Run with Nghiệp's gh login (the GitHub Apps have no Administration permission, ADR 0011).
   identity/       ← workforce_bootstrap.py (AA-854): admin-run, MFA, stdlib + boto3. create-staff
                     (AdminCreateUser SUPPRESS + groups), breakglass-init / -verify (password + TOTP
@@ -670,6 +671,11 @@ makes CI Terraform Plan fail with 403.
   the snapshot carries `aa:retain-until` = +30 d and is expired by `rds_snapshot_expiry.tf`, AA-869),
   and `apply` refuses (exit 7) while any owner job table is busy or a rerun wave is open (AA-751,
   ADR 0003a decision 5; exempt kinds and the `override_busy_jobs` input in `db/README.md`).
+  An `-- migrate: expand` file (AA-993 Phase E, root ADR 0017) is linted as additive-only, size-checked (exit 15),
+  skips the idle wait, and since M2b is diffed against the catalog inside its own transaction (`expand_snapshot` /
+  `expand_findings` in `db/run_migration.py`): a change to an existing object rolls back with exit 14; `check`
+  rehearses it. The Copy Guard's **Expand classify** job runs the same post-check on a replayed PostgreSQL 15
+  (`db/expand_check.py --classify`, replay order from the latest DB Schema Dump artifact) for every copy a PR changes.
   **DB Schema Dump** (`db-schema-dump.yml`, AA-807 N1) runs a read-only catalog dump in a one-off ECS
   task nightly and after every apply, and opens a PR on the root repo that regenerates
   `docs/architecture/db-schema-reference.md` and the generated ERD pages `docs/architecture/erd/` (`db/gen_erd.py`,

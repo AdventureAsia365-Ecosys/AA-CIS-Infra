@@ -926,7 +926,7 @@ def apply_order_fixes(order: dict, fixes: list) -> list:
 
 
 async def replay(admin_dsn: str, live: dict, sources: dict, out_dump: str | None, baseline: list = (),
-                 replay_order: list = ()) -> dict:
+                 replay_order: list = (), collect_dump: bool = True) -> dict:
     texts = {o: {f: (Path(p) / f).read_text(encoding="utf-8") for f in os.listdir(p) if f.endswith(".sql")}
              for o, p in sources.items()}
     live_roles = {r["role"]: r for r in live.get("roles", [])}
@@ -976,14 +976,16 @@ async def replay(admin_dsn: str, live: dict, sources: dict, out_dump: str | None
                              + (f"; {len(bad)} refused, first: {bad[0][:200]}" if bad else ""))
         print(f"REPLAY {item.status:6} {item.rel} key={item.key or '-'} login={item.login or '-'} "
               f"as={item.run_as or '-'}{' ' + item.error[:160] if item.error else ''}", flush=True)
-    import asyncpg
-    conn = await asyncpg.connect(admin_db, timeout=30, server_settings=schema_dump.SESSION_SETTINGS)
-    try:
-        async with conn.transaction(isolation="repeatable_read", readonly=True):
-            dump = await schema_dump.collect(conn)
-    finally:
-        await conn.close()
-    if out_dump:
+    dump = None
+    if collect_dump:            # AA-993 M2b: db/expand_check.py --classify needs the replayed database, not its dump
+        import asyncpg
+        conn = await asyncpg.connect(admin_db, timeout=30, server_settings=schema_dump.SESSION_SETTINGS)
+        try:
+            async with conn.transaction(isolation="repeatable_read", readonly=True):
+                dump = await schema_dump.collect(conn)
+        finally:
+            await conn.close()
+    if out_dump and dump is not None:
         Path(out_dump).write_text(json.dumps(dump, default=str, indent=1, sort_keys=True), encoding="utf-8")
     items = order["items"]
     return {

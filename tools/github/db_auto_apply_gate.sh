@@ -14,6 +14,7 @@
 # Order (orchestrator_steps of the I1 PR): merge I1 -> local MFA terraform apply of cicd_db_auto_apply.tf -> env ->
 # secret -> ruleset -> proofs. The ruleset requires "Copies match owner main" and "Migration lint and unique numbers",
 # which run on every PR only once the I1 change to migration-copy-guard.yml is on main: apply the ruleset after merge.
+# AA-993 M2b adds "Expand classify" (same workflow): re-run `ruleset` (update in place) after the M2b PR is on main.
 #
 # On GitHub Free a ruleset and environment branch rules work only while the repo is public (root ADR 0014). When
 # AA-CIS-Infra goes private they stop being enforced: set the repo variable DB_AUTO_APPLY=false the same day

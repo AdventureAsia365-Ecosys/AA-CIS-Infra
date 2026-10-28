@@ -62,7 +62,7 @@ class AgreementTests(unittest.TestCase):
         guard jobs must run unless scope said relevant=false explicitly."""
         wf = (ROOT / ".github" / "workflows" / "migration-copy-guard.yml").read_text(encoding="utf-8")
         conds = re.findall(r"^    needs: scope\n(?:    #.*\n)*    if: (.+)$", wf, re.M)
-        self.assertEqual(len(conds), 3, "guard, lint and retention-rows each need scope")
+        self.assertEqual(len(conds), 4, "guard, lint, retention-rows and classify (AA-993 M2b) each need scope")
         for c in conds:
             self.assertIn("!cancelled()", c)
             self.assertIn("needs.scope.outputs.relevant != 'false'", c)

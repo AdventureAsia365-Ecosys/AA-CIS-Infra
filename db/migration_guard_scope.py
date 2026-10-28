@@ -36,6 +36,7 @@ PATHS: tuple[str, ...] = (
     "db/check_migration_ownership.py",
     "db/check_retention_rows.py",
     "db/run_migration.py",
+    "db/expand_check.py",
     "db/migration_guard_scope.py",
     "db/tests/**",
     "db/owners.yaml",
