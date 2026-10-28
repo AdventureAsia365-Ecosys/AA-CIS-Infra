@@ -386,6 +386,23 @@ resource "aws_iam_role_policy" "ecs_task_policy" {
         Action   = ["s3:PutObject", "s3:DeleteObject"]
         Resource = "arn:aws:s3:::${var.bronze_bucket_name}/data-model/*"
       },
+      # AA-898 — the admin docs reader (AA-CIS-App GET /admin/docs/manifest, /admin/docs/page) reads the bundle the
+      # root repo Docs sync workflow uploads (manifest.json + pages/<repo>/<path>.md under docs-reader/). The "*"
+      # GetObject above already covers it; this names the read so it survives a narrowing of that grant.
+      {
+        Sid      = "ReadDocsReader"
+        Effect   = "Allow"
+        Action   = ["s3:GetObject"]
+        Resource = "arn:aws:s3:::${var.bronze_bucket_name}/docs-reader/*"
+      },
+      # AA-898 — only CI (accounts/aa365/docs_reader.tf aa-cis-<env>-docs-sync) writes what the admin shows; the
+      # "*" PutObject above must not reach this prefix.
+      {
+        Sid      = "DenyDocsReaderWrites"
+        Effect   = "Deny"
+        Action   = ["s3:PutObject", "s3:DeleteObject"]
+        Resource = "arn:aws:s3:::${var.bronze_bucket_name}/docs-reader/*"
+      },
       # AA-835 (S6 review) — DM-7 row "supply_media": when Booking withdraws a supply photo's usage rights or removes
       # it, the supply_media_purge job deletes the CIS WebP copies (photos/supply/<type>/<media_id>-{1600,600}.webp).
       # The only S3 delete this role holds, on that prefix only; every other CIS photo (photos/<country slug>/) stays

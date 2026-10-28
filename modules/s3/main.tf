@@ -99,6 +99,30 @@ resource "aws_s3_bucket_lifecycle_configuration" "bronze" {
       storage_class = "STANDARD_IA"
     }
   }
+
+  # AA-898: the admin docs reader bundle (root repo docs-sync.yml). Each sync from a fresh CI checkout re-uploads
+  # every page, so the versioned bucket would keep a noncurrent copy per run forever; keep 7 days for a quick look
+  # back, then expire them. The current objects never expire (the next sync replaces or deletes them).
+  rule {
+    id     = "docs-reader-noncurrent-7d"
+    status = "Enabled"
+
+    filter {
+      prefix = "docs-reader/"
+    }
+
+    noncurrent_version_expiration {
+      noncurrent_days = 7
+    }
+
+    expiration {
+      expired_object_delete_marker = true
+    }
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 1
+    }
+  }
 }
 
 # Encryption at rest
