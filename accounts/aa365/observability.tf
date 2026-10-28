@@ -371,8 +371,9 @@ resource "aws_budgets_budget" "per_app_monthly" {
 
 # -----------------------------------------------------------------------------
 # AA-286 — CloudTrail
-# Single-region (us-west-1) trail — assumption, not a locked decision, called
-# out in the PR for review. Bucket policy built via aws_iam_policy_document
+# Multi-region since AA-873 PR 2 (S255; single-region us-west-1 before), SSE-KMS
+# with aws_kms_key.cloudtrail, bucket versioned with Object Lock GOVERNANCE 365 days
+# (security_cloudtrail.tf). Bucket policy built via aws_iam_policy_document
 # (no hardcoded ARNs — the trail ARN is built from vars, same deterministic-
 # ARN pattern the root module already uses in `locals` to break the
 # ECS <-> Step Functions cycle).
@@ -407,22 +408,31 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "cloudtrail_logs" 
   }
 }
 
-# Standard 30 days → Glacier Deep Archive, no expiration (audit log retained
-# indefinitely per AA-286 spec).
+# AA-873 PR 2 (S255): the AA-286 rule "Standard 30 days -> Glacier Deep Archive" never ran: S3 skips
+# objects under 128 KB by default (transition_default_minimum_object_size = all_storage_classes_128K) and
+# CloudTrail files average ~62 KB. Forcing it would cost more than it saves (0.05 USD per 1,000 transitions
+# x ~9k files/month vs ~0.01 USD/month of storage saved). Logs stay in Standard, current versions never
+# expire (AA-286 "retain indefinitely"); the rule now only cleans up what versioning leaves behind:
+# replaced versions after the 365-day Object Lock window, and stale multipart uploads.
 resource "aws_s3_bucket_lifecycle_configuration" "cloudtrail_logs" {
   bucket = aws_s3_bucket.cloudtrail_logs.id
 
   rule {
-    id     = "archive-to-deep-archive"
+    id     = "noncurrent-and-mpu-cleanup"
     status = "Enabled"
 
     filter {}
 
-    transition {
-      days          = 30
-      storage_class = "DEEP_ARCHIVE"
+    noncurrent_version_expiration {
+      noncurrent_days = 400 # after the 365-day GOVERNANCE retention, which blocks an earlier delete anyway
+    }
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
     }
   }
+
+  depends_on = [aws_s3_bucket_versioning.cloudtrail_logs]
 }
 
 data "aws_iam_policy_document" "cloudtrail_logs" {
@@ -480,9 +490,10 @@ resource "aws_cloudtrail" "main" {
   name           = local.cloudtrail_trail_name
   s3_bucket_name = aws_s3_bucket.cloudtrail_logs.id
 
-  is_multi_region_trail         = false
+  is_multi_region_trail         = true # AA-873 PR 2 (S255): was false. First copy of management events is free in every region
   include_global_service_events = true
   enable_log_file_validation    = true
+  kms_key_id                    = aws_kms_key.cloudtrail.arn # AA-873 PR 2 (S255): SSE-KMS, key in security_cloudtrail.tf
 
   tags = merge(local.shared_tags, { Issue = "AA-286" })
 
