@@ -99,18 +99,5 @@
     {"name": "aa_cis_admin (roles files, set-password, run-script, break-glass)", "connections": 10},
     {"name": "rdsadmin + superuser_reserved_connections", "connections": 5}
   ],
-  "accepted_overages": [
-    {
-      "check": "role:cis_app",
-      "accept_up_to": 100,
-      "until": "2026-12-15",
-      "reason": "cis-api main pool is still 10 (C2.2 target 5, shrink to be decided from the aa859_main_pool_gauge baseline). Worst case needs 7 api + 3 worker tasks; Dev runs 1 + 1 and the measured instance-wide DatabaseConnections daily max was 28 (05-18/10/2026). The CONNECTION LIMIT 90 is the backstop."
-    },
-    {
-      "check": "total",
-      "accept_up_to": 168,
-      "until": "2026-12-15",
-      "reason": "Same cause as role:cis_app: with the cis-api main pool at its C2.2 target of 5 the total is 133 (127 + crm-api 3 x 2 = 6, AA-932), under the 135 ceiling. AA-932 raised this from 162 by exactly the crm-api row (C2.2 crm_app limit 6 / pool 3, data standards v1.3); the CIS pool stays 10 after the S247 burst (AA-859), so this overage needs a decision before 2026-12-15: the measured Dev peak is far below (DatabaseConnections daily max 28), the worst case assumes 7 api + 3 worker tasks."
-    }
-  ]
+  "accepted_overages": []
 }

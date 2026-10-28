@@ -13,9 +13,10 @@ locals {
 # Checked live on default.postgres15 (15/10/2026): shared_preload_libraries = pg_stat_statements,
 # rds.force_ssl = 1 and track_io_timing = 1 are already the RDS system defaults. They are set here
 # anyway so the group states them explicitly and a future engine default change cannot drop them
-# silently. Every parameter below is dynamic except shared_preload_libraries (static), whose value
-# is unchanged; attaching a new group to the instance still needs one reboot to reach "in-sync",
-# which the instance class change takes anyway (see apply_immediately).
+# silently. Every parameter below is dynamic except shared_preload_libraries and pg_stat_statements.max
+# (both static; the second waits for the next planned reboot, AA-838 D13). Attaching a new group to the
+# instance still needs one reboot to reach "in-sync", which the instance class change takes anyway (see
+# apply_immediately).
 # pg_stat_statements still needs CREATE EXTENSION in a CIS migration (not in this repo).
 # -----------------------------------------------------------------------------
 resource "aws_db_parameter_group" "main" {
@@ -83,6 +84,19 @@ resource "aws_db_parameter_group" "main" {
   parameter {
     name         = "shared_preload_libraries"
     value        = "pg_stat_statements"
+    apply_method = "pending-reboot"
+  }
+
+  # AA-838 D13 (first C8 capacity review, S255/S256): the statement table was full (4,928 of 5,000 kept, 1,466
+  # deallocations in three weeks), so rare statements lost their history before a weekly C4.3 check could see
+  # them. 10,000 entries cost a few MB of shared memory (shared_buffers is 516 MB on db.t4g.small). The
+  # parameter is STATIC: it applies only at the next reboot, so "pending-reboot" is the only valid method.
+  # Until that reboot the instance shows ParameterApplyStatus = pending-reboot and pg_settings still says 5000.
+  # The reboot is a planned orchestrator step in a quiet window (all job tables idle, C5.5a), never part of
+  # an apply. 5000 is the engine default (Source = engine-default), so this value reads back as "user".
+  parameter {
+    name         = "pg_stat_statements.max"
+    value        = "10000"
     apply_method = "pending-reboot"
   }
 

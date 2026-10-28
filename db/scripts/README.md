@@ -273,8 +273,20 @@ counts and age against the C5.4 / DM-7 retention windows, job durations per kind
 (`mean + 2 x stddev`). Prints `PROBE ` lines: aggregates, object names and normalised statement text only (constants
 are `$n`), never row values; never calls `pg_stat_statements_reset()` (C4.3a). Through run-script it sees every
 role's statement text (master); the same file also runs by S3-mediated ECS exec as `cis_app` (other roles' text
-hidden). `PROBE_TOP` (default 20) and `PROBE_QTEXT` (default 160) size the output. Report: root
+hidden). `PROBE_TOP` (default 50, the C4.3a top-50 snapshot; run-script passes no environment) and `PROBE_QTEXT`
+(default 160) size the output. S256 (AA-838 D6) synced the reviewed fixes: `decision_log` window 180 days,
+`shared.job` aged on `finished_at`, and a `[retention]` section (latest run, mode and trigger of every CIS
+`retention_*` kind, and which kinds already have an approved live run, DM-7.2). Monthly C8 review: dispatch it
+with `mode=run-script` (full text of every role); weekly C4.3: PI plus the same file by ECS exec. Report: root
 `docs/audits/2026-10-28-S255-aa838-capacity/`.
+
+`aa838_booking_queue_age_check.py` (AA-838 D8, S256; read-only): names the `booking.job` row behind the single
+`AA/Jobs/Booking OldestQueuedAgeSeconds` sample of 38,746 s at 2026-10-24 03:14:47 UTC. The Booking task log shows
+that sample came from a new task's sampler 0.5 s after a rolling deploy started it (the old task sent 0 at 03:11:23,
+the next sample was 0), so the script lists the rows whose `run_after` is ~2026-10-23 16:29 UTC and every row that was
+due and still queued at the spike, each with an `explain=` label (enqueued during the deploy with an old `run_after`,
+re-queued keeping its `run_after`, or due but unclaimed by the old worker). Kinds, statuses, timestamps and counters
+only: no ids, payloads, error text or `created_by` values. Always returns 0.
 
 `aa850_dead_table_dry_run.py` (AA-850, S255; read-only DRY RUN, step 1 of `skill/aa-cis-schema/references/
 destructive-ops.md`, data standards DM-3.8 / DM-3.9): Dead Table Registry census (rows, size, last write, scan and
