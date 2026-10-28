@@ -284,4 +284,6 @@ functions / triggers / policies / FKs, grants, `pg_stat_statements` calls per ro
 twice: T0, then T1 >= 14 days later or right before the quarantine migration; the wave-1 counters must not move
 between the two (same `stats_reset`). The ECS-exec fallback sets the session read-only with `SET SESSION
 CHARACTERISTICS AS TRANSACTION READ ONLY` (the runner's shape check refuses a literal naming
-`default_transaction_read_only`).
+`default_transaction_read_only`). Wave 1 is done: CIS 294 quarantined the ten objects and CIS 296 drops them (the
+14-day wait and the T1 run waived by Nghiệp, S255), so the script's wave-1 list now reports them missing; edit the
+list for the next wave.

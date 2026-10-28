@@ -94,10 +94,10 @@ _GRANDFATHERED_TP = "grandfathered TripPlanner read (owners.yaml consumer_grants
 _REVOKED_254 = "grandfathered TripPlanner read, revoked by CIS 254 (AA-847)"
 # AA-712 X4: CIS 270 revokes the rest of the pilot's reads (TripPlanner keeps the catalog views and the gateway).
 _REVOKED_270 = "grandfathered TripPlanner read, revoked by CIS 270 (AA-712 X4)"
-# AA-850: the wave-1 tables with a tenant_id column that CIS 294 quarantines in `retired` (DM-3.9).
+# AA-850: the wave-1 tables with a tenant_id column that CIS 294 quarantined in `retired` (DM-3.9) and CIS 296 drops.
 _WAVE1_TENANT_TABLES = ("acp_runs", "tenant_brand_rule_versions", "tenant_brand_rules_deleted_aa404", "route_pick",
                         "tenant_atom_state")
-_QUARANTINED_294 = "quarantined, AA-850 (CIS 294, no grant to any role); dropped >= 14 days later"
+_QUARANTINED_294 = "quarantined, AA-850 (CIS 294, no grant to any role); dropped by CIS 296"
 ALLOWLIST: dict[str, dict[str, str]] = {
     "a": {
         "shared.tenants": "the tenant registry itself (tenant_id is its key); cis_app only, no tenant-pool grant",
@@ -121,14 +121,11 @@ ALLOWLIST: dict[str, dict[str, str]] = {
         "silver_aa_internal.raw_sources": f"source registry, admin + pipeline only; {_CIS_ONLY}",
         "silver_aa_internal.review_queue": f"staff review queue; {_CIS_ONLY}",
         "silver_aa_internal.upload_staging": f"staff upload staging; {_CIS_ONLY}",
-        # AA-850 wave 1: CIS 294 moves these dead tables to the quarantine schema `retired` (no grant to any role).
+        # AA-850 wave 1: dead tables in the quarantine schema `retired` (CIS 294, no grant to any role). CIS 296 drops
+        # them: these keys keep the nightly Dev dump clean until 296 is applied there, and are stale afterwards (CIS CI
+        # already: reported, not fatal). Remove them in the next change of this file after the 296 apply. (The
+        # pre-294 names left with this change: 294 is applied on Dev.)
         **{f"retired.{t}": _QUARANTINED_294 for t in _WAVE1_TENANT_TABLES},
-        # Their pre-294 names, so the nightly Dev dump stays clean until 294 is applied; stale afterwards (reported,
-        # not fatal), removed with the wave-1 drop migration.
-        **{f"{s}.{t}": f"{_CIS_ONLY}; dead (AA-850 wave 1), until CIS 294 moves it to retired"
-           for s, t in (("shared", "acp_runs"), ("shared", "tenant_brand_rule_versions"),
-                        ("shared", "tenant_brand_rules_deleted_aa404"), ("acp_contract", "route_pick"),
-                        ("acp_shared", "tenant_atom_state"))},
     },
     "b": {
         f"{t}:tenant_isolation": "legacy tenant_isolation TO PUBLIC (004/006, pre-X1); retire in a tenant-pool review"
