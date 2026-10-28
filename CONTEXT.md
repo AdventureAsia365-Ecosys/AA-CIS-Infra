@@ -206,6 +206,12 @@ accounts/
                                    e2e-cis-admin@, after aa-crm-dev-ingest) -> inbound-admin/, object reads there denied
                                    to every principal except the MFA admin role (the reader role included). Any future
                                    SES receiving in us-west-1 adds rules to this set)
+    docs_reader.tf                (AA-898: GitHub OIDC role aa-cis-<env>-docs-sync, trusted only by the root repo
+                                   AA-Ecosys on refs/heads/master (immutable subject), ListBucket on docs-reader/ +
+                                   Put/Delete on docs-reader/* of the bronze bucket: the root "Docs sync" workflow uploads
+                                   the /admin/docs bundle (manifest.json + pages/<repo>/<path>.md); the CIS task role reads
+                                   it (modules/ecs ReadDocsReader, DenyDocsReaderWrites); noncurrent versions expire after
+                                   7 days (modules/s3). < $0.10/month)
     custom_domains.tf             (AA-818: ACM certs api-booking./api-tripplanner. (us-west-1) and auth./staff-auth.
                                    (us-east-1, provider alias aws.us_east_1) + validation records; API GW custom
                                    domains, alias records and Vercel CNAMEs gated by var.custom_domains_enabled;
@@ -518,7 +524,8 @@ makes CI Terraform Plan fail with 403.
   repo's own Terraform / DB Migrate / schema-dump workflows), `tripplanner.tf`
   (`aa-tripplanner-dev-app-deploy`), `booking.tf` (`aa-booking-dev-app-deploy`) and `crm_app.tf`
   (`aa-crm-dev-app-deploy`, AA-Partner, AA-933), plus `crm_scrub.tf` (`aa-crm-dev-scrub-corpus`, AA-Partner
-  "Scrub corpus" workflow, environment `scrub-corpus`, AA-938). Each app repo
+  "Scrub corpus" workflow, environment `scrub-corpus`, AA-938), and `docs_reader.tf` (`aa-cis-dev-docs-sync`, the root repo's
+  "Docs sync" workflow on `master`, AA-898). Each app repo
   and each job type gets its **own** role. The old shared `aa-cis-dev-role` is retired (AA-806
   step 3); the apply boundary denies every write on that name so it cannot come back.
 - **OIDC subject fact (learned AA-588, re-verified AA-678):** the repos have GitHub's immutable
