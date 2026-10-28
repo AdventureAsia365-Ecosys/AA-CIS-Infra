@@ -41,7 +41,7 @@ MAX_FULL_COLUMNS = 150
 # Front-matter applies_to per owner app (docs/templates/frontmatter.schema.json slugs already in use).
 APPLIES_TO = {"cis": "aa-cis-api", "booking": "aa-booking-api", "tripplanner": "tripplanner-lambda",
               "platform": "ecosystem"}
-OWNER_LABEL = {"cis": "CIS", "booking": "Booking", "tripplanner": "TripPlanner", "platform": "platform"}
+OWNER_LABEL = {"cis": "CIS", "booking": "Booking", "tripplanner": "TripPlanner", "crm": "CRM", "platform": "platform"}
 
 # Mermaid erDiagram words: an attribute type starts with a letter and holds letters, digits, '-', '_', '()' and
 # '[]'; an unquoted entity or attribute name holds letters, digits, '-' and '_'.

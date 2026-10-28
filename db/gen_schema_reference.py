@@ -413,7 +413,9 @@ def render(d: dict, source: Optional[str] = None, drift: Optional[dict] = None,
     w(f"**Verified:** {stamp(d['generated_at'])} UTC — live catalog dump of the shared RDS (`aa-cis-dev-db`, "
       f"`aa-cis/dev/rds`, acc2, us-west-1, PostgreSQL {db.get('server_version', '?')}). "
       f"Latest migration per owner: CIS **{latest.get('cis')}**, TripPlanner **{latest.get('tripplanner')}**, "
-      f"Booking **{latest.get('booking')}** ({len(d.get('migrations', []))} versions registered).")
+      f"Booking **{latest.get('booking')}**"
+      + (f", CRM **{latest['crm']}**" if latest.get("crm") else "")  # AA-993 M1
+      + f" ({len(d.get('migrations', []))} versions registered).")
     w("")
     w("> **Generated file — do not edit by hand** (data standards DM-3.1). It is the single source of truth for "
       "table/column names, owners, grants and RLS across CIS, TripPlanner and Booking (one RDS, one schema per "

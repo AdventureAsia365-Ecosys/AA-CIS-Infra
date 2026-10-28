@@ -104,7 +104,11 @@ probe asserts 42501 for `crm_app` on `booking.*`, `tripplanner.*`, `shared.*` an
    the version is in `shared.schema_versions` afterwards. Re-running `apply` is a no-op.
 4. **DB Schema Dump** (`.github/workflows/db-schema-dump.yml`) is dispatched by a successful apply
    (and runs nightly): it regenerates `AA-Ecosys/docs/architecture/db-schema-reference.md` and
-   opens/updates the root PR `bot/db-schema-reference` when the structure changed. Merge it by hand.
+   opens/updates the root PR `bot/db-schema-reference` when the structure changed. After an apply
+   (`after_apply=true`, set by DB Migrate apply) the PR merges itself as `aa-ecosys-ci-bot` when this run
+   opened it, the drift fingerprint did not change, the design ERD drift check is green, the PR holds only
+   the generated files and every root check on it is green (AA-993 M1, `db/schema_dump_automerge.py`).
+   Otherwise (nightly, manual, run-script, drift change, red check) merge it by hand; the run summary says why.
    The same apply also dispatches **DB Isolation Probe** (see "Isolation probe" below).
 
 ## Runner safety (AA-807 N5, `run_migration.py`)

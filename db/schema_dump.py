@@ -322,7 +322,8 @@ def build_dump(schemas: list, rows: dict, generated_at: str, soft_key_rows: list
     latest_per_owner = {}
     for label, test in (("cis", lambda v: v.isdigit() and len(v) == 3),
                         ("tripplanner", lambda v: v.startswith("tp-")),
-                        ("booking", lambda v: v.startswith("bk-"))):
+                        ("booking", lambda v: v.startswith("bk-")),
+                        ("crm", lambda v: v.startswith("crm-"))):  # AA-993 M1: the fourth owner (AA-Partner)
         versions = sorted(m["version"] for m in migrations if test(m["version"]))
         latest_per_owner[label] = versions[-1] if versions else None
 

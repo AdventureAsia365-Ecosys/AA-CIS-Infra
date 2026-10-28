@@ -139,7 +139,18 @@ class BuildDumpTest(unittest.TestCase):
 
     def test_latest_per_owner_skips_legacy_keys(self):
         self.assertEqual(dump()["migrations_latest_per_owner"],
-                         {"cis": "231", "tripplanner": "tp-010", "booking": "bk-009"})
+                         {"cis": "231", "tripplanner": "tp-010", "booking": "bk-009", "crm": None})
+
+    def test_latest_per_owner_includes_crm(self):
+        # AA-993 M1: the fourth owner's key (crm-NNN) is reported like the other three.
+        r = rows()
+        r["migrations"] = list(r["migrations"]) + [
+            {"version": "crm-002", "applied_at": "2026-10-20 01:00:00+00:00", "description": "a"},
+            {"version": "crm-023", "applied_at": "2026-10-28 01:00:00+00:00", "description": "b"}]
+        d = sd.build_dump(SCHEMAS, r, "2026-10-15T05:00:00+00:00", soft())
+        self.assertEqual(d["migrations_latest_per_owner"]["crm"], "crm-023")
+        self.assertIn("Booking **bk-009**, CRM **crm-023** (", gen.render(d))
+        self.assertNotIn("CRM **", gen.render(dump()))
 
     def test_role_config_keeps_only_allowed_keys(self):
         self.assertEqual(dump()["roles"][0]["config"], {"statement_timeout": "30s"})
