@@ -125,7 +125,8 @@ line (a directive after the first statement is an error):
 `-- migrate: expand` marks a file that only adds. Allowed: new objects (tables, views, functions, types, sequences,
 indexes, policies and triggers **on tables the file creates**), on an existing table only `ADD COLUMN` (nullable, or
 with a non-volatile, non-generated default) and a non-unique index, `GRANT` on new objects to the owner's
-`runtime_roles` / `nologin_roles`, `COMMENT ON`, `INSERT` into a table the file creates, `SET`. Everything else is
+`runtime_roles` / `nologin_roles`, `COMMENT ON`, `INSERT` into a table the file creates, `SET [LOCAL]` of `ROLE`, `search_path`, or `lock_timeout` /
+`statement_timeout` between 1 ms and 30 s (header or body; serial columns count as volatile). Everything else is
 refused by `expand_lint` (exit 4): DO blocks, SELECT calls, `CREATE OR REPLACE`, REVOKE, default privileges, writes to
 existing tables, constraints / policies / triggers / unique indexes on existing tables, any statement naming an
 `owners.yaml` `expand_hot_tables` table or `catalog.*` (a non-unique `CREATE INDEX CONCURRENTLY` excepted), and
@@ -133,7 +134,9 @@ existing tables, constraints / policies / triggers / unique indexes on existing 
 `CREATE INDEX CONCURRENTLY IF NOT EXISTS` statements plus its registration.
 
 At run time an expand file: is size-checked before any statement (exit 15 when it would lock an existing table above
-100k rows with `ALTER TABLE` or a non-concurrent index build; check mode reports the same); runs with
+100k rows with `ALTER TABLE` or a non-concurrent index build, when that table's size is unknown (never analyzed; a
+partitioned table counts its leaves), or when a relation it creates with `IF NOT EXISTS` already exists; check mode
+reports the same; skipped for a version already registered); runs with
 `statement_timeout = 30s` (a header may set less; CIC files keep 15 min); skips the job-table idle wait (it still waits
 for an open rerun wave when it names a hot table, exit 7 after the usual three waits); after its CIC statements every
 index named must exist and be valid before the registration runs (exit 16, version not registered). No header =
