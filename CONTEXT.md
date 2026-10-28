@@ -238,7 +238,7 @@ accounts/
                                    (us-east-1, provider alias aws.us_east_1) + validation records; API GW custom
                                    domains, alias records and Vercel CNAMEs gated by var.custom_domains_enabled;
                                    Vercel hosts in var.custom_domain_vercel_hosts: tripplanner. (aa-tripplanner),
-                                   booking. (aa-booking-admin), portal. (aa-cis-portal, CIS tenant portal, AA-885),
+                                   booking. (aa-booking-admin) (portal. left for crm_agency_edge.tf in AA-979 P2b),
                                    booking-preview. (aa-booking-admin) and aa-cis-preview. (aa-cis-frontend): the
                                    fixed staff Preview sign-in hosts, the only callbacks of the two
                                    *-preview app clients (AA-911);
@@ -267,6 +267,9 @@ accounts/
                                    on the existing internal NLB -> ALB :80; rule crm_partner_default (Host +
                                    secret X-AA-Origin, any path crm_api does not take) -> the CRM web target group
                                    (AA-935; was a fixed 404 JSON); rule "any X-AA-Origin -> 403"; ACM us-east-1 + alias records.
+                                   AA-979 P2b clean-up: viewer-request CloudFront Function crm_partner_to_agency
+                                   (cloudfront_functions/crm_partner_to_agency.js): 301 to portal.<zone> with path and
+                                   query for every path but /crm and /crm/* (deploy gates and server-to-server calls).
                                    The AA-931 hello spike service aa-crm-dev-spike was removed in AA-933 (S248
                                    d16); live check tools/terraform/crm_edge_live_check.py)
     crm_agency_edge.tf            (AA-979 CRM-P2b, the AGENCY host portal.lumiguides.it.com, CRM + Content studio:
@@ -275,15 +278,17 @@ accounts/
                                    one before the flip), ALB rules crm_agency_api (/crm, /crm/*) -> CRM API,
                                    crm_agency_studio (/portal*, /api/*, /tenant-login*) and crm_agency_studio_x
                                    (/terms, /privacy, /assets/*) -> Content studio, crm_agency_default -> CRM web; the
-                                   portal. CNAME (moved from custom_domains.tf vercel_frontend["portal"], TTL 60 in
-                                   the window) whose target is the ONE cutover switch var.crm_agency_live: false =
-                                   Vercel aa-cis-portal (rollback target), true = this distribution; no ECS deploy)
+                                   portal. CNAME (moved from custom_domains.tf vercel_frontend["portal"]) -> this
+                                   distribution, TTL 300. The S253 cutover switch crm_agency_live, the Vercel target and
+                                   the 60 s TTL were removed at the P2b clean-up (runbook 4.5, S256); the Vercel project
+                                   aa-cis-portal is deleted)
     crm_portal.tf                 (AA-979 CRM-P2b, the Content studio runtime: ECR aa-crm-<env>-portal (IMMUTABLE),
                                    secret shell crm/<env>/portal-sentry-dsn (mapped with crm_portal_sentry_enabled),
                                    execution role (portal repo, CRM log group stream prefix portal, reads crm/<env>/web
                                    for the shared session key only + the Sentry DSN), task role (ECS Exec only), task
                                    definition Fargate ARM64 port 3000 (API_URL = CIS API, PORTAL_HOSTS,
-                                   PORTAL_PUBLIC_ORIGIN, PORTAL_API_KEY_SIGNIN), target group aa-crm-<env>-portal-tg
+                                   PORTAL_PUBLIC_ORIGIN, PORTAL_API_KEY_SIGNIN = false since the clean-up), target
+                                   group aa-crm-<env>-portal-tg
                                    (/healthz), service aa-crm-<env>-portal (desired 0, FARGATE_SPOT), three alarms;
                                    security group sg-crm-portal (ALB -> 3000, egress 443 only); deployed by the CRM
                                    deploy role (crm_app.tf))
@@ -336,14 +341,16 @@ accounts/
                                    tools/identity/crm_dev_identity.py web-secret (never by Terraform), own execution role
                                    (web repo, CRM log group stream prefix web, that secret only; never the DSN) and task
                                    role (ECS Exec only), task definition Fargate ARM64 port 3000 (env: public origin,
-                                   partner/client hosts, CRM_API_ORIGIN = the public partner host, the EXTERNAL
-                                   cis-portal client until AA-939, CONTENT_STUDIO_URL, CIS_API_URL = var.crm_cis_api_url
+                                   partner/client hosts (WEB_PUBLIC_ORIGIN = the agency host portal. since the AA-979
+                                   clean-up), CRM_API_ORIGIN = the public partner host (/crm/* is not redirected), the
+                                   EXTERNAL cis-portal client until AA-939, CONTENT_STUDIO_URL, CIS_API_URL = var.crm_cis_api_url
                                    for the client-host trip page's CIS GET /v1/trip/{id}, AA-979 P2b), target group
                                    aa-crm-<env>-web-tg
                                    (/healthz) behind crm_partner_default, service aa-crm-<env>-web (desired 0,
                                    FARGATE_SPOT), two target-group alarms; security group sg-crm-web (ALB -> 3000, not
                                    admitted by RDS); the API deploy role also deploys it (crm_app.tf). The cis-portal
-                                   client lists the partner host's /auth/callback and /signed-out (identity_variables.tf);
+                                   client lists only the partner host's /auth/callback and /signed-out
+                                   (identity_variables.tf; the portal. placeholders went at the AA-979 clean-up);
                                    the e2e mailbox rule takes the CRM e2e users of tools/identity/crm_e2e_users.json)
     crm_scrub.tf                  (AA-938 CRM-10, AA-Partner F3 scrubber pass 3, all behind
                                    var.crm_scrub_guardrail_enabled (default false): Bedrock guardrail aa-crm-<env>-scrub

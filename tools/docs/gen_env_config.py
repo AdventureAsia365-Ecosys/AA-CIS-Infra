@@ -74,7 +74,8 @@ BLURB = (
 # Coverage the page must have (AA-894 Done-when 5). Missing one = collection problem, no page.
 REQUIRED_ECS = ("aa-cis-dev-api", "aa-cis-dev-worker", "aa-booking-dev-api")
 REQUIRED_LAMBDA = ("aa-tripplanner-dev-browse", "aa-tripplanner-dev-assembly")
-REQUIRED_VERCEL = ("aa-cis-frontend", "aa-cis-portal", "aa-booking-admin", "aa-tripplanner")
+# AA-979 P2b clean-up: aa-cis-portal is gone (the Content studio runs on ECS, aa-crm-dev-portal).
+REQUIRED_VERCEL = ("aa-cis-frontend", "aa-booking-admin", "aa-tripplanner")
 
 # Sections of the page, by runtime-name prefix (ECS service, Lambda function, Vercel project).
 APPS = (

@@ -74,10 +74,12 @@ locals {
   # crm/dev/web.
   crm_web_env = [
     { name = "ENVIRONMENT", value = var.environment },
-    { name = "WEB_PUBLIC_ORIGIN", value = "https://${local.crm_partner_host}" },
-    # AA-979 P2b (Q1, Q12): the web answers BOTH agency hosts during the window, each with its own public origin
-    # (AA-Partner web/lib/hosts.ts publicOriginFor), so cutover and rollback are DNS only. WEB_PUBLIC_ORIGIN and
-    # CRM_API_ORIGIN stay on partner-dev. (fallback / server to server) until the clean-up.
+    # AA-979 clean-up: the fallback public origin is the agency host (the old partner host answers 301 there except
+    # /crm/*, so the web only sees portal. requests).
+    { name = "WEB_PUBLIC_ORIGIN", value = "https://${local.crm_agency_host}" },
+    # AA-979 P2b (Q1, Q12): the web answers BOTH hosts, each with its own public origin (AA-Partner web/lib/hosts.ts
+    # publicOriginFor); kept after the clean-up so removing the partner-host 301 needs no web change. CRM_API_ORIGIN
+    # stays on the partner host: server to server, /crm/* is not redirected.
     { name = "WEB_PARTNER_HOSTS", value = join(",", local.crm_edge_on == 1 ? [local.crm_partner_host, local.crm_agency_host] : [local.crm_partner_host]) },
     # AA-936: the client host of crm_client_edge.tf, plus any extra host given here.
     { name = "WEB_CLIENT_HOSTS", value = join(",", distinct(concat(local.crm_client_hosts, var.crm_web_client_hosts))) },
