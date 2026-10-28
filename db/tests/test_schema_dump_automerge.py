@@ -113,6 +113,15 @@ class WorkflowWiringTests(unittest.TestCase):
         self.assertIn("schema_dump_automerge.py files", step)
         self.assertIn("schema_dump_automerge.py checks", step)
 
+    def test_drift_not_computed_never_reads_as_unchanged(self):
+        """Review S255: a failed drift job leaves NEW_DFP empty and DRIFT_CHANGED=false; the merge step must not
+        read that as "drift unchanged"."""
+        step = self.wf[self.wf.index("- name: Open or update the root PR"):self.wf.index("- name: Merge the root PR")]
+        self.assertIn("drift_changed=not-computed", step)
+        ok, why = am.decide("true", "not-computed", "success", "", "false", "false")
+        self.assertFalse(ok)
+        self.assertIn("not computed", why)
+
     def test_design_ref_never_written_into_the_root_checkout(self):
         step = self.wf[self.wf.index("- name: Design ERD drift (report)"):self.wf.index("- name: Open or update")]
         self.assertNotIn("git -C root checkout", step)

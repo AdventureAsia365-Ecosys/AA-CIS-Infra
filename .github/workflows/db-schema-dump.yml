@@ -488,7 +488,10 @@ jobs:
             echo "- structure, ERD and drift unchanged since master (\`${NEW_FP:0:12}\`): no PR" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          echo "drift_changed=$DRIFT_CHANGED" >> "$GITHUB_OUTPUT"
+          # AA-993 M1 (review S255): the auto-merge needs this run's drift. When the drift job failed (NEW_DFP empty)
+          # DRIFT_CHANGED stays false for the "no PR" test above, but the merge step must see "not computed".
+          if [ -n "$NEW_DFP" ]; then echo "drift_changed=$DRIFT_CHANGED" >> "$GITHUB_OUTPUT"
+          else echo "drift_changed=not-computed" >> "$GITHUB_OUTPUT"; fi
           cp reference.md "root/$REF_PATH"
           cd root
           git config user.name "github-actions[bot]"
@@ -517,7 +520,7 @@ jobs:
               echo "- ERD pages: unchanged"
             fi
             echo
-            if [ "$AFTER_APPLY" = "true" ] && [ "$DRIFT_CHANGED" != "true" ] && [ -z "$DESIGN_REF" ]; then
+            if [ "$AFTER_APPLY" = "true" ] && [ -n "$NEW_DFP" ] && [ "$DRIFT_CHANGED" != "true" ] && [ -z "$DESIGN_REF" ]; then
               echo "After an apply with no drift change: this PR merges itself once the design ERD check and the root checks are green (AA-993 M1). If it stays open, read the run summary for the reason."
             else
               echo "Review the diff for objects no migration explains (DDL outside DB Migrate, standards MIG-5), then merge by hand."
