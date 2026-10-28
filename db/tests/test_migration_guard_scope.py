@@ -57,6 +57,16 @@ class AgreementTests(unittest.TestCase):
         pr_block = on_block[on_block.index("pull_request:"):on_block.index("schedule:")]
         self.assertNotIn("paths:", pr_block)
 
+    def test_guard_jobs_fail_closed_when_scope_fails(self):
+        """Review S255: a job that needs a failed `scope` is skipped, and a skipped job passes a required check. The
+        guard jobs must run unless scope said relevant=false explicitly."""
+        wf = (ROOT / ".github" / "workflows" / "migration-copy-guard.yml").read_text(encoding="utf-8")
+        conds = re.findall(r"^    needs: scope\n(?:    #.*\n)*    if: (.+)$", wf, re.M)
+        self.assertEqual(len(conds), 3, "guard, lint and retention-rows each need scope")
+        for c in conds:
+            self.assertIn("!cancelled()", c)
+            self.assertIn("needs.scope.outputs.relevant != 'false'", c)
+
     def test_required_checks_are_job_names_of_always_run_workflows(self):
         rules = json.loads((ROOT / "tools" / "github" / "infra-main-ruleset.json").read_text(encoding="utf-8"))
         contexts = [c["context"] for r in rules["rules"] if r["type"] == "required_status_checks"

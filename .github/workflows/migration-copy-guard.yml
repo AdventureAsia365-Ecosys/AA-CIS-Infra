@@ -81,13 +81,20 @@ jobs:
           # Both names of a rename count (moving a file out of db/migrations/ is relevant too).
           gh api --paginate "repos/${{ github.repository }}/pulls/$PR/files" \
             --jq '.[] | .filename, (.previous_filename // empty)' > changed.txt
+          # The files API lists at most 3000 files: a PR at that cap may hide a migration path, so it is relevant.
+          N=$(gh api "repos/${{ github.repository }}/pulls/$PR" --jq .changed_files)
+          if [ "${N:-0}" -ge 3000 ]; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"; echo "$N changed files (>= 3000, the files API cap): every job runs"; exit 0
+          fi
           python3 db/migration_guard_scope.py < changed.txt | tee -a "$GITHUB_OUTPUT"
           echo "$(wc -l < changed.txt) changed path(s)"
 
   guard:
     name: Copies match owner main
     needs: scope
-    if: needs.scope.outputs.relevant == 'true'
+    # Fail closed (review S255): skip only on an explicit relevant=false. A failed or cancelled `scope` (API error,
+    # script error) leaves the output empty and this job runs the full check; a skipped job would count as passed.
+    if: ${{ !cancelled() && needs.scope.outputs.relevant != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -139,7 +146,9 @@ jobs:
   lint:
     name: Migration lint and unique numbers
     needs: scope
-    if: needs.scope.outputs.relevant == 'true'
+    # Fail closed (review S255): skip only on an explicit relevant=false. A failed or cancelled `scope` (API error,
+    # script error) leaves the output empty and this job runs the full check; a skipped job would count as passed.
+    if: ${{ !cancelled() && needs.scope.outputs.relevant != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -171,7 +180,9 @@ jobs:
   retention-rows:
     name: Retention rows for new-app tables
     needs: scope
-    if: needs.scope.outputs.relevant == 'true'
+    # Fail closed (review S255): skip only on an explicit relevant=false. A failed or cancelled `scope` (API error,
+    # script error) leaves the output empty and this job runs the full check; a skipped job would count as passed.
+    if: ${{ !cancelled() && needs.scope.outputs.relevant != 'false' }}
     runs-on: ubuntu-latest
     env:
       ROOT_REPO: AdventureAsia365-Ecosys/AA-Ecosys
