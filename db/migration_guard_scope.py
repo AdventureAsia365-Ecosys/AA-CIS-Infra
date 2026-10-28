@@ -27,6 +27,7 @@ PATHS: tuple[str, ...] = (
     "db/replay_baseline/**",
     "db/gen_replay_baseline.py",
     "db/gen_schema_reference.py",
+    "db/schema_dump_automerge.py",
     "db/gen_erd.py",
     "tools/docs/aws_mask.py",
     "db/check_erd_drift.py",

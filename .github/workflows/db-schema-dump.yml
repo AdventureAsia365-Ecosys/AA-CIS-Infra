@@ -22,10 +22,15 @@ name: DB Schema Dump (shared RDS)
 # 3. If the STRUCTURE changed (fingerprint in the file differs from the root repo's master, an ERD page differs from
 #    master, or publish=true), the reference and the ERD pages are pushed to the root repo branch
 #    bot/db-schema-reference and a PR is opened or updated. Nightly runs where only statistics moved open nothing.
-#    The root PR is merged by hand (root repo rule).
+#    AA-993 M1 (root ADR 0017 decision 9): the PR merges itself (squash, as aa-ecosys-ci-bot) when the run was
+#    dispatched after an apply (input after_apply=true: DB Migrate apply, later migration-apply), this run opened
+#    the PR (an open PR from an earlier run may carry a change no apply explains), the drift fingerprint did not change, the design ERD drift check (step 4, now before the merge) is green, the PR holds
+#    only the generated files, and every check on its head commit is green (Docs lint and gitleaks at least).
+#    Anything else (nightly, manual, run-script, a drift change, a red check) stays open for a person.
 # 4. db/check_erd_drift.py (AA-894 scope 3) compares the hand-written design ERDs of the root repo
 #    (docs/architecture/erd/design/<schema>.md on master) with erd.json and writes a drift report to the step summary;
-#    it fails only for a live schema whose design page is marked enforce=true.
+#    it fails only for a live schema whose design page is marked enforce=true. It runs before the PR step (a red
+#    result never holds back the PR, it only stops the auto-merge).
 # 5. AA-853 schema drift (report only, never blocks steps 1-4): db/replay_migrations.py replays every applied
 #    migration (live shared.schema_versions order; the owner repos' own migration folders, cloned anonymously, they
 #    are public) into a throw-away pgvector/PostgreSQL 15 container (image pinned by digest) and dumps that catalog
@@ -40,7 +45,8 @@ name: DB Schema Dump (shared RDS)
 # worth stealing; capped at 15 min for the replay) -> `publish` (no AWS: the root PR and step 4, with the App token).
 # The dump job's 45 min cap is unchanged by the replay. Files move between jobs as this run's artifacts.
 #
-# Triggers: nightly, manual, and DB Migrate after every successful apply (gh workflow run).
+# Triggers: nightly, manual, and DB Migrate after every successful apply or run-script (gh workflow run; only an
+# apply passes after_apply=true).
 # Root repo access (AA-901, root ADR 0011): a short-lived installation token of the GitHub App aa-ecosys-ci-bot,
 # minted right before the root checkout (after every AWS step that produces the dump) for AdventureAsia365-Ecosys/AA-Ecosys
 # only, Contents write + Pull requests write; revoked when the job ends. Needs the repo variable AA_CI_BOT_APP_ID and
@@ -65,6 +71,11 @@ on:
         required: false
         type: string
         default: ""
+      after_apply:
+        description: "AA-993 M1: set by DB Migrate apply (and migration-apply): the root PR may merge itself when every merge condition holds (header step 3)"
+        required: false
+        type: boolean
+        default: false
   schedule:
     - cron: "43 3 * * *"   # nightly, 03:43 UTC
 
@@ -197,7 +208,7 @@ jobs:
             --source "AA-CIS-Infra DB Schema Dump ($REASON), $RUN_URL"
           {
             echo "### Schema dump ($REASON)"
-            jq -r '"- latest: CIS \(.migrations_latest_per_owner.cis), TripPlanner \(.migrations_latest_per_owner.tripplanner), Booking \(.migrations_latest_per_owner.booking)",
+            jq -r '"- latest: CIS \(.migrations_latest_per_owner.cis), TripPlanner \(.migrations_latest_per_owner.tripplanner), Booking \(.migrations_latest_per_owner.booking), CRM \(.migrations_latest_per_owner.crm // "-")",
                    "- \(.counts.schemas) schemas, \(.counts.relations) tables/views, \(.counts.indexes) indexes, \(.counts.policies) policies, \(.counts.functions) functions",
                    "- JSON: s3://'"$BUCKET"'/'"$PREFIX"'/schema.json (also db-schema-dump/latest.json)"' schema.json
             jq -r '(.soft_keys // [])[] | "- soft key \(.name): \(.status), rows \(.total // "-"), without key \(.without_key // "-"), orphans \(.orphans // "-")"' schema.json
@@ -348,6 +359,10 @@ jobs:
       ERD_DIR: docs/architecture/erd
       REASON: ${{ github.event_name == 'schedule' && 'nightly' || inputs.reason || 'manual' }}
       PUBLISH: ${{ github.event_name == 'workflow_dispatch' && inputs.publish && 'true' || 'false' }}
+      # AA-993 M1: merge conditions (header step 3). DESIGN_REF set = a test run of the drift check: never merges.
+      AFTER_APPLY: ${{ github.event_name == 'workflow_dispatch' && inputs.after_apply && 'true' || 'false' }}
+      DESIGN_REF: ${{ inputs.design_ref }}
+      ROOT_REQUIRED_CHECKS: "Docs lint,gitleaks"
       HAS_CI_BOT_APP: ${{ vars.AA_CI_BOT_APP_ID != '' && secrets.AA_CI_BOT_PRIVATE_KEY != '' }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
@@ -414,7 +429,35 @@ jobs:
             echo "- schema drift (AA-853): not computed in this run; master's drift section kept" >> "$GITHUB_STEP_SUMMARY"
           fi
 
+      # AA-894 scope 3: hand-written design ERDs (root docs/architecture/erd/design/<schema>.md, read from master, or from
+      # the dispatch input design_ref) vs this dump's erd.json. A report in the step summary: tables, primary keys and FK
+      # edges that differ. It fails only for a live schema whose design page says enforce=true; a schema with no
+      # relations yet ("not live yet") passes. AA-993 M1: runs BEFORE the root PR step and is continue-on-error, so a
+      # drift never holds back the regenerated reference; its outcome is one of the auto-merge conditions. design_ref
+      # pages are extracted to a scratch dir, never into the root checkout (the PR step commits from that checkout).
+      - name: Design ERD drift (report)
+        id: erd_drift
+        if: steps.root.outcome == 'success'
+        continue-on-error: true
+        run: |
+          DESIGN_DIR="root/$ERD_DIR/design"
+          if [ -n "${DESIGN_REF:-}" ]; then
+            # Only the design pages come from that ref; the reference and the generated pages are published from master.
+            case "$DESIGN_REF" in *[!A-Za-z0-9._/-]*) echo "::error::design_ref has unexpected characters"; exit 2;; esac
+            git -C root fetch --depth 1 origin "$DESIGN_REF"
+            mkdir -p design-ref
+            git -C root archive FETCH_HEAD "$ERD_DIR/design" | tar -x -C design-ref
+            DESIGN_DIR="design-ref/$ERD_DIR/design"
+            echo "- design ERD pages read from \`$DESIGN_REF\` (dispatch input), not master" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if ! ls "$DESIGN_DIR"/*.md >/dev/null 2>&1; then
+            echo "- design ERD drift: no design pages under \`$ERD_DIR/design/\`" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          python3 db/check_erd_drift.py erd.json "$DESIGN_DIR" --summary "$GITHUB_STEP_SUMMARY"
+
       - name: Open or update the root PR when the structure changed
+        id: pr
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           NEW_FP: ${{ needs.dump.outputs.fingerprint }}
@@ -445,6 +488,7 @@ jobs:
             echo "- structure, ERD and drift unchanged since master (\`${NEW_FP:0:12}\`): no PR" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
+          echo "drift_changed=$DRIFT_CHANGED" >> "$GITHUB_OUTPUT"
           cp reference.md "root/$REF_PATH"
           cd root
           git config user.name "github-actions[bot]"
@@ -454,10 +498,11 @@ jobs:
           git commit -q -m "docs: regenerate db-schema-reference.md and the ERD pages from the live dump" \
             -m "Generated by AA-CIS-Infra DB Schema Dump ($REASON): $RUN_URL"
           git push -q --force origin "$PR_BRANCH"
+          echo "head=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           {
             echo "Generated by the AA-CIS-Infra **DB Schema Dump** workflow ($REASON): $RUN_URL"
             echo
-            jq -r '"- Latest migration per owner: CIS **\(.migrations_latest_per_owner.cis)**, TripPlanner **\(.migrations_latest_per_owner.tripplanner)**, Booking **\(.migrations_latest_per_owner.booking)**",
+            jq -r '"- Latest migration per owner: CIS **\(.migrations_latest_per_owner.cis)**, TripPlanner **\(.migrations_latest_per_owner.tripplanner)**, Booking **\(.migrations_latest_per_owner.booking)**, CRM **\(.migrations_latest_per_owner.crm // "-")**",
                    "- \(.counts.schemas) schemas, \(.counts.relations) tables/views, \(.counts.indexes) indexes, \(.counts.policies) RLS policies, \(.counts.functions) functions"' ../schema.json
             echo "- Structural fingerprint: \`${OLD_FP:-none}\` on master -> \`$NEW_FP\`"
             if [ -s ../drift.json ] && [ -n "$NEW_DFP" ]; then
@@ -472,40 +517,71 @@ jobs:
               echo "- ERD pages: unchanged"
             fi
             echo
-            echo "Review the diff for objects no migration explains (DDL outside DB Migrate, standards MIG-5), then merge by hand."
+            if [ "$AFTER_APPLY" = "true" ] && [ "$DRIFT_CHANGED" != "true" ] && [ -z "$DESIGN_REF" ]; then
+              echo "After an apply with no drift change: this PR merges itself once the design ERD check and the root checks are green (AA-993 M1). If it stays open, read the run summary for the reason."
+            else
+              echo "Review the diff for objects no migration explains (DDL outside DB Migrate, standards MIG-5), then merge by hand."
+            fi
             echo "Do not push to \`$PR_BRANCH\`: every run force-pushes it from master. This PR is updated in place until merged."
           } > ../pr-body.md
           PR=$(gh pr list --repo "$ROOT_REPO" --head "$PR_BRANCH" --state open --json number --jq '.[0].number // empty')
           if [ -n "$PR" ]; then
             gh pr edit "$PR" --repo "$ROOT_REPO" --body-file ../pr-body.md
             echo "- updated root PR #$PR" >> "$GITHUB_STEP_SUMMARY"
+            echo "existed=true" >> "$GITHUB_OUTPUT"
           else
             URL=$(gh pr create --repo "$ROOT_REPO" --base "$ROOT_BRANCH" --head "$PR_BRANCH" \
               --title "docs: regenerate db-schema-reference.md and ERD (live dump)" --body-file ../pr-body.md)
             echo "- opened root PR $URL" >> "$GITHUB_STEP_SUMMARY"
+            PR="${URL##*/}"
+            echo "existed=false" >> "$GITHUB_OUTPUT"
           fi
+          echo "number=$PR" >> "$GITHUB_OUTPUT"
 
-      # AA-894 scope 3: hand-written design ERDs (root docs/architecture/erd/design/<schema>.md, read from master, or from
-      # the dispatch input design_ref) vs
-      # this dump's erd.json. A report in the step summary: tables, primary keys and FK edges that differ. It fails
-      # only for a live schema whose design page says enforce=true; a schema with no relations yet ("not live yet",
-      # crm today) passes. Runs after the root PR step so a drift never holds back the regenerated reference.
-      - name: Design ERD drift (report)
-        if: always() && steps.root.outcome == 'success'
+      # AA-993 M1 (root ADR 0017 decision 9). Squash-merge the root PR as aa-ecosys-ci-bot when every condition holds;
+      # otherwise leave it open and say why. Polls the PR's checks (allow_auto_merge is off on the root repo). A red
+      # result here is a warning, not a failed run: the dump, the artifact and the PR all exist already.
+      - name: Merge the root PR after an apply (AA-993 M1)
+        if: steps.pr.outputs.number != '' && steps.pr.outputs.head != ''
+        continue-on-error: true
         env:
-          DESIGN_REF: ${{ inputs.design_ref }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR: ${{ steps.pr.outputs.number }}
+          HEAD: ${{ steps.pr.outputs.head }}
+          DRIFT_CHANGED: ${{ steps.pr.outputs.drift_changed }}
+          PR_EXISTED: ${{ steps.pr.outputs.existed }}
+          ERD_DRIFT: ${{ steps.erd_drift.outcome }}
         run: |
-          DESIGN_DIR="root/$ERD_DIR/design"
-          if [ -n "${DESIGN_REF:-}" ]; then
-            # Only the design pages come from that ref; the reference and the generated pages were published from master.
-            case "$DESIGN_REF" in *[!A-Za-z0-9._/-]*) echo "::error::design_ref has unexpected characters"; exit 2;; esac
-            git -C root fetch --depth 1 origin "$DESIGN_REF"
-            rm -rf "$DESIGN_DIR"
-            git -C root checkout FETCH_HEAD -- "$ERD_DIR/design"
-            echo "- design ERD pages read from \`$DESIGN_REF\` (dispatch input), not master" >> "$GITHUB_STEP_SUMMARY"
-          fi
-          if ! ls "$DESIGN_DIR"/*.md >/dev/null 2>&1; then
-            echo "- design ERD drift: no design pages under \`$ERD_DIR/design/\` on master" >> "$GITHUB_STEP_SUMMARY"
+          python3 db/schema_dump_automerge.py decide \
+            --after-apply "$AFTER_APPLY" --drift-changed "${DRIFT_CHANGED:-}" --erd-drift "${ERD_DRIFT:-}" \
+            --design-ref "${DESIGN_REF:-}" --publish "$PUBLISH" --pr-existed "${PR_EXISTED:-}" > decide.txt || true
+          cat decide.txt
+          if ! grep -q '^merge=yes' decide.txt; then
+            echo "- root PR #$PR stays open for a person: $(grep '^reason=' decide.txt | cut -d= -f2-)" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          python3 db/check_erd_drift.py erd.json "$DESIGN_DIR" --summary "$GITHUB_STEP_SUMMARY"
+          # Only the generated files may be in the PR (the reference + generated ERD pages; never design/).
+          gh pr diff "$PR" --repo "$ROOT_REPO" --name-only > files.txt
+          if ! python3 db/schema_dump_automerge.py files --ref-path "$REF_PATH" --erd-dir "$ERD_DIR" < files.txt; then
+            echo "- root PR #$PR stays open: it holds files other than the generated ones" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # Checks on the PR head: wait (max 10 min) until every one is complete; then each required one must be
+          # green and none may be red.
+          rc=2
+          for i in $(seq 1 40); do
+            gh api "repos/$ROOT_REPO/commits/$HEAD/check-runs?per_page=100" > checks.json
+            set +e
+            python3 db/schema_dump_automerge.py checks --required "$ROOT_REQUIRED_CHECKS" < checks.json > verdict.txt
+            rc=$?
+            set -e
+            [ "$rc" = "2" ] || break
+            sleep 15
+          done
+          cat verdict.txt
+          if [ "$rc" != "0" ]; then
+            echo "- root PR #$PR stays open: $(tail -1 verdict.txt)" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          gh pr merge "$PR" --repo "$ROOT_REPO" --squash --match-head-commit "$HEAD"
+          echo "- root PR #$PR merged by aa-ecosys-ci-bot (after apply, no drift change, design ERD green, checks green)" >> "$GITHUB_STEP_SUMMARY"
