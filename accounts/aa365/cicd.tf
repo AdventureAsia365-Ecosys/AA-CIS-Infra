@@ -24,7 +24,9 @@ locals {
     "arn:aws:iam::aws:policy/SecretsManagerReadWrite",
     "arn:aws:iam::aws:policy/AmazonECS_FullAccess",
     "arn:aws:iam::aws:policy/CloudWatchFullAccess",
-    "arn:aws:iam::aws:policy/AmazonSQSFullAccess",
+    # AA-873 (S255): AmazonSQSFullAccess (sqs:* on *) moved, unchanged, into the customer managed
+    # aa-cis-infra-tf-apply-sec (cicd_sec.tf, Sid SqsManage) to free the slot for that policy: the role
+    # stays at the default quota of 10 managed policies.
     "arn:aws:iam::aws:policy/AmazonVPCFullAccess",
     "arn:aws:iam::aws:policy/AmazonElastiCacheFullAccess",
     # AA-931: AWSStepFunctionsFullAccess removed. No Step Functions resource exists since AA-750 (the

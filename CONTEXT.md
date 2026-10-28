@@ -173,6 +173,20 @@ accounts/
                                    alerts topic policy = AWS default statement + events.amazonaws.com;
                                    AA-816 S243: root ADR 0006a A8 rule on CloudTrail AdminCreateUser on
                                    the WORKFORCE pool with a temporary password / RESEND / no SUPPRESS)
+    security_baseline.tf          (AA-873 PR 1, S255: account S3 Block Public Access (4 flags); IAM Access Analyzer
+                                   aa-sec-<env>-external-access (ACCOUNT, external access only; no paid unused-access
+                                   analyzer) + rule on ACTIVE findings; EventBridge rules aa-sec-<env>-* on CloudTrail
+                                   events -> SNS alerts: trail tamper (any principal), security-group change and IAM
+                                   change (not by the CI apply role), root activity (all management events); a us-east-1
+                                   rule forwards IAM write calls and root events (global services) to the us-west-1
+                                   default bus through role aa-sec-<env>-events-forwarder. Topic policy statement
+                                   AllowSecurityEventBridgeRules (identity_alerts.tf). 0 USD/month)
+    cicd_sec.tf                   (AA-873, bootstrap: customer managed policy aa-cis-infra-tf-apply-sec on the apply
+                                   role — Access Analyzer, events rules aa-sec-* (both regions), the Access Analyzer /
+                                   GuardDuty service-linked roles, GuardDuty detector + features, KMS create/admin only
+                                   for keys tagged App=shared (no PutKeyPolicy / deletion / crypto), aliases
+                                   alias/aa-cis-<env>-*; plus sqs:* moved unchanged from AmazonSQSFullAccess, whose
+                                   managed slot it takes (the role stays at 10). Applied locally with MFA)
     observability.tf, observability_ecosys.tf (S235 alarms + log retention; RDS alarms per data standard
                                    C4.1 + per-role AA/RDS RoleConnectionLimitPct alarms, AA-832; job
                                    backlog alarms per owner AA/Jobs/CIS + AA/Jobs/Booking and the
