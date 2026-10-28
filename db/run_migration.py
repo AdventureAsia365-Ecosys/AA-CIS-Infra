@@ -234,8 +234,9 @@ class OwnerDir:
 OWNER_DIRS = {
     "cis": OwnerDir("shared",
                     ("acp_contract", "acp_deliver", "acp_gold_output", "acp_shared", "acp_silver_s2",
-                     "acp_silver_s3", "acp_silver_s4", "catalog", "geo", "gold_aa_internal", "shared",
-                     "silver_aa_internal"),
+                     "acp_silver_s3", "acp_silver_s4", "catalog", "geo", "gold_aa_internal",
+                     "retired",            # AA-850 (CIS 294): DM-3.9 quarantine schema, no runtime grant
+                     "shared", "silver_aa_internal"),
                     frozenset({"catalog_owner", "cis_owner", "cis_app"}), 243, frozenset({"catalog_owner"})),
     "booking": OwnerDir("booking", ("booking",), frozenset(), 14),
     "tripplanner": OwnerDir("tripplanner", ("tripplanner",), frozenset(), 13),

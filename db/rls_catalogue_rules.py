@@ -63,6 +63,7 @@ SCHEMA_OWNERS = {
     "booking": "booking",
     "tripplanner": "tripplanner",
     "crm": "crm",                                    # partner CRM, AA-Partner (AA-932, ADR 0008a)
+    "retired": "cis",                                # CIS quarantine (DM-3.9, CIS 294, AA-850): no app grant
     "public": "platform",
 }
 # The app roles of each owner (owner role, runtime roles, view owner). Platform roles (the RDS master,
@@ -93,6 +94,10 @@ _GRANDFATHERED_TP = "grandfathered TripPlanner read (owners.yaml consumer_grants
 _REVOKED_254 = "grandfathered TripPlanner read, revoked by CIS 254 (AA-847)"
 # AA-712 X4: CIS 270 revokes the rest of the pilot's reads (TripPlanner keeps the catalog views and the gateway).
 _REVOKED_270 = "grandfathered TripPlanner read, revoked by CIS 270 (AA-712 X4)"
+# AA-850: the wave-1 tables with a tenant_id column that CIS 294 quarantines in `retired` (DM-3.9).
+_WAVE1_TENANT_TABLES = ("acp_runs", "tenant_brand_rule_versions", "tenant_brand_rules_deleted_aa404", "route_pick",
+                        "tenant_atom_state")
+_QUARANTINED_294 = "quarantined, AA-850 (CIS 294, no grant to any role); dropped >= 14 days later"
 ALLOWLIST: dict[str, dict[str, str]] = {
     "a": {
         "shared.tenants": "the tenant registry itself (tenant_id is its key); cis_app only, no tenant-pool grant",
@@ -103,24 +108,27 @@ ALLOWLIST: dict[str, dict[str, str]] = {
         "shared.dfs_call_log": f"DataForSEO cost log; tenant_id is attribution; {_CIS_ONLY}",
         "shared.decision_log": f"Jev decision audit; tenant_id is attribution; {_CIS_ONLY}",
         "shared.jev_tenant_allowlist": f"Jev rollout switch per tenant (admin-managed); {_CIS_ONLY}",
-        "shared.acp_runs": f"legacy ACP v1 run table (pre-AA-751); {_CIS_ONLY}",
-        "shared.tenant_brand_rule_versions": f"history of tenant brand rules; {_CIS_ONLY}",
-        "shared.tenant_brand_rules_deleted_aa404": f"AA-404 backup copy of deleted brand rules; {_CIS_ONLY}",
         "shared.tenant_export_config": f"tenant export settings, admin + pipeline only; {_CIS_ONLY}",
         "shared.tenant_rewrite_usage": f"rewrite quota counter; {_CIS_ONLY}",
         "shared.unmapped_market_requests": f"admin triage list of market requests; {_CIS_ONLY}",
         "shared.tenant_members": f"CIS membership directory (AA-978, 276), served over HTTP only; {_CIS_ONLY}",
         "shared.tenant_membership_event": f"tenant.membership.v1 feed (AA-978, 276), HTTP only; {_CIS_ONLY}",
-        "acp_contract.route_pick": f"tenant route picks written by the T-pipeline jobs; {_CIS_ONLY}",
         "acp_shared.acp_output_rules": "RLS on with the X1 cis_app parity policy only (CIS 244); no tenant-pool grant",
         "acp_shared.acp_quota_ledger": f"tenant quota ledger; {_CIS_ONLY}",
         "acp_shared.audit_log": f"tenant action audit log; {_CIS_ONLY}",
         "acp_shared.debate_brand_fit_cache": f"pipeline cache keyed by tenant; {_CIS_ONLY}",
-        "acp_shared.tenant_atom_state": f"per-tenant atom state, pipeline only; {_CIS_ONLY}",
         "acp_shared.tenant_config": f"tenant settings, admin + pipeline only; {_CIS_ONLY}",
         "silver_aa_internal.raw_sources": f"source registry, admin + pipeline only; {_CIS_ONLY}",
         "silver_aa_internal.review_queue": f"staff review queue; {_CIS_ONLY}",
         "silver_aa_internal.upload_staging": f"staff upload staging; {_CIS_ONLY}",
+        # AA-850 wave 1: CIS 294 moves these dead tables to the quarantine schema `retired` (no grant to any role).
+        **{f"retired.{t}": _QUARANTINED_294 for t in _WAVE1_TENANT_TABLES},
+        # Their pre-294 names, so the nightly Dev dump stays clean until 294 is applied; stale afterwards (reported,
+        # not fatal), removed with the wave-1 drop migration.
+        **{f"{s}.{t}": f"{_CIS_ONLY}; dead (AA-850 wave 1), until CIS 294 moves it to retired"
+           for s, t in (("shared", "acp_runs"), ("shared", "tenant_brand_rule_versions"),
+                        ("shared", "tenant_brand_rules_deleted_aa404"), ("acp_contract", "route_pick"),
+                        ("acp_shared", "tenant_atom_state"))},
     },
     "b": {
         f"{t}:tenant_isolation": "legacy tenant_isolation TO PUBLIC (004/006, pre-X1); retire in a tenant-pool review"
