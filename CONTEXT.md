@@ -729,6 +729,9 @@ makes CI Terraform Plan fail with 403.
 - `docs/ecosystem-architecture.md` (root docs repo) — ecosystem-wide account map, Bedrock
   routing, OIDC design, and the App/Infra ownership split.
 - `docs/database/schema-ownership.md` (root docs repo) — owner repo per schema / `shared.*` table.
+- `docs/architecture/diagrams/infra.svg` (root docs repo) — architecture diagram with AWS icons of what the two
+  Terraform roots create, drawn from `infra.py`; catalog page `docs/architecture/diagrams/README.md` (shown in the CIS
+  admin at `/admin/docs?path=docs/architecture/diagrams/README.md`), checked against the live state on 2026-10-28.
 - `accounts/aa365/versions.tf` — the authoritative state backend + provider config.
 - `accounts/aa365/cicd.tf`, `accounts/aa365/tripplanner.tf`, `accounts/aa365/booking.tf` — the OIDC deploy roles and their
   corrected trust subjects.
