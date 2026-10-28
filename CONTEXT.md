@@ -183,6 +183,12 @@ accounts/
                                    rule forwards IAM write calls and root events (global services) to the us-west-1
                                    default bus through role aa-sec-<env>-events-forwarder. Topic policy statement
                                    AllowSecurityEventBridgeRules (identity_alerts.tf). 0 USD/month)
+    security_cloudtrail.tf        (AA-873 PR 2, S255: KMS key alias/aa-cis-<env>-cloudtrail (rotation, App=shared,
+                                   CloudTrail GenerateDataKey for this trail only, no account-wide decrypt), trail
+                                   bucket versioning + Object Lock GOVERNANCE 365 days on the existing bucket (no
+                                   replacement: provider probe). observability.tf: aws_cloudtrail.main multi-region +
+                                   kms_key_id; bucket lifecycle = noncurrent 400 d + multipart cleanup (the old Deep
+                                   Archive rule never ran: files < 128 KB). ~1.25 USD/month)
     cicd_sec.tf                   (AA-873, bootstrap: customer managed policy aa-cis-infra-tf-apply-sec on the apply
                                    role — Access Analyzer, events rules aa-sec-* (both regions), the Access Analyzer /
                                    GuardDuty service-linked roles, GuardDuty detector + features, KMS create/admin only
