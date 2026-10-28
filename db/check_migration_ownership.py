@@ -362,10 +362,19 @@ def touches(sql: str) -> tuple:
     return found, warnings
 
 
-def owner_schemas(owner_dir: str) -> tuple:
-    """The schemas a file of the dir may touch: its live schemas and the ones it dropped (owners.yaml dropped_schemas,
-    AA-850: its older files grant on them, the drop file drops them)."""
+# The last file number that may still name a dropped schema, per owner dir: the file that dropped it (AA-850, CIS 299).
+# A later file that names one again (CREATE SCHEMA + tables) would bring back a schema the isolation probe and the RLS
+# catalogue no longer watch, so the lint refuses it; a schema that comes back must return to owners.yaml schemas.
+DROPPED_SCHEMAS_LAST_FILE = {"cis": 299}
+
+
+def owner_schemas(owner_dir: str, number: int = None) -> tuple:
+    """The schemas a file of the dir may touch: its live schemas and, for files up to the drop file, the ones it dropped
+    (owners.yaml dropped_schemas, AA-850: its older files grant on them, the drop file drops them)."""
     d = run_migration.OWNER_DIRS[owner_dir]
+    last = DROPPED_SCHEMAS_LAST_FILE.get(owner_dir)
+    if d.dropped_schemas and (number is None or last is None or number > last):
+        return d.schemas
     return d.schemas + d.dropped_schemas
 
 
@@ -374,7 +383,7 @@ def lint(sql: str, rel_path: str) -> tuple:
     owner_dir, _number = run_migration.migration_path(rel_path)
     if owner_dir not in run_migration.OWNER_DIRS:
         return [], []
-    mine = set(owner_schemas(owner_dir))
+    mine = set(owner_schemas(owner_dir, _number))
     found, warnings = touches(sql)
     errors: list = []
     seen: set = set()
