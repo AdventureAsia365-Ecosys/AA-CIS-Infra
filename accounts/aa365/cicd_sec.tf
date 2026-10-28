@@ -4,7 +4,7 @@
 # Covers the three AA-873 PRs in one local MFA apply: security_baseline.tf (PR 1: account BPA, IAM Access Analyzer,
 # EventBridge alert rules + us-east-1 forwarder), security_cloudtrail.tf (PR 2: CloudTrail KMS key, multi-region
 # trail, trail bucket versioning / Object Lock) and security_guardduty.tf (PR 3: GuardDuty behind
-# var.guardduty_enabled).
+# var.guardduty_enabled), plus the public AMI parameter read of the NAT AMI fix (modules/vpc).
 #
 # Why a customer managed policy and not more inline statements: the apply role's inline policy renders to 8,963 of
 # the 10,240 characters every inline policy of a role shares (terraform console on main 82400b9, 28/10/2026); these
@@ -74,6 +74,15 @@ data "aws_iam_policy_document" "tf_apply_sec" {
       variable = "iam:AWSServiceName"
       values   = local.sec_slr_services
     }
+  }
+
+  # NAT AMI fix (modules/vpc, S255 finding F-4): data.aws_ssm_parameter.nat_al2023_arm64 reads the public AL2023 AMI
+  # parameter on refresh. AmazonECS_FullAccess only covers /aws/service/ecs*. Public AWS parameters live in an AWS
+  # account, so the ARN has no account id.
+  statement {
+    sid       = "PublicAmiParameterRead"
+    actions   = ["ssm:GetParameter", "ssm:GetParameters"]
+    resources = ["arn:aws:ssm:${var.aws_region}::parameter/aws/service/ami-amazon-linux-latest/*"]
   }
 
   # PR 3: GuardDuty detector, its features (UpdateDetector) and tags. CreateDetector takes no resource ARN.
