@@ -271,6 +271,8 @@ data "aws_iam_policy_document" "tf_apply_boundary" {
       "arn:aws:iam::${var.account_id}:policy/aa-cis-infra-tf-apply-boundary",
       # AA-931: the apply role's own CRM grants (cicd_crm.tf) must not be widened by CI either.
       "arn:aws:iam::${var.account_id}:policy/aa-cis-infra-tf-apply-crm",
+      # AA-873 (S255): same for the security baseline grants (cicd_sec.tf).
+      "arn:aws:iam::${var.account_id}:policy/aa-cis-infra-tf-apply-sec",
     ]
   }
 
