@@ -118,7 +118,31 @@ line (a directive after the first statement is an error):
 -- migrate: lock_timeout=30s        -- override (us, ms, s, min, h, d)
 -- migrate: statement_timeout=1h    -- override
 -- migrate: destructive             -- DB Migrate takes an RDS snapshot before apply
+-- migrate: expand                  -- AA-993: additive only (see "Expand files" below)
 ```
+
+### Expand files (AA-993 M2a, root ADR 0017 decisions 3-5)
+`-- migrate: expand` marks a file that only adds. Allowed: new objects (tables, views, functions, types, sequences,
+indexes, policies and triggers **on tables the file creates**), on an existing table only `ADD COLUMN` (nullable, or
+with a non-volatile, non-generated default) and a non-unique index, `GRANT` on new objects to the owner's
+`runtime_roles` / `nologin_roles`, `COMMENT ON`, `INSERT` into a table the file creates, `SET`. Everything else is
+refused by `expand_lint` (exit 4): DO blocks, SELECT calls, `CREATE OR REPLACE`, REVOKE, default privileges, writes to
+existing tables, constraints / policies / triggers / unique indexes on existing tables, any statement naming an
+`owners.yaml` `expand_hot_tables` table or `catalog.*` (a non-unique `CREATE INDEX CONCURRENTLY` excepted), and
+`expand` together with `destructive`. A no-transaction expand file holds only non-unique
+`CREATE INDEX CONCURRENTLY IF NOT EXISTS` statements plus its registration.
+
+At run time an expand file: is size-checked before any statement (exit 15 when it would lock an existing table above
+100k rows with `ALTER TABLE` or a non-concurrent index build; check mode reports the same); runs with
+`statement_timeout = 30s` (a header may set less; CIC files keep 15 min); skips the job-table idle wait (it still waits
+for an open rerun wave when it names a hot table, exit 7 after the usual three waits); after its CIC statements every
+index named must exist and be valid before the registration runs (exit 16, version not registered). No header =
+contract: DB Migrate behaves exactly as before. The runtime catalog post-check (exit 14) comes with M2b; until then
+nothing applies expand files automatically.
+
+**Apply lock.** Every applying mode (apply, roles/ files, set-password, a run-script that is not `READ_ONLY`) takes
+the session advisory lock `pg_try_advisory_lock(993, 1)` (polled every 15 s, up to 25 min, then exit 17), so a
+person's DB Migrate run and the coming auto-apply (M3) never overlap. `check` and READ_ONLY scripts take no lock.
 
 - **no-transaction** (MIG-10): for `CREATE INDEX CONCURRENTLY`, `REINDEX CONCURRENTLY`, `VACUUM`.
   No `BEGIN`/`COMMIT` in the file, every statement idempotent (`IF NOT EXISTS`), and the
