@@ -274,6 +274,16 @@ class FakeConn:
         return [groups[k] for k in sorted(groups)]
 
     async def fetchval(self, query, *args):
+        if query == rm.APPLY_LOCK_SQL:              # AA-993 M2a: free unless the test holds it (lock_busy polls)
+            self.lock_tries = getattr(self, "lock_tries", 0) + 1
+            busy = getattr(self, "lock_busy", 0)
+            return self.lock_tries > busy
+        if query == rm.RELTUPLES_SQL:
+            return getattr(self, "reltuples", {}).get(args[0])
+        if query == rm.INDEX_VALID_SQL:
+            return getattr(self, "index_valid", {}).get(args[0], True)
+        if query == rm.REL_EXISTS_SQL:
+            return args[0] in getattr(self, "existing", set())
         if query == rm.SESSION_USER_SQL:
             return self.login
         if query == rm.SCHEMA_OWNER_SQL:

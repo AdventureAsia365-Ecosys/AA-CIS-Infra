@@ -181,6 +181,10 @@ class MirrorsAgreeTest(unittest.TestCase):
                 self.assertEqual(d.role_lint_from, o["role_lint_from"])
                 self.assertEqual(d.view_owner_roles, frozenset(o.get("view_owner_roles", [])))
                 self.assertEqual(list(d.dropped_schemas), o.get("dropped_schemas", []))
+                # AA-993 M2a: an expand file grants only to the owner's runtime and nologin roles.
+                self.assertEqual(d.grant_roles, frozenset(o.get("runtime_roles", []) + o.get("nologin_roles", [])))
+        self.assertEqual(list(rm.EXPAND_HOT_TABLES), REGISTRY["expand_hot_tables"])
+        self.assertEqual(list(rm.EXPAND_HOT_SCHEMAS), REGISTRY["expand_hot_schemas"])
         self.assertEqual(set(rm.OWNER_SCHEMAS), {s for o in SCHEMA_OWNERS.values() for s in o["schemas"]})
 
     def test_isolation_probe_constants(self):

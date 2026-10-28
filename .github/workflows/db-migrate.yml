@@ -45,6 +45,12 @@ name: DB Migrate (shared RDS)
 #     with default_transaction_read_only=on and the idle check only reports. 30-minute ceiling. See db/scripts/README.md.
 # Exit 10 = mode input refused, 11 = set-password secret refused, 12 = set-password test login failed,
 # 13 = run-script failed.
+# AA-993 M2a (root ADR 0017): a file with the header `-- migrate: expand` only adds (lint: expand_lint in
+# db/run_migration.py), runs with statement_timeout 30s, skips the job-table idle wait (an open wave still blocks one
+# that names a hot table) and is size-checked first. Every applying mode (apply, set-password, run-script that is not
+# READ_ONLY) takes one session advisory lock, so this workflow and the coming auto-apply never overlap.
+# Exit 15 = expand lock risk (nothing ran), 16 = expand CIC left a missing/INVALID index (not registered),
+# 17 = the apply lock stayed taken by another run (nothing ran). Files without the header behave as before.
 on:
   workflow_dispatch:
     inputs:
@@ -200,7 +206,7 @@ jobs:
           jq -r '.errors[] | "::error file=db/migrations/'"$MIGRATION"'::" + .' <<<"$INSPECT"
           [ "$LINT" = "0" ] || exit 1
           echo "destructive=$(jq -r '.destructive' <<<"$INSPECT")" >> "$GITHUB_OUTPUT"
-          jq -r '"- transaction: \(if .no_transaction then "no (statement by statement)" else "yes" end), destructive: \(.destructive), lock_timeout \(.settings.lock_timeout), statement_timeout \(.settings.statement_timeout)"' <<<"$INSPECT" >> "$GITHUB_STEP_SUMMARY"
+          jq -r '"- transaction: \(if .no_transaction then "no (statement by statement)" else "yes" end), destructive: \(.destructive), expand: \(.expand), lock_timeout \(.settings.lock_timeout), statement_timeout \(.settings.statement_timeout)"' <<<"$INSPECT" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v6
@@ -348,6 +354,18 @@ jobs:
           fi
           if [ "$EXIT" = "13" ]; then
             echo "::error::run-script: the script raised or returned non-zero (see its output above and the MIGRATE ERROR line)"
+            exit 1
+          fi
+          if [ "$EXIT" = "15" ]; then
+            echo "::error::expand: lock risk (see the MIGRATE ERROR line): the file would lock an existing table above 100k rows. Nothing ran. Use CREATE INDEX CONCURRENTLY in a no-transaction file, or drop the expand header and apply it as a contract file"
+            exit 1
+          fi
+          if [ "$EXIT" = "16" ]; then
+            echo "::error::expand: CREATE INDEX CONCURRENTLY left a missing or INVALID index (named in the MIGRATE ERROR line). The version is NOT registered: drop that index, then re-run"
+            exit 1
+          fi
+          if [ "$EXIT" = "17" ]; then
+            echo "::error::the apply lock is held by another DB Migrate or auto-apply run (waited 25 min). Nothing ran: re-run after it finishes"
             exit 1
           fi
           [ "$EXIT" = "0" ] || { echo "::error::migration task exited with $EXIT"; exit 1; }
