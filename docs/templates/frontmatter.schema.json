@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/AdventureAsia365-Ecosys/AA-Ecosys/docs/templates/frontmatter.schema.json",
   "title": "AA-Ecosys doc front-matter",
-  "description": "YAML front-matter for every page listed in the doc catalog (docs/README.md). Journals (sessions, audits, implementation notes, backlog, research) and ADRs do not use it. Source: S243 docs-standard proposal section 2.1 as corrected by the S243 reconciliation (K-29a to K-29c). Lint: AA-888.",
+  "description": "YAML front-matter for every page listed in the doc catalog (docs/README.md). Journals (sessions, audits, implementation notes, backlog, research) and ADRs do not use it. Source: S243 docs-standard proposal section 2.1 as corrected by the S243 reconciliation (K-29a to K-29c). Lint: AA-888. Translations (lang, translation_of): S255.",
   "type": "object",
   "required": ["id", "title", "type", "status", "owner", "last_reviewed"],
   "additionalProperties": false,
@@ -28,7 +28,7 @@
       "enum": ["tutorial", "how-to", "reference", "explanation", "adr", "report", "template"]
     },
     "status": {
-      "description": "draft = not yet read by Nghiep or (runbook) not yet run on Dev; active = current truth; deprecated = still true but being replaced; superseded = replaced, see superseded_by; archived = kept for history only.",
+      "description": "draft = not yet read by the tech lead or (runbook) not yet run on Dev; active = current truth; deprecated = still true but being replaced; superseded = replaced, see superseded_by; archived = kept for history only.",
       "enum": ["draft", "active", "deprecated", "superseded", "archived"]
     },
     "superseded_by": {
@@ -36,12 +36,12 @@
       "type": ["string", "null"]
     },
     "owner": {
-      "description": "Person accountable for the page. Default nghiep.",
+      "description": "Slug of whoever is accountable for the page. Company docs name roles, not people; the default slug nghiep stands for the tech lead role.",
       "type": "string",
       "pattern": "^[a-z][a-z0-9-]*$"
     },
     "audience": {
-      "description": "Navigation filter, not an access control. owner = Ms. Thu (CEO).",
+      "description": "Navigation filter, not an access control. owner = the business owner (CEO).",
       "type": "array",
       "minItems": 1,
       "uniqueItems": true,
@@ -66,6 +66,15 @@
       "type": "integer",
       "minimum": 7,
       "maximum": 730
+    },
+    "lang": {
+      "description": "Language of the page body. Omit it (or en) on the English page, which is the source. A translation is a sibling file <same name>.<lang>.md that sets its language here (docs/STYLE.md, Language).",
+      "enum": ["en", "vi"]
+    },
+    "translation_of": {
+      "description": "Translations only: repo-relative path of the English page this file translates (docs/guides/ceo.md for docs/guides/ceo.vi.md). The translation keeps the English page's id; check_frontmatter.py checks the pair.",
+      "type": "string",
+      "pattern": "^docs/(?:[A-Za-z0-9._-]+/)*[A-Za-z0-9._-]+\\.md$"
     },
     "last_tested": {
       "description": "Runbooks only: ISO date the steps were last executed (Dev, drill, incident or dry run).",
@@ -133,6 +142,14 @@
     {
       "if": {"properties": {"generated": {"const": true}}, "required": ["generated"]},
       "then": {"required": ["generator"], "properties": {"generator": {"type": "string"}}}
+    },
+    {
+      "if": {"properties": {"lang": {"const": "vi"}}, "required": ["lang"]},
+      "then": {"required": ["translation_of"]}
+    },
+    {
+      "if": {"required": ["translation_of"]},
+      "then": {"required": ["lang"], "properties": {"lang": {"const": "vi"}}}
     }
   ]
 }
