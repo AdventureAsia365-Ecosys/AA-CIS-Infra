@@ -128,7 +128,7 @@ DML = ("DELETE", "INSERT", "SELECT", "UPDATE")
 OWNERS = {
     "cis": ProbeOwner(
         ("acp_contract", "acp_deliver", "acp_gold_output", "acp_shared", "acp_silver_s2", "acp_silver_s3",
-         "acp_silver_s4", "catalog", "geo", "gold_aa_internal", "shared", "silver_aa_internal"),
+         "acp_silver_s4", "catalog", "geo", "gold_aa_internal", "retired", "shared", "silver_aa_internal"),
         "shared", "cis_owner", "245",
         (("cis_app", "aa-cis/dev/rds-cis-app"), ("aa_app_user", "aa-cis/dev/rds-app-user")),
         frozenset({"catalog_owner"}),
