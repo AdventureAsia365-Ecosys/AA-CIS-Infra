@@ -40,6 +40,28 @@ TEMPLATE_PREFIX = "docs/templates/"
 # Put this marker on a line to skip the text checks for that line only.
 IGNORE_MARKER = "docs-lint: ignore"
 
+# Translations (S255, docs/STYLE.md "Language"): a page is written in English; a translation sits next to it as
+# <same name>.<lang>.md, carries the same front-matter (same id) plus `lang: <lang>` and `translation_of: <path of the
+# English page>`. Only the languages listed here are translations; any other "x.y.md" name is an ordinary page.
+TRANSLATION_LANGS = ("vi",)
+SOURCE_LANG = "en"
+
+
+def translation_lang(relpath: str) -> str | None:
+    """The language of a translation file (docs/guides/ceo.vi.md -> 'vi'), or None for an English page."""
+    for lang in TRANSLATION_LANGS:
+        if relpath.endswith(f".{lang}.md") and len(Path(relpath).name) > len(f".{lang}.md"):
+            return lang
+    return None
+
+
+def source_of_translation(relpath: str) -> str:
+    """The English page a translation belongs to: docs/guides/ceo.vi.md -> docs/guides/ceo.md."""
+    lang = translation_lang(relpath)
+    if lang is None:
+        return relpath
+    return relpath[: -len(f".{lang}.md")] + ".md"
+
 
 @dataclass
 class Finding:

@@ -30,11 +30,15 @@ from jsonschema import Draft202012Validator, FormatChecker
 
 from docslib import (
     REPO_ROOT,
+    SOURCE_LANG,
+    TRANSLATION_LANGS,
     Finding,
     emit,
     is_template,
     list_markdown,
+    source_of_translation,
     split_front_matter,
+    translation_lang,
 )
 
 SCHEMA_PATH = "docs/templates/frontmatter.schema.json"
@@ -86,10 +90,20 @@ def validate(root: Path, pages: list[tuple[str, dict]]) -> list[Finding]:
     validator = Draft202012Validator(schema, format_checker=FormatChecker())
     errors: list[Finding] = []
     seen: dict[str, str] = {}
+    by_path = dict(pages)
     for relpath, data in pages:
         for err in sorted(validator.iter_errors(data), key=lambda e: list(e.path)):
             where = ".".join(str(p) for p in err.path) or "(root)"
             errors.append(Finding(relpath, 1, "Front-matter", f"{where}: {err.message}"))
+        lang = translation_lang(relpath)
+        if lang is not None:
+            # A translation shares the id of its English page, so it is not part of the unique-id check.
+            errors += _check_translation(relpath, lang, data, by_path)
+            continue
+        if "translation_of" in data or data.get("lang", SOURCE_LANG) != SOURCE_LANG:
+            errors.append(Finding(relpath, 1, "Front-matter",
+                                  f"only a translation file (<name>.<lang>.md, lang one of {', '.join(TRANSLATION_LANGS)}) "
+                                  f"may set translation_of or a lang other than {SOURCE_LANG}"))
         page_id = data.get("id")
         if isinstance(page_id, str) and not is_template(relpath):
             if page_id in seen:
@@ -98,6 +112,25 @@ def validate(root: Path, pages: list[tuple[str, dict]]) -> list[Finding]:
                 )
             else:
                 seen[page_id] = relpath
+    return errors
+
+
+def _check_translation(relpath: str, lang: str, data: dict, by_path: dict[str, dict]) -> list[Finding]:
+    """A <name>.<lang>.md page: lang matches the file name, translation_of names the English page next to it, and that
+    page exists with the same id (docs/STYLE.md "Language")."""
+    errors: list[Finding] = []
+    source = source_of_translation(relpath)
+    if data.get("lang") != lang:
+        errors.append(Finding(relpath, 1, "Front-matter", f"a translation file named *.{lang}.md needs lang: {lang}"))
+    if data.get("translation_of") != source:
+        errors.append(Finding(relpath, 1, "Front-matter", f"translation_of must be {source} (the English page)"))
+    english = by_path.get(source)
+    if english is None:
+        errors.append(Finding(relpath, 1, "Front-matter",
+                              f"translation of {source}, but that page is missing or has no front-matter"))
+    elif english.get("id") != data.get("id"):
+        errors.append(Finding(relpath, 1, "Front-matter",
+                              f"id {data.get('id')} differs from the English page ({english.get('id')} in {source})"))
     return errors
 
 

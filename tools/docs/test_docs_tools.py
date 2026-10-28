@@ -219,6 +219,33 @@ class FrontMatterTest(TempRepo):
         msgs = self.errors()
         self.assertEqual([m for m in msgs if "duplicate id" in m], ["duplicate id OPS-02 (also in docs/ops/a.md)"])
 
+    def test_translation_shares_the_english_id(self) -> None:
+        vi = GOOD_FM.replace("---\n\n#", "lang: vi\ntranslation_of: docs/ops/rollback.md\n---\n\n#")
+        self.write("docs/ops/rollback.md", GOOD_FM)
+        self.write("docs/ops/rollback.vi.md", vi)
+        self.assertEqual(self.errors(), [])
+
+    def test_translation_rules_fail(self) -> None:
+        self.write("docs/ops/rollback.md", GOOD_FM)
+        # wrong target, id differs from the English page, English page missing, lang missing
+        self.write("docs/ops/rollback.vi.md",
+                   GOOD_FM.replace("---\n\n#", "lang: vi\ntranslation_of: docs/ops/other.md\n---\n\n#"))
+        self.write("docs/ops/b.vi.md", GOOD_FM.replace("OPS-02", "OPS-07").replace(
+            "---\n\n#", "lang: vi\ntranslation_of: docs/ops/b.md\n---\n\n#"))
+        self.write("docs/ops/c.md", GOOD_FM.replace("OPS-02", "OPS-08").replace("---\n\n#", "lang: vi\n---\n\n#"))
+        msgs = " | ".join(self.errors())
+        self.assertIn("translation_of must be docs/ops/rollback.md", msgs)
+        self.assertIn("docs/ops/b.md, but that page is missing", msgs)
+        self.assertIn("'translation_of' is a required property", msgs)
+        self.assertIn("only a translation file", msgs)
+        self.assertNotIn("duplicate id", msgs)
+
+    def test_translation_helpers(self) -> None:
+        self.assertEqual(docslib.translation_lang("docs/guides/ceo.vi.md"), "vi")
+        self.assertIsNone(docslib.translation_lang("docs/guides/ceo.md"))
+        self.assertIsNone(docslib.translation_lang("docs/.vi.md"))
+        self.assertEqual(docslib.source_of_translation("docs/guides/ceo.vi.md"), "docs/guides/ceo.md")
+
     def test_freshness_report(self) -> None:
         self.write("docs/ops/rollback.md", GOOD_FM)
         pages, _ = check_frontmatter.load_pages(self.root)
