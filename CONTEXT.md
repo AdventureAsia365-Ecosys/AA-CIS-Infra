@@ -89,6 +89,12 @@ accounts/
                                    legacy shared CI role aa-cis-dev-role retired in AA-806 step 3)
     cicd_split.tf                 (AA-806: aa-cis-dev-app-deploy, aa-cis-infra-tf-plan/-apply,
                                    permissions boundaries; bootstrap, applied by a human)
+    cicd_db_auto_apply.tf         (AA-993 I1, root ADR 0017 d6: aa-cis-infra-db-auto-apply, trusted only for
+                                   environment:dev-db-auto + ref main; RunTask/Register/Deregister of the migrator
+                                   family, PassRole on the two migrator roles, S3 prefix db-auto-apply/, log read.
+                                   Bootstrap (outside aa-*-dev-*), applied by a human. GitHub side (environment,
+                                   ruleset on main): tools/github/db_auto_apply_gate.sh; proof:
+                                   db-auto-apply-role-check.yml)
     tripplanner.tf                (TripPlanner OIDC deploy role + TripPlanner-specific resources.
                                    AA-878: no secret value in the Lambda env; the edge key is read by
                                    name tripplanner/<ENVIRONMENT>/api-key (grant ReadApiKeySecret);
@@ -354,6 +360,10 @@ modules/          ← reusable building blocks, consumed by the account roots
   vpc, rds, ecs, alb, api_gateway, s3, secrets, waf, dynamodb, efs,
   elasticache, eventbridge, langfuse, monitoring
 tools/
+  github/         ← db_auto_apply_gate.sh + infra-main-ruleset.json (AA-993 I1): environment dev-db-auto (main only),
+                    its AWS_ROLE_ARN secret and the ruleset on main (PR required, no direct push or force push, required
+                    checks Terraform Plan / gitleaks / the two Migration Copy Guard jobs, org-admin bypass only through
+                    a PR). Run with Nghiệp's gh login (the GitHub Apps have no Administration permission, ADR 0011).
   identity/       ← workforce_bootstrap.py (AA-854): admin-run, MFA, stdlib + boto3. create-staff
                     (AdminCreateUser SUPPRESS + groups), breakglass-init / -verify (password + TOTP
                     into aa-identity/dev/breakglass, user left DISABLED), breakglass-otp-probe

@@ -95,12 +95,14 @@ patterns_for() {
     managed-login-branding) # managed-login-branding.yml
       printf '%s\n' 'accounts/aa365/**' 'tools/terraform/managed_login_branding.py' \
         'tools/terraform/tests/test_managed_login_branding.py' '.github/workflows/managed-login-branding.yml' ;;
+    # AA-993 I1: the workflow no longer filters by path; this list = db/migration_guard_scope.py PATHS (its scope job;
+    # db/tests/test_migration_guard_scope.py checks both agree).
     migration-guard) # migration-copy-guard.yml
       printf '%s\n' 'db/migrations/**' 'db/check_migration_copies.py' 'db/rls_catalogue_rules.py' \
         'db/replay_migrations.py' 'db/schema_drift.py' 'db/schema_drift_decisions.json' 'db/replay_baseline/**' \
         'db/gen_replay_baseline.py' 'db/gen_schema_reference.py' 'db/gen_erd.py' 'tools/docs/aws_mask.py' \
         'db/check_erd_drift.py' 'db/schema_dump.py' 'db/check_migration_files.py' 'db/check_migration_ownership.py' \
-        'db/check_retention_rows.py' 'db/run_migration.py' 'db/tests/**' 'db/owners.yaml' 'db/isolation_probe.py' \
+        'db/check_retention_rows.py' 'db/run_migration.py' 'db/migration_guard_scope.py' 'db/tests/**' 'db/owners.yaml' 'db/isolation_probe.py' \
         'db/tour_liveness_gate.py' 'db/freshness_gate.py' 'db/scripts/**' 'db/templates/**' '.github/scripts/**' \
         '.github/workflows/db-isolation-probe.yml' '.github/workflows/db-tour-liveness-gate.yml' \
         '.github/workflows/db-freshness-probe.yml' '.github/workflows/db-migrate.yml' \
