@@ -65,6 +65,10 @@ password_roles: {cis_app: aa-cis/dev/rds-cis-app, crm_app: crm/dev/database-url,
 # EXPAND_HOT_TABLES / EXPAND_HOT_SCHEMAS. The list shrinks when the star queries on a table are replaced (Q17).
 expand_hot_tables: [acp_shared.acp_quota_ledger, booking.job, crm.job, shared.job, shared.job_worker]
 expand_hot_schemas: [catalog]
+# AA-993 M2b (ADR 0017 d3): a new table an expand file creates in these schemas must ENABLE and FORCE row level
+# security (crm: every tenant table is FORCE RLS). A new table with a tenant_id column needs both in any schema.
+# Mirrored by db/run_migration.py EXPAND_RLS_SCHEMAS.
+expand_rls_schemas: [crm]
 
 owners:
   cis:

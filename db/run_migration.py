@@ -121,7 +121,10 @@ is not a member of) · 9 ownership post-check failed (rolled
 back; for a no-transaction file the statements before the registration stay committed and the
 version is not registered), or the check after COMMIT found something that ran at COMMIT (committed
 and registered: clean up by hand).
-Exit codes (AA-993 M2a, root ADR 0017): 14 reserved for the expand runtime post-check (M2b) · 15 lock risk: an expand
+Exit codes (AA-993 M2a/M2b, root ADR 0017): 14 the expand runtime post-check found a change outside the allowed set
+(an existing object changed or dropped, a new policy / trigger / constraint / unique index on an existing table, an
+overload, default privileges, rows written to an existing table, a column on a hot table, a new table needing RLS
+without ENABLE + FORCE): rolled back, not registered, the log names each object · 15 lock risk: an expand
 file would lock an existing table above EXPAND_MAX_ROWS or of unknown size (non-concurrent CREATE INDEX, ALTER TABLE),
 or creates with IF NOT EXISTS a relation that already exists — nothing ran, make it a contract file (or use
 CONCURRENTLY) · 16 an expand CREATE INDEX CONCURRENTLY left a missing or INVALID index —
@@ -133,6 +136,12 @@ a non-volatile default, or a non-unique index). It runs with statement_timeout 3
 the job-table idle wait (it still waits for an open wave when it names a hot table, Q5), is size-checked before any
 statement (exit 15) and, for a CIC file, index-validity-checked before its registration (exit 16). The static lint
 (expand_lint) refuses what the text shows; no header = contract, DB Migrate behaves exactly as before.
+M2b: a transactional expand file is one BEGIN … COMMIT block; between them the runner snapshots the catalog of every
+non-system schema and the transaction's row counters before and after the body (expand_snapshot) and diffs them
+(expand_findings): anything outside the allowed set is ROLLBACK + exit 14. A CIC file gets the same diff before its
+registration. In check mode a transactional expand file is rehearsed: the body and the post-check run, then ROLLBACK
+(it takes the apply lock, since its statements run). db/expand_check.py --classify runs the same code on a replayed
+CI PostgreSQL.
 
 Local, no database and no asyncpg needed (CI lint and the DB Migrate "Validate input" step):
   python3 db/run_migration.py --inspect db/migrations/cis/230_x.sql
@@ -1091,6 +1100,10 @@ def expand_lint(sql: str, d: "Directives", owner_dir: str = None) -> list:
     if owner_dir not in OWNER_DIRS:
         errors.append(f"`-- migrate: expand` is only for owner dirs ({', '.join(sorted(OWNER_DIRS))}); "
                       f"{owner_dir or 'this path'} files are applied by hand")
+    if not d.no_transaction and transaction_parts(sql)[3]:
+        # M2b: the runtime post-check runs between the file's BEGIN and COMMIT, so it needs exactly that shape.
+        errors.append(f"an expand file is one BEGIN … COMMIT block (the post-check runs inside it): "
+                      f"{transaction_parts(sql)[3]}")
     stmts = split_statements(sql)
     created = _created(stmts)
     grant_roles = OWNER_DIRS[owner_dir].grant_roles if owner_dir in OWNER_DIRS else frozenset()
@@ -1282,6 +1295,296 @@ async def invalid_cic_indexes(conn, stmts: list) -> list:
         if valid is not True:
             bad.append(f"{name} ({'missing' if valid is None else 'INVALID'})")
     return bad
+
+
+# ── AA-993 Phase E slice M2b: the expand runtime post-check (root ADR 0017 d3, exit 14) ──
+# The static lint above refuses what the text shows; this is the authority. Inside the file's own transaction the runner
+# snapshots the catalog of every non-system schema (objects owned by the owner role included: OBJECTS_SQL keys on
+# owners and drops those, so it is not reused) before and after the body, plus the transaction's row counters
+# (pg_stat_xact_user_tables), and diffs them against the allowed set. Anything else rolls the file back with exit 14.
+# The same code runs in check mode as a rehearsal (the body, the post-check, then ROLLBACK) and in db/expand_check.py
+# --classify against a replayed CI PostgreSQL. It lives in this file because DB Migrate ships this one file to the task.
+# owners.yaml expand_rls_schemas (test_owners_registry keeps them equal): a new table there must ENABLE and FORCE RLS.
+# A new table with a tenant_id column needs both in any schema (RLS catalogue rule a).
+EXPAND_RLS_SCHEMAS = ("crm",)
+EXPAND_REGISTRY_TABLE = "shared.schema_versions"      # the file's own registration: the one existing table it writes
+
+
+# One row per object: (kind, key, rel, value, aux). `value` is what must not change on an existing object (fields
+# joined by '|', names in EXPAND_FIELDS), `rel` the relation a column / index / constraint / policy / trigger / rule
+# belongs to, `aux` what the allowed-change rules read. Definitions are md5'd: a changed view or function shows as a
+# changed hash. Every pg_get_*def call depends on search_path, so expand_snapshot pins it around the query.
+def _fields(*exprs: str) -> str:
+    """SQL text joining the expressions with '|' (NULL as ''), so every field keeps its position (concat_ws would
+    drop NULLs and shift the names of EXPAND_FIELDS)."""
+    return "pg_catalog.array_to_string(ARRAY[" + ", ".join(f"({e})::text" for e in exprs) + "], '|', '')"
+
+
+EXPAND_SNAPSHOT_SQL = f"""
+WITH ns AS (
+  SELECT n.oid, n.nspname::text AS nsp FROM pg_catalog.pg_namespace n
+   WHERE n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname !~ '^pg_(toast|temp_)'),
+rel AS (
+  SELECT c.oid, ns.nsp || '.' || c.relname::text AS name FROM pg_catalog.pg_class c JOIN ns ON ns.oid = c.relnamespace)
+SELECT 'schema'::text AS kind, ns.nsp AS key, NULL::text AS rel,
+       {_fields("pg_catalog.pg_get_userbyid(n.nspowner)", "n.nspacl")} AS value, NULL::text AS aux
+  FROM ns JOIN pg_catalog.pg_namespace n ON n.oid = ns.oid
+UNION ALL
+SELECT 'relation', r.name, r.name,
+       {_fields("c.relkind", "pg_catalog.pg_get_userbyid(c.relowner)", "c.relacl", "c.relrowsecurity",
+                "c.relforcerowsecurity", "c.relfilenode", "c.reloptions", "c.relpersistence", "c.relispartition",
+                "SELECT pg_catalog.concat_ws(',', s.seqtypid, s.seqincrement, s.seqmin, s.seqmax, s.seqstart, "
+                "s.seqcycle) FROM pg_catalog.pg_sequence s WHERE s.seqrelid = c.oid",
+                "CASE WHEN c.relkind IN ('v', 'm') THEN pg_catalog.md5(pg_catalog.pg_get_viewdef(c.oid)) END")},
+       {_fields("c.relkind", "c.relrowsecurity", "c.relforcerowsecurity",
+                "EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid = c.oid "
+                "AND a.attname = 'tenant_id' AND NOT a.attisdropped)",
+                "SELECT p.name FROM pg_catalog.pg_inherits i JOIN rel p ON p.oid = i.inhparent "
+                "WHERE i.inhrelid = c.oid ORDER BY p.name LIMIT 1")}
+  FROM rel r JOIN pg_catalog.pg_class c ON c.oid = r.oid WHERE c.relkind IN ('r', 'p', 'v', 'm', 'S', 'f', 'c')
+UNION ALL
+SELECT 'column', r.name || '.' || a.attname::text, r.name,
+       {_fields("pg_catalog.format_type(a.atttypid, a.atttypmod)", "a.attnotnull",
+                "pg_catalog.md5(pg_catalog.pg_get_expr(d.adbin, d.adrelid))", "a.attgenerated", "a.attidentity",
+                "a.attcollation", "a.attacl")},
+       {_fields("a.attnotnull", "d.adbin IS NOT NULL", "a.attgenerated <> ''", "a.attidentity <> ''")}
+  FROM rel r JOIN pg_catalog.pg_class c ON c.oid = r.oid
+  JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+  LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+ WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f', 'c')
+UNION ALL
+SELECT 'index', ir.name, tr.name,
+       {_fields("pg_catalog.md5(pg_catalog.pg_get_indexdef(i.indexrelid))", "i.indisunique", "i.indisprimary",
+                "i.indisexclusion")},
+       (i.indisunique OR i.indisprimary OR i.indisexclusion)::text
+  FROM pg_catalog.pg_index i JOIN rel ir ON ir.oid = i.indexrelid JOIN rel tr ON tr.oid = i.indrelid
+UNION ALL
+SELECT 'constraint', COALESCE(tr.name, ns.nsp || '.' || t.typname::text) || ':' || co.conname::text,
+       COALESCE(tr.name, ns.nsp || '.' || t.typname::text),
+       {_fields("co.contype", "pg_catalog.md5(pg_catalog.pg_get_constraintdef(co.oid))", "co.convalidated",
+                "co.condeferrable", "co.condeferred")},
+       co.contype::text
+  FROM pg_catalog.pg_constraint co JOIN ns ON ns.oid = co.connamespace
+  LEFT JOIN rel tr ON tr.oid = co.conrelid LEFT JOIN pg_catalog.pg_type t ON t.oid = co.contypid
+ WHERE co.conrelid <> 0 OR co.contypid <> 0
+UNION ALL
+SELECT 'policy', r.name || ':' || p.polname::text, r.name,
+       {_fields("p.polcmd", "p.polpermissive", "p.polroles",
+                "pg_catalog.md5(pg_catalog.pg_get_expr(p.polqual, p.polrelid))",
+                "pg_catalog.md5(pg_catalog.pg_get_expr(p.polwithcheck, p.polrelid))")},
+       NULL
+  FROM pg_catalog.pg_policy p JOIN rel r ON r.oid = p.polrelid
+UNION ALL
+SELECT 'trigger', r.name || ':' || t.tgname::text, r.name,
+       {_fields("pg_catalog.md5(pg_catalog.pg_get_triggerdef(t.oid))", "t.tgenabled")}, NULL
+  FROM pg_catalog.pg_trigger t JOIN rel r ON r.oid = t.tgrelid WHERE NOT t.tgisinternal
+UNION ALL
+SELECT 'rule', r.name || ':' || w.rulename::text, r.name, pg_catalog.md5(pg_catalog.pg_get_ruledef(w.oid)), NULL
+  FROM pg_catalog.pg_rewrite w JOIN rel r ON r.oid = w.ev_class WHERE w.rulename <> '_RETURN'
+UNION ALL
+SELECT 'function',
+       ns.nsp || '.' || p.proname::text || '(' || pg_catalog.pg_get_function_identity_arguments(p.oid) || ')', NULL,
+       {_fields("pg_catalog.pg_get_userbyid(p.proowner)", "p.proacl",
+                "pg_catalog.md5(CASE WHEN p.prokind = 'a' THEN p.prosrc ELSE pg_catalog.pg_get_functiondef(p.oid) END)",
+                "p.prosecdef", "p.proconfig", "p.provolatile", "p.proleakproof")},
+       ns.nsp || '.' || p.proname::text
+  FROM pg_catalog.pg_proc p JOIN ns ON ns.oid = p.pronamespace
+UNION ALL
+SELECT 'type', ns.nsp || '.' || t.typname::text, NULL,
+       {_fields("t.typtype", "pg_catalog.pg_get_userbyid(t.typowner)", "t.typacl", "t.typbasetype", "t.typnotnull",
+                "pg_catalog.md5(t.typdefault)",
+                "SELECT pg_catalog.string_agg(e.enumlabel::text, ',' ORDER BY e.enumsortorder) "
+                "FROM pg_catalog.pg_enum e WHERE e.enumtypid = t.oid")},
+       NULL
+  FROM pg_catalog.pg_type t JOIN ns ON ns.oid = t.typnamespace WHERE t.typrelid = 0 AND t.typcategory <> 'A'
+UNION ALL
+SELECT 'default privileges',
+       'for ' || pg_catalog.pg_get_userbyid(d.defaclrole) || ' in ' || COALESCE(n.nspname::text, '(all schemas)')
+         || ' on ' || d.defaclobjtype::text,
+       NULL, d.defaclacl::text, NULL
+  FROM pg_catalog.pg_default_acl d LEFT JOIN pg_catalog.pg_namespace n ON n.oid = d.defaclnamespace
+UNION ALL
+SELECT 'rows', s.schemaname::text || '.' || s.relname::text, s.schemaname::text || '.' || s.relname::text,
+       {_fields("s.n_tup_ins", "s.n_tup_upd", "s.n_tup_del")}, NULL
+  FROM pg_catalog.pg_stat_xact_user_tables s
+"""
+EXPAND_FIELDS = {
+    "schema": ("owner", "grants"),
+    "relation": ("kind", "owner", "grants", "RLS enabled", "RLS forced", "storage (relfilenode: a table rewrite)",
+                 "options", "persistence", "partition flag", "sequence parameters", "view definition"),
+    "column": ("type", "NOT NULL", "default", "generated", "identity", "collation", "column grants"),
+    "index": ("definition", "unique", "primary", "exclusion"),
+    "constraint": ("type", "definition", "validated", "deferrable", "deferred"),
+    "policy": ("command", "permissive", "roles", "USING", "WITH CHECK"),
+    "trigger": ("definition", "enabled"),
+    "rule": ("definition",),
+    "function": ("owner", "grants", "definition", "security definer", "settings", "volatility", "leakproof"),
+    "type": ("type", "owner", "grants", "base type", "NOT NULL", "default", "enum labels"),
+    "default privileges": ("grants",),
+}
+SEARCH_PATH_GET_SQL = "SELECT pg_catalog.current_setting('search_path')"
+SEARCH_PATH_SET_SQL = "SELECT pg_catalog.set_config('search_path', $1, $2)"
+EXPAND_PINNED_PATH = "pg_catalog, pg_temp"
+
+
+async def expand_snapshot(conn, in_transaction: bool = True) -> list:
+    """The catalog rows of EXPAND_SNAPSHOT_SQL as plain dicts, read with a pinned search_path (the pg_get_*def output
+    qualifies names by it) and the caller's search_path put back after."""
+    old = await conn.fetchval(SEARCH_PATH_GET_SQL)
+    await conn.fetchval(SEARCH_PATH_SET_SQL, EXPAND_PINNED_PATH, in_transaction)
+    try:
+        return [{k: r[k] for k in ("kind", "key", "rel", "value", "aux")}
+                for r in await conn.fetch(EXPAND_SNAPSHOT_SQL)]
+    finally:
+        if old is not None:
+            await conn.fetchval(SEARCH_PATH_SET_SQL, old, in_transaction)
+
+
+def _changed_fields(kind: str, old: str, new: str) -> str:
+    names = EXPAND_FIELDS.get(kind, ())
+    a, b = (old or "").split("|"), (new or "").split("|")
+    if len(a) != len(b) or len(a) != len(names):
+        return "definition"
+    return ", ".join(n for n, x, y in zip(names, a, b) if x != y) or "definition"
+
+
+def _flag(aux: str, i: int) -> bool:
+    parts = (aux or "").split("|")
+    return len(parts) > i and parts[i] in ("true", "t")
+
+
+def _rows(value: str) -> tuple:
+    try:
+        return tuple(int(x) for x in (value or "0|0|0").split("|"))
+    except ValueError:
+        return (0, 0, 0)
+
+
+def expand_findings(before: list, after: list, hot_tables=EXPAND_HOT_TABLES, hot_schemas=EXPAND_HOT_SCHEMAS,
+                    rls_schemas=EXPAND_RLS_SCHEMAS, registry=EXPAND_REGISTRY_TABLE) -> list:
+    """Pure: what an expand file changed outside the allowed set (ADR 0017 d3), as sorted one-line findings naming
+    the object. `before` / `after` are expand_snapshot() rows taken around the body, inside its transaction.
+
+    Allowed: new objects (schemas, tables, views, sequences, types, functions that are neither an overload nor
+    SECURITY DEFINER, indexes, constraints / policies / triggers on new tables); on an existing table a new column that
+    is nullable or has a
+    default and is neither generated nor identity (a volatile default rewrites the table and shows as a changed
+    relfilenode), a non-unique index, and the internal RI triggers a new table's FK adds (not snapshotted); rows
+    written to tables the file creates and at most one row inserted into the registry
+    (shared.schema_versions: its own registration; no update or delete there). Everything else
+    is contract: any change to or removal of an existing object, a new policy / trigger / constraint / rule / unique
+    index on an existing table, an overload, a new SECURITY DEFINER function, a new partition of an existing table, default privileges, a new
+    column on a hot table, anything new in a hot schema, a new table that needs RLS without ENABLE + FORCE, and rows
+    inserted, updated or deleted in an existing table."""
+    b = {(r["kind"], r["key"]): r for r in before}
+    a = {(r["kind"], r["key"]): r for r in after}
+    old_rels = {key: r for (kind, key), r in b.items() if kind == "relation"}
+    old_types = {key for (kind, key) in b if kind == "type"}
+    old_fn_names = {r["aux"] for (kind, _), r in b.items() if kind == "function"}
+    hot = {t.lower() for t in hot_tables}
+    hot_ns = {s.lower() for s in hot_schemas}
+
+    def is_hot(name: str) -> bool:
+        return bool(name) and (name.lower() in hot or name.split(".", 1)[0].lower() in hot_ns)
+
+    found = []
+    for (kind, key), r in b.items():
+        if kind == "rows":
+            continue
+        now = a.get((kind, key))
+        if now is None:
+            found.append(f"{kind} {key}: dropped or renamed")
+        elif now["value"] != r["value"]:
+            found.append(f"{kind} {key}: {_changed_fields(kind, r['value'], now['value'])} changed")
+    for (kind, key), r in a.items():
+        rel = r["rel"] or ""
+        if kind == "rows":
+            delta = [x - y for x, y in zip(_rows(r["value"]), _rows((b.get((kind, key)) or {}).get("value")))]
+            if rel == registry:
+                # Review S256: the expand lint skips the registration statement, so a CTE there (WITH d AS (DELETE
+                # FROM shared.schema_versions …) INSERT …) could unregister another key; the file adds its own row.
+                if delta[0] > 1 or delta[1] or delta[2]:
+                    found.append(f"rows of the registry {rel}: {delta[0]} inserted, {delta[1]} updated, "
+                                 f"{delta[2]} deleted (an expand file only inserts its own registration)")
+            elif rel in old_rels:
+                if any(delta):
+                    found.append(f"rows of existing table {rel}: {delta[0]} inserted, {delta[1]} updated, "
+                                 f"{delta[2]} deleted (config and routing rows included: contract)")
+            continue
+        if (kind, key) in b:
+            continue
+        on_old = rel in old_rels
+        if kind == "column" and on_old:
+            relkind = (old_rels[rel]["aux"] or "").split("|")[0]
+            if relkind not in ("r", "p"):
+                found.append(f"column {key}: added to an existing {relkind or '?'}-kind relation (not a table)")
+            elif is_hot(rel):
+                found.append(f"column {key}: added to hot table {rel} (running code reads it with SELECT * / "
+                             f"RETURNING *: owners.yaml expand_hot_tables)")
+            elif _flag(r["aux"], 2) or _flag(r["aux"], 3):
+                found.append(f"column {key}: generated or identity column on an existing table")
+            elif _flag(r["aux"], 0) and not _flag(r["aux"], 1):
+                found.append(f"column {key}: NOT NULL without a default on an existing table")
+        elif kind == "index" and on_old:
+            if r["aux"] in ("true", "t"):
+                found.append(f"index {key}: unique / primary / exclusion index on existing table {rel}")
+        elif kind in ("constraint", "policy", "trigger", "rule") and (on_old or (kind == "constraint"
+                                                                                 and rel in old_types)):
+            found.append(f"{kind} {key}: new {kind} on existing {'table' if on_old else 'type'} {rel}")
+        elif kind == "function" and r["aux"] in old_fn_names:
+            found.append(f"function {key}: overload of an existing function name {r['aux']}")
+        elif kind == "function" and _flag(r["value"], 3):
+            # Review S256: a new SECURITY DEFINER function runs with its owner's rights (the owner role's own RLS
+            # policy, e.g. USING (true)) and EXECUTE is granted to PUBLIC by default: an RLS bypass needs a review.
+            found.append(f"function {key}: new SECURITY DEFINER function (runs with its owner's rights; EXECUTE is "
+                         f"PUBLIC by default): contract")
+        elif kind == "default privileges":
+            found.append(f"default privileges {key}: added (ALTER DEFAULT PRIVILEGES)")
+        elif kind == "relation":
+            aux = (r["aux"] or "").split("|")
+            relkind, parent = aux[0], (aux[4] if len(aux) > 4 else "")
+            if is_hot(key):
+                found.append(f"relation {key}: new object in hot schema {key.split('.', 1)[0]} (catalog recipe)")
+            elif parent and parent in old_rels:
+                found.append(f"relation {key}: new partition or child of existing table {parent}")
+            elif relkind in ("r", "p") and not parent and (key.split(".", 1)[0] in rls_schemas or _flag(r["aux"], 3)) \
+                    and not (_flag(r["aux"], 1) and _flag(r["aux"], 2)):
+                why = "has a tenant_id column" if _flag(r["aux"], 3) else "in an RLS schema (expand_rls_schemas)"
+                found.append(f"relation {key}: new table {why} without ENABLE and FORCE ROW LEVEL SECURITY")
+        elif kind in ("index", "constraint", "policy", "trigger", "rule", "column") and is_hot(rel):
+            found.append(f"{kind} {key}: new object in hot schema (catalog recipe)")
+    return sorted(set(found))
+
+
+def _log_expand(found: list, rehearse: bool) -> None:
+    shown = found[:40]
+    more = f" (+{len(found) - len(shown)} more)" if len(found) > len(shown) else ""
+    log(f"ERROR: expand file changed an existing object: {'; '.join(shown)}{more}. "
+        f"{'Rehearsal rolled back' if rehearse else 'Rolled back, the version is NOT registered'}: drop the "
+        f"`-- migrate: expand` header (contract: migration-only PR, manual DB Migrate apply) or change the file")
+
+
+async def run_expand_transaction(conn, sql: str, rehearse: bool = False, report: list = None) -> int:
+    """Plain path (no role switch) of a transactional expand file: the file's BEGIN, snapshot, body, snapshot,
+    post-check, then its COMMIT, or ROLLBACK with exit 14. rehearse=True always rolls back (check mode, classify)."""
+    begin, body, commit, _ = transaction_parts(sql)
+    await conn.execute(begin.text)
+    before = await expand_snapshot(conn)
+    if body:
+        await conn.execute("\n".join(s.text for s in body))
+    found = expand_findings(before, await expand_snapshot(conn))
+    if report is not None:
+        report.extend(found)
+    if found or rehearse:
+        await conn.execute("ROLLBACK")
+        if found:
+            _log_expand(found, rehearse)
+            return 14
+        log("expand rehearsal: post-check ok (no existing object changed), rolled back")
+        return 0
+    log("expand post-check: ok (no existing object changed)")
+    await conn.execute(commit.text)
+    return 0
 
 
 # One session-level advisory lock for every applying mode (apply, roles/ files, set-password, run-script that is not
@@ -1606,8 +1909,13 @@ def _log_invalid_cic(bad: list) -> None:
         f"(DROP INDEX CONCURRENTLY IF EXISTS <name>, a run-script or a follow-up file) and re-run the file")
 
 
-async def run_switched(conn, sql: str, d: Directives, plan: RolePlan, owner_dir: str) -> int:
+async def run_switched(conn, sql: str, d: Directives, plan: RolePlan, owner_dir: str, rehearse: bool = False,
+                       report: list = None) -> int:
     """Runs the file as plan.run_as; returns 0, or 9 when the ownership post-check fails.
+
+    An expand file (AA-993 M2b) also gets the expand post-check (expand_findings) inside the same transaction, after
+    the ownership post-check: a finding rolls back and returns 14 (findings appended to `report` when given).
+    rehearse=True (check mode, classify; transactional files only) rolls back even when every check passes.
 
     Transactional file: BEGIN, snapshot, SET LOCAL ROLE, the body, then — owner still current —
     SET CONSTRAINTS ALL IMMEDIATE + CLOSE ALL (deferred triggers and WITH HOLD cursors would run at
@@ -1622,6 +1930,7 @@ async def run_switched(conn, sql: str, d: Directives, plan: RolePlan, owner_dir:
     if d.no_transaction:
         stmts = split_statements(sql)
         before = await object_snapshot(conn, plan)
+        xbefore = await expand_snapshot(conn, in_transaction=False) if d.expand else None
         await conn.execute(f"SET ROLE {role}")
         for k, s in enumerate(stmts[:-1], 1):
             log(f"statement {k}/{len(stmts)} (line {s.line}) …")
@@ -1632,6 +1941,12 @@ async def run_switched(conn, sql: str, d: Directives, plan: RolePlan, owner_dir:
             if bad:
                 _log_invalid_cic(bad)
                 return 16
+            found = expand_findings(xbefore, await expand_snapshot(conn, in_transaction=False))
+            if report is not None:
+                report.extend(found)
+            if found:
+                _log_expand(found, False)
+                return 14
         log(f"statement {len(stmts)}/{len(stmts)} (line {stmts[-1].line}) … (registration, as {plan.run_as}, "
             f"in a transaction with the post-check)")
         await conn.execute("BEGIN")
@@ -1651,6 +1966,7 @@ async def run_switched(conn, sql: str, d: Directives, plan: RolePlan, owner_dir:
         begin, body, commit, _ = transaction_parts(sql)
         await conn.execute(begin.text)
         before = await object_snapshot(conn, plan)
+        xbefore = await expand_snapshot(conn) if d.expand else None
         await conn.execute(f"SET LOCAL ROLE {role}")
         if body:
             await conn.execute("\n".join(s.text for s in body))
@@ -1661,6 +1977,22 @@ async def run_switched(conn, sql: str, d: Directives, plan: RolePlan, owner_dir:
                 f"Rolled back. A RESET ROLE or SET ROLE back to the login role inside the file is the usual cause "
                 f"(use SET LOCAL ROLE {plan.run_as}); roles and memberships belong in roles/")
             return 9
+        if d.expand:
+            found = expand_findings(xbefore, await expand_snapshot(conn))
+            if report is not None:
+                report.extend(found)
+            if found or rehearse:
+                await conn.execute("ROLLBACK")
+                if found:
+                    _log_expand(found, rehearse)
+                    return 14
+                log(f"expand rehearsal: post-check ok (ran as {plan.run_as}; no existing object changed), "
+                    f"rolled back")
+                return 0
+            log("expand post-check: ok (no existing object changed)")
+        elif rehearse:
+            await conn.execute("ROLLBACK")
+            return 0
         await conn.execute(commit.text)
     late = await _post_commit_findings(conn, before, plan, owner_dir)
     if late:
@@ -2144,6 +2476,51 @@ async def _connect(dsn: str, settings: dict, ssl=None):
     return await asyncpg.connect(dsn, timeout=30, server_settings=settings, **extra)
 
 
+async def execute_file(conn, sql: str, d: "Directives", plan: "RolePlan", owner_dir: str,
+                       rehearse: bool = False, report: list = None) -> int:
+    """Runs the file's statements the way apply does (role switch, no-transaction, plain); 0 or an exit code. An
+    expand file gets the M2b post-check (exit 14); rehearse=True (expand, transactional) always rolls back."""
+    try:
+        if plan.switch:
+            return await run_switched(conn, sql, d, plan, owner_dir, rehearse=rehearse, report=report)
+        if d.expand and not d.no_transaction:
+            return await run_expand_transaction(conn, sql, rehearse=rehearse, report=report)
+        if d.no_transaction:
+            stmts = split_statements(sql)
+            xbefore = await expand_snapshot(conn, in_transaction=False) if d.expand else None
+            for k, s in enumerate(stmts, 1):
+                if d.expand and k == len(stmts):
+                    bad = await invalid_cic_indexes(conn, stmts[:-1])
+                    if bad:
+                        _log_invalid_cic(bad)
+                        return 16
+                    found = expand_findings(xbefore, await expand_snapshot(conn, in_transaction=False))
+                    if report is not None:
+                        report.extend(found)
+                    if found:
+                        _log_expand(found, False)
+                        return 14
+                log(f"statement {k}/{len(stmts)} (line {s.line}) …")
+                await conn.execute(s.text)          # one statement per message: autocommit
+        else:
+            await conn.execute(sql)                 # simple protocol: the file's own BEGIN/COMMIT
+        return 0
+    except Exception as e:                          # asyncpg.PostgresError and friends
+        state = getattr(e, "sqlstate", "") or ""
+        log(f"ERROR: {type(e).__name__} {state} {e}")
+        if state == "55P03":
+            log(f"hint: lock_timeout ({d.settings['lock_timeout']}) hit — a job or session holds a lock "
+                f"on the table. Retry when shared.job / booking.job are idle; raise it only with "
+                f"`-- migrate: lock_timeout=…`")
+        elif state == "57014":
+            log(f"hint: statement_timeout ({d.settings['statement_timeout']}) hit — raise it with "
+                f"`-- migrate: statement_timeout=…` if the statement is expected to be slow")
+        if d.no_transaction:
+            log("hint: no-transaction file stopped half way; statements before it are committed. "
+                "A failed CREATE INDEX CONCURRENTLY leaves an INVALID index: drop it before the retry")
+        return 6
+
+
 async def run_task(env=None, fetch=_fetch, connect=_connect, sleep=asyncio.sleep, get_secret=_get_secret) -> int:
     env = os.environ if env is None else env
     try:
@@ -2204,8 +2581,12 @@ async def run_task(env=None, fetch=_fetch, connect=_connect, sleep=asyncio.sleep
             log(f"ERROR: role: {reach_error}")
             return 8
         log(f"ran as: {plan.run_as}{' (check mode: the role apply uses)' if mode != 'apply' else ''} — {plan.why}")
-        if d.expand and await conn.fetchval("SELECT applied_at FROM shared.schema_versions WHERE version = $1",
-                                            version):
+        expand_applied = d.expand and await conn.fetchval(
+            "SELECT applied_at FROM shared.schema_versions WHERE version = $1", version)
+        # AA-993 M2b: check mode rehearses a transactional expand file (body + post-check, then ROLLBACK), so a check
+        # predicts exit 14 too. It runs the statements, so it takes the apply lock like apply does.
+        rehearse = mode != "apply" and d.expand and not d.no_transaction and not expand_applied
+        if expand_applied:
             log("expand: version already registered, lock-risk check skipped")
         elif d.expand:
             # ADR 0017 d4: sizes are read before any statement (check mode too, so a check predicts the apply).
@@ -2216,7 +2597,8 @@ async def run_task(env=None, fetch=_fetch, connect=_connect, sleep=asyncio.sleep
                 return 15
             log(f"expand: lock-risk check ok ({len(lock_risk_targets(sql, d))} existing table(s) locked, each "
                 f"<= {EXPAND_MAX_ROWS} rows); statement_timeout {d.settings['statement_timeout']}")
-        if mode == "apply" and not await take_apply_lock(conn, sleep, f"apply {file}"):
+        if (mode == "apply" or rehearse) and not await take_apply_lock(
+                conn, sleep, f"{'apply' if mode == 'apply' else 'expand rehearsal'} {file}"):
             return 17
         latest = await conn.fetchval(
             "SELECT version FROM shared.schema_versions WHERE version ~ $1 ORDER BY version DESC LIMIT 1",
@@ -2229,6 +2611,12 @@ async def run_task(env=None, fetch=_fetch, connect=_connect, sleep=asyncio.sleep
         if mode != "apply":
             if override:
                 log("note: the idle-check override only applies to mode=apply")
+            if rehearse:
+                log("expand rehearsal: the body runs in a transaction that is rolled back (check mode) …")
+                return await execute_file(conn, sql, d, plan, owner_dir, rehearse=True)
+            if d.expand and d.no_transaction and not expand_applied:
+                log("expand: no rehearsal for a CREATE INDEX CONCURRENTLY file (it cannot run in a transaction); "
+                    "apply checks it before the registration")
             return 0
         if applied:
             log("skip: already applied")
@@ -2266,37 +2654,9 @@ async def run_task(env=None, fetch=_fetch, connect=_connect, sleep=asyncio.sleep
                     "(MIGRATION_SNAPSHOT is empty) — run it through db-migrate.yml")
                 return 5
             log(f"snapshot taken before apply: {snapshot}")
-        try:
-            if plan.switch:
-                code = await run_switched(conn, sql, d, plan, owner_dir)
-                if code:
-                    return code
-            elif d.no_transaction:
-                stmts = split_statements(sql)
-                for k, s in enumerate(stmts, 1):
-                    if d.expand and k == len(stmts):
-                        bad = await invalid_cic_indexes(conn, stmts[:-1])
-                        if bad:
-                            _log_invalid_cic(bad)
-                            return 16
-                    log(f"statement {k}/{len(stmts)} (line {s.line}) …")
-                    await conn.execute(s.text)          # one statement per message: autocommit
-            else:
-                await conn.execute(sql)                 # simple protocol: the file's own BEGIN/COMMIT
-        except Exception as e:                          # asyncpg.PostgresError and friends
-            state = getattr(e, "sqlstate", "") or ""
-            log(f"ERROR: {type(e).__name__} {state} {e}")
-            if state == "55P03":
-                log(f"hint: lock_timeout ({d.settings['lock_timeout']}) hit — a job or session holds a lock "
-                    f"on the table. Retry when shared.job / booking.job are idle; raise it only with "
-                    f"`-- migrate: lock_timeout=…`")
-            elif state == "57014":
-                log(f"hint: statement_timeout ({d.settings['statement_timeout']}) hit — raise it with "
-                    f"`-- migrate: statement_timeout=…` if the statement is expected to be slow")
-            if d.no_transaction:
-                log("hint: no-transaction file stopped half way; statements before it are committed. "
-                    "A failed CREATE INDEX CONCURRENTLY leaves an INVALID index: drop it before the retry")
-            return 6
+        code = await execute_file(conn, sql, d, plan, owner_dir)
+        if code:
+            return code
         applied = await conn.fetchval("SELECT applied_at FROM shared.schema_versions WHERE version = $1", version)
         if not applied:
             log("ERROR: file ran but did not register its version in shared.schema_versions")

@@ -52,6 +52,10 @@ name: DB Migrate (shared RDS)
 # READ_ONLY) takes one session advisory lock, so this workflow and the coming auto-apply never overlap.
 # Exit 15 = expand lock risk (nothing ran), 16 = expand CIC left a missing/INVALID index (not registered),
 # 17 = the apply lock stayed taken by another run (nothing ran). Files without the header behave as before.
+# AA-993 M2b: inside its transaction an expand file's catalog is diffed before / after the body (every non-system
+# schema, objects of the owner role included, and the transaction's row counters): a change outside the allowed set
+# is rolled back, exit 14. `check` rehearses a transactional expand file (body + post-check, then ROLLBACK; it takes
+# the apply lock), so a check predicts exit 14 as well.
 on:
   workflow_dispatch:
     inputs:
@@ -355,6 +359,10 @@ jobs:
           fi
           if [ "$EXIT" = "13" ]; then
             echo "::error::run-script: the script raised or returned non-zero (see its output above and the MIGRATE ERROR line)"
+            exit 1
+          fi
+          if [ "$EXIT" = "14" ]; then
+            echo "::error::expand: the post-check found a change to an existing object (each one named in the MIGRATE ERROR line). Rolled back, the version is NOT registered. Change the file, or drop the expand header and ship it as a contract file (migration-only PR, manual apply)"
             exit 1
           fi
           if [ "$EXIT" = "15" ]; then
