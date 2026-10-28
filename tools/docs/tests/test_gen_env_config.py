@@ -131,7 +131,6 @@ def _aws_model() -> dict:
 def _vercel_model() -> dict:
     projects = {p: ec.extract_vercel_api(VERCEL_API_ENVS) for p in ec.REQUIRED_VERCEL if p != "aa-booking-admin"}
     projects["aa-booking-admin"] = ec.parse_vercel_cli(VERCEL_CLI_TEXT)
-    projects["aa-cis-portal"] = []
     return {"format": 1, "source": "snapshot", "captured": "2026-10-22", "projects": projects}
 
 
@@ -270,7 +269,7 @@ class Render(unittest.TestCase):
         for h in ("## CIS", "## Booking", "## TripPlanner", "## Identity (Cognito triggers)",
                   "### ECS service `aa-cis-dev-api`", "### ECS service `aa-cis-dev-worker`",
                   "### ECS service `aa-booking-dev-api`", "### Lambda `aa-tripplanner-dev-browse`",
-                  "### Vercel project `aa-cis-portal`", "### Vercel project `aa-booking-admin`"):
+                  "### Vercel project `aa-tripplanner`", "### Vercel project `aa-booking-admin`"):
             self.assertIn(h, self.page)
         self.assertLess(self.page.index("## CIS"), self.page.index("## Booking"))
 

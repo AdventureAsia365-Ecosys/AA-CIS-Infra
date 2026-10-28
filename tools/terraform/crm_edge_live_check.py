@@ -8,15 +8,15 @@ at $0.
   python3 tools/terraform/crm_edge_live_check.py --cf-domain <distribution>.cloudfront.net
 
 Checks (exit 1 if any fails):
-  partner-root   https://<partner host>/        the CRM web (crm_partner_default -> aa-crm-dev-web): 307 to
-                                                /auth/refresh (no session), or 503 = the rule matched but the web has
-                                                no healthy task (desired 0): reported, not failed. Never the old fixed
-                                                404 JSON, never the API (proves CloudFront -> VPC origin -> NLB -> ALB
+  partner-root   https://<partner host>/        AA-979 clean-up: 301 to https://<agency host>/ (the partner
+                                                distribution's CloudFront Function, crm_edge.tf)
+  partner-path   https://<partner host>/crmx?x=1   301 to https://<agency host>/crmx?x=1: /crmx is not /crm or /crm/*,
+                                                so it moves too, with its query
+  partner-healthz https://<partner host>/healthz  301 to https://<agency host>/healthz (the web lives there now)
+  crm-health     https://<partner host>/crm/health   200 = the API answers (crm_api rule, NOT redirected); 503 = the
+                                                rule matched but aa-crm-dev-api has no healthy task (desired 0):
+                                                reported, not failed (proves CloudFront -> VPC origin -> NLB -> ALB
                                                 host + secret rule)
-  partner-path   https://<partner host>/crmx    the same: /crmx is not /crm or /crm/*, so the web, not the API
-  web-healthz    https://<partner host>/healthz 200 {"service": "aa-crm-web"} or 503 (no healthy web task)
-  crm-health     https://<partner host>/crm/health   200 = the API answers (crm_api rule); 503 = the rule matched but
-                                                aa-crm-dev-api has no healthy task (desired 0): reported, not failed
   client-root    https://<client host>/         AA-936: the CRM web off /c/* (crm_client_default): its 404 page (not
                                                 JSON), or 503 = no healthy web task (reported, not failed)
   client-public  https://<client host>/crm/public/v1/forms/short   AA-936: the CRM API (crm_client_public): 422 JSON
@@ -29,13 +29,14 @@ Checks (exit 1 if any fails):
   api-plain      https://<api host>/health      200 (CIS unchanged)
   booking        https://<booking host>/booking/health   200 (Booking unchanged)
 
-AA-979 (CRM-P2b), only with --agency-cf-domain: the agency host portal.<zone> on its OWN distribution. Before the
-cutover portal. still resolves to Vercel, so these checks connect to the distribution's *.cloudfront.net name and send
-SNI + Host = the agency host (the `curl --resolve` of the runbook, without a DNS change); after the cutover pass the
-same flag, or --agency-direct to go through DNS.
+AA-979 (CRM-P2b), only with --agency-cf-domain: the agency host portal.<zone> on its OWN distribution. The checks
+connect to the distribution's *.cloudfront.net name and send SNI + Host = the agency host (the `curl --resolve` of the
+runbook); pass --agency-direct to go through DNS (portal. points at the distribution since the S253 cutover).
   agency-root     https://<agency host>/              the CRM web (crm_agency_default): 307 to /auth/refresh, or 503
-  agency-studio   https://<agency host>/tenant-login  the Content studio (crm_agency_studio): 200 HTML page, or 503
-                                                     (aa-crm-dev-portal at desired 0); never the web's 404 page
+  agency-healthz  https://<agency host>/healthz       200 {"service": "aa-crm-web"} or 503 (no healthy web task)
+  agency-studio   https://<agency host>/tenant-login  the Content studio (crm_agency_studio): since the clean-up 308 to
+                                                     /auth/refresh?next=%2Fportal%2Fdashboard (API-key sign-in off),
+                                                     or 503 (aa-crm-dev-portal at desired 0); never the web's 404 page
   agency-legal    https://<agency host>/terms         the Content studio (crm_agency_studio_x): 200 HTML, or 503
   agency-crm      https://<agency host>/crm/health    the CRM API (crm_agency_api): 200, or 503
   agency-raw-cf   https://<agency cf domain>/         403 "Forbidden" from the deny rule (no Host rule matches)
@@ -150,6 +151,32 @@ def eval_studio_page(status: int, body: bytes, ctype: str, location: str = "") -
     return False, f"status={status} type={ctype or '-'} location={location or '-'} body={body[:60]!r}"
 
 
+def moved_to(agency_host: str, path: str) -> Callable[..., Result]:
+    """AA-979 clean-up: the partner host answers 301 to the same path (and query) on the agency host."""
+    want = f"https://{agency_host}{path}"
+
+    def evaluate(status: int, body: bytes, ctype: str, location: str = "") -> Result:
+        if status == 301 and location == want:
+            return True, f"status=301 -> {location}"
+        return False, f"status={status} location={location or '-'} (expected 301 -> {want})"
+
+    return evaluate
+
+
+def studio_sign_in_gone(agency_host: str) -> Callable[..., Result]:
+    """AA-979 clean-up: /tenant-login on the agency host is the studio's 308 to the CRM web's sign-in."""
+    want = f"https://{agency_host}/auth/refresh?next=%2Fportal%2Fdashboard"
+
+    def evaluate(status: int, body: bytes, ctype: str, location: str = "") -> Result:
+        if status == 308 and location == want:
+            return True, f"status=308 -> {location} (Content studio answers, API-key sign-in off)"
+        if status == 503 and _json(body) is None:
+            return True, "status=503 (rule matched, aa-crm-dev-portal has no healthy task: desired 0?)"
+        return False, f"status={status} location={location or '-'} (expected 308 -> {want})"
+
+    return evaluate
+
+
 def eval_raw_cf(status: int, body: bytes, ctype: str, location: str = "") -> Result:
     return status == 403 and body.strip() == b"Forbidden", f"status={status} body={body[:40]!r}"
 
@@ -168,9 +195,9 @@ def build_checks(args: argparse.Namespace) -> dict[str, Callable[[], Result]]:
         return lambda: evaluate(*get(host, path, headers))
 
     checks = {
-        "partner-root": run(eval_web_default, args.host, "/"),
-        "partner-path": run(eval_web_default, args.host, "/crmx"),
-        "web-healthz": run(eval_web_healthz, args.host, "/healthz"),
+        "partner-root": run(moved_to(args.agency_host, "/"), args.host, "/"),
+        "partner-path": run(moved_to(args.agency_host, "/crmx?x=1"), args.host, "/crmx?x=1"),
+        "partner-healthz": run(moved_to(args.agency_host, "/healthz"), args.host, "/healthz"),
         "crm-health": run(eval_crm_health, args.host, "/crm/health"),
         "client-root": run(eval_client_web_404, args.client_host, "/"),
         "client-public": run(eval_client_public, args.client_host, "/crm/public/v1/forms/short"),
@@ -188,7 +215,8 @@ def build_checks(args: argparse.Namespace) -> dict[str, Callable[[], Result]]:
 
         checks.update({
             "agency-root": agency(eval_web_default, "/"),
-            "agency-studio": agency(eval_studio_page, "/tenant-login"),
+            "agency-healthz": agency(eval_web_healthz, "/healthz"),
+            "agency-studio": agency(studio_sign_in_gone(args.agency_host), "/tenant-login"),
             "agency-legal": agency(eval_studio_page, "/terms"),
             "agency-crm": agency(eval_crm_health, "/crm/health"),
             "agency-raw-cf": run(eval_raw_cf, args.agency_cf_domain, "/"),

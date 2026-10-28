@@ -22,12 +22,13 @@
 #
 # The portal is UI only (ADR 0010 §7): it calls the CIS API server to server (API_URL, egress via the NAT instance),
 # never the crm schema or /crm/*. Its sign-in reads the CRM web's sealed session cookie on the same host (read only)
-# and exchanges the partner-pool access token at CIS POST /auth/tenant-session. During the P2b window the API-key
-# sign-in stays on (PORTAL_API_KEY_SIGNIN, crm_portal_api_key_signin).
+# and exchanges the partner-pool access token at CIS POST /auth/tenant-session. The people-facing API-key sign-in was on
+# during the P2b window and is off since the clean-up (PORTAL_API_KEY_SIGNIN=false, crm_portal_api_key_signin; the
+# studio then answers /tenant-login with 308 to the partner sign-in). Machines keep X-API-Key on the CIS API.
 #
 # Order: this apply (desired 0) -> the AA-Partner portal PR merges -> Deploy Portal Dev pushes the first image ->
-# scale 0 -> 1 -> pre-cutover smoke with --resolve (crm_agency_edge.tf). Nothing here changes what users see while
-# crm_agency_live = false (the portal. CNAME still points at Vercel).
+# scale 0 -> 1 -> pre-cutover smoke with --resolve (crm_agency_edge.tf). The portal. CNAME points at the agency
+# distribution since the S253 cutover.
 #
 # Cost (us-west-1, est., D-19): $0 compute at desired 0; at desired 1 FARGATE_SPOT ARM64 0.25 vCPU / 0.5 GB ~ $2.2/month
 # (on demand ~ $7.2); ECR < $0.05; Sentry DSN secret $0.40; 3 alarms $0.30; logs < $0.10; NAT egress to CIS < $0.10.
@@ -41,9 +42,9 @@ variable "crm_portal_sentry_enabled" {
 }
 
 variable "crm_portal_api_key_signin" {
-  description = "AA-979 (Q3): keep the Content studio's tenant API-key sign-in (/tenant-login) during the P2b window. false at clean-up (P2b + 7 days); machines keep X-API-Key on the CIS API either way."
+  description = "AA-979 (Q3): the Content studio's people-facing tenant API-key sign-in (/tenant-login). It was on during the P2b window only; false since the clean-up (runbook 4.5): /tenant-login answers 308 to the partner sign-in. Machines keep X-API-Key on the CIS API either way."
   type        = bool
-  default     = true
+  default     = false
 }
 
 locals {

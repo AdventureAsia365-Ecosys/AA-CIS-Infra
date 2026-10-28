@@ -13,15 +13,16 @@
 # `/portal*` (no slash) also matches the studio's asset prefix `/portal-assets/...` (Next assetPrefix), so the
 # studio needs two rules within the ALB limit of 5 condition values per rule (host 1 + header 1 + 3 paths).
 #
-# THE CUTOVER SWITCH is var.crm_agency_live and it changes ONE thing: the target of the portal. CNAME (Vercel before,
-# this distribution after). The web answers both partner hosts with a per-host public origin (AA-Partner web), so no
-# ECS deploy, no web / API env change and no crm.job / shared.job gate is part of the cutover or of its rollback
-# (critic C4). Flip = in-place UPSERT of the same CNAME, no delete / create gap; the TTL is 60 s during the window.
+# The portal. CNAME points at this distribution. P2b phase 2 (S253, 27/10/2026) flipped it from the Vercel project
+# aa-cis-portal with a one-off cutover switch; the P2b clean-up (runbook 4.5, S256) removed the switch, the
+# Vercel target (the Vercel project is deleted) and the 60 s window TTL (back to 300 s). The old partner host now
+# answers 301 to this host except /crm/* (crm_edge.tf CloudFront Function).
 #
 # Certificate (critic C1): a WILDCARD *.<zone>, not portal.<zone>. portal. CNAMEs to Vercel today and the CAA lookup
 # follows the CNAME to a set that does not list Amazon, so a portal.-only certificate fails (CAA_ERROR) until the
-# flip; the wildcard is CAA-checked at the zone apex (no CAA record). Attached to this distribution only (Q11); the
-# clean-up may swap it for a portal.-only certificate once the CNAME points here.
+# flip; the wildcard is CAA-checked at the zone apex (no CAA record). Attached to this distribution only (Q11). Kept
+# at the clean-up (the runbook's optional portal.-only certificate): a swap is a certificate replace on a live
+# distribution for no gain on Dev.
 #
 # Cost (est., D-19): distribution and VPC-origin reuse $0 (traffic inside the always-free 1 TB / 10M requests), ACM $0,
 # Route 53 validation record + queries ~ $0, four ALB rules inside the LCU rule allowance (< $0.10/month).
@@ -31,24 +32,6 @@ variable "crm_agency_subdomain" {
   description = "AA-979: label under dns_zone_name of the agency host (CRM + Content studio), ADR 0010 §2."
   type        = string
   default     = "portal"
-}
-
-variable "crm_agency_live" {
-  description = "AA-979 P2b CUTOVER SWITCH: true points the portal. CNAME at the crm_agency CloudFront distribution (Fargate), false at the Vercel project aa-cis-portal (rollback target). Changes the DNS target only (no ECS deploy, no env change)."
-  type        = bool
-  default     = false
-}
-
-variable "crm_agency_vercel_target" {
-  description = "AA-979: the Vercel CNAME target of portal. (project aa-cis-portal; was custom_domain_vercel_hosts.portal). Kept as the rollback target until the P2b clean-up (P2b + 7 days)."
-  type        = string
-  default     = "22ba595c1afe124b.vercel-dns-017.com"
-}
-
-variable "crm_agency_dns_ttl" {
-  description = "AA-979: TTL of the portal. CNAME. 60 s during the P2b window (lowered at least one old TTL, 300 s, before the flip); back to 300 at the clean-up."
-  type        = number
-  default     = 60
 }
 
 locals {
@@ -159,13 +142,13 @@ resource "aws_route53_record" "crm_agency" {
   zone_id = aws_route53_zone.lumiguides.zone_id
   name    = local.crm_agency_host
   type    = "CNAME"
-  ttl     = var.crm_agency_dns_ttl
-  records = [var.crm_agency_live ? aws_cloudfront_distribution.crm_agency[0].domain_name : var.crm_agency_vercel_target]
+  ttl     = 300
+  records = [aws_cloudfront_distribution.crm_agency[0].domain_name]
 
   lifecycle {
     precondition {
-      condition     = !var.crm_agency_live || local.crm_edge_on == 1
-      error_message = "crm_agency_live = true needs the CRM edge (crm_edge_enabled and custom_domains_enabled)."
+      condition     = local.crm_edge_on == 1
+      error_message = "The agency host needs the CRM edge (crm_edge_enabled and custom_domains_enabled): its CNAME points at the crm_agency distribution."
     }
   }
 }
@@ -306,7 +289,6 @@ output "crm_agency_edge" {
     agency_host         = local.crm_agency_host
     distribution_id     = aws_cloudfront_distribution.crm_agency[0].id
     distribution_domain = aws_cloudfront_distribution.crm_agency[0].domain_name
-    live                = var.crm_agency_live
-    dns_target          = var.crm_agency_live ? aws_cloudfront_distribution.crm_agency[0].domain_name : var.crm_agency_vercel_target
+    dns_target          = aws_cloudfront_distribution.crm_agency[0].domain_name
   } : null
 }

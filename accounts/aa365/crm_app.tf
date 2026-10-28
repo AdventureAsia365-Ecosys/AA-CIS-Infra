@@ -122,7 +122,8 @@ locals {
     { name = "COGNITO_PARTNER_ISSUER", value = local.idpartner_issuer },
     { name = "COGNITO_PARTNER_WEB_CLIENT_ID", value = aws_cognito_user_pool_client.partner["partner-web"].id },
     { name = "COGNITO_PARTNER_POOL_ID", value = aws_cognito_user_pool.partner.id },
-    { name = "PARTNER_WEB_ORIGIN", value = "https://${local.crm_partner_host}" },
+    # AA-979 clean-up: join links on the agency host (portal.); the old partner host answers 301 there except /crm/*.
+    { name = "PARTNER_WEB_ORIGIN", value = "https://${local.crm_agency_host}" },
     { name = "SES_FROM_ADDRESS", value = var.ses_from_address },
     { name = "SES_CONFIGURATION_SET", value = aws_sesv2_configuration_set.stream["transactional"].configuration_set_name },
   ]
@@ -363,8 +364,8 @@ resource "aws_iam_role_policy" "crm_ecs_task" {
 # AA-947 (CRM-19 B2B client): BOOKING_API_URL (var.crm_booking_api_url) with the same M2M_CLIENT (the CRM client holds
 # every booking.b2b scope and cis.catalog/read already, identity_m2m.tf: no Cognito, IAM or secret change).
 # AA-945 (CRM-17 mail, crm_mail.tf local.crm_mail_env / crm_mail_secrets): CRM_INGEST_BUCKET (the ingest bucket the
-# forward-in rule writes raw/ to), CRM_INGEST_DOMAIN (crm-in.<zone>), MAIL_OAUTH_REDIRECT_BASE (the partner host, where
-# the web's OAuth callback lives) and, only with var.crm_mail_oauth_enabled, the secret MAIL_OAUTH.
+# forward-in rule writes raw/ to), CRM_INGEST_DOMAIN (crm-in.<zone>), MAIL_OAUTH_REDIRECT_BASE (the agency host since the
+# AA-979 clean-up, where the web's OAuth callback /connect/mail/callback lives) and, only with var.crm_mail_oauth_enabled, the secret MAIL_OAUTH.
 # AA-946 (CRM-18 traveller portal): PORTAL_OTP_DEV_ECHO = "true" on dev only: the portal's e-mail code is also returned
 # in the API answer, because the synthetic Dev agencies have no mailbox to send it from (the Dev E2E signs in with it).
 # The API refuses to start with it on outside dev / test / local.
