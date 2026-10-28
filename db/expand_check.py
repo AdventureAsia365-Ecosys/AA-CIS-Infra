@@ -82,7 +82,7 @@ def verdict(entry: dict) -> str:
 
 def exit_code(entries: list, targets: set | None) -> int:
     """Pure: 14 when a target with the expand header has a finding or a lint error, 1 when one failed with a SQL
-    error (or a target is missing), else 0."""
+    error, else 0 (a target that is not pending is only noted by main())."""
     code = 0
     for e in entries:
         if targets is not None and e["file"] not in targets:
@@ -121,9 +121,10 @@ async def classify_one(rel: str, sql: str, login_dsn: str) -> dict:
     if owner != rm.ROLES_DIR and (d.no_transaction or not rm.transaction_parts(sql)[3]):
         dx = copy.copy(d)
         dx.expand = True                    # header-less files: the evidence for the label
-        conn = await asyncpg.connect(login_dsn, timeout=30,
-                                     server_settings={**d.settings, "application_name": rp.APPLICATION_NAME})
+        conn = None
         try:
+            conn = await asyncpg.connect(login_dsn, timeout=30,
+                                         server_settings={**d.settings, "application_name": rp.APPLICATION_NAME})
             with contextlib.redirect_stdout(buf):
                 plan = await rm.resolve_role(conn, owner)
                 if plan.error:
@@ -142,10 +143,16 @@ async def classify_one(rel: str, sql: str, login_dsn: str) -> dict:
                     entry["eligible"] = code == 0 and not entry["findings"]
                     if not d.expand and entry["findings"]:
                         entry["log"].append("not expand-eligible: " + "; ".join(entry["findings"][:5]))
+        except Exception as exc:            # review S256: one file's failure is its own error, never a crash of the
+            # whole run (the required check would then block unrelated copy PRs); exit_code() still fails a target
+            entry["error"] = entry["error"] or f"{type(exc).__name__}: {str(exc)[:200]}"
         finally:
-            if conn.is_in_transaction():
-                await conn.execute("ROLLBACK")
-            await conn.close()
+            if conn is not None:
+                with contextlib.suppress(Exception):
+                    if conn.is_in_transaction():
+                        await conn.execute("ROLLBACK")
+                with contextlib.suppress(Exception):
+                    await conn.close()
     elif owner != rm.ROLES_DIR:
         entry["eligible"] = False
         entry["log"].append(f"shape: {rm.transaction_parts(sql)[3]}")

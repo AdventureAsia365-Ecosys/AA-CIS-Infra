@@ -92,12 +92,27 @@ class ExpandFindingsTest(unittest.TestCase):
             "1 inserted": row("rows", "booking.config", "1|0|0", "booking.config"),
             "new constraint on existing type": row("constraint", "booking.status:chk", "c|h|true|false|false",
                                                    "booking.status", "c"),
+            "new SECURITY DEFINER function": row("function", "booking.peek()", "o||h|true||s|false", None,
+                                                 "booking.peek"),
         }
         for needle, added in cases.items():
             with self.subTest(case=needle):
                 got = findings(added=[added]) if added["kind"] != "rows" else rm.expand_findings(
                     BASE, [r for r in BASE if (r["kind"], r["key"]) != ("rows", added["key"])] + [added])
                 self.assertTrue(any(needle in f for f in got), got)
+
+    def test_registry_takes_only_its_own_insert(self):
+        """Review S256: the lint skips the registration statement, so a CTE there could unregister another key."""
+        def reg_rows(value):
+            return rm.expand_findings(BASE, [r for r in BASE if (r["kind"], r["key"]) != (
+                "rows", "shared.schema_versions")] + [row("rows", "shared.schema_versions", value,
+                                                          "shared.schema_versions")])
+        self.assertEqual(reg_rows("1|0|0"), [])
+        self.assertEqual(reg_rows("0|0|0"), [])           # ON CONFLICT DO NOTHING on a re-run
+        for value in ("1|0|1", "0|1|0", "2|0|0"):
+            with self.subTest(value=value):
+                got = reg_rows(value)
+                self.assertTrue(any("rows of the registry shared.schema_versions" in f for f in got), got)
 
     def test_changed_and_removed_name_the_field(self):
         rewritten = table("booking.trip", rls=True, force=True, filenode="2")

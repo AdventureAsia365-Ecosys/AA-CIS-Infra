@@ -1308,6 +1308,8 @@ async def invalid_cic_indexes(conn, stmts: list) -> list:
 # A new table with a tenant_id column needs both in any schema (RLS catalogue rule a).
 EXPAND_RLS_SCHEMAS = ("crm",)
 EXPAND_REGISTRY_TABLE = "shared.schema_versions"      # the file's own registration: the one existing table it writes
+
+
 # One row per object: (kind, key, rel, value, aux). `value` is what must not change on an existing object (fields
 # joined by '|', names in EXPAND_FIELDS), `rel` the relation a column / index / constraint / policy / trigger / rule
 # belongs to, `aux` what the allowed-change rules read. Definitions are md5'd: a changed view or function shows as a
@@ -1463,13 +1465,15 @@ def expand_findings(before: list, after: list, hot_tables=EXPAND_HOT_TABLES, hot
     """Pure: what an expand file changed outside the allowed set (ADR 0017 d3), as sorted one-line findings naming
     the object. `before` / `after` are expand_snapshot() rows taken around the body, inside its transaction.
 
-    Allowed: new objects (schemas, tables, views, sequences, types, functions that are not an overload, indexes,
-    constraints / policies / triggers on new tables); on an existing table a new column that is nullable or has a
+    Allowed: new objects (schemas, tables, views, sequences, types, functions that are neither an overload nor
+    SECURITY DEFINER, indexes, constraints / policies / triggers on new tables); on an existing table a new column that
+    is nullable or has a
     default and is neither generated nor identity (a volatile default rewrites the table and shows as a changed
     relfilenode), a non-unique index, and the internal RI triggers a new table's FK adds (not snapshotted); rows
-    written to the file's own registration (shared.schema_versions) and to tables the file creates. Everything else
+    written to tables the file creates and at most one row inserted into the registry
+    (shared.schema_versions: its own registration; no update or delete there). Everything else
     is contract: any change to or removal of an existing object, a new policy / trigger / constraint / rule / unique
-    index on an existing table, an overload, a new partition of an existing table, default privileges, a new
+    index on an existing table, an overload, a new SECURITY DEFINER function, a new partition of an existing table, default privileges, a new
     column on a hot table, anything new in a hot schema, a new table that needs RLS without ENABLE + FORCE, and rows
     inserted, updated or deleted in an existing table."""
     b = {(r["kind"], r["key"]): r for r in before}
@@ -1495,8 +1499,14 @@ def expand_findings(before: list, after: list, hot_tables=EXPAND_HOT_TABLES, hot
     for (kind, key), r in a.items():
         rel = r["rel"] or ""
         if kind == "rows":
-            if rel in old_rels and rel != registry:
-                delta = [x - y for x, y in zip(_rows(r["value"]), _rows((b.get((kind, key)) or {}).get("value")))]
+            delta = [x - y for x, y in zip(_rows(r["value"]), _rows((b.get((kind, key)) or {}).get("value")))]
+            if rel == registry:
+                # Review S256: the expand lint skips the registration statement, so a CTE there (WITH d AS (DELETE
+                # FROM shared.schema_versions …) INSERT …) could unregister another key; the file adds its own row.
+                if delta[0] > 1 or delta[1] or delta[2]:
+                    found.append(f"rows of the registry {rel}: {delta[0]} inserted, {delta[1]} updated, "
+                                 f"{delta[2]} deleted (an expand file only inserts its own registration)")
+            elif rel in old_rels:
                 if any(delta):
                     found.append(f"rows of existing table {rel}: {delta[0]} inserted, {delta[1]} updated, "
                                  f"{delta[2]} deleted (config and routing rows included: contract)")
@@ -1523,6 +1533,11 @@ def expand_findings(before: list, after: list, hot_tables=EXPAND_HOT_TABLES, hot
             found.append(f"{kind} {key}: new {kind} on existing {'table' if on_old else 'type'} {rel}")
         elif kind == "function" and r["aux"] in old_fn_names:
             found.append(f"function {key}: overload of an existing function name {r['aux']}")
+        elif kind == "function" and _flag(r["value"], 3):
+            # Review S256: a new SECURITY DEFINER function runs with its owner's rights (the owner role's own RLS
+            # policy, e.g. USING (true)) and EXECUTE is granted to PUBLIC by default: an RLS bypass needs a review.
+            found.append(f"function {key}: new SECURITY DEFINER function (runs with its owner's rights; EXECUTE is "
+                         f"PUBLIC by default): contract")
         elif kind == "default privileges":
             found.append(f"default privileges {key}: added (ALTER DEFAULT PRIVILEGES)")
         elif kind == "relation":

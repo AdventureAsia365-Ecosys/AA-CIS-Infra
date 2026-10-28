@@ -184,6 +184,26 @@ class ExpandPostCheckPgTest(unittest.TestCase):
         asyncio.run(_fresh())
         self.assert_contract(tx("DROP VIEW booking.v_trip;"), "relation booking.v_trip: dropped or renamed")
 
+    def test_registration_cte_cannot_unregister_another_key(self):
+        """Review S256: the expand lint skips the registration statement; the runtime check refuses the delete."""
+        async def seed():
+            conn = await asyncpg.connect(_dsn(DB))
+            try:
+                await conn.execute(reg("bk-001"))
+            finally:
+                await conn.close()
+        asyncio.run(seed())
+        sql = ("-- Migration bk-099\n-- migrate: expand\nBEGIN;\nCREATE TABLE booking.aa993_x (id bigint);\n"
+               "WITH d AS (DELETE FROM shared.schema_versions WHERE version = 'bk-001' RETURNING 1) "
+               "INSERT INTO shared.schema_versions (version, applied_at, description) "
+               "VALUES ('bk-099', now(), 'x');\nCOMMIT;\n")
+        self.assert_contract(sql, "rows of the registry shared.schema_versions: 1 inserted, 0 updated, 1 deleted")
+
+    def test_new_security_definer_function(self):
+        self.assert_contract(tx("CREATE FUNCTION booking.peek() RETURNS SETOF booking.trip LANGUAGE sql "
+                                "SECURITY DEFINER AS 'SELECT * FROM booking.trip';"),
+                             "function booking.peek(): new SECURITY DEFINER function")
+
     def test_plain_path_without_role_switch(self):
         self.assert_contract(tx("CREATE POLICY open_all ON booking.trip USING (true);"), "new policy", switch=False)
 
