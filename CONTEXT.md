@@ -39,7 +39,7 @@ Secrets, Lambda plumbing, OIDC deploy roles, cross-account Bedrock trust — is 
 
 | Account | ID | Role in ecosystem | Managed here |
 |---------|----|-------------------|--------------|
-| acc1 | 867490540162 | **Retired (AA-998)**: former Bedrock fallback; no grant from acc2, root scheduled for destroy | `accounts/acc1-bedrock/` (destroy only) |
+| acc1 | 867490540162 | **Retired (AA-998)**: former Bedrock fallback; no grant from acc2, root destroyed and removed 28/10/2026 | (root removed) |
 | acc2 (aa365) | 005097885195 | **Main dev stack** (VPC/RDS/ECS/ALB/API GW/…) + CI/CD OIDC | `accounts/aa365/` |
 | acc3 | 786888028788 | `AA3-Bedrock-Invoker`, the **only** LLM satellite | `accounts/acc3-bedrock/` |
 
@@ -48,7 +48,7 @@ Bedrock routing across the ecosystem is **acc3 only** (acc2 native models stay o
 the next model on the same account, or the job retries. The cross-account assume-role wiring that
 lets the main stack (acc2) and TripPlanner reach Bedrock in acc3 lives in
 `accounts/aa365/bedrock_satellite_assume.tf` (caller side) and the `acc3-bedrock` root (trust side).
-`accounts/acc1-bedrock/` stays in the repo only until a human runs its `terraform destroy`.
+`accounts/acc1-bedrock/` was destroyed on 28/10/2026 (7 resources, state bucket deleted) and removed from the repo (AA-998).
 The satellite invoker roles trust only the ECS task role (`aa-cis-dev-ecs-task-role`), not an
 admin session — Claude cannot be called from a local shell.
 
@@ -346,7 +346,6 @@ accounts/
                                    via local.crm_scrub_env in crm_app.tf. Needs the MFA bootstrap apply of cicd_crm.tf
                                    CrmBedrockGuardrail* first. ~ $0.75/month)
     variables.tf / tripplanner_variables.tf / booking_variables.tf
-  acc1-bedrock/   ← RETIRED (AA-998): former acc1 fallback roles, scheduled for destroy
   acc3-bedrock/   ← acc3 Bedrock invoker role (the only satellite) + Bedrock Batch (batch.tf)
                     + Cost Explorer reader + spend guards (cost_guard.tf: monthly budget,
                     daily anomaly e-mail; cost_anomaly_immediate.tf: SNS topic aa3-cost-alerts +
