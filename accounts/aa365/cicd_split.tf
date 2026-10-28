@@ -16,7 +16,7 @@
 #                           capped by the permissions boundary aa-cis-infra-tf-apply-boundary.
 #
 # Bootstrap objects, which the apply role cannot change (a CI apply of a change to them fails with
-# AccessDenied by design; a human applies them with the MFA admin profile, like the acc1/acc3 roots):
+# AccessDenied by design; a human applies them with the MFA admin profile, like the acc3 root):
 #   - aa-cis-infra-tf-plan / -apply: names outside aa-*-dev-*;
 #   - aa-cis-dev-app-deploy, aa-cis-dev-agent-session: inside the pattern, so explicitly denied
 #     (local.tf_apply_protected_role_arns);

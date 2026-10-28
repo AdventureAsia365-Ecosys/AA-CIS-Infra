@@ -270,8 +270,8 @@ self_test() {
   expect "ci helper script" ".github/scripts/migrator-task.sh" "migration-guard"
   expect "this hook" "scripts/pre-push.sh,.githooks/pre-push" "hook-self-test"
   expect "untracked-like path" "dist/whatever.zip" ""
-  expect "two roots" "accounts/acc1-bedrock/main.tf,accounts/acc3-bedrock/batch.tf" \
-    "tf-fmt tf-validate:acc1-bedrock tf-validate:acc3-bedrock docs-gen"
+  expect "two roots" "accounts/aa365/lambda.tf,accounts/acc3-bedrock/batch.tf" \
+    "tf-fmt tf-validate:aa365 tf-validate:acc3-bedrock alb-rule-order connection-budget docs-gen managed-login-branding"
   expect "space + Vietnamese .md" "docs/ghi chú.md" "docs-lint"
   expect "space + Vietnamese .tf" "accounts/aa365/tên mới.tf" \
     "tf-fmt tf-validate:aa365 alb-rule-order connection-budget docs-gen managed-login-branding"

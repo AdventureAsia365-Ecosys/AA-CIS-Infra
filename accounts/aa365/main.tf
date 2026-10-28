@@ -200,9 +200,8 @@ module "ecs" {
   redis_auth_secret_arn = module.elasticache.auth_secret_arn
   redis_cluster_id      = module.elasticache.member_cluster_id
 
-  # AA-902: satellite account IDs as env (the public CIS repo no longer carries them)
-  bedrock_acct_primary  = local.bedrock_acct_primary
-  bedrock_acct_fallback = local.bedrock_acct_fallback
+  # AA-902: satellite account ID as env (the public CIS repo no longer carries it); acc3 only (AA-998)
+  bedrock_acct_primary = local.bedrock_acct_primary
 
   # AA-847 lines: the place_shape job (line geometry, Geoapify credits). The flip is false -> true in its own PR;
   # it reaches the tasks on the next CIS Deploy Dev (the deploy copies the latest task-def revision).

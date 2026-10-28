@@ -20,7 +20,7 @@ What is masked:
     pl-) -> `<prefix>-{masked}`. Pages keep the Name column next to it.
 UUIDs are left alone (their last group can be 12 digits, e.g. the AA master tenant id).
 
-Alias table: env AWS_ACCOUNT_ALIASES = "acc1=<id>,acc2=<id>,acc3=<id>" (comma, space or newline
+Alias table: env AWS_ACCOUNT_ALIASES = "acc2=<id>,acc3=<id>" (comma, space or newline
 separated). The ids are never written in this repo: the docs-gen workflow builds the value from the
 optional repo secret AWS_ACCOUNT_ALIASES plus acc2 read from `sts get-caller-identity` at run time
 (masked in the log). Without it every id renders as `{aws-account}`: still masked, just less precise.
@@ -68,7 +68,7 @@ class AliasError(ValueError):
 
 
 def parse_aliases(spec: Optional[str]) -> dict[str, str]:
-    """'acc1=<id>,acc2=<id>' -> {id: label}."""
+    """'acc2=<id>,acc3=<id>' -> {id: label}."""
     out: dict[str, str] = {}
     for item in re.split(r"[,\s]+", (spec or "").strip()):
         if not item:

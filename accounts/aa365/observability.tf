@@ -136,7 +136,7 @@ resource "aws_cloudwatch_metric_alarm" "ecs_task_count_low" {
 #     AA-CIS-App shared/cost_guard.py + table shared.spend_budget, alerting to
 #     shared.notifications, edited in the admin Cost Operations page.
 #   - That ledger is reconciled against Cost Explorer under AA-804.
-#   - Most Bedrock spend runs in the acc3/acc1 satellite accounts
+#   - Most Bedrock spend runs in the acc3 satellite account
 #     (shared/llm_client/bedrock_satellite.py), which the acc2 `App` cost
 #     allocation tags and the per-app budgets below do not cover.
 # (Background, verified for AA-362: AWS/Billing CloudWatch metrics are not
@@ -329,7 +329,7 @@ resource "aws_budgets_budget" "total_monthly" {
 #     aws_budgets_budget.total_monthly covers it.
 #   - Tags apply only to usage from the moment they are set; Cost Explorer does
 #     not re-tag earlier usage, so the month of the apply is partly untagged.
-#   - Bedrock calls made in the acc3/acc1 satellite accounts are billed there,
+#   - Bedrock calls made in the acc3 satellite account are billed there,
 #     not here; LLM spend is guarded by the AA-CIS-App ledger (see AA-362 note).
 # -----------------------------------------------------------------------------
 
