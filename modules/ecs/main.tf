@@ -26,11 +26,10 @@ locals {
     { name = "ALERT_BOOTSTRAP_EMAIL", value = var.alert_bootstrap_email },
   ]
 
-  # AA-902: the Bedrock / Cost Explorer satellite account IDs (shared/llm_client/bedrock_satellite.py
-  # builds every satellite ARN from these; the public repo carries no account ID).
+  # AA-902: the Bedrock / Cost Explorer satellite account ID (shared/llm_client/bedrock_satellite.py
+  # builds every satellite ARN from it; the public repo carries no account ID). acc3 only (AA-998).
   bedrock_satellite_env = [
     { name = "BEDROCK_ACCT_PRIMARY", value = var.bedrock_acct_primary },
-    { name = "BEDROCK_ACCT_FALLBACK", value = var.bedrock_acct_fallback },
   ]
 
   # AA-847 lines: the place_shape job's kill switch (AA-CIS-App services/jobs/place_shape_job.py; the job runs on the

@@ -39,31 +39,33 @@ Secrets, Lambda plumbing, OIDC deploy roles, cross-account Bedrock trust — is 
 
 | Account | ID | Role in ecosystem | Managed here |
 |---------|----|-------------------|--------------|
-| acc1 | 867490540162 | `AA-Bedrock-Invoker`, Bedrock **fallback** | `accounts/acc1-bedrock/` |
+| acc1 | 867490540162 | **Retired (AA-998)**: former Bedrock fallback; no grant from acc2, root scheduled for destroy | `accounts/acc1-bedrock/` (destroy only) |
 | acc2 (aa365) | 005097885195 | **Main dev stack** (VPC/RDS/ECS/ALB/API GW/…) + CI/CD OIDC | `accounts/aa365/` |
-| acc3 | 786888028788 | `AA3-Bedrock-Invoker`, Bedrock **primary** | `accounts/acc3-bedrock/` |
+| acc3 | 786888028788 | `AA3-Bedrock-Invoker`, the **only** LLM satellite | `accounts/acc3-bedrock/` |
 
-Bedrock routing across the ecosystem is **acc3 primary → acc1 fallback**. The cross-account
-assume-role wiring that lets the main stack (acc2) and TripPlanner reach Bedrock in acc3/acc1
-lives in `accounts/aa365/bedrock_satellite_assume.tf` and the `acc1-bedrock`/`acc3-bedrock` roots.
+Bedrock routing across the ecosystem is **acc3 only** (acc2 native models stay on acc2). AA-998
+(S255) retired acc1 and accepted the loss of the cross-account LLM fallback: an acc3 failure moves to
+the next model on the same account, or the job retries. The cross-account assume-role wiring that
+lets the main stack (acc2) and TripPlanner reach Bedrock in acc3 lives in
+`accounts/aa365/bedrock_satellite_assume.tf` (caller side) and the `acc3-bedrock` root (trust side).
+`accounts/acc1-bedrock/` stays in the repo only until a human runs its `terraform destroy`.
 The satellite invoker roles trust only the ECS task role (`aa-cis-dev-ecs-task-role`), not an
 admin session — Claude cannot be called from a local shell.
 
 Cross-account pieces added 15-25/09/2026 (same assume-role pattern as the Bedrock satellite):
 
 - **Cost Explorer read (AA-623)**: acc2 is a **member account**, not the AWS Organizations payer
-  (payer `033086823579` is unrelated to acc1/2/3), so there is no consolidated CE call. Each
-  account exposes its own read role, assumed by the acc2 ECS task role:
-  - acc1 `AA-CostExplorer-Reader` (ExternalId `aa623-satellite-cost-explorer`),
-    `accounts/acc1-bedrock/cost_explorer_reader.tf`;
+  (payer `033086823579` is unrelated to acc2/acc3), so there is no consolidated CE call. Each
+  account exposes its own read role, assumed by the acc2 ECS task role (the acc1
+  `AA-CostExplorer-Reader` grant was removed by AA-998):
   - acc3 `AA3-CostExplorer-Reader` (ExternalId `aa623-satellite-cost-explorer-acc3`),
     `accounts/acc3-bedrock/cost_explorer_reader.tf`;
   - acc2 calls CE directly (`ce:GetCostAndUsage` on the ECS task role) and gets
-    `sts:AssumeRole` on the two roles above via `accounts/aa365/cost_explorer_satellite_assume.tf`.
+    `sts:AssumeRole` on the acc3 role above via `accounts/aa365/cost_explorer_satellite_assume.tf`.
 - **Bedrock Batch Inference (AA-606)**: bronze bucket prefixes `batch-input/s1-rewrite/*` and
-  `batch-output/s1-rewrite/*` (`modules/s3`), plus the batch service roles
-  `aa-bedrock-batch-inference-role` (acc1) and `aa3-bedrock-batch-inference-role` (acc3,
-  `accounts/acc3-bedrock/batch.tf`). IAM is complete, but **AWS has not enabled Batch
+  `batch-output/s1-rewrite/*` (`modules/s3`), plus the batch service role
+  `aa3-bedrock-batch-inference-role` (acc3, `accounts/acc3-bedrock/batch.tf`); the acc1 role's
+  bucket-policy statements were removed by AA-998. IAM is complete, but **AWS has not enabled Batch
   Inference on acc3 yet** (support case 178979743800653, Linear AA-624): job creation fails with
   a `ValidationException` about account authorization, which is an entitlement, not IAM.
 - **Spend guards per account (AA-896)**: acc2 has the account budget (`var.total_monthly_budget_usd`, 300 USD
@@ -74,7 +76,7 @@ Cross-account pieces added 15-25/09/2026 (same assume-role pattern as the Bedroc
   cost-allocation-tag monitors only in the management (payer) account. acc3, where almost all LLM spend
   lands, has its own monthly budget (credits excluded), a DAILY anomaly e-mail on the AWS-created services
   monitor (`accounts/acc3-bedrock/cost_guard.tf`) and, since S255, an IMMEDIATE subscription (impact >= 15 USD)
-  to its own SNS topic `aa3-cost-alerts` with an e-mail subscriber (`accounts/acc3-bedrock/cost_anomaly_immediate.tf`). acc1 keeps the two budgets created by hand in its console (spend there is cents).
+  to its own SNS topic `aa3-cost-alerts` with an e-mail subscriber (`accounts/acc3-bedrock/cost_anomaly_immediate.tf`). acc1 (retired, AA-998) keeps only hand-made console budgets of its owner; it is outside the ecosystem.
 
 ## Layout
 
@@ -102,7 +104,7 @@ accounts/
                                    SSE-S3, versioned (noncurrent 30 d), TLS only, CIS task role denied writes;
                                    Booking task role Put/Get on supply-media/*; env SUPPLY_MEDIA_BUCKET)
     bedrock_satellite_assume.tf   (cross-account Bedrock assume-role trust)
-    cost_explorer_satellite_assume.tf (acc2 → acc1/acc3 Cost Explorer read roles, AA-623)
+    cost_explorer_satellite_assume.tf (acc2 → acc3 Cost Explorer read role, AA-623; acc1 removed, AA-998)
     dfs_balance.tf                (ops-probe Lambda: 06:15 UTC schedule POSTs the admin probes, AA-627/720/727,
                                    plus the daily staff directory reconcile enqueue, AA-816;
                                    20:30 UTC schedule POSTs /admin/job-runner/retention/schedule, AA-825;
@@ -334,8 +336,8 @@ accounts/
                                    via local.crm_scrub_env in crm_app.tf. Needs the MFA bootstrap apply of cicd_crm.tf
                                    CrmBedrockGuardrail* first. ~ $0.75/month)
     variables.tf / tripplanner_variables.tf / booking_variables.tf
-  acc1-bedrock/   ← acc1 Bedrock invoker role (fallback) + Cost Explorer reader
-  acc3-bedrock/   ← acc3 Bedrock invoker role (primary) + Bedrock Batch (batch.tf)
+  acc1-bedrock/   ← RETIRED (AA-998): former acc1 fallback roles, scheduled for destroy
+  acc3-bedrock/   ← acc3 Bedrock invoker role (the only satellite) + Bedrock Batch (batch.tf)
                     + Cost Explorer reader + spend guards (cost_guard.tf: monthly budget,
                     daily anomaly e-mail; cost_anomaly_immediate.tf: SNS topic aa3-cost-alerts +
                     IMMEDIATE anomaly subscription >= 15 USD; AA-896)

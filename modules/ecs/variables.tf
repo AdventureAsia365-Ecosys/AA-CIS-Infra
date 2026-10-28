@@ -244,13 +244,7 @@ variable "alert_bootstrap_email" {
 }
 
 variable "bedrock_acct_primary" {
-  description = "AA-902: acc3 (Bedrock satellite primary) account ID, env BEDROCK_ACCT_PRIMARY on api and worker"
-  type        = string
-  default     = ""
-}
-
-variable "bedrock_acct_fallback" {
-  description = "AA-902: acc1 (Bedrock satellite fallback) account ID, env BEDROCK_ACCT_FALLBACK on api and worker"
+  description = "AA-902: acc3 (the only Bedrock satellite, AA-998) account ID, env BEDROCK_ACCT_PRIMARY on api and worker"
   type        = string
   default     = ""
 }

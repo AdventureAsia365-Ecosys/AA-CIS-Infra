@@ -16,15 +16,15 @@ the root repo, never in an app repo.
 - **Live root: `accounts/aa365/`** (acc2). CI runs plan/apply there. The old repo-root Terraform was
   removed in AA-587; the `main.tf.bak*` files left at the root are history (cleanup: AA-890). `envs/` was
   removed in AA-841 — do not recreate it.
-- Other roots, applied by a human locally with MFA: `accounts/acc3-bedrock/` (acc3, Bedrock primary +
-  Batch + Cost Explorer reader) and `accounts/acc1-bedrock/` (acc1, Bedrock fallback + Cost Explorer
-  reader). acc1 hosts **no** app infrastructure.
+- Other roots, applied by a human locally with MFA: `accounts/acc3-bedrock/` (acc3, the only Bedrock
+  satellite + Batch + Cost Explorer reader). `accounts/acc1-bedrock/` (acc1) is **retired (AA-998)**:
+  nothing in aa365 grants access to it; its only remaining step is a human `terraform destroy`.
 
 | Account | ID | Region | Profile | Holds |
 |---|---|---|---|---|
 | acc2 | 005097885195 | us-west-1 | `aa365-admin` | all app infrastructure (only account with infra) |
-| acc3 | 786888028788 | us-west-1 | `nghiep_aa365` | Bedrock satellite (primary) |
-| acc1 | 867490540162 | us-west-1 | `pqnghiep-admin` | Bedrock satellite (fallback) |
+| acc3 | 786888028788 | us-west-1 | `nghiep_aa365` | Bedrock satellite (the only one) |
+| acc1 | 867490540162 | us-west-1 | `pqnghiep-admin` | retired (AA-998), destroy of `accounts/acc1-bedrock` pending |
 
 Always check first: `aws sts get-caller-identity --profile aa365-admin --region us-west-1`.
 
