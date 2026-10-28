@@ -1,0 +1,58 @@
+name: DB auto-apply role check
+# AA-993 Phase E slice I1 (root ADR 0017 decision 6): live proof of the narrow role aa-cis-infra-db-auto-apply
+# (accounts/aa365/cicd_db_auto_apply.tf) before migration-apply.yml (slice M3) uses it. Manual only.
+#
+#   - dispatched from main: the environment dev-db-auto lets the job start, OIDC assumes the role, and the job makes
+#     READ calls only (who am I, the migrator family's revisions, the api service). Green = trust + grants work.
+#   - dispatched from any other ref: the environment's deployment-branch rule (main only) refuses the job before it
+#     gets a token; if that rule were ever removed, the role's `ref` condition refuses the assume. Red = gate works.
+# It registers, runs and writes nothing. M3 may delete this workflow once migration-apply.yml has a green run.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: db-auto-apply-role-check
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Assume aa-cis-infra-db-auto-apply (read only)
+    runs-on: ubuntu-latest
+    environment: dev-db-auto
+    timeout-minutes: 5
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      AWS_REGION: us-west-1
+      CLUSTER: aa-cis-dev-cluster
+      SERVICE: aa-cis-dev-api
+      FAMILY: aa-cis-dev-db-migrate
+    steps:
+      - name: Configure AWS credentials (OIDC, environment dev-db-auto)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-west-1
+
+      # The repo is public: mask the account id before any line that could carry it.
+      - name: Who am I (role name only)
+        run: |
+          ID=$(aws sts get-caller-identity --output json)
+          echo "::add-mask::$(jq -r .Account <<<"$ID")"
+          ROLE=$(jq -r .Arn <<<"$ID" | sed -E 's#^arn:aws:sts::[0-9]+:assumed-role/([^/]+)/.*#\1#')
+          echo "assumed role: $ROLE"
+          [ "$ROLE" = "aa-cis-infra-db-auto-apply" ] || { echo "::error::assumed $ROLE, expected aa-cis-infra-db-auto-apply"; exit 1; }
+          echo "- assumed role: \`$ROLE\` (ref ${{ github.ref }})" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Read calls the auto-apply needs
+        run: |
+          N=$(aws ecs list-task-definitions --family-prefix "$FAMILY" --status ACTIVE --query 'length(taskDefinitionArns)' --output text)
+          echo "ACTIVE revisions of $FAMILY: $N"
+          TD=$(aws ecs describe-services --cluster "$CLUSTER" --services "$SERVICE" --query 'services[0].taskDefinition' --output text)
+          [ -n "$TD" ] && [ "$TD" != "None" ] || { echo "::error::describe-services returned no task definition"; exit 1; }
+          echo "api service task definition: ${TD##*/}"
+          echo "- list-task-definitions ($FAMILY): $N ACTIVE; describe-services ($SERVICE): ok" >> "$GITHUB_STEP_SUMMARY"

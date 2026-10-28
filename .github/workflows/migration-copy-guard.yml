@@ -30,41 +30,13 @@ name: Migration Copy Guard
 # Contents read on AdventureAsia365-Ecosys/AA-Ecosys only, minted in the job, revoked when it ends) and only when a
 # scoped dir has a copy; with no such copy it passes without minting a token. The job also runs on pull_request, so
 # it never asks for a write permission. The existing owners' tables are grandfathered (DM-7.1).
+# AA-993 I1 (S255): no `paths` filter on pull_request any more. The jobs below are required checks of the ruleset on
+# main (tools/github/infra-main-ruleset.json), and a required check whose workflow never starts blocks the PR. The job
+# `scope` decides instead (tools/github/pr_paths.py, the path list that used to be the filter): when the PR touches
+# none of those paths, guard, lint and retention-rows are skipped, and a skipped job counts as passed.
 on:
   pull_request:
     branches: [main]
-    paths:
-      - "db/migrations/**"
-      - "db/check_migration_copies.py"
-      - "db/rls_catalogue_rules.py"
-      - "db/replay_migrations.py"        # AA-853 drift report (DB Schema Dump); unit tests in db/tests
-      - "db/schema_drift.py"
-      - "db/schema_drift_decisions.json"
-      - "db/replay_baseline/**"
-      - "db/gen_replay_baseline.py"     # AA-853 replay baseline generator (tests in db/tests/test_replay_baseline.py)
-      - "db/gen_schema_reference.py"
-      - "db/gen_erd.py"
-      - "tools/docs/aws_mask.py"   # imported by db/gen_schema_reference.py (AA-981)
-      - "db/check_erd_drift.py"
-      - "db/schema_dump.py"
-      - "db/check_migration_files.py"
-      - "db/check_migration_ownership.py"
-      - "db/check_retention_rows.py"
-      - "db/run_migration.py"
-      - "db/tests/**"
-      - "db/owners.yaml"
-      - "db/isolation_probe.py"
-      - "db/tour_liveness_gate.py"
-      - "db/freshness_gate.py"
-      - "db/scripts/**"
-      - "db/templates/**"
-      - ".github/scripts/**"
-      - ".github/workflows/db-isolation-probe.yml"
-      - ".github/workflows/db-tour-liveness-gate.yml"
-      - ".github/workflows/db-freshness-probe.yml"
-      - ".github/workflows/db-migrate.yml"
-      - ".github/workflows/db-schema-dump.yml"
-      - ".github/workflows/migration-copy-guard.yml"
   schedule:
     - cron: "17 2 * * *"   # nightly, 02:17 UTC
   workflow_dispatch:
@@ -80,8 +52,42 @@ permissions:
   contents: read
 
 jobs:
+  # AA-993 I1: replaces the old pull_request `paths` filter (see the comment above `on:`). Schedule and manual runs
+  # always check everything.
+  scope:
+    name: Migration paths touched?
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      relevant: ${{ steps.scope.outputs.relevant }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: db/migration_guard_scope.py
+          sparse-checkout-cone-mode: false
+
+      - name: Changed files vs the guard's path list
+        id: scope
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"; echo "not a pull request: every job runs"; exit 0
+          fi
+          # Both names of a rename count (moving a file out of db/migrations/ is relevant too).
+          gh api --paginate "repos/${{ github.repository }}/pulls/$PR/files" \
+            --jq '.[] | .filename, (.previous_filename // empty)' > changed.txt
+          python3 db/migration_guard_scope.py < changed.txt | tee -a "$GITHUB_OUTPUT"
+          echo "$(wc -l < changed.txt) changed path(s)"
+
   guard:
     name: Copies match owner main
+    needs: scope
+    if: needs.scope.outputs.relevant == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -132,6 +138,8 @@ jobs:
 
   lint:
     name: Migration lint and unique numbers
+    needs: scope
+    if: needs.scope.outputs.relevant == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -162,6 +170,8 @@ jobs:
 
   retention-rows:
     name: Retention rows for new-app tables
+    needs: scope
+    if: needs.scope.outputs.relevant == 'true'
     runs-on: ubuntu-latest
     env:
       ROOT_REPO: AdventureAsia365-Ecosys/AA-Ecosys
