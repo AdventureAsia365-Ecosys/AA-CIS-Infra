@@ -236,6 +236,9 @@ resource "aws_iam_role_policy" "booking_ecs_execution" {
 # AA/Jobs/Booking only (observability_ecosys.tf aws_iam_role_policy.booking_ecs_task_put_metric_jobs,
 # the job backlog sampler, AA-751), and s3:PutObject / s3:GetObject on supply-media/* of the Booking supply-media
 # bucket (booking_media.tf aws_iam_role_policy.booking_ecs_task_supply_media, supplier photos, AA-835), and
+# s3:PutObject / s3:GetObject on ops-docs/* of the Booking ops-docs bucket (booking_ops_docs.tf
+# aws_iam_role_policy.booking_ecs_task_ops_docs, vouchers / evidence / bills, AA-682; the bucket policy denies every
+# other principal the objects), and
 # s3:PutObject on archive/booking/* of the CIS bronze bucket (aws_iam_role_policy.booking_ecs_task_retention_archive
 # below: the bk_retention_job archive of failed / cancelled jobs before delete, AA-825). No Bedrock, no other S3, no
 # CIS secrets: add them only when a feature needs them.
@@ -324,7 +327,8 @@ resource "aws_iam_role_policy" "booking_ecs_task_retention_archive" {
 # COGNITO_M2M_CRM_CLIENT_ID (identity_m2m.tf; the B2B API answers 503 without them). GIT_SHA is baked into the
 # image at build time. AA-871: SENTRY_DSN (secret booking/<env>/sentry-dsn) and SENTRY_REQUIRED=true, both only
 # while var.booking_sentry_enabled (booking_variables.tf says why it waits for the secret value). AA-835:
-# SUPPLY_MEDIA_BUCKET (booking_media.tf), where the supplier photo upload writes. AA-825 (S251):
+# SUPPLY_MEDIA_BUCKET (booking_media.tf), where the supplier photo upload writes. AA-682: OPS_DOCS_BUCKET
+# (booking_ops_docs.tf), where the operations document upload writes. AA-825 (S251):
 # RETENTION_OVERRIDE_ENABLED, the explicit opt-in for the retention manual_override proof run; the app refuses an
 # override unless ENVIRONMENT is dev / test / local AND this is "true" (fail closed, no default), so only dev sets it.
 # AA-993 G4: JOB_TEST_KINDS ("1" on dev only) registers the test job kind bk_noop_sleep for the worker-drain proof;
@@ -360,6 +364,8 @@ resource "aws_ecs_task_definition" "booking" {
       { name = "COGNITO_M2M_CRM_CLIENT_ID", value = aws_cognito_user_pool_client.m2m_crm.id },
       # AA-835: supplier photos (booking_media.tf); the app writes supply-media/<type>/<entity>/<id>.<ext> there.
       { name = "SUPPLY_MEDIA_BUCKET", value = aws_s3_bucket.booking_supply_media.bucket },
+      # AA-682: operations documents (booking_ops_docs.tf); the app writes ops-docs/<kind>/<id>.<ext> there.
+      { name = "OPS_DOCS_BUCKET", value = aws_s3_bucket.booking_ops_docs.bucket },
       # AA-825: the retention manual_override (explicit-cutoff proof run) is Dev only; any other environment gets false.
       { name = "RETENTION_OVERRIDE_ENABLED", value = var.environment == "dev" ? "true" : "false" },
       # AA-993 G4 proof: the Dev-only test job kind bk_noop_sleep (AA-Booking app/jobs/noop_sleep.py, deploy-gate
