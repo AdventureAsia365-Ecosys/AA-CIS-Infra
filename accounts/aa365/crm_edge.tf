@@ -6,6 +6,12 @@
 #          -> VPC origin -> internal NLB aa-cis-dev-nlb (the existing API Gateway VPC-link NLB)
 #          -> ALB :80 rule crm_api             (Host + secret + /crm, /crm/*) -> AA-Partner API (crm_app.tf)
 #             ALB :80 rule crm_partner_default (Host + secret, any other path) -> AA-Partner web (crm_web.tf, AA-935)
+#
+# AA-979 P2b clean-up (runbook 4.5): the agency host portal.<zone> (crm_agency_edge.tf) serves the CRM web and the
+# Content studio, so this host keeps only the CRM API. A viewer-request CloudFront Function answers 301 to
+# https://portal.<zone><path>?<query> for every path but /crm and /crm/* (the deploy gates and server-to-server calls
+# POST there). Source: cloudfront_functions/crm_partner_to_agency.js. Cost: CloudFront Functions $0.10 per million
+# invocations after the always-free 2M a month; Dev traffic stays inside the free tier ($0).
 #             ALB :80 rule crm_origin_deny     (any X-AA-Origin)              -> 403, never CIS or Booking
 #
 # crm_partner_default held the partner host's other paths as a fixed 404 until the CRM web; since AA-935 it forwards
@@ -139,6 +145,18 @@ data "aws_cloudfront_origin_request_policy" "all_viewer_and_cf_headers" {
   name  = "Managed-AllViewerAndCloudFrontHeaders-2022-06"
 }
 
+resource "aws_cloudfront_function" "crm_partner_to_agency" {
+  count = local.crm_edge_on
+
+  name    = "${local.crm_name_prefix}-partner-to-agency"
+  runtime = "cloudfront-js-2.0"
+  comment = "AA-979: partner host 301 to the agency host except /crm and /crm/*"
+  publish = true
+  code = templatefile("${path.module}/cloudfront_functions/crm_partner_to_agency.js", {
+    agency_origin = "https://${local.crm_agency_host}"
+  })
+}
+
 resource "aws_cloudfront_distribution" "crm_partner" {
   count = local.crm_edge_on
 
@@ -175,6 +193,12 @@ resource "aws_cloudfront_distribution" "crm_partner" {
     compress                 = false # nothing is cached; keep streamed SSR chunks unbuffered
     cache_policy_id          = data.aws_cloudfront_cache_policy.caching_disabled[0].id
     origin_request_policy_id = data.aws_cloudfront_origin_request_policy.all_viewer_and_cf_headers[0].id
+
+    # AA-979 clean-up: 301 to the agency host for everything but the CRM API paths (see the header).
+    function_association {
+      event_type   = "viewer-request"
+      function_arn = aws_cloudfront_function.crm_partner_to_agency[0].arn
+    }
   }
 
   # No geo restriction and no WAF on Dev (the CloudFront WAF comes at Go-real, W8, without geo block).

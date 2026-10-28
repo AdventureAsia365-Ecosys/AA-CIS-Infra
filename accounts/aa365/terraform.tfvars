@@ -87,8 +87,5 @@ identity_external_native_signup_enabled = true
 # AA-945 (S252): Google OAuth client stored in crm/dev/mail-oauth; map it into the CRM task as MAIL_OAUTH.
 crm_mail_oauth_enabled = true
 
-# AA-979 P2b phase 2 (S253): the cutover. portal.lumiguides.it.com moves from the Vercel project aa-cis-portal to
-# the crm_agency CloudFront distribution (Fargate portal + CRM web/api). One in-place CNAME update; rollback = false.
-# Pre-cutover checks (root docs/audits/2026-10-27-S253-aa979-cutover/): curl through the distribution, the edge live
-# check, partner sign-in + MFA on portal. through the distribution, UI Smoke (portal) target=fargate.
-crm_agency_live = true
+# AA-979 P2b: portal.lumiguides.it.com points at the crm_agency CloudFront distribution since the S253 cutover; the
+# switch crm_agency_live and the Vercel rollback target were removed at the clean-up (runbook 4.5, S256).

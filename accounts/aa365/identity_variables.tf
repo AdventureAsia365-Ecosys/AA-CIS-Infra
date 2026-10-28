@@ -172,13 +172,12 @@ variable "identity_client_urls" {
       logout_urls   = ["https://booking-preview.lumiguides.it.com/login"]
     }
     "cis-portal" = {
-      # S243 AA-885: the tenant portal is its own Vercel project (aa-cis-portal, root portal/) on
-      # portal.lumiguides.it.com; local dev port 3004. Still placeholders: tenants sign in with an API key
-      # until AA-813 (Phase 3) adds the Cognito callback route at this path.
-      # AA-935 (CRM-07, design v3 Fix C10): the AA-Partner CRM web signs agency users in with this same client on
-      # Dev until AA-939 (partner pool): its callback and sign-out pages on the partner host, local dev port 3005.
-      callback_urls = ["https://portal.lumiguides.it.com/api/auth/callback/cognito", "http://localhost:3004/api/auth/callback/cognito", "https://partner-dev.lumiguides.it.com/auth/callback", "http://localhost:3005/auth/callback"]
-      logout_urls   = ["https://portal.lumiguides.it.com/tenant-login", "http://localhost:3004/tenant-login", "https://partner-dev.lumiguides.it.com/signed-out", "http://localhost:3005/signed-out"]
+      # AA-935 (CRM-07, design v3 Fix C10): the AA-Partner CRM web's EXTERNAL-pool fallback (used only while
+      # crm_partner_signin_enabled = false): its callback and sign-out pages on the partner host, local dev port 3005.
+      # AA-979 P2b clean-up: the tenant portal's placeholder entries (portal. /api/auth/callback/cognito,
+      # /tenant-login, localhost:3004) are removed: the studio signs in with the partner pool through the CRM web.
+      callback_urls = ["https://partner-dev.lumiguides.it.com/auth/callback", "http://localhost:3005/auth/callback"]
+      logout_urls   = ["https://partner-dev.lumiguides.it.com/signed-out", "http://localhost:3005/signed-out"]
     }
     "crm-staff" = {
       # AA-939: the AA-Partner staff pages on the partner host (their UI arrives with CRM-13b / CRM-26).

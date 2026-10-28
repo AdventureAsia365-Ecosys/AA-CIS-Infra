@@ -76,14 +76,16 @@ variable "crm_mail_oauth_enabled" {
 }
 
 locals {
-  crm_ingest_domain    = "${var.crm_ingest_subdomain}.${var.dns_zone_name}"
-  crm_ingest_rule      = "${local.crm_name_prefix}-ingest"
-  crm_ingest_raw       = "raw/"
-  crm_ingest_imports   = "imports/"
-  crm_ingest_bucket    = aws_s3_bucket.crm["ingest"]
-  crm_mail_tags        = merge(local.crm_tags, { Service = "crm", Issue = "AA-945" })
-  crm_mail_oauth_name  = "crm/${var.environment}/mail-oauth"
-  crm_mail_redirect    = "https://${local.crm_partner_host}"
+  crm_ingest_domain   = "${var.crm_ingest_subdomain}.${var.dns_zone_name}"
+  crm_ingest_rule     = "${local.crm_name_prefix}-ingest"
+  crm_ingest_raw      = "raw/"
+  crm_ingest_imports  = "imports/"
+  crm_ingest_bucket   = aws_s3_bucket.crm["ingest"]
+  crm_mail_tags       = merge(local.crm_tags, { Service = "crm", Issue = "AA-945" })
+  crm_mail_oauth_name = "crm/${var.environment}/mail-oauth"
+  # AA-979 clean-up: the agency host (the web's /connect/mail/callback). The Google (and later Microsoft) OAuth client
+  # must list https://portal.<zone>/connect/mail/callback as a redirect URI BEFORE the API runs with this value.
+  crm_mail_redirect    = "https://${local.crm_agency_host}"
   crm_mail_object_arns = ["${local.crm_ingest_bucket.arn}/${local.crm_ingest_raw}*", "${local.crm_ingest_bucket.arn}/${local.crm_ingest_imports}*"]
 
   # Task environment (AA-Partner api/app/settings.py; crm_app.tf concatenates it). Bucket and domain are not secrets.
