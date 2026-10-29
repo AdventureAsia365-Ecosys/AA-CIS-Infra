@@ -299,3 +299,16 @@ CHARACTERISTICS AS TRANSACTION READ ONLY` (the runner's shape check refuses a li
 `default_transaction_read_only`). Wave 1 is done: CIS 294 quarantined the ten objects and CIS 296 drops them (the
 14-day wait and the T1 run waived by Nghiệp, S255), so the script's wave-1 list now reports them missing; edit the
 list for the next wave.
+
+`aa995_tp_place_read_explain.py` (AA-995 follow-up, S257, read-only): why TripPlanner's `catalog.v_tour_place` reads
+by `tour_id = ANY($1)` are slow (C4.3 W44: mean 335 ms, p95 ~2.5 s, all buffer hits, temp spill). For three tour-id
+sets (25 and every tour of the country with the most tours, 100 tours overall) it PREPAREs each TripPlanner reader
+verbatim as `tripplanner` (`SET LOCAL ROLE`) and, per mode (custom / generic plan × server jit / jit off), prints one
+`EXPLAIN (ANALYZE, BUFFERS)` summary (`SCRIPT timing … explain_exec_ms plan_ms hit read temp_w jit_ms jit_functions`,
+the top plan nodes as `SCRIPT plan …`) and the median of 3 timed EXECUTEs. As the master it runs the same readers over
+the view body inlined (`old_inline`, CIS 256 with `_live_tour` 273 and `_tour_day_text` 289, to calibrate) and over a
+candidate narrower view (`cand_a` / `cand_b`, a possible CIS `catalog.v_tour_destination`), with
+`SCRIPT parity … verdict=PASS|FAIL` against the view's rows; then how often `geo.tour_place.name_norm` differs from
+`geo.name_norm(name)`, the planner settings and `pg_stat_statements` for every v_tour_place statement. Counts and
+timings only; ~1–5 minutes, budget 20 minutes; always returns 0. Notes: AA-TripPlanner-Web
+`docs/implementation-notes/AA-995.md` (S257).
