@@ -591,8 +591,8 @@ makes CI Terraform Plan fail with 403.
     task-definition revision or update a CIS service).
 - **AA-806 role split** (`cicd_split.tf`, cut-over plan `docs/ci-role-split.md`):
   `aa-cis-dev-app-deploy` (AA-CIS-App, `environment:dev`, CIS ECR/task families/services only),
-  `aa-cis-infra-tf-plan` (`pull_request`, plus `ref:refs/heads/main` for docs-gen.yml since AA-893;
-  read only) and `aa-cis-infra-tf-apply`
+  `aa-cis-infra-tf-plan` (`pull_request`, plus `ref:refs/heads/main` for docs-gen.yml since AA-893,
+  crm-key-policy-diff.yml and terraform-drift.yml (AA-879); read only) and `aa-cis-infra-tf-apply`
   (`environment:prod`, boundary `aa-cis-infra-tf-apply-boundary`). `aa-cis-dev-role` was removed in
   step 3 (S239), together with phase 3 (`tf_apply_require_boundary_on_role_policy_writes = true`:
   role policy writes only on roles that carry the workload boundary). **Every new `aws_iam_role` must set
@@ -663,6 +663,23 @@ makes CI Terraform Plan fail with 403.
     then `terraform -chdir=accounts/aa365 apply`.
 - **prod**: there is no separate prod apply pipeline wired to merges; a `workflow_dispatch` apply
   targets the same dev state and would show "No changes" if the stack is already in sync.
+
+### Scheduled drift check (AA-879)
+
+- `terraform-drift.yml` runs nightly (05:37 UTC) and by hand: `terraform plan -detailed-exitcode -lock=false -json`
+  of `main` for every root `terraform-plan.yml` covers (today `accounts/aa365`), with the read-only plan role
+  `aa-cis-infra-tf-plan` (sub `ref:refs/heads/main`, no environment). `tools/terraform/drift_report.py` writes
+  the job summary: green = in sync; **red, exit 2** = not in sync, listing the resources changed outside Terraform
+  and the actions an apply of `main` would take; **red, exit 1** = the plan failed (errors listed, account ids and
+  ARNs masked). No plan file is saved or uploaded.
+- `-lock=false` on purpose: a plan never writes the state, and holding `<key>.tflock` for the refresh would make an
+  apply or PR plan started meanwhile fail on the lock. A run that overlaps an apply may show false drift: rerun it.
+- When red with exit 2: if the code on `main` is what we want, dispatch Terraform Apply Prod (read its plan first);
+  if the live value is what we want (a hand change that should stay), change the code in a PR; if neither, revert
+  the hand change. Then dispatch Terraform Drift again; it must end green. A merged PR that was never applied also
+  shows here: that is the point (main and the account must match).
+- A new CI-planned root goes into both `terraform-plan.yml` and the drift matrix
+  (`tools/terraform/tests/test_drift_report.py` compares them).
 
 ## Boundaries — what this repo does NOT do
 

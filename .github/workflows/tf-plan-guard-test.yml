@@ -6,6 +6,8 @@ name: Terraform Plan Guard Tests
 # Lock bucket) and the CRM key-policy diff tool (tools/terraform/crm_key_policy_diff.py), same test folder.
 # Two tests read files outside tools/terraform (crm_storage.tf: Dev never COMPLIANCE; crm-key-policy-diff.yml:
 # read-only, nightly, plan role), so those paths trigger this workflow too.
+# AA-879: plus the scheduled drift report (tools/terraform/drift_report.py): its shape test reads terraform-drift.yml and
+# terraform-plan.yml (same roots), and the report masks through tools/docs/aws_mask.py, so those paths trigger it too.
 # The guarded fixture must exit non-zero, the clean and no-op fixtures must exit 0, and the guard
 # must stay wired in front of the apply step in terraform-apply.yml. Offline, no AWS access.
 
@@ -18,6 +20,9 @@ on:
       - ".github/workflows/tf-plan-guard-test.yml"
       - "accounts/aa365/crm_storage.tf"
       - ".github/workflows/crm-key-policy-diff.yml"
+      - ".github/workflows/terraform-drift.yml"
+      - ".github/workflows/terraform-plan.yml"
+      - "tools/docs/aws_mask.py"
   push:
     branches: [main]
     paths:
@@ -26,6 +31,9 @@ on:
       - ".github/workflows/tf-plan-guard-test.yml"
       - "accounts/aa365/crm_storage.tf"
       - ".github/workflows/crm-key-policy-diff.yml"
+      - ".github/workflows/terraform-drift.yml"
+      - ".github/workflows/terraform-plan.yml"
+      - "tools/docs/aws_mask.py"
 
 permissions:
   contents: read

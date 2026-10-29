@@ -1,0 +1,110 @@
+name: Terraform Drift
+# AA-879 part B: a scheduled `terraform plan -detailed-exitcode` of `main` against the live account, for every root
+# terraform-plan.yml covers (today only accounts/aa365, state key dev/terraform.tfstate). The PR plan only shows what a
+# PR would change; this run shows whether the account still matches `main`.
+#   exit 0  in sync                                     -> green
+#   exit 2  not in sync (drift, or a merged change never applied) -> the job fails (GitHub e-mails it); the summary
+#           lists each resource changed outside Terraform and each action an apply of main would take
+#   exit 1  the plan failed (AccessDenied, provider error, ...) -> the job fails; the summary lists the errors
+# Report: tools/terraform/drift_report.py (stdlib only). What to do when red: CONTEXT.md, "Scheduled drift check".
+#
+# Read-only, like docs-gen.yml and crm-key-policy-diff.yml: no environment, so the OIDC sub is `ref:refs/heads/main`,
+# trusted only by the read-only plan role aa-cis-infra-tf-plan (cicd_split.tf, AA-893; no IAM change for this job).
+# The repo-level secret AWS_ROLE_ARN names that role; a step fails closed if it ever names another one.
+#
+# State lock: `-lock=false`. A plan never writes the state, and this run must not get in the way of an apply: with the
+# default lock it would hold <key>.tflock for the whole refresh (~1-2 min), and an apply or PR plan starting then fails
+# at once with "Error acquiring the state lock" (lessons: two CI plans/applies racing the S3 lock). The cost is that a
+# run overlapping an apply can read a half-written state and report false drift: rerun it after the apply.
+#
+# No plan file is written (`-json` streams messages, not a plan): nothing with secret values exists to upload. The JSON
+# log stays in RUNNER_TEMP (umask 077), is never printed or uploaded, and is deleted at the end of the step; only
+# resource addresses, actions and error text reach the summary, masked by tools/docs/aws_mask.py (public repo logs).
+#
+# Roots not here: accounts/acc3-bedrock is another account, applied only by a human with MFA (the plan role cannot
+# read it). A new CI-planned root goes into terraform-plan.yml and into the matrix below (the shape test compares them).
+#
+# Cost: $0 AWS (read-only API calls; CloudTrail management events, first copy free). About 10k management events a
+# run (S255 FinOps audit); if GuardDuty is ever switched on (~4.40 USD per million events) make the cron weekly
+# (~1.3 USD/month nightly vs ~0.2 weekly). GitHub Actions about 2 minutes a night.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "37 5 * * *"   # nightly, 05:37 UTC (after the 03:43-05:13 DB probes and Docs Gen)
+
+concurrency:
+  group: terraform-drift
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  drift:
+    name: Terraform drift (${{ matrix.root }})
+    runs-on: ubuntu-latest
+    # No environment: the OIDC sub is `ref:refs/heads/main`, trusted only by the read-only plan role.
+    if: github.ref == 'refs/heads/main'
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - root: accounts/aa365
+            state_key: dev/terraform.tfstate
+    env:
+      ROOT: ${{ matrix.root }}
+      TF_IN_AUTOMATION: "1"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Configure AWS credentials (OIDC, read-only plan role)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-west-1
+
+      # Fail closed if the repo-level secret ever names a role with write rights. Mask the account id (public logs).
+      - name: Verify the role is the read-only plan role
+        run: |
+          ACC=$(aws sts get-caller-identity --query Account --output text)
+          echo "::add-mask::$ACC"
+          ARN=$(aws sts get-caller-identity --query Arn --output text)
+          case "$ARN" in
+            *:assumed-role/aa-cis-infra-tf-plan/*) echo "role: aa-cis-infra-tf-plan" ;;
+            *) echo "::error::terraform-drift must run with the read-only role aa-cis-infra-tf-plan (got another role)"; exit 1 ;;
+          esac
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.15.5"
+          terraform_wrapper: false   # the real exit code of plan -detailed-exitcode, clean JSON on stdout
+
+      - name: Terraform Init (read-only lockfile)
+        working-directory: ${{ matrix.root }}
+        env:
+          STATE_KEY: ${{ matrix.state_key }}
+        run: |
+          terraform init -input=false -lockfile=readonly \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="key=$STATE_KEY" \
+            -backend-config="region=us-west-1"
+
+      - name: Terraform Plan (detailed exit code, no state lock)
+        env:
+          TF_VAR_db_password: ${{ secrets.TF_VAR_DB_PASSWORD }}
+        run: |
+          umask 077
+          LOG="$RUNNER_TEMP/drift-plan.jsonl"
+          trap 'rm -f "$LOG"' EXIT
+          set +e
+          terraform -chdir="$ROOT" plan -lock=false -input=false -detailed-exitcode -json > "$LOG"
+          RC=$?
+          set -e
+          echo "terraform plan exit code: $RC"
+          python3 -B tools/terraform/drift_report.py --plan-log "$LOG" --exit-code "$RC" --root "$ROOT" \
+            --summary "$GITHUB_STEP_SUMMARY"
