@@ -99,6 +99,32 @@ class PlanPendingTest(unittest.TestCase):
         self.assertEqual(plan[0].action, "stop")
         self.assertIn("lint error", plan[0].reason)
 
+    def test_a_gap_in_the_copies_stops_before_the_later_file(self):
+        # Review of M3: 290 is on the owner's main but its copy PR has not merged; 291's copy is here. The task must
+        # not apply 291 on its own (the runner's verdict is ok for 291, the replay copies in the owner's 290).
+        plan = rm.plan_pending([entry("booking/291_e.sql", expand(291))], registered("booking", 289))["booking"]
+        self.assertEqual([(s.action, s.path) for s in plan["steps"]], [("stop", "booking/291_e.sql")])
+        self.assertIn("gap: bk-290 is neither registered nor copied", plan["steps"][0].reason)
+        self.assertFalse(ap.needs_person(plan["steps"][0].reason))         # it waits for the copy, not a person
+
+    def test_a_gap_after_applied_files_stops_there(self):
+        files = [entry("booking/290_e.sql", expand(290)), entry("booking/292_e.sql", expand(292))]
+        self.assertEqual(self.steps(files, registered("booking", 289)),
+                         [("apply", "booking/290_e.sql"), ("stop", "booking/292_e.sql")])
+
+    def test_an_owner_main_file_not_copied_yet_stops_its_number(self):
+        files = [rm.not_copied_entry("booking/290_x.sql"), entry("booking/291_e.sql", expand(291))]
+        plan = rm.plan_pending(files, registered("booking", 289))["booking"]["steps"]
+        self.assertEqual([(s.action, s.path) for s in plan], [("stop", "booking/290_x.sql")])
+        self.assertIn("not copied yet", plan[0].reason)
+
+    def test_two_copies_with_one_number_stop_at_the_second(self):
+        files = [entry("booking/290_a.sql", expand(290)), entry("booking/290_b.sql", expand(290))]
+        plan = rm.plan_pending(files, registered("booking", 289))["booking"]["steps"]
+        self.assertEqual([(s.action, s.path) for s in plan], [("apply", "booking/290_a.sql"),
+                                                              ("stop", "booking/290_b.sql")])
+        self.assertIn("duplicate number", plan[1].reason)
+
     def test_owners_are_independent(self):
         files = [entry("booking/290_c.sql", contract(290)), entry("crm/024_e.sql", expand(24, "crm"))]
         plan = rm.plan_pending(files, registered("booking", 289) | registered("crm", 23))
@@ -242,6 +268,27 @@ class RunApplyPendingTest(unittest.TestCase):
         self.assertEqual(code, 0, self.log)
         self.assertEqual(self.result()["owners"]["booking"]["files"][0]["status"], "deferred")
 
+    def test_a_gap_applies_nothing_of_that_owner(self):
+        files = [entry("booking/291_e.sql", expand(291)), entry("crm/024_e.sql", expand(24, "crm"))]
+        keys = registered("booking", 289) | registered("crm", 23)
+        code = self.run_pending(bundle(files, not_copied=["booking/290_x.sql"]), keys)
+        self.assertEqual(code, 0, self.log)
+        self.assertEqual(len(self.used), 1)                                   # only crm 024 ran
+        self.assertIn("auto: booking: STOP at booking/290_x.sql (bk-290): not copied yet", self.log)
+        res = self.result()["owners"]
+        self.assertEqual([(r["file"], r["status"]) for r in res["booking"]["files"]],
+                         [("booking/290_x.sql", "manual")])
+        # Without the runner's gap list the task still refuses to jump the gap on its own.
+        code = self.run_pending(bundle(files[:1]), registered("booking", 289))
+        self.assertEqual((code, self.used), (0, []))
+        self.assertIn("auto: booking: STOP at booking/291_e.sql (bk-291): gap: bk-290", self.log)
+
+    def test_bundle_not_copied_list_is_checked(self):
+        raw = bundle([entry("booking/290_e.sql", expand(290))], not_copied=["booking/290_other.sql"])
+        self.assertEqual(self.run_pending(raw, []), 10)                       # its number has a copy
+        self.assertEqual(self.run_pending(bundle([], not_copied=["roles/009_x.sql"]), []), 10)
+        self.assertEqual(self.run_pending(bundle([], not_copied="booking/290_x.sql"), []), 10)
+
     def test_bundle_tampering_is_refused(self):
         raw = bundle([entry("booking/290_e.sql", expand(290))])
         self.assertEqual(self.run_pending(raw, [], sha="0" * 64), 2)
@@ -317,6 +364,21 @@ class RunnerSideTest(unittest.TestCase):
         plan = json.loads((self.repo / "plan.json").read_text())["owners"]["booking"]["steps"]
         self.assertEqual([(s["action"], s["file"]) for s in plan],
                          [("apply", "booking/290_e.sql"), ("stop", "booking/291_c.sql")])
+
+    def test_owner_main_file_not_copied_yet_is_a_gap_in_the_bundle(self):
+        # Review of M3: 290 is on the owner's main only (copy PR not merged), 291 is copied and classified expand.
+        self.put("289_e.sql", expand(289))
+        (self.owner / "290_x.sql").write_text(expand(290))
+        self.put("291_e.sql", expand(291))
+        out, b = self.run_plan(registered("booking", 289), self.classify("booking/291_e.sql"))
+        self.assertEqual(b["not_copied"], ["booking/290_x.sql"])
+        self.assertEqual((out["apply"], out["needs_classify"], out["manual"]), ("false", "false", ""))
+        plan = json.loads((self.repo / "plan.json").read_text())["owners"]["booking"]["steps"]
+        self.assertEqual([(s["action"], s["file"]) for s in plan], [("stop", "booking/290_x.sql")])
+        self.assertIn("booking/290_x.sql", [f["path"] for f in rm.read_bundle(json.dumps(b).encode())])
+        # Below the owner's lowest copy is pre-copy-flow history: never a gap.
+        (self.owner / "005_history.sql").write_text("-- old\n")
+        self.assertEqual(ap.not_copied(self.repo, {"booking": self.owner}), ["booking/290_x.sql"])
 
     def test_nothing_pending_needs_no_classify(self):
         self.put("290_e.sql", expand(290))
@@ -416,6 +478,10 @@ class WorkflowShapeTest(unittest.TestCase):
         self.assertEqual(self.sync["jobs"]["sync"]["if"], "github.ref == 'refs/heads/main'")
         self.assertIn("--match-head-commit", self.sync_text)
         self.assertIn("db/migration_sync.py merge-check", self.sync_text)
+        # Per owner in ascending number order, and the pass sees what it merged (merge-check's gap rule).
+        self.assertIn('"\\(.head.ref) \\(.number)"\' \\\n            | LC_ALL=C sort', self.sync_text)
+        self.assertIn("--repo-root .", self.sync_text)
+        self.assertIn('cp head.sql "$F"', self.sync_text)
         self.assertIn("steps.gate.outputs.merge == 'true'", self.sync_text)
         self.assertEqual(self.sync["permissions"], {"contents": "read"})
 

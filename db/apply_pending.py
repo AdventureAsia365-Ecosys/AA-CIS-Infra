@@ -16,11 +16,15 @@ plan (also the dry run): for every copy in db/migrations/<cis|booking|tripplanne
   * the file is re-classified: `--classify` is the JSON of `db/expand_check.py --classify` run in this workflow on a
     replay of Dev; only class `expand` passes. Without it the verdict is "no classify evidence", which the task treats
     as a stop, so nothing is applied on a header alone.
+Plus the gap list (bundle field `not_copied`): every `NNN_name.sql` on an owner's main above the floor (and at or above
+the owner's lowest copy here, as migration_sync.plan) whose number has no copy here yet, i.e. its copy PR has not
+merged. plan_pending stops the owner at that number, so a later copy is never applied past it (critic 2); the task also
+refuses any number that is not the owner's head + 1 on its own, so the gap list only names the reason.
 The expected plan comes from run_migration.plan_pending (the same code the task runs) on the registered keys of the
 latest DB Schema Dump artifact (`--live`) or a key list (`--registered`, one key per line). It is only a forecast: the
 task re-reads the keys under the apply lock. Outputs (`--github-output`): `needs_classify` (an expected `apply` step
 exists when classify evidence is assumed), `apply` (an expected `apply` step exists with the real verdicts), `pending`
-(count of expected steps), `manual` (expected stops a person must apply: contract, out-of-order). `--bundle` writes the task's input: kind, format, files (path, sha256, sql, verdict).
+(count of expected steps), `manual` (expected stops a person must apply: contract, out-of-order). `--bundle` writes the task's input: kind, format, files (path, sha256, sql, verdict), not_copied (paths).
 
 report: reads the task log's `MIGRATE auto-result {json}` line, writes the run summary, and outputs `applied`
 (true when a file was applied) and `manual` (the copies a person must apply: contract or out-of-order, comma
@@ -105,6 +109,28 @@ def copies(repo_root: Path) -> list:
     return out
 
 
+def not_copied(repo_root: Path, sources: dict) -> list:
+    """Owner-main files whose number has no copy here: ["owner/NNN_name.sql"], above AUTO_APPLY_FLOOR and at or above
+    the owner's lowest copy (below it is the history from before the copy flow, as migration_sync.plan)."""
+    out = []
+    for owner in rm.AUTO_OWNERS:
+        src = sources.get(owner)
+        if src is None or not src.is_dir():
+            continue
+        d = repo_root / "db" / "migrations" / owner
+        here = {int(m.group(2)) for p in (d.glob("*.sql") if d.is_dir() else [])
+                if (m := rm.AUTO_FILE_RE.match(f"{owner}/{p.name}"))}
+        lowest = min(here) if here else 0
+        for p in sorted(src.glob("*.sql")):
+            m = rm.AUTO_FILE_RE.match(f"{owner}/{p.name}")
+            if not m:
+                continue
+            number = int(m.group(2))
+            if number > rm.AUTO_APPLY_FLOOR.get(owner, 0) and number >= lowest and number not in here:
+                out.append(f"{owner}/{p.name}")
+    return out
+
+
 def byte_verdict(c: dict, sources: dict) -> str:
     src = sources.get(c["owner"])
     if src is None:
@@ -178,9 +204,12 @@ def cmd_plan(args) -> int:
     else:
         registered, basis = None, ""
     files = build(root, sources, classify)
+    missing = not_copied(root, sources)
+    for path in missing:
+        print(f"PLAN gap: {path} is on the owner's main but has no copy here yet (its copy PR has not merged)")
     if args.bundle:
-        Path(args.bundle).write_text(json.dumps({"kind": rm.BUNDLE_KIND, "format": 1, "files": files}, sort_keys=True),
-                                     encoding="utf-8")
+        Path(args.bundle).write_text(json.dumps({"kind": rm.BUNDLE_KIND, "format": 1, "files": files,
+                                                 "not_copied": missing}, sort_keys=True), encoding="utf-8")
     if registered is None:
         print("PLAN no registered keys (no --live dump artifact, no --registered list): no forecast; the task decides "
               "from the database, and without classify evidence it applies nothing")
@@ -189,8 +218,9 @@ def cmd_plan(args) -> int:
             with open(args.summary, "a", encoding="utf-8") as fh:
                 fh.write("### Expected plan\n\nNo DB Schema Dump artifact: no forecast, nothing to classify.\n")
         return 0
-    plan = rm.plan_pending(files, registered)
-    provisional = rm.plan_pending(build(root, sources, classify, assume_classified=True), registered)
+    gaps = [rm.not_copied_entry(path) for path in missing]
+    plan = rm.plan_pending(files + gaps, registered)
+    provisional = rm.plan_pending(build(root, sources, classify, assume_classified=True) + gaps, registered)
     has_apply = any(s.action == "apply" for p in plan.values() for s in p["steps"])
     needs_classify = any(s.action == "apply" for p in provisional.values() for s in p["steps"])
     pending = sum(len(p["steps"]) for p in plan.values())

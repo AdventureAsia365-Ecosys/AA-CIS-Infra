@@ -14,10 +14,13 @@ name: Migration Sync (owner copies)
 #      a GITHUB_TOKEN PR would not). Labels migration:expand | migration:contract | migration:destructive (+
 #      out-of-order) are set with this job's GITHUB_TOKEN. An open PR whose file no longer matches the owner's main is
 #      updated on its branch; a branch left over from a closed PR is recreated;
-#   4. merge pass: every open bot/migration-copy/* PR that db/migration_sync.py merge-check passes (opened by the bot,
-#      exactly one new file of that owner and number, byte-identical to the owner's main, every required check of the
-#      ruleset green) is squash-merged by ci-bot, pinned to the head commit it checked. A PR whose file reached main
-#      some other way is closed. Every class is merged: copy is not apply (migration-apply.yml decides what runs).
+#   4. merge pass, per owner in ascending number order (branch names sort that way): every open bot/migration-copy/*
+#      PR that db/migration_sync.py merge-check passes (opened by the bot, exactly one new file of that owner and
+#      number, byte-identical to the owner's main, no lower-numbered owner-main file still missing from main, every
+#      required check of the ruleset green) is squash-merged by ci-bot, pinned to the head commit it checked. So a copy
+#      never reaches main before a lower one of its owner (critic 2): 291 waits while 290 is unmerged, still running
+#      its checks, or refused. A PR whose file reached main some other way is closed. Every class is merged: copy is
+#      not apply (migration-apply.yml decides what runs).
 #      The merge pass runs only while the repo is public and main carries the ruleset (pull request + required
 #      checks): on a private repo the ruleset is not enforced on GitHub Free, so a person merges the copy PRs
 #      (ADR 0011a decision 6).
@@ -190,8 +193,12 @@ jobs:
           REPO="$GITHUB_REPOSITORY"
           SOURCES=(--source cis=owners/AA-CIS-App/api/migrations --source booking=owners/AA-Booking/migrations
                    --source tripplanner=owners/AA-TripPlanner-Web/migrations --source crm=owners/AA-Partner/api/migrations)
-          for N in $(gh api --paginate "repos/$REPO/pulls?state=open&per_page=100" \
-                       --jq '.[] | select(.head.ref | startswith("bot/migration-copy/")) | .number'); do
+          # Per owner, lowest number first: the branch is bot/migration-copy/<owner>-<NNN> (3 digits), so a plain sort
+          # of "<branch> <number>" orders it; the API lists newest first.
+          gh api --paginate "repos/$REPO/pulls?state=open&per_page=100" \
+            --jq '.[] | select(.head.ref | startswith("bot/migration-copy/")) | "\(.head.ref) \(.number)"' \
+            | LC_ALL=C sort | awk '{print $2}' > merge-order.txt
+          for N in $(cat merge-order.txt); do
             gh api "repos/$REPO/pulls/$N" > pr.json
             SHA=$(jq -r .head.sha pr.json)
             gh api "repos/$REPO/pulls/$N/files?per_page=100" > files.json
@@ -209,7 +216,7 @@ jobs:
             gh api "repos/$REPO/commits/$SHA/check-runs?per_page=100" > checks.json
             set +e
             OUT=$(python3 db/migration_sync.py merge-check --pr pr.json --files files.json --checks checks.json \
-              --head-file head.sql "${SOURCES[@]}")
+              --head-file head.sql --repo-root . "${SOURCES[@]}")
             RC=$?
             set -e
             echo "#$N: $OUT"
@@ -218,6 +225,9 @@ jobs:
               if gh pr merge "$N" --repo "$REPO" --squash --match-head-commit "$SHA" \
                    --subject "$(jq -r .title pr.json) (#$N)" --body "Refs AA-993"; then
                 echo "- merged #$N \`$F\`" >> "$GITHUB_STEP_SUMMARY"
+                # The squash added exactly this file (merge-check: one added file, these bytes): mirror it in the
+                # checkout, so the next PR of this owner in the pass sees it on main (merge-check's gap rule).
+                cp head.sql "$F"
               else
                 echo "::warning::#$N: GitHub refused the merge (see above); the next run retries"
                 echo "- #$N merge refused by GitHub" >> "$GITHUB_STEP_SUMMARY"

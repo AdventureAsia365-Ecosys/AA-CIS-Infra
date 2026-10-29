@@ -2693,7 +2693,10 @@ async def apply_file(env, sql: str, file: str, version: str, mode: str, connect,
 #   * read every registered key once; per owner, in number order, every unregistered copy above the floor is pending;
 #   * apply each pending file while it is the next in line AND expand by its own header and lint AND has the runner's
 #     verdict ok AND is not below the owner's highest registered key (out-of-order); stop that owner at the first file
-#     that is not (it stays for a person: manual DB Migrate apply). Never skip past a gap (critic 2);
+#     that is not (it stays for a person: manual DB Migrate apply). Never skip past a gap (critic 2): the task checks
+#     it itself, not only the runner. Above the owner's head the numbers must be contiguous (head + 1, + 2, …; the app
+#     preflight requires owner max + 1), and an owner-main file the runner found missing here (bundle `not_copied`: its
+#     copy PR has not merged yet) is a stop at its number, so a later copy never runs before it;
 #   * each file goes through apply_file exactly like DB Migrate apply (role switch, lock risk exit 15, post-check exit
 #     14, CIC validity exit 16, the wave wait for hot tables; no idle override, no snapshot: an expand file is never
 #     destructive), a lock timeout (55P03) is retried after AUTO_LOCK_RETRY_S;
@@ -2728,10 +2731,12 @@ def auto_version(owner: str, number: int) -> str:
 def plan_pending(files: list, registered) -> dict:
     """Pure (also the runner-side dry run): {owner: {"head": key or None, "steps": [AutoStep], "legacy": n}}.
 
-    files: [{"path", "sql", "verdict"}] (verdict "ok", or why the runner refuses the file); registered: every key in
+    files: [{"path", "sql", "verdict"}] (verdict "ok", or why the runner refuses the file), plus the runner's
+    {"path", "not_copied": True} entries (on the owner's main, not copied here yet); registered: every key in
     shared.schema_versions. Per owner, the unregistered files above AUTO_APPLY_FLOOR in number order: `apply` while
-    each one is expand (header, lint), verdict ok and not below the owner's highest registered key; the first that is
-    not ends the owner's steps with `stop`."""
+    each one is copied, the next number (head + 1, then + 1 per step: never past a gap, critic 2), expand (header,
+    lint), verdict ok and not below the owner's highest registered key; the first that is not ends the owner's steps
+    with `stop`."""
     registered = set(registered)
     out = {}
     for owner in AUTO_OWNERS:
@@ -2747,17 +2752,26 @@ def plan_pending(files: list, registered) -> dict:
                 entries.append((int(m.group(2)), f))
         entries.sort(key=lambda e: (e[0], e[1]["path"]))
         steps, legacy = [], 0
+        expected = max(head, floor) + 1            # the only number that may run next (then + 1 per applied file)
         for number, f in entries:
             version = auto_version(owner, number)
             if version in registered:
                 continue
             if number <= floor:
-                legacy += 1
+                legacy += 0 if f.get("not_copied") else 1
                 continue
             reason = ""
             if number < head:
                 reason = (f"out-of-order: below the owner's highest registered key {auto_version(owner, head)}; "
                           f"manual DB Migrate apply")
+            elif f.get("not_copied"):
+                reason = (f"not copied yet: on the {owner} owner repo's main but not in db/migrations/{owner}/ (its "
+                          f"migration-sync copy PR has not merged); nothing after it runs before it")
+            elif number < expected:
+                reason = f"duplicate number: {version} is already pending in this run; the copies must be fixed"
+            elif number > expected:
+                reason = (f"gap: {auto_version(owner, expected)} is neither registered nor copied here; nothing past a "
+                          f"gap is applied (the owner's next file must be its head + 1)")
             else:
                 d = parse_directives(f["sql"])
                 errs = lint(f["sql"], d, f["path"])[0]
@@ -2771,16 +2785,24 @@ def plan_pending(files: list, registered) -> dict:
                 steps.append(AutoStep(f["path"], version, "stop", reason))
                 break
             steps.append(AutoStep(f["path"], version, "apply"))
+            expected = number + 1
         out[owner] = {"head": auto_version(owner, head) if mine else None, "steps": steps, "legacy": legacy}
     return out
 
 
+def not_copied_entry(path: str) -> dict:
+    """A plan_pending entry for an owner-main file that has no copy here yet: always a stop, never SQL to run."""
+    return {"path": path, "sql": "", "verdict": "not copied", "not_copied": True}
+
+
 def read_bundle(raw: bytes) -> list:
-    """The bundle's files after the shape and per-file sha256 checks; ValueError names the first problem."""
+    """The bundle's files after the shape and per-file sha256 checks, plus a not_copied_entry per path of the bundle's
+    `not_copied` list (owner-main files the runner found missing here; stops only, so the task may trust them as is);
+    ValueError names the first problem."""
     data = json.loads(raw.decode("utf-8"))
     if not isinstance(data, dict) or data.get("kind") != BUNDLE_KIND or data.get("format") != 1:
         raise ValueError(f"not an apply-pending bundle (kind {BUNDLE_KIND}, format 1)")
-    files, seen = [], set()
+    files, seen, numbers = [], set(), set()
     for f in data.get("files") or []:
         path, sql = f.get("path", ""), f.get("sql")
         if not AUTO_FILE_RE.match(path) or not isinstance(sql, str) or path in seen:
@@ -2788,7 +2810,17 @@ def read_bundle(raw: bytes) -> list:
         if hashlib.sha256(sql.encode("utf-8")).hexdigest() != f.get("sha256"):
             raise ValueError(f"bundle entry {path}: sha256 mismatch")
         seen.add(path)
+        numbers.add(path[:path.index("_")])
         files.append({"path": path, "sql": sql, "verdict": f.get("verdict", "")})
+    missing = data.get("not_copied") or []
+    if not isinstance(missing, list):
+        raise ValueError("bundle not_copied: not a list of owner-dir paths")
+    for path in missing:
+        if not isinstance(path, str) or not AUTO_FILE_RE.match(path) or path[:path.index("_")] in numbers:
+            raise ValueError(f"bundle not_copied entry {path!r}: not an owner-dir path, or its number has a copy "
+                             f"or is listed twice")
+        numbers.add(path[:path.index("_")])
+        files.append(not_copied_entry(path))
     return files
 
 

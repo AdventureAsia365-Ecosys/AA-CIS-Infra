@@ -5,7 +5,7 @@ payload from an app) and runs:
 
   python3 db/migration_sync.py plan --source cis=owners/AA-CIS-App/api/migrations … [--live schema.json] --out plan.json
   python3 db/migration_sync.py merge-check --pr pr.json --files files.json --checks checks.json \
-      --head-file head.sql --source cis=… [--ruleset tools/github/infra-main-ruleset.json]
+      --head-file head.sql --source cis=… [--repo-root .] [--ruleset tools/github/infra-main-ruleset.json]
 
 plan: the SET DIFFERENCE per owner (check_migration_copies.OWNERS, not roles/): every `NNN_name.sql` on the owner's
 main that is missing from db/migrations/<owner>/, numbered at or above the owner's lowest copy here (below it is the
@@ -21,6 +21,10 @@ running), 1 with the reason when it must not:
   * an open, non-draft PR from a branch of this repo named bot/migration-copy/<owner>-<NNN>, opened by a bot, on main;
   * exactly one changed file, status `added`, db/migrations/<owner>/<NNN>_name.sql of that owner and number;
   * the file at the PR head (`--head-file`) byte-identical to the owner repo's main (`--source`);
+  * no gap below it (wait, critic 2): every lower-numbered file of that owner on the owner's main, at or above the
+    owner's lowest copy, already has a copy on Infra main (`--repo-root`, the checkout of main; the workflow adds each
+    file it merges in the pass). With the pass going per owner in ascending number order, a copy never reaches main
+    before a lower one, so migration-apply never sees a later file first (it also stops at any gap on its own);
   * every required check of the ruleset on main (`--ruleset`) present on the head commit and successful (or skipped),
     and no check run failed. The ruleset enforces the checks again at merge time.
 Standard library only.
@@ -165,8 +169,17 @@ def required_contexts(ruleset: dict) -> list:
     return []
 
 
+def lower_missing(repo_root: Path, src: Path, owner: str, number: int) -> list:
+    """Owner-main files numbered below `number` (at or above the owner's lowest copy) whose number has no copy here."""
+    here = sql_files(repo_root / "db" / "migrations" / owner)
+    used = set(here.values())
+    floor = min(used) if used else 0
+    return [name for name, n in sorted(sql_files(src).items(), key=lambda kv: (kv[1], kv[0]))
+            if floor <= n < number and n not in used]
+
+
 def merge_check(pr: dict, files: list, checks: list, head_file: bytes | None, sources: dict,
-                required: list) -> tuple:
+                required: list, repo_root: Path = REPO_ROOT) -> tuple:
     """(code, reason): 0 merge, 2 wait, 1 refuse (see the module docstring)."""
     head = (pr.get("head") or {})
     m = BRANCH_RE.match(head.get("ref") or "")
@@ -199,6 +212,10 @@ def merge_check(pr: dict, files: list, checks: list, head_file: bytes | None, so
     bad = [c["name"] for c in checks if c.get("status") == "completed" and c.get("conclusion") in BAD_CONCLUSIONS]
     if bad:
         return 1, f"check(s) failed on the head commit: {', '.join(sorted(set(bad)))}"
+    gap = lower_missing(repo_root, src, owner, int(number))
+    if gap:
+        return 2, (f"waiting for lower-numbered {owner} file(s) to reach main first: {', '.join(gap)} (their copy PRs "
+                   f"merge before this one; never past a gap)")
     waiting = []
     for ctx in required:
         runs = by_name.get(ctx) or []
@@ -228,6 +245,7 @@ def main(argv: list | None = None) -> int:
     m.add_argument("--checks", required=True, help="GET …/commits/{head sha}/check-runs JSON")
     m.add_argument("--head-file", required=True, help="the file's bytes at the PR head (may be missing)")
     m.add_argument("--source", action="append", default=[])
+    m.add_argument("--repo-root", default=str(REPO_ROOT), help="checkout of Infra main (the copies already there)")
     m.add_argument("--ruleset", default=str(DEFAULT_RULESET))
     args = parser.parse_args(argv)
     if args.cmd == "plan":
@@ -248,7 +266,8 @@ def main(argv: list | None = None) -> int:
                                json.loads(Path(args.files).read_text(encoding="utf-8")),
                                checks.get("check_runs", checks) if isinstance(checks, dict) else checks,
                                head.read_bytes() if head.is_file() else None, parse_sources(args.source),
-                               required_contexts(json.loads(Path(args.ruleset).read_text(encoding="utf-8"))))
+                               required_contexts(json.loads(Path(args.ruleset).read_text(encoding="utf-8"))),
+                               Path(args.repo_root))
     print(f"MERGE-CHECK {['merge', 'refuse', 'wait'][code]}: {reason}")
     return code
 

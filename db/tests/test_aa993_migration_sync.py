@@ -138,7 +138,8 @@ class MergeCheckTest(unittest.TestCase):
 
     def check(self, p=None, files=None, checks=None, head=EXPAND.encode()):
         return ms.merge_check(p or pr(), self.files if files is None else files,
-                              green() if checks is None else checks, head, {"booking": self.r.owner}, self.req)
+                              green() if checks is None else checks, head, {"booking": self.r.owner}, self.req,
+                              self.r.infra)
 
     def test_required_contexts_come_from_the_ruleset(self):
         self.assertIn("Copies match owner main", self.req)
@@ -175,6 +176,38 @@ class MergeCheckTest(unittest.TestCase):
         self.assertEqual(self.check(checks=failed)[0], 1)
         skipped = [dict(c, conclusion="skipped") if c["name"] == "Terraform Plan (dev)" else c for c in green()]
         self.assertEqual(self.check(checks=skipped)[0], 0)
+
+    def test_a_lower_owner_file_missing_on_main_waits(self):
+        # Review of M3: 033 is on the owner's main but its copy PR has not merged (newer PRs are listed first, or
+        # 033's checks still run, or it is refused): 034 must not reach main before it.
+        self.r.copy("032_a.sql")
+        self.r.main("033_late.sql", CONTRACT)
+        code, why = self.check()
+        self.assertEqual(code, 2)
+        self.assertIn("033_late.sql", why)
+        self.r.copy("033_late.sql", CONTRACT)              # 033's copy merged (or the pass mirrored its merge)
+        self.assertEqual(self.check()[0], 0)
+
+    def test_a_failed_check_still_refuses_before_the_gap_wait(self):
+        self.r.copy("032_a.sql")
+        self.r.main("033_late.sql", CONTRACT)
+        failed = green() + [{"name": "Docs lint", "status": "completed", "conclusion": "failure"}]
+        self.assertEqual(self.check(checks=failed)[0], 1)
+
+    def test_history_below_the_lowest_copy_and_a_used_number_do_not_wait(self):
+        self.r.copy("032_a.sql")
+        self.r.main("010_history.sql", "-- before the copy flow\n")
+        self.r.copy("033_here.sql")
+        self.r.main("033_renamed.sql", "-- conflict: migration-apply stops at the copy's bytes\n")
+        self.assertEqual(self.check()[0], 0)
+
+    def test_merge_pass_order_never_merges_291_before_290(self):
+        # The workflow's ordering (LC_ALL=C sort of "<branch> <number>") on what the API returns (newest first).
+        # Python's sorted() on ASCII is the C-locale byte order the workflow's sort uses.
+        listed = ["bot/migration-copy/booking-291 42", "bot/migration-copy/crm-024 41",
+                  "bot/migration-copy/booking-290 40", "bot/migration-copy/cis-302 38"]
+        order = [ln.split()[1] for ln in sorted(listed)]
+        self.assertEqual(order, ["40", "42", "38", "41"])
 
     def test_file_missing_on_the_owner_main_refuses(self):
         (self.r.owner / "034_b.sql").unlink()
