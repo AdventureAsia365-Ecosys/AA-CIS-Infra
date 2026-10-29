@@ -102,6 +102,13 @@ accounts/
                                    AA-712 X4: no PLACES_SOURCE any more (TripPlanner reads only the catalog views).
                                    AA-871: secret shell tripplanner/<env>/sentry-dsn (no version), read by
                                    name at cold start, grant ReadSentryDsnSecret; no DSN in the Lambda env)
+    tripplanner_jobs.tf           (AA-861: the TripPlanner jobs Lambda aa-tripplanner-<env>-jobs, worker of
+                                   tripplanner.job (tp-021, ADR 0003a d4): same zip (jobs.zip, handler
+                                   backend.jobs.handler.handler), own role (DB + Sentry DSN secrets, VPC,
+                                   own logs; no Bedrock / edge key / SES), reserved concurrency 1, daily
+                                   EventBridge Scheduler tick 19:30 UTC, no Lambda retry, alarms errors >= 1
+                                   and not-run 2 days, log group 30 d. Live override of the outbox
+                                   redaction closed unless var.tripplanner_jobs_retention_override_enabled)
     booking.tf                    (AA-Booking ECS service, ECR, ALB rule /booking/*, REST API on the
                                    existing VPC link, OIDC deploy role — AA-678; AA-871: secret shell
                                    booking/<env>/sentry-dsn (no version, execution-role read) mapped to

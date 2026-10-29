@@ -207,6 +207,8 @@ IDLE_EXEMPT_KINDS = {
     # AA-932: AA-Partner worker liveness kind (AA-933); AA-978: the CIS membership feed pull, every 20 s;
     # AA-947: the AA outage queue + Booking feed (crm_booking_sync), every 60 s
     "crm": frozenset({"crm_heartbeat", "crm_membership_pull", "crm_booking_sync"}),
+    # AA-861 (tp-021): the TripPlanner jobs Lambda runs once a day; no always-queued kind, so nothing is exempt.
+    "tripplanner": frozenset(),
 }
 # AA-990: mirrors the CIS deploy gate (AA-CIS-App shared/jobs/queue.py DEPLOY_GATE_HORIZON_S). A queued row due
 # more than this far ahead is not touched by a migration that takes minutes; whichever schema it then meets is the one

@@ -101,6 +101,8 @@ PII_ALLOWLIST = {
     "booking.v_supply_services.working_title": "internal working title of a supplier service (bk-023 contract view "
                                                "of services.title), no customer data",
     "tripplanner.narration_cache.itinerary_hash": "hash of a catalog itinerary (cache key), no identity",
+    "tripplanner.job.payload": "job payloads carry flags and counts only (DM-6.3; tp-021, the retention kind's "
+                               "trigger / dry_run / max_rows)",
 }
 
 

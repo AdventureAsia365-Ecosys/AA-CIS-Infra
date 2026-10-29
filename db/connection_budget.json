@@ -70,6 +70,14 @@
       "processes": {"tf_file": "accounts/aa365/tripplanner_variables.tf", "tf_regex": "variable \"tripplanner_lambda_reserved_concurrency\" \\{[^}]*?default\\s*=\\s*(\\d+)"}
     },
     {
+      "name": "tp-jobs",
+      "role": "tripplanner",
+      "max_size": 1,
+      "source": {"repo": "AA-TripPlanner-Web", "path": "backend/shared/db.py", "regex": "create_pool\\(.*?max_size=(\\d+)"},
+      "processes": {"tf_file": "accounts/aa365/tripplanner_variables.tf", "tf_regex": "variable \"tripplanner_jobs_reserved_concurrency\" \\{[^}]*?default\\s*=\\s*(\\d+)"},
+      "note": "AA-861: the tripplanner.job worker Lambda (tripplanner_jobs.tf), one runner"
+    },
+    {
       "name": "booking-api",
       "role": "booking",
       "max_size": 5,
