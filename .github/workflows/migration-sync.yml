@@ -1,0 +1,228 @@
+name: Migration Sync (owner copies)
+# AA-993 Phase E slice M3 (root ADR 0017 decision 2, ADR 0011a): the byte copy of an owner's migration into
+# db/migrations/<owner>/ is PULLED by this repo, never pushed by the apps. Every 10 minutes (while AA-CIS-Infra is
+# public: free Actions minutes, ADR 0014) and by hand:
+#
+#   1. clone each public owner repo's main anonymously (migrations folder only): AA-CIS-App api/migrations,
+#      AA-Booking migrations, AA-TripPlanner-Web migrations, AA-Partner api/migrations. No token for another repo, no
+#      repository_dispatch payload from an app to trust (critic 1);
+#   2. db/migration_sync.py plan: the SET DIFFERENCE (owner files missing here, at or above the owner's lowest copy),
+#      so a lower-numbered file merged late is copied too (critic 2), labelled out-of-order against the registered keys
+#      of the latest DB Schema Dump artifact;
+#   3. one branch per file, bot/migration-copy/<owner>-<NNN>, created from main through the GitHub API with the owner's
+#      raw bytes, and one PR, opened as aa-ecosys-ci-bot (an App token: its PR events start the required checks, which
+#      a GITHUB_TOKEN PR would not). Labels migration:expand | migration:contract | migration:destructive (+
+#      out-of-order) are set with this job's GITHUB_TOKEN. An open PR whose file no longer matches the owner's main is
+#      updated on its branch; a branch left over from a closed PR is recreated;
+#   4. merge pass: every open bot/migration-copy/* PR that db/migration_sync.py merge-check passes (opened by the bot,
+#      exactly one new file of that owner and number, byte-identical to the owner's main, every required check of the
+#      ruleset green) is squash-merged by ci-bot, pinned to the head commit it checked. A PR whose file reached main
+#      some other way is closed. Every class is merged: copy is not apply (migration-apply.yml decides what runs).
+#      The merge pass runs only while the repo is public and main carries the ruleset (pull request + required
+#      checks): on a private repo the ruleset is not enforced on GitHub Free, so a person merges the copy PRs
+#      (ADR 0011a decision 6).
+#
+# Token (ADR 0011a decision 2): actions/create-github-app-token, minted only on main and only when there is something to
+# open or merge, for AA-CIS-Infra only, Contents write + Pull requests write; nothing else. ci-bot is not a bypass actor
+# of the ruleset, so it cannot push to main: its merge of a green copy PR is the only way its write reaches main.
+# Needs the repo variable AA_CI_BOT_APP_ID and the repo secret AA_CI_BOT_PRIVATE_KEY (as DB Schema Dump).
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Plan only: open, update, label or merge nothing"
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: migration-sync
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    name: Copy owner migrations (set difference) and merge green copies
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read          # the latest DB Schema Dump artifact (registered keys, for out-of-order)
+      issues: write          # create the class labels (GITHUB_TOKEN)
+      pull-requests: write   # add the labels (GITHUB_TOKEN); opening and merging is ci-bot's token
+    env:
+      DRY_RUN: ${{ inputs.dry_run == true }}
+      HAS_CI_BOT_APP: ${{ vars.AA_CI_BOT_APP_ID != '' && secrets.AA_CI_BOT_PRIVATE_KEY != '' }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Clone the owner repos' main (anonymous, migrations folders only)
+        run: |
+          clone() {
+            git clone --quiet --depth 1 --filter=blob:none --sparse "https://github.com/AdventureAsia365-Ecosys/$1.git" "owners/$1"
+            git -C "owners/$1" sparse-checkout set "$2"
+            echo "$1 main: $(git -C "owners/$1" rev-parse --short HEAD)"
+          }
+          clone AA-CIS-App api/migrations
+          clone AA-Booking migrations
+          clone AA-TripPlanner-Web migrations
+          clone AA-Partner api/migrations
+
+      - name: Registered keys (latest DB Schema Dump artifact)
+        id: live
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RUN=$(gh run list -R "$GITHUB_REPOSITORY" --workflow db-schema-dump.yml --branch main --status success \
+            --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+          if [ -n "$RUN" ] && gh run download "$RUN" -R "$GITHUB_REPOSITORY" -n "db-schema-dump-$RUN" -D dump \
+              && [ -s dump/schema.json ]; then
+            echo "path=dump/schema.json" >> "$GITHUB_OUTPUT"
+          else
+            echo "no DB Schema Dump artifact: out-of-order is judged against the highest copy here"
+          fi
+
+      - name: Plan (set difference)
+        id: plan
+        env:
+          LIVE: ${{ steps.live.outputs.path }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ARGS=(--source cis=owners/AA-CIS-App/api/migrations --source booking=owners/AA-Booking/migrations
+                --source tripplanner=owners/AA-TripPlanner-Web/migrations --source crm=owners/AA-Partner/api/migrations)
+          [ -n "$LIVE" ] && ARGS+=(--live "$LIVE")
+          python3 db/migration_sync.py plan "${ARGS[@]}" --out plan.json
+          echo "copies=$(jq '.copies | length' plan.json)" >> "$GITHUB_OUTPUT"
+          gh api --paginate "repos/$GITHUB_REPOSITORY/pulls?state=open&per_page=100" \
+            --jq '.[] | select(.head.ref | startswith("bot/migration-copy/")) | .number' > open.txt
+          echo "open=$(wc -l < open.txt | tr -d ' ')" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Migration sync"
+            jq -r '.copies[] | "- copy `\(.owner)/\(.file)` -> `\(.branch)` [\(.labels | join(", "))]"' plan.json
+            jq -r '.conflicts[] | "- **conflict** `\(.owner)/\(.file)`: \(.reason)"' plan.json
+            echo "- open copy PRs: $(wc -l < open.txt | tr -d ' ')"
+          } >> "$GITHUB_STEP_SUMMARY"
+          jq -r '.conflicts[] | "::warning::\(.owner)/\(.file): \(.reason) (not copied)"' plan.json
+
+      # ADR 0011a decision 6: bot merges only while the ruleset is enforced (public repo, rules on main).
+      - name: Merge gate
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PRIVATE=$(gh api "repos/$GITHUB_REPOSITORY" --jq .private)
+          TYPES=$(gh api "repos/$GITHUB_REPOSITORY/rules/branches/main" --jq '[.[].type] | join(",")' || echo "")
+          if [ "$PRIVATE" = "false" ] && [[ ",$TYPES," == *,pull_request,* ]] && [[ ",$TYPES," == *,required_status_checks,* ]]; then
+            echo "merge=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "merge=false" >> "$GITHUB_OUTPUT"
+            echo "- merge pass off: repo private=$PRIVATE, rules on main: ${TYPES:-none}. A person merges the copy PRs (ADR 0011a d6)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Mint the aa-ecosys-ci-bot token (AA-CIS-Infra, contents + pull requests write)
+        id: app-token
+        if: >-
+          env.DRY_RUN != 'true' && env.HAS_CI_BOT_APP == 'true' &&
+          (steps.plan.outputs.copies != '0' || (steps.plan.outputs.open != '0' && steps.gate.outputs.merge == 'true'))
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.AA_CI_BOT_APP_ID }}
+          private-key: ${{ secrets.AA_CI_BOT_PRIVATE_KEY }}
+          owner: AdventureAsia365-Ecosys
+          repositories: AA-CIS-Infra
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Open or update one PR per missing file
+        if: env.DRY_RUN != 'true' && steps.plan.outputs.copies != '0'
+        env:
+          BOT_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN_LABELS: ${{ github.token }}
+        run: |
+          if [ -z "$BOT_TOKEN" ]; then
+            echo "::error::the aa-ecosys-ci-bot App is not configured (repo variable AA_CI_BOT_APP_ID and/or secret AA_CI_BOT_PRIVATE_KEY missing): no copy PR can be opened"
+            exit 1
+          fi
+          REPO="$GITHUB_REPOSITORY"; ORGN="${REPO%%/*}"
+          for L in migration:expand migration:contract migration:destructive out-of-order; do
+            GH_TOKEN="$GH_TOKEN_LABELS" gh label create "$L" --repo "$REPO" --color ededed \
+              --description "AA-993 migration copy class (migration-sync)" --force >/dev/null
+          done
+          MAIN_SHA=$(GH_TOKEN="$BOT_TOKEN" gh api "repos/$REPO/git/ref/heads/main" --jq .object.sha)
+          jq -c '.copies[]' plan.json | while read -r c; do
+            BR=$(jq -r .branch <<<"$c"); F=$(jq -r .path <<<"$c"); SRC=$(jq -r .source <<<"$c")
+            export GH_TOKEN="$BOT_TOKEN"
+            N=$(gh api "repos/$REPO/pulls?state=open&head=$ORGN:$BR" --jq '.[0].number // empty')
+            if [ -n "$N" ]; then
+              gh api -H "Accept: application/vnd.github.raw" "repos/$REPO/contents/$F?ref=$BR" > cur.sql || : > cur.sql
+              if cmp -s cur.sql "$SRC"; then echo "#$N $F: up to date"; continue; fi
+              BLOB=$(gh api "repos/$REPO/contents/$F?ref=$BR" --jq .sha)
+              gh api -X PUT "repos/$REPO/contents/$F" -f message="$(jq -r .commit <<<"$c")" \
+                -f content="$(base64 -w0 "$SRC")" -f branch="$BR" -f sha="$BLOB" >/dev/null
+              echo "#$N $F: updated to the owner's main bytes"
+              echo "- updated #$N \`$F\` (the owner's main changed)" >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+            if gh api "repos/$REPO/git/ref/heads/$BR" >/dev/null 2>&1; then
+              gh api -X DELETE "repos/$REPO/git/refs/heads/$BR" >/dev/null     # left over from a closed PR
+            fi
+            gh api -X POST "repos/$REPO/git/refs" -f ref="refs/heads/$BR" -f sha="$MAIN_SHA" >/dev/null
+            gh api -X PUT "repos/$REPO/contents/$F" -f message="$(jq -r .commit <<<"$c")" \
+              -f content="$(base64 -w0 "$SRC")" -f branch="$BR" >/dev/null
+            N=$(gh api -X POST "repos/$REPO/pulls" -f title="$(jq -r .title <<<"$c")" -f head="$BR" -f base=main \
+              -f body="$(jq -r .body <<<"$c")" --jq .number)
+            ARGS=(); for L in $(jq -r '.labels[]' <<<"$c"); do ARGS+=(-f "labels[]=$L"); done
+            GH_TOKEN="$GH_TOKEN_LABELS" gh api -X POST "repos/$REPO/issues/$N/labels" "${ARGS[@]}" >/dev/null
+            echo "#$N $F: opened ($(jq -r '.labels | join(", ")' <<<"$c"))"
+            echo "- opened #$N \`$F\` [$(jq -r '.labels | join(", ")' <<<"$c")]" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+      - name: Merge the green copy PRs (ci-bot)
+        if: env.DRY_RUN != 'true' && steps.gate.outputs.merge == 'true' && steps.app-token.outputs.token != ''
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          REPO="$GITHUB_REPOSITORY"
+          SOURCES=(--source cis=owners/AA-CIS-App/api/migrations --source booking=owners/AA-Booking/migrations
+                   --source tripplanner=owners/AA-TripPlanner-Web/migrations --source crm=owners/AA-Partner/api/migrations)
+          for N in $(gh api --paginate "repos/$REPO/pulls?state=open&per_page=100" \
+                       --jq '.[] | select(.head.ref | startswith("bot/migration-copy/")) | .number'); do
+            gh api "repos/$REPO/pulls/$N" > pr.json
+            SHA=$(jq -r .head.sha pr.json)
+            gh api "repos/$REPO/pulls/$N/files?per_page=100" > files.json
+            F=$(jq -r 'if length == 1 then .[0].filename else "" end' files.json)
+            # The checkout is main at the start of this run: a file already there came in another way.
+            if [ -n "$F" ] && [ -f "$F" ] && [ "$(jq -r .user.type pr.json)" = "Bot" ]; then
+              gh pr close "$N" --repo "$REPO" --comment "\`$F\` is already on main; this copy PR is no longer needed (migration-sync)." >/dev/null
+              echo "- closed #$N: \`$F\` already on main" >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+            rm -f head.sql
+            if [ -n "$F" ]; then
+              gh api -H "Accept: application/vnd.github.raw" "repos/$REPO/contents/$F?ref=$SHA" > head.sql || rm -f head.sql
+            fi
+            gh api "repos/$REPO/commits/$SHA/check-runs?per_page=100" > checks.json
+            set +e
+            OUT=$(python3 db/migration_sync.py merge-check --pr pr.json --files files.json --checks checks.json \
+              --head-file head.sql "${SOURCES[@]}")
+            RC=$?
+            set -e
+            echo "#$N: $OUT"
+            if [ "$RC" = "0" ]; then
+              # The ruleset checks again at merge time; a refusal is reported and the next PR still gets its turn.
+              if gh pr merge "$N" --repo "$REPO" --squash --match-head-commit "$SHA" \
+                   --subject "$(jq -r .title pr.json) (#$N)" --body "Refs AA-993"; then
+                echo "- merged #$N \`$F\`" >> "$GITHUB_STEP_SUMMARY"
+              else
+                echo "::warning::#$N: GitHub refused the merge (see above); the next run retries"
+                echo "- #$N merge refused by GitHub" >> "$GITHUB_STEP_SUMMARY"
+              fi
+            else
+              echo "- #$N not merged: ${OUT#MERGE-CHECK }" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done

@@ -52,6 +52,12 @@ PATHS: tuple[str, ...] = (
     ".github/workflows/db-migrate.yml",
     ".github/workflows/db-schema-dump.yml",
     ".github/workflows/migration-copy-guard.yml",
+    # AA-993 M3: the auto-apply's runner side, the copy sync and the ruleset its merge check reads.
+    "db/apply_pending.py",
+    "db/migration_sync.py",
+    ".github/workflows/migration-apply.yml",
+    ".github/workflows/migration-sync.yml",
+    "tools/github/infra-main-ruleset.json",
 )
 
 

@@ -169,14 +169,59 @@ artifact), then every pending file, in number order, is rehearsed (expand post-c
 the next file sees it. It prints one `CLASSIFY` line per file and writes JSON (`class` expand / contract, the
 findings). Exit 14 when a file with the expand header has a finding or a lint error. The Migration Copy Guard job
 "Expand classify" runs it on every PR that changes a copy (a required check of the ruleset on `main`), and the M2b
-PostgreSQL tests (`db/tests/test_aa993_expand_check_pg.py`) on the same container. Nothing applies expand files
-automatically until M3.
+PostgreSQL tests (`db/tests/test_aa993_expand_check_pg.py`) on the same container. `migration-apply.yml` (M3, below)
+runs it again before every auto-apply.
 
 **Apply lock.** Every applying mode (apply, roles/ files, set-password, a run-script that is not `READ_ONLY`, and the
 `check` rehearsal of an expand file) takes
 the session advisory lock `pg_try_advisory_lock(993, 1)` (polled every 15 s, up to 25 min, then exit 17), so a
-person's DB Migrate run and the coming auto-apply (M3) never overlap. `check` of any other file and READ_ONLY
+person's DB Migrate run and the auto-apply (M3) never overlap. `check` of any other file and READ_ONLY
 scripts take no lock.
+
+### Copy sync and expand auto-apply (AA-993 M3, root ADR 0017 decisions 2, 5, 6, 8; ADR 0011a)
+**Migration Sync** (`.github/workflows/migration-sync.yml`, every 10 min + manual, `dry_run` input) replaces the hand
+copy PR. It clones each public owner repo's `main` anonymously (no token for another repo, no payload from an app),
+and `db/migration_sync.py plan` lists the **set difference**: every owner file missing from `db/migrations/<owner>/`,
+numbered at or above the owner's lowest copy here (below it is the history from before the copy flow: CIS 001-214,
+TripPlanner 001-006), so a lower-numbered file merged late is found too. Each one gets its own branch
+`bot/migration-copy/<owner>-<NNN>` (created from `main` through the GitHub API with the owner's raw bytes) and PR,
+opened as `aa-ecosys-ci-bot` (App token minted in the job: AA-CIS-Infra only, Contents + Pull requests write), labelled
+`migration:expand|contract|destructive`, plus `out-of-order` when the number is below the owner's highest registered
+key (latest DB Schema Dump artifact). A number already used here by another name is a conflict (warned, not copied).
+The merge pass squash-merges, pinned to the head commit, every open copy PR that `db/migration_sync.py merge-check`
+passes: opened by the bot, exactly one new file of that owner and number, byte-identical to the owner's `main`, every
+required check of `tools/github/infra-main-ruleset.json` green. Every class is merged (copy is not apply). The merge
+pass runs only while the repo is public and `main` carries the ruleset; otherwise a person merges the copy PRs.
+
+**Migration Apply** (`.github/workflows/migration-apply.yml`: push to `main` touching an owner dir, hourly, manual with
+`dry_run`; its own concurrency group `db-auto-apply`, never `db-migrate`) applies the pending **expand** files:
+
+1. `plan` (no AWS): owner clones + the latest dump's registered keys; `db/apply_pending.py plan` re-checks every
+   copy's bytes against the owner's `main` and forecasts the plan; when an expand file is next in line it runs
+   `db/expand_check.py --classify` (replay of Dev on a PostgreSQL 15 container). A copy gets the verdict `ok` in the
+   task's bundle only when its bytes equal the owner's `main` AND the replay classifies it `expand`.
+2. `apply` (environment `dev-db-auto`, role `aa-cis-infra-db-auto-apply`, uploads under `db-auto-apply/` only): one
+   migrator task, `MIGRATION_MODE=apply-pending` (`run_apply_pending` in `run_migration.py`). It takes the apply lock
+   for the whole run, reads the registered keys under it, and per owner (cis, booking, tripplanner, crm; never
+   `roles/`), in number order, applies each unregistered file above the legacy floor (`AUTO_APPLY_FLOOR`: CIS 263, the
+   hand-applied gaps 232/252/263 are ignored) while it is expand by its own header and lint, has the verdict `ok` and is
+   not below the owner's highest registered key; it **stops the owner at the first file that is not** (never skips past
+   a gap). Each file goes through the DB Migrate apply path (role switch, lock risk exit 15, post-check exit 14, CIC
+   validity exit 16, 30 s statement timeout, no job-table idle wait, no override, no snapshot); a lock timeout (55P03)
+   is retried after 30 s and 90 s; a file naming a hot table during an open rerun wave is deferred to the next run; a
+   failed file stops its owner, the other owners still run. Task log: `MIGRATE auto: …` lines and one
+   `MIGRATE auto-result {json}` line, summarised by `db/apply_pending.py report`.
+3. `probe`: the DB Isolation Probe as a **blocking** job (`db-isolation-probe.yml` called as a reusable workflow with
+   the same environment and the `db-auto-apply/probe` prefix), only after a file was applied.
+4. `dump`: DB Schema Dump with `after_apply=true`.
+5. `summary`: each contract / out-of-order file that blocks an owner gets one comment on its copy PR, "manual DB
+   Migrate apply needed".
+
+**Switch:** the repo variable `DB_AUTO_APPLY`. Anything but `true` (unset by default), a private repo, or a `main`
+without the ruleset = **list only**: the plan runs, the summary shows what would be applied, a person applies with
+DB Migrate. Local dry run (no AWS, no database):
+`python3 db/apply_pending.py plan --source booking=<AA-Booking clone>/migrations … --registered keys.txt` (one key per
+line) prints the plan the task would follow.
 
 - **no-transaction** (MIG-10): for `CREATE INDEX CONCURRENTLY`, `REINDEX CONCURRENTLY`, `VACUUM`.
   No `BEGIN`/`COMMIT` in the file, every statement idempotent (`IF NOT EXISTS`), and the

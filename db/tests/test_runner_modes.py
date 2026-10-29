@@ -588,10 +588,10 @@ class RunScriptTest(unittest.TestCase):
 
 
 # ── the workflows on the migrator task definition (X1 S12; the tour liveness gate, AA-986 L7b; the freshness
-# probe, AA-991) ──
+# probe, AA-991; the expand auto-apply, AA-993 M3) ──
 WORKFLOWS = {name: (ROOT / ".github" / "workflows" / f"{name}.yml").read_text(encoding="utf-8")
              for name in ("db-migrate", "db-schema-dump", "db-isolation-probe", "db-tour-liveness-gate",
-                          "db-freshness-probe")}
+                          "db-freshness-probe", "migration-apply")}
 # Every variable name the task could see before S12 (db-migrate overrides) plus the dump's two: S12 adds none.
 TASK_ENV_NAMES = {"RUNNER_URL", "MIGRATION_URL", "MIGRATION_FILE", "MIGRATION_VERSION", "MIGRATION_SHA256",
                   "MIGRATION_MODE", "MIGRATION_SNAPSHOT", "MIGRATION_IDLE_OVERRIDE", "DUMP_BUCKET", "DUMP_KEY"}

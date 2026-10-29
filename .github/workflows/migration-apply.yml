@@ -1,0 +1,409 @@
+name: Migration Apply (expand auto-apply)
+# AA-993 Phase E slice M3 (root ADR 0017 decisions 5, 6, 8; design §2 M3; critic points 1, 2, 4, 11): applies the
+# pending EXPAND copies of db/migrations/<cis|booking|tripplanner|crm>/ to the Dev database before the apps deploy the
+# code that needs them. Contract, destructive and out-of-order files are never applied here: they are listed in the
+# summary and commented on their copy PR ("manual DB Migrate apply needed"). roles/ files are never touched.
+#
+# Switch: the repo variable DB_AUTO_APPLY. Anything but 'true' (unset by default) = LIST ONLY: the plan job runs and
+# the summary shows what would be applied (a person applies it with DB Migrate). Auto-apply also needs AA-CIS-Infra
+# to be public with the ruleset on main in force (ADR 0017 d8, ADR 0014): on GitHub Free the ruleset and the
+# environment rules exist only on a public repo, so a private repo or a missing ruleset means list only as well.
+#
+# Jobs:
+#   plan    no AWS. Clones the public owner repos' main (anonymous, migrations folders only) and reads the latest DB
+#           Schema Dump artifact (registered keys). db/apply_pending.py re-checks every copy's bytes against the owner's
+#           main (never the copy PR's merge or label) and forecasts the strict-prefix plan. When an expand file is next
+#           in line it re-classifies: db/expand_check.py --classify on a throw-away PostgreSQL 15 replay of Dev (the
+#           same code as the Copy Guard's "Expand classify"). Only files with bytes = owner main AND class expand get
+#           the verdict ok in the bundle (artifact) the task receives. A scheduled run in list-only mode skips the
+#           classify (no evidence needed when nothing will be applied).
+#   apply   environment dev-db-auto (deployment branch main), OIDC role aa-cis-infra-db-auto-apply (secret AWS_ROLE_ARN
+#           of that environment; accounts/aa365/cicd_db_auto_apply.tf: the migrator family and the S3 prefix
+#           db-auto-apply/ only, not aa-cis-infra-tf-apply). One migrator task (.github/scripts/migrator-task.sh) runs
+#           db/run_migration.py MIGRATION_MODE=apply-pending: the apply lock (session advisory lock 993/1, the one DB
+#           Migrate takes) for the whole run, the registered keys read under it, then per owner in number order every
+#           unregistered expand file with verdict ok until the first file a person must apply (never past a gap).
+#           Each file goes through the DB Migrate apply path: role switch, lock risk (exit 15), runtime post-check
+#           (exit 14), CIC validity (exit 16), statement_timeout 30 s, no job-table idle wait (ADR 0017 d5), but a file
+#           naming a hot table waits for an open rerun wave (deferred to the next run). 55P03 is retried twice.
+#   probe   BLOCKING DB Isolation Probe (reusable db-isolation-probe.yml, same narrow role), only after a file was
+#           applied. Red here = the run is red, and the app schema-gate (M4b) requires this run to be green.
+#   dump    dispatches DB Schema Dump with after_apply=true (its root PR merges itself when clean, AA-993 M1).
+#   summary comments on the copy PR of each contract / out-of-order file that blocks an owner (once per PR).
+#
+# Concurrency: its own group db-auto-apply, never db-migrate (critic 11: an auto-apply must never replace a person's
+# pending DB Migrate run). The apply lock in the database serializes this workflow and DB Migrate.
+# Triggers: a push to main that touches an owner dir (a merged copy PR), hourly (a backstop, e.g. after a person
+# applied the contract file that blocked an owner, or after a deferral), and manual (dry_run = plan + classify only).
+on:
+  push:
+    branches: [main]
+    paths:
+      - "db/migrations/cis/**"
+      - "db/migrations/booking/**"
+      - "db/migrations/tripplanner/**"
+      - "db/migrations/crm/**"
+  schedule:
+    - cron: "37 * * * *"   # hourly, :37
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Plan and classify only: no AWS call, nothing applied (also the behaviour while DB_AUTO_APPLY is not true)"
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: db-auto-apply
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    name: Plan (bytes, classify, forecast; no AWS)
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read          # gh run download of the DB Schema Dump artifact (this repo only)
+    outputs:
+      apply: ${{ steps.final.outputs.apply }}
+      manual: ${{ steps.final.outputs.manual }}
+      allowed: ${{ steps.gate.outputs.allowed }}
+    env:
+      # pgvector/pgvector:0.8.1-pg15 (PostgreSQL 15 + vector 0.8.1, as RDS), pinned to its image index digest (as the
+      # Copy Guard's "Expand classify" and the DB Schema Dump replay).
+      REPLAY_IMAGE: pgvector/pgvector@sha256:94aee7e88f98125114657cab98e28c5dfa8dd517a6bf83fd98b503439f1e3de6
+      EVENT: ${{ github.event_name }}
+      DRY_RUN: ${{ inputs.dry_run == true }}
+      DB_AUTO_APPLY: ${{ vars.DB_AUTO_APPLY }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Clone the owner repos' main (anonymous, migrations folders only)
+        run: |
+          clone() {
+            git clone --quiet --depth 1 --filter=blob:none --sparse "https://github.com/AdventureAsia365-Ecosys/$1.git" "owners/$1"
+            git -C "owners/$1" sparse-checkout set "$2"
+            echo "$1 main: $(git -C "owners/$1" rev-parse --short HEAD)"
+          }
+          clone AA-CIS-App api/migrations
+          clone AA-Booking migrations
+          clone AA-TripPlanner-Web migrations
+          clone AA-Partner api/migrations
+
+      - name: Registered keys (latest DB Schema Dump artifact)
+        id: live
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RUN=$(gh run list -R "$GITHUB_REPOSITORY" --workflow db-schema-dump.yml --branch main --status success \
+            --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+          if [ -n "$RUN" ] && gh run download "$RUN" -R "$GITHUB_REPOSITORY" -n "db-schema-dump-$RUN" -D dump \
+              && [ -s dump/schema.json ]; then
+            echo "path=dump/schema.json" >> "$GITHUB_OUTPUT"
+            echo "registered keys: the live dump of DB Schema Dump run $RUN"
+          else
+            echo "::warning::no DB Schema Dump artifact on main (expired or none): no forecast and no classify, so nothing is applied this run. Dispatch DB Schema Dump"
+          fi
+
+      # ADR 0017 d8: auto-apply only while DB_AUTO_APPLY is 'true' AND the repo is public AND main carries the ruleset
+      # (pull request + required checks). Anything else is list only.
+      - name: Auto-apply gate
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PRIVATE=$(gh api "repos/$GITHUB_REPOSITORY" --jq .private)
+          TYPES=$(gh api "repos/$GITHUB_REPOSITORY/rules/branches/main" --jq '[.[].type] | join(",")' || echo "")
+          why=""
+          [ "$DB_AUTO_APPLY" = "true" ] || why="repo variable DB_AUTO_APPLY is '${DB_AUTO_APPLY:-unset}', not 'true'"
+          [ -n "$why" ] || [ "$DRY_RUN" != "true" ] || why="dry run"
+          [ -n "$why" ] || [ "$PRIVATE" = "false" ] || why="the repo is private: the ruleset is not enforced on GitHub Free (ADR 0017 d8)"
+          if [ -z "$why" ]; then
+            case ",$TYPES," in *,pull_request,*) ;; *) why="main has no pull_request rule (ruleset missing)";; esac
+            case ",$TYPES," in *,required_status_checks,*) ;; *) why="${why:-main has no required_status_checks rule (ruleset missing)}";; esac
+          fi
+          if [ -z "$why" ]; then
+            echo "allowed=true" >> "$GITHUB_OUTPUT"
+            echo "- **auto-apply on** (DB_AUTO_APPLY=true, public repo, ruleset on main: $TYPES)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "allowed=false" >> "$GITHUB_OUTPUT"
+            echo "auto-apply off: $why (list only)"
+            echo "- **list only:** $why. Expand files below are applied by hand with DB Migrate (one click each)." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: First plan (bytes against the owner main; is a classify needed?)
+        id: first
+        env:
+          LIVE: ${{ steps.live.outputs.path }}
+        run: |
+          ARGS=(--source cis=owners/AA-CIS-App/api/migrations --source booking=owners/AA-Booking/migrations
+                --source tripplanner=owners/AA-TripPlanner-Web/migrations --source crm=owners/AA-Partner/api/migrations)
+          [ -n "$LIVE" ] && ARGS+=(--live "$LIVE")
+          python3 db/apply_pending.py plan "${ARGS[@]}" --github-output "$GITHUB_OUTPUT"
+
+      - name: Classify the pending files (expand post-check on a replay of Dev)
+        id: classify
+        if: >-
+          steps.first.outputs.needs_classify == 'true' &&
+          (steps.gate.outputs.allowed == 'true' || env.EVENT != 'schedule')
+        env:
+          LIVE: ${{ steps.live.outputs.path }}
+        run: |
+          python -m pip install --quiet asyncpg==0.30.0 pyyaml==6.0.2
+          PW="$(openssl rand -hex 16)"
+          docker run -d --name classify-db -e POSTGRES_PASSWORD="$PW" -p 127.0.0.1:55432:5432 "$REPLAY_IMAGE" >/dev/null
+          # The replay reads a COPY of the owner folders with this repo's copies laid over them (as the Copy Guard
+          # does). owners/ itself stays the pristine owner main: the byte check of the final plan compares with it.
+          for pair in cis:AA-CIS-App/api/migrations booking:AA-Booking/migrations \
+                      tripplanner:AA-TripPlanner-Web/migrations crm:AA-Partner/api/migrations; do
+            mkdir -p "replay/${pair#*:}"
+            cp "owners/${pair#*:}"/*.sql "replay/${pair#*:}/"
+            cp db/migrations/"${pair%%:*}"/*.sql "replay/${pair#*:}/"
+          done
+          for _ in $(seq 1 60); do docker exec classify-db pg_isready -h 127.0.0.1 -U postgres -q && break; sleep 2; done
+          set +e
+          python3 db/expand_check.py --classify --live "$LIVE" \
+            --admin-dsn "postgresql://postgres:${PW}@127.0.0.1:55432/postgres" \
+            --source roles=db/migrations/roles --source cis=replay/AA-CIS-App/api/migrations \
+            --source booking=replay/AA-Booking/migrations --source tripplanner=replay/AA-TripPlanner-Web/migrations \
+            --source crm=replay/AA-Partner/api/migrations \
+            --out classify.json --summary "$GITHUB_STEP_SUMMARY" > classify.log 2>&1
+          status=$?
+          set -e
+          grep -v '^REPLAY ok' classify.log || true
+          # 14 = an expand file has a finding: that file gets a contract verdict (the plan below), not a red run here.
+          # Anything else non-zero without a result file = no evidence = nothing applied.
+          echo "classify exit $status"
+          [ -s classify.json ] || echo "::warning::classify produced no result (exit $status): no file gets the verdict ok this run"
+          docker rm -f classify-db >/dev/null 2>&1 || true
+
+      - name: Final plan and the task's bundle
+        id: final
+        env:
+          LIVE: ${{ steps.live.outputs.path }}
+        run: |
+          ARGS=(--source cis=owners/AA-CIS-App/api/migrations --source booking=owners/AA-Booking/migrations
+                --source tripplanner=owners/AA-TripPlanner-Web/migrations --source crm=owners/AA-Partner/api/migrations)
+          [ -n "$LIVE" ] && ARGS+=(--live "$LIVE")
+          [ -s classify.json ] && ARGS+=(--classify classify.json)
+          python3 db/apply_pending.py plan "${ARGS[@]}" --bundle bundle.json --plan-out plan.json \
+            --summary "$GITHUB_STEP_SUMMARY" --github-output "$GITHUB_OUTPUT"
+
+      - name: Keep the plan, the bundle and the classify result
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          # No attempt in the name: "re-run failed jobs" re-runs only the apply job, which must find this bundle.
+          name: migration-apply-${{ github.run_id }}
+          overwrite: true
+          path: |
+            bundle.json
+            plan.json
+            classify.json
+            classify.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+  apply:
+    name: Apply on Dev (dev-db-auto)
+    needs: plan
+    if: needs.plan.outputs.apply == 'true' && needs.plan.outputs.allowed == 'true'
+    runs-on: ubuntu-latest
+    environment: dev-db-auto
+    timeout-minutes: 45
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      applied: ${{ steps.result.outputs.applied }}
+      manual: ${{ steps.result.outputs.manual }}
+    env:
+      AWS_REGION: us-west-1
+      CLUSTER: aa-cis-dev-cluster
+      SERVICE: aa-cis-dev-api
+      BUCKET: aa-cis-bronze-005097885195
+      LOG_GROUP: /ecs/aa-cis-dev
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: migration-apply-${{ github.run_id }}
+
+      - name: Configure AWS credentials (OIDC, environment dev-db-auto)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-west-1
+
+      # The same per-run revision of aa-cis-dev-db-migrate as DB Migrate (api image swapped in), deregistered below.
+      - name: Register the migrator revision (api image)
+        id: td
+        run: bash .github/scripts/migrator-task.sh prepare
+
+      # Presigned URLs (15 min) are created and used in this one step (a masked step output can be dropped). Uploads
+      # go under db-auto-apply/ only: the narrow role may write nowhere else in the bucket.
+      - name: Upload runner + bundle, run one-off ECS task (apply-pending)
+        id: task
+        run: |
+          test -s bundle.json || { echo "::error::no bundle from the plan job"; exit 1; }
+          PREFIX="db-auto-apply/${{ github.run_id }}-${{ github.run_attempt }}"
+          echo "prefix=$PREFIX" >> "$GITHUB_OUTPUT"
+          aws s3 cp db/run_migration.py "s3://$BUCKET/$PREFIX/run_migration.py" --only-show-errors
+          RUNNER_URL=$(aws s3 presign "s3://$BUCKET/$PREFIX/run_migration.py" --expires-in 900)
+          echo "::add-mask::$RUNNER_URL"
+          aws s3 cp bundle.json "s3://$BUCKET/$PREFIX/payload" --only-show-errors
+          FILE_URL=$(aws s3 presign "s3://$BUCKET/$PREFIX/payload" --expires-in 900)
+          echo "::add-mask::$FILE_URL"
+          SHA256=$(sha256sum bundle.json | cut -d' ' -f1)
+          TASK_DEF="${{ steps.td.outputs.arn }}"
+          NET='${{ steps.td.outputs.network }}'
+          echo "task definition: $TASK_DEF (image of ${{ steps.td.outputs.api_task_definition }}); bundle sha256 ${SHA256:0:12}"
+          # The variable names DB Migrate already passes (no new name reaches the task): MIGRATION_FILE and
+          # MIGRATION_VERSION are empty, the mode is apply-pending, no snapshot and never an idle override.
+          OVERRIDES=$(jq -nc --arg runner "$RUNNER_URL" --arg sql "$FILE_URL" --arg sha "$SHA256" \
+            '{containerOverrides: [{name: "migrate",
+              command: ["python3", "-c", "import os,urllib.request;exec(urllib.request.urlopen(os.environ[\"RUNNER_URL\"],timeout=30).read())"],
+              environment: [
+                {name: "RUNNER_URL", value: $runner}, {name: "MIGRATION_URL", value: $sql},
+                {name: "MIGRATION_FILE", value: ""}, {name: "MIGRATION_VERSION", value: ""},
+                {name: "MIGRATION_SHA256", value: $sha}, {name: "MIGRATION_MODE", value: "apply-pending"}]}]}')
+          TASK_ARN=$(aws ecs run-task --cluster "$CLUSTER" --task-definition "$TASK_DEF" \
+            --launch-type FARGATE --network-configuration "$NET" --overrides "$OVERRIDES" \
+            --started-by "gh-db-auto-apply-${{ github.run_id }}" \
+            --query 'tasks[0].taskArn' --output text)
+          [ -n "$TASK_ARN" ] && [ "$TASK_ARN" != "None" ] || { echo "::error::run-task returned no task"; exit 1; }
+          echo "task: $TASK_ARN"
+          echo "arn=$TASK_ARN" >> "$GITHUB_OUTPUT"
+          # The waiter gives up after 10 min; the apply lock may wait 25 min for a DB Migrate run: 40 min in total.
+          for _ in 1 2 3 4; do aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$TASK_ARN" && break; done
+
+      - name: Task log + result
+        id: result
+        if: always() && steps.task.outputs.arn != ''
+        env:
+          TASK_ARN: ${{ steps.task.outputs.arn }}
+        run: |
+          TASK_ID="${TASK_ARN##*/}"
+          STREAM="migrate/migrate/$TASK_ID"
+          : > task.log
+          TOKEN=""
+          for _ in $(seq 1 50); do
+            if [ -z "$TOKEN" ]; then
+              R=$(aws logs get-log-events --log-group-name "$LOG_GROUP" --log-stream-name "$STREAM" --start-from-head --output json) || break
+            else
+              R=$(aws logs get-log-events --log-group-name "$LOG_GROUP" --log-stream-name "$STREAM" --next-token "$TOKEN" --output json) || break
+            fi
+            jq -r '.events[].message' <<<"$R" >> task.log
+            NEXT=$(jq -r '.nextForwardToken' <<<"$R")
+            [ "$NEXT" = "$TOKEN" ] && break
+            TOKEN="$NEXT"
+          done
+          grep -v '^MIGRATE auto-result ' task.log || true
+          grep '^MIGRATE auto: ' task.log >> "$GITHUB_STEP_SUMMARY" || true
+          # Outputs (applied, manual) before any exit below: the probe and the summary jobs read them.
+          python3 db/apply_pending.py report --log task.log --summary "$GITHUB_STEP_SUMMARY" --github-output "$GITHUB_OUTPUT"
+          DESC=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$TASK_ARN" --output json)
+          EXIT=$(jq -r '.tasks[0].containers[] | select(.name=="migrate") | .exitCode' <<<"$DESC")
+          STATUS=$(jq -r '.tasks[0].lastStatus' <<<"$DESC")
+          echo "exit code: $EXIT  status: $STATUS  stopped: $(jq -r '.tasks[0].stoppedReason' <<<"$DESC")"
+          if [ "$STATUS" != "STOPPED" ]; then
+            echo "::error::the task is still $STATUS after the 40-minute wait and keeps running with the migrator login (the log above is partial). Watch $STREAM in CloudWatch; stop the task in the ECS Console only if it must not finish"
+            exit 1
+          fi
+          if [ "$EXIT" != "0" ]; then
+            echo "::error::auto-apply task exited $EXIT: $(python3 db/apply_pending.py explain "$EXIT")"
+            exit 1
+          fi
+
+      - name: Deregister the migrator revision
+        if: always() && steps.td.outputs.arn != ''
+        run: bash .github/scripts/migrator-task.sh deregister "${{ steps.td.outputs.arn }}"
+
+      - name: Remove S3 objects
+        if: always() && steps.task.outputs.prefix != ''
+        run: aws s3 rm "s3://$BUCKET/${{ steps.task.outputs.prefix }}/" --recursive --only-show-errors
+
+  # Blocking (critic 4): today DB Migrate only dispatches the probe (continue-on-error). Here a failing cell makes the
+  # run red, and the app schema-gate (M4b) requires the run that registered its keys to be green.
+  probe:
+    name: Isolation probe (blocking)
+    needs: apply
+    if: always() && needs.apply.outputs.applied == 'true'
+    permissions:
+      id-token: write
+      contents: read
+    uses: ./.github/workflows/db-isolation-probe.yml
+    with:
+      reason: "after migration-apply run ${{ github.run_id }}"
+      environment: dev-db-auto
+      s3_root: db-auto-apply/probe
+    secrets: inherit
+
+  dump:
+    name: Regenerate the schema reference (DB Schema Dump)
+    needs: [apply, probe]
+    if: always() && needs.apply.outputs.applied == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      # The schema changed, whatever the probe said; with after_apply=true the root PR merges itself only when its
+      # own conditions hold (AA-993 M1, db/schema_dump_automerge.py).
+      - name: Dispatch DB Schema Dump (after_apply)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run db-schema-dump.yml --repo "$GITHUB_REPOSITORY" --ref main \
+            -f reason="after migration-apply (run ${{ github.run_id }})" -f after_apply=true
+          echo "- dispatched DB Schema Dump (after_apply=true)" >> "$GITHUB_STEP_SUMMARY"
+
+  summary:
+    name: Summary and copy PR notes
+    needs: [plan, apply, probe]
+    if: always() && needs.plan.result != 'skipped'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write   # one comment per blocking contract / out-of-order copy PR
+    steps:
+      - name: Comment "manual DB Migrate apply needed" on blocking copy PRs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # The task's own list when it ran; the forecast when it did not (list only).
+          MANUAL: ${{ needs.apply.result == 'skipped' && needs.plan.outputs.manual || needs.apply.outputs.manual }}
+        run: |
+          {
+            echo "### Migration Apply"
+            echo "- plan: ${{ needs.plan.result }}, apply: ${{ needs.apply.result }}, probe: ${{ needs.probe.result }}"
+            echo "- auto-apply allowed: ${{ needs.plan.outputs.allowed }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+          MARK="<!-- aa993-manual-apply -->"
+          OWNER="${GITHUB_REPOSITORY%%/*}"
+          IFS=',' read -ra FILES <<<"$MANUAL"
+          for f in "${FILES[@]}"; do
+            [ -n "$f" ] || continue
+            dir="${f%%/*}"; num="${f#*/}"; num="${num:0:3}"
+            BR="bot/migration-copy/${dir}-${num}"
+            N=$(gh api "repos/$GITHUB_REPOSITORY/pulls?state=all&head=$OWNER:$BR&per_page=1" --jq '.[0].number // empty')
+            if [ -z "$N" ]; then
+              echo "- \`$f\`: manual DB Migrate apply needed (no bot copy PR found, copied by hand)" >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+            if gh api "repos/$GITHUB_REPOSITORY/issues/$N/comments?per_page=100" --jq '.[].body' | grep -qF "$MARK"; then
+              echo "- \`$f\`: manual DB Migrate apply needed (#$N, already noted)" >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+            gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$N/comments" -f body="$MARK
+          **Manual DB Migrate apply needed** for \`$f\`: it is a contract (or out-of-order) file, so migration-apply never applies it and every later file of this owner waits behind it (strict number order, root ADR 0017 d5). Run DB Migrate \`check\` then \`apply\` with \`migration=$f\` (run ${{ github.run_id }})." >/dev/null
+            echo "- \`$f\`: manual DB Migrate apply needed (commented on #$N)" >> "$GITHUB_STEP_SUMMARY"
+          done

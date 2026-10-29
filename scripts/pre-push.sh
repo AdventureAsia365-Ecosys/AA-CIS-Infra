@@ -106,7 +106,9 @@ patterns_for() {
         'db/tour_liveness_gate.py' 'db/freshness_gate.py' 'db/scripts/**' 'db/templates/**' '.github/scripts/**' \
         '.github/workflows/db-isolation-probe.yml' '.github/workflows/db-tour-liveness-gate.yml' \
         '.github/workflows/db-freshness-probe.yml' '.github/workflows/db-migrate.yml' \
-        '.github/workflows/db-schema-dump.yml' '.github/workflows/migration-copy-guard.yml' ;;
+        '.github/workflows/db-schema-dump.yml' '.github/workflows/migration-copy-guard.yml' \
+        'db/apply_pending.py' 'db/migration_sync.py' '.github/workflows/migration-apply.yml' \
+        '.github/workflows/migration-sync.yml' 'tools/github/infra-main-ruleset.json' ;;
     ops-probe) # ops-probe-test.yml
       printf '%s\n' 'accounts/aa365/lambda_src/dfs_balance_check/**' 'accounts/aa365/lambda_src/dfs_balance_check_tests/**' \
         '.github/workflows/ops-probe-test.yml' ;;

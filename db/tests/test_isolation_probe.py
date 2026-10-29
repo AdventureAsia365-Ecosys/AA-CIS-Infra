@@ -976,7 +976,10 @@ class MainTest(unittest.TestCase):
 class WorkflowTest(unittest.TestCase):
     def test_schedule_and_concurrency(self):
         self.assertIn('cron: "13 4 * * *"', WORKFLOW)                 # 30 min after the dump (03:43)
-        self.assertRegex(WORKFLOW, r"concurrency:\n  group: db-isolation-probe\n  cancel-in-progress: false")
+        # AA-993 M3: github.workflow is the caller's name in a reusable run (migration-apply's blocking probe), so a
+        # called probe and the nightly one never share a group (a pending run in a shared group is cancelled).
+        self.assertRegex(WORKFLOW, r"concurrency:\n  group: \$\{\{ github\.workflow \}\}-isolation-probe\n"
+                                   r"  cancel-in-progress: false")
         self.assertIn("if: github.ref == 'refs/heads/main'", WORKFLOW)
 
     def test_config_is_an_argument_not_new_env(self):
