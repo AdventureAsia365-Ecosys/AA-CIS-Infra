@@ -579,14 +579,14 @@ class WorkflowShapeTest(unittest.TestCase):
         self.assertIn("workflow_dispatch", on)
 
     def test_sync_pulls_and_mints_a_narrow_token_only(self):
-        self.assertEqual(self.sync[True]["schedule"], [{"cron": "*/10 * * * *"}])
+        self.assertEqual(self.sync[True]["schedule"], [{"cron": "4-59/10 * * * *"}])
         self.assertNotIn("repository_dispatch", self.sync[True])
         steps = {s.get("name", ""): s for s in self.sync["jobs"]["sync"]["steps"]}
         mint = next(s for n, s in steps.items() if n.startswith("Mint"))
         self.assertEqual(mint["with"]["repositories"], "AA-CIS-Infra")
         perms = {k: v for k, v in mint["with"].items() if k.startswith("permission-")}
         self.assertEqual(perms, {"permission-contents": "write", "permission-pull-requests": "write"})
-        self.assertEqual(self.sync["jobs"]["sync"]["if"], "github.ref == 'refs/heads/main'")
+        self.assertTrue(self.sync["jobs"]["sync"]["if"].startswith("github.ref == 'refs/heads/main' && ("))
         self.assertIn("--match-head-commit", self.sync_text)
         self.assertIn("db/migration_sync.py merge-check", self.sync_text)
         # Per owner in ascending number order, and the pass sees what it merged (merge-check's gap rule).
@@ -599,6 +599,31 @@ class WorkflowShapeTest(unittest.TestCase):
         self.assertIn("BOT_LOGIN=$(python3 db/migration_sync.py bot-login)", self.sync_text)
         self.assertIn("steps.gate.outputs.merge == 'true'", self.sync_text)
         self.assertEqual(self.sync["permissions"], {"contents": "read"})
+
+    def test_sync_wakes_on_events_not_only_the_cron(self):
+        # S258: GitHub's */10 cron is best effort. An owner's wake-up comment and the end of a copy PR's slow checks
+        # start the sync too; the cron stays as the backstop.
+        on, job = self.sync[True], self.sync["jobs"]["sync"]
+        self.assertEqual(on["issue_comment"], {"types": ["created"]})
+        self.assertEqual(on["workflow_run"]["types"], ["completed"])
+        self.assertEqual(on["workflow_run"]["branches"], ["bot/migration-copy/**"])
+        # Each name is the `name:` of a workflow that reports a required check of the ruleset (a rename would
+        # silently drop the trigger).
+        import yaml
+        names = {yaml.safe_load((WF / f).read_text())["name"] for f in ("terraform-plan.yml", "migration-copy-guard.yml")}
+        self.assertEqual(set(on["workflow_run"]["workflows"]), names)
+        # Only ci-bot's comment on the labelled wake-up issue counts; never a PR comment, never anyone else.
+        cond = " ".join(job["if"].split())
+        self.assertIn("github.event.comment.user.login == 'aa-ecosys-ci-bot[bot]'", cond)
+        self.assertIn("contains(github.event.issue.labels.*.name, 'migration-sync-wake')", cond)
+        self.assertIn("!github.event.issue.pull_request", cond)
+        self.assertIn("github.event.workflow_run.head_repository.full_name == github.repository", cond)
+        self.assertIn("startsWith(github.event.workflow_run.head_branch, 'bot/migration-copy/')", cond)
+        # The comment is a doorbell: its body is never read.
+        self.assertNotIn("comment.body", self.sync_text)
+        # Job-level concurrency: a skipped run (someone else's comment) never replaces a pending real run.
+        self.assertNotIn("concurrency", self.sync)
+        self.assertEqual(job["concurrency"], {"group": "migration-sync", "cancel-in-progress": False})
 
 
 if __name__ == "__main__":

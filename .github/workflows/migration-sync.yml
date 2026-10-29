@@ -30,9 +30,29 @@ name: Migration Sync (owner copies)
 # open or merge, for AA-CIS-Infra only, Contents write + Pull requests write; nothing else. ci-bot is not a bypass actor
 # of the ruleset, so it cannot push to main: its merge of a green copy PR is the only way its write reaches main.
 # Needs the repo variable AA_CI_BOT_APP_ID and the repo secret AA_CI_BOT_PRIVATE_KEY (as DB Schema Dump).
+#
+# Triggers (S258: GitHub runs a */10 cron best effort; on 29/10 it fired once in ~6 h, so the cron alone is no
+# "no hand step" path). Every run does the same idempotent work, whatever started it:
+#   - wake-up comment: each owner repo's "Migration sync wake-up" workflow (push to main touching its migrations
+#     folder) posts a comment, as aa-ecosys-ci-bot, on the open issue labelled migration-sync-wake here. Its token is
+#     minted for AA-CIS-Infra with Issues write only (no Contents, Pull requests or Actions: it cannot write code,
+#     open a PR or dispatch a workflow). The comment is a doorbell, not a payload: its text is never read, the run
+#     still pulls the owners' main anonymously (critic 1). Comments by anyone else, or on any other issue, skip the job;
+#   - copy PR checks done: workflow_run of "Terraform Plan" and "Migration Copy Guard" on a bot/migration-copy/*
+#     branch of this repo, so the merge pass runs as soon as the slow required checks finish ("gitleaks" runs on
+#     pull_request_target, whose head branch is main, so it is no trigger; it is the fastest check);
+#   - the cron, kept as the backstop (offset from :00, when GitHub drops the most scheduled runs), and by hand.
+# The wake-up issue is created here (GITHUB_TOKEN) when a scheduled or manual run finds none open; the owner workflows
+# only look it up. Concurrency is per job, so a skipped run (a stranger's comment) never replaces a pending real run.
 on:
   schedule:
-    - cron: "*/10 * * * *"
+    - cron: "4-59/10 * * * *"
+  issue_comment:
+    types: [created]
+  workflow_run:
+    workflows: ["Terraform Plan", "Migration Copy Guard"]
+    types: [completed]
+    branches: ["bot/migration-copy/**"]
   workflow_dispatch:
     inputs:
       dry_run:
@@ -41,10 +61,6 @@ on:
         type: boolean
         default: false
 
-concurrency:
-  group: migration-sync
-  cancel-in-progress: false
-
 permissions:
   contents: read
 
@@ -52,7 +68,19 @@ jobs:
   sync:
     name: Copy owner migrations (set difference) and merge green copies
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
+    if: >-
+      github.ref == 'refs/heads/main' && (
+        (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') ||
+        (github.event_name == 'issue_comment' && !github.event.issue.pull_request &&
+         contains(github.event.issue.labels.*.name, 'migration-sync-wake') &&
+         github.event.comment.user.login == 'aa-ecosys-ci-bot[bot]') ||
+        (github.event_name == 'workflow_run' &&
+         github.event.workflow_run.head_repository.full_name == github.repository &&
+         startsWith(github.event.workflow_run.head_branch, 'bot/migration-copy/'))
+      )
+    concurrency:
+      group: migration-sync
+      cancel-in-progress: false
     timeout-minutes: 15
     permissions:
       contents: read
@@ -64,6 +92,21 @@ jobs:
       HAS_CI_BOT_APP: ${{ vars.AA_CI_BOT_APP_ID != '' && secrets.AA_CI_BOT_PRIVATE_KEY != '' }}
     steps:
       - uses: actions/checkout@v7
+
+      # Read by tools/github/migration_lead_time.py (which trigger opened or merged a copy).
+      - name: Trigger
+        env:
+          EVENT: ${{ github.event_name }}
+          WAKE_FROM: ${{ github.event.comment.created_at }}
+          RUN_NAME: ${{ github.event.workflow_run.name }}
+          RUN_BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          case "$EVENT" in
+            issue_comment) why="wake-up comment ($WAKE_FROM)" ;;
+            workflow_run)  why="$RUN_NAME completed on $RUN_BRANCH" ;;
+            *)             why="$EVENT" ;;
+          esac
+          echo "- trigger: $why" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Clone the owner repos' main (anonymous, migrations folders only)
         run: |
@@ -238,3 +281,20 @@ jobs:
               echo "- #$N not merged: ${OUT#MERGE-CHECK }" >> "$GITHUB_STEP_SUMMARY"
             fi
           done
+
+      # The owner repos' "Migration sync wake-up" workflows comment on this issue; they never create it (their token
+      # is Issues write on this repo only, and one open labelled issue keeps the doorbell in one place).
+      - name: Wake-up issue (find or create)
+        if: env.DRY_RUN != 'true' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          REPO="$GITHUB_REPOSITORY"
+          N=$(gh api "repos/$REPO/issues?state=open&labels=migration-sync-wake&per_page=1" --jq '.[0].number // empty')
+          if [ -n "$N" ]; then echo "wake-up issue #$N"; exit 0; fi
+          gh label create migration-sync-wake --repo "$REPO" --color ededed \
+            --description "AA-993: owner repos comment here to start Migration Sync" --force >/dev/null
+          N=$(gh issue create --repo "$REPO" --title "Migration sync wake-up (bot doorbell)" --label migration-sync-wake \
+            --body "Each owner repo's \"Migration sync wake-up\" workflow comments here (as aa-ecosys-ci-bot) after a push to main that touches its migrations folder; each such comment starts .github/workflows/migration-sync.yml. Comments by anyone else are ignored. Closing this issue is safe: the next scheduled Migration Sync run opens a new one. Refs AA-993." \
+            | sed 's#.*/##')
+          echo "- opened wake-up issue #$N" >> "$GITHUB_STEP_SUMMARY"

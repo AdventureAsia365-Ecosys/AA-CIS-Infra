@@ -180,7 +180,11 @@ scripts take no lock.
 
 ### Copy sync and expand auto-apply (AA-993 M3, root ADR 0017 decisions 2, 5, 6, 8; ADR 0011a)
 **Migration Sync** (`.github/workflows/migration-sync.yml`, every 10 min + manual, `dry_run` input) replaces the hand
-copy PR. It clones each public owner repo's `main` anonymously (no token for another repo, no payload from an app),
+copy PR. Since S258 it does not wait for the cron: each owner repo's `migration-sync-wake.yml` (push to `main`
+touching its migrations folder) comments, as ci-bot with an Issues-write-only token for this repo, on the open issue
+labelled `migration-sync-wake` (created by a scheduled or manual sync run), and that comment starts the sync; the
+comment text is never read. The end of the copy PR's `Terraform Plan` / `Migration Copy Guard` runs starts it again
+(`workflow_run`), so the merge pass follows the checks at once. The cron (`4-59/10`) is the backstop. It clones each public owner repo's `main` anonymously (no token for another repo, no payload from an app),
 and `db/migration_sync.py plan` lists the **set difference**: every owner file missing from `db/migrations/<owner>/`,
 numbered at or above the owner's lowest copy here (below it is the history from before the copy flow: CIS 001-214,
 TripPlanner 001-006), so a lower-numbered file merged late is found too. Each one gets its own branch

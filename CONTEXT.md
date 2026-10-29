@@ -696,7 +696,8 @@ makes CI Terraform Plan fail with 403.
   `expand_findings` in `db/run_migration.py`): a change to an existing object rolls back with exit 14; `check`
   rehearses it. The Copy Guard's **Expand classify** job runs the same post-check on a replayed PostgreSQL 15
   (`db/expand_check.py --classify`, replay order from the latest DB Schema Dump artifact) for every copy a PR changes.
-  Since M3 the copy is pulled, never pushed by an app: **Migration Sync** (`migration-sync.yml`, every 10 min) opens one
+  Since M3 the copy is pulled, never pushed by an app: **Migration Sync** (`migration-sync.yml`: an owner repo's wake-up comment after a migration merge, the end of a copy PR's
+  slow checks, and a 10-min cron backstop) opens one
   ci-bot PR per owner file missing here (set difference against the public owner repos' `main`) and ci-bot merges it
   when it is one byte-identical new file with every required check green (root ADR 0011a); **Migration Apply**
   (`migration-apply.yml`, group `db-auto-apply`, environment `dev-db-auto`, role `aa-cis-infra-db-auto-apply`) re-checks
