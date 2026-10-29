@@ -25,6 +25,10 @@ name: DB Isolation Probe (shared RDS)
 #
 # Triggers: nightly 04:13 UTC (30 min after the schema dump, so the two never hold db_migrator
 # sessions together, X1 S20), manual, and DB Migrate after every successful apply.
+# AA-993 M3 (root ADR 0017 d5): also a reusable workflow. migration-apply.yml calls it as its BLOCKING probe job after
+# an auto-apply, with environment dev-db-auto (the narrow role aa-cis-infra-db-auto-apply, which may run the migrator
+# family and write only under s3://<bronze>/db-auto-apply/) and s3_root db-auto-apply/probe. Dispatch, nightly and DB
+# Migrate runs keep environment prod and the db-isolation-probe/ prefix.
 # No new environment variable reaches the task: its configuration is one JSON argument.
 on:
   workflow_dispatch:
@@ -34,13 +38,31 @@ on:
         required: false
         type: string
         default: manual
+  workflow_call:
+    inputs:
+      reason:
+        description: "Why this run (migration-apply sets it)"
+        required: false
+        type: string
+        default: auto-apply
+      environment:
+        description: "GitHub environment of the AWS role: prod (aa-cis-infra-tf-apply) or dev-db-auto (aa-cis-infra-db-auto-apply)"
+        required: false
+        type: string
+        default: prod
+      s3_root:
+        description: "S3 prefix root of the probe upload (the role must be allowed to write under it)"
+        required: false
+        type: string
+        default: db-isolation-probe
   schedule:
     - cron: "13 4 * * *"   # nightly, 04:13 UTC (schema dump: 03:43)
 
 # Own group: never queued behind or ahead of DB Migrate or the schema dump (a pending run in a shared
-# group would cancel a pending migration).
+# group would cancel a pending migration). AA-993 M3: github.workflow is the CALLER's name in a reusable run, so the
+# probe of a migration-apply run gets its own group (never cancelled as a pending run by a nightly probe).
 concurrency:
-  group: db-isolation-probe
+  group: ${{ github.workflow }}-isolation-probe
   cancel-in-progress: false
 
 permissions:
@@ -51,8 +73,9 @@ jobs:
   probe:
     name: Isolation probe
     runs-on: ubuntu-latest
-    # Same OIDC subject as DB Migrate and the schema dump (environment:prod -> aa-cis-infra-tf-apply).
-    environment: prod
+    # Same OIDC subject as DB Migrate and the schema dump (environment:prod -> aa-cis-infra-tf-apply); called from
+    # migration-apply: environment:dev-db-auto -> aa-cis-infra-db-auto-apply (AA-993 M3).
+    environment: ${{ inputs.environment || 'prod' }}
     if: github.ref == 'refs/heads/main'
     timeout-minutes: 30
     env:
@@ -61,7 +84,9 @@ jobs:
       SERVICE: aa-cis-dev-api
       BUCKET: aa-cis-bronze-005097885195
       LOG_GROUP: /ecs/aa-cis-dev
-      REASON: ${{ github.event_name == 'schedule' && 'nightly' || inputs.reason || 'manual' }}
+      # inputs.reason first: a call from a scheduled migration-apply run has event_name schedule too.
+      REASON: ${{ inputs.reason || (github.event_name == 'schedule' && 'nightly' || 'manual') }}
+      S3_ROOT: ${{ inputs.s3_root || 'db-isolation-probe' }}
     steps:
       - uses: actions/checkout@v7
 
@@ -90,7 +115,7 @@ jobs:
       - name: Upload the probe, run one-off ECS task
         id: task
         run: |
-          PREFIX="db-isolation-probe/${{ github.run_id }}"
+          PREFIX="$S3_ROOT/${{ github.run_id }}-${{ github.run_attempt }}"
           echo "prefix=$PREFIX" >> "$GITHUB_OUTPUT"
           aws s3 cp db/isolation_probe.py "s3://$BUCKET/$PREFIX/isolation_probe.py" --only-show-errors
           URL=$(aws s3 presign "s3://$BUCKET/$PREFIX/isolation_probe.py" --expires-in 900)

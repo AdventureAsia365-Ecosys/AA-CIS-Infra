@@ -29,6 +29,10 @@ same value, so no new environment variable reaches the task:
                         migration (MIGRATION_URL + MIGRATION_SHA256, MIGRATION_FILE = the path), must
                         define a top-level async def main(conn), and runs as the master after the same idle
                         check as apply; its output goes to the log as is.
+  apply-pending         AA-993 M3 (migration-apply.yml, root ADR 0017 d5): MIGRATION_URL is a JSON bundle of
+                        owner-dir copies with the runner's verdicts (db/apply_pending.py); per owner, in number
+                        order, every unregistered expand file is applied (apply lock held for the whole run)
+                        until the first file a person must apply. See run_apply_pending below.
 
 Every migration self-registers in shared.schema_versions (repo convention), so:
   check — print whether the version is applied, change nothing
@@ -2006,6 +2010,7 @@ async def run_switched(conn, sql: str, d: Directives, plan: RolePlan, owner_dir:
 # "run-script:db/scripts/<name>.py"), so no new environment variable reaches the task.
 SET_PASSWORD = "set-password"
 RUN_SCRIPT = "run-script"
+APPLY_PENDING = "apply-pending"                # AA-993 M3: migration-apply.yml (bundle of copies, see below)
 SECRETS_REGION = "us-west-1"                  # acc2: every DSN secret of the shared RDS lives here
 PASSWORD_MIN_LEN = 32                         # plan S17: a new random password of at least 32 characters
 # Printable ASCII only: PostgreSQL's SASLprep returns pure ASCII unchanged, so the verifier computed here
@@ -2031,7 +2036,7 @@ class Mode:
 
 def parse_mode(value: str) -> Mode:
     """MIGRATION_MODE → Mode; ValueError (exit 10) for anything outside the allowlists."""
-    if value in ("check", "apply"):
+    if value in ("check", "apply", APPLY_PENDING):
         return Mode(value)
     kind, sep, arg = (value or "").partition(":")
     if kind == SET_PASSWORD and sep:
@@ -2043,7 +2048,7 @@ def parse_mode(value: str) -> Mode:
         if not SCRIPT_PATH_RE.fullmatch(arg):
             raise ValueError(f"run-script: {arg!r} is not a db/scripts/<name>.py path")
         return Mode(kind, arg)
-    raise ValueError(f"unknown MIGRATION_MODE {value!r} (check, apply, set-password:<role>, "
+    raise ValueError(f"unknown MIGRATION_MODE {value!r} (check, apply, apply-pending, set-password:<role>, "
                      f"run-script:db/scripts/<name>.py)")
 
 
@@ -2477,9 +2482,10 @@ async def _connect(dsn: str, settings: dict, ssl=None):
 
 
 async def execute_file(conn, sql: str, d: "Directives", plan: "RolePlan", owner_dir: str,
-                       rehearse: bool = False, report: list = None) -> int:
+                       rehearse: bool = False, report: list = None, info: dict = None) -> int:
     """Runs the file's statements the way apply does (role switch, no-transaction, plain); 0 or an exit code. An
-    expand file gets the M2b post-check (exit 14); rehearse=True (expand, transactional) always rolls back."""
+    expand file gets the M2b post-check (exit 14); rehearse=True (expand, transactional) always rolls back.
+    `info` (M3, apply-pending) receives the SQLSTATE of a PostgreSQL error, so the caller can retry 55P03."""
     try:
         if plan.switch:
             return await run_switched(conn, sql, d, plan, owner_dir, rehearse=rehearse, report=report)
@@ -2507,6 +2513,8 @@ async def execute_file(conn, sql: str, d: "Directives", plan: "RolePlan", owner_
         return 0
     except Exception as e:                          # asyncpg.PostgresError and friends
         state = getattr(e, "sqlstate", "") or ""
+        if info is not None:
+            info["sqlstate"] = state
         log(f"ERROR: {type(e).__name__} {state} {e}")
         if state == "55P03":
             log(f"hint: lock_timeout ({d.settings['lock_timeout']}) hit — a job or session holds a lock "
@@ -2532,6 +2540,8 @@ async def run_task(env=None, fetch=_fetch, connect=_connect, sleep=asyncio.sleep
         return await run_set_password(env, m.arg, connect=connect, get_secret=get_secret, sleep=sleep)
     if m.kind == RUN_SCRIPT:
         return await run_script(env, m.arg, fetch=fetch, connect=connect, sleep=sleep, get_secret=get_secret)
+    if m.kind == APPLY_PENDING:
+        return await run_apply_pending(env, fetch=fetch, connect=connect, sleep=sleep, get_secret=get_secret)
     raw = fetch(env["MIGRATION_URL"])
     digest = hashlib.sha256(raw).hexdigest()
     if digest != env["MIGRATION_SHA256"]:
@@ -2539,10 +2549,16 @@ async def run_task(env=None, fetch=_fetch, connect=_connect, sleep=asyncio.sleep
         return 2
     version, mode = env["MIGRATION_VERSION"], env["MIGRATION_MODE"]
     log(f"file={env['MIGRATION_FILE']} version={version} sha256={digest[:12]} mode={mode}")
+    return await apply_file(env, raw.decode("utf-8"), env.get("MIGRATION_FILE") or "", version, mode,
+                            connect=connect, sleep=sleep, get_secret=get_secret)
 
-    sql = raw.decode("utf-8")
+
+async def apply_file(env, sql: str, file: str, version: str, mode: str, connect, sleep, get_secret,
+                     lock_held: bool = False, info: dict = None) -> int:
+    """check / apply of ONE file (lint, login, role, lock risk, apply lock, idle check, statements, registration).
+    run_task calls it for DB Migrate; run_apply_pending (M3) once per file with lock_held=True, because the run
+    already holds the apply lock on its own session, and `info` to learn the SQLSTATE of a failure."""
     d = parse_directives(sql)
-    file = env.get("MIGRATION_FILE") or ""
     errors, warnings = lint(sql, d, file)
     log(f"directives: transaction={'no' if d.no_transaction else 'yes'} destructive={'yes' if d.destructive else 'no'} "
         f"lock_timeout={d.settings['lock_timeout']} statement_timeout={d.settings['statement_timeout']}")
@@ -2597,7 +2613,9 @@ async def run_task(env=None, fetch=_fetch, connect=_connect, sleep=asyncio.sleep
                 return 15
             log(f"expand: lock-risk check ok ({len(lock_risk_targets(sql, d))} existing table(s) locked, each "
                 f"<= {EXPAND_MAX_ROWS} rows); statement_timeout {d.settings['statement_timeout']}")
-        if (mode == "apply" or rehearse) and not await take_apply_lock(
+        if lock_held:
+            log("apply lock: held by this run's own session (apply-pending)")
+        elif (mode == "apply" or rehearse) and not await take_apply_lock(
                 conn, sleep, f"{'apply' if mode == 'apply' else 'expand rehearsal'} {file}"):
             return 17
         latest = await conn.fetchval(
@@ -2654,7 +2672,7 @@ async def run_task(env=None, fetch=_fetch, connect=_connect, sleep=asyncio.sleep
                     "(MIGRATION_SNAPSHOT is empty) — run it through db-migrate.yml")
                 return 5
             log(f"snapshot taken before apply: {snapshot}")
-        code = await execute_file(conn, sql, d, plan, owner_dir)
+        code = await execute_file(conn, sql, d, plan, owner_dir, info=info)
         if code:
             return code
         applied = await conn.fetchval("SELECT applied_at FROM shared.schema_versions WHERE version = $1", version)
@@ -2665,6 +2683,250 @@ async def run_task(env=None, fetch=_fetch, connect=_connect, sleep=asyncio.sleep
         return 0
     finally:
         await conn.close()
+
+
+# ── AA-993 Phase E slice M3: apply-pending (root ADR 0017 decision 5, migration-apply.yml) ──
+# MIGRATION_MODE=apply-pending: MIGRATION_URL is a JSON bundle built on the runner by db/apply_pending.py (every copy
+# of the four owner dirs above the floor, its bytes, sha256 and the runner's verdict: bytes equal to the owner repo's
+# main AND classified expand by db/expand_check.py on a replay). MIGRATION_SHA256 is the bundle's digest; MIGRATION_FILE
+# and MIGRATION_VERSION are empty. In one task, holding the apply lock on its own session for the whole run:
+#   * read every registered key once; per owner, in number order, every unregistered copy above the floor is pending;
+#   * apply each pending file while it is the next in line AND expand by its own header and lint AND has the runner's
+#     verdict ok AND is not below the owner's highest registered key (out-of-order); stop that owner at the first file
+#     that is not (it stays for a person: manual DB Migrate apply). Never skip past a gap (critic 2): the task checks
+#     it itself, not only the runner. Above the owner's head the numbers must be contiguous (head + 1, + 2, …; the app
+#     preflight requires owner max + 1), and an owner-main file the runner found missing here (bundle `not_copied`: its
+#     copy PR has not merged yet) is a stop at its number, so a later copy never runs before it;
+#   * each file goes through apply_file exactly like DB Migrate apply (role switch, lock risk exit 15, post-check exit
+#     14, CIC validity exit 16, the wave wait for hot tables; no idle override, no snapshot: an expand file is never
+#     destructive), a lock timeout (55P03) is retried after AUTO_LOCK_RETRY_S;
+#   * a failed file stops its owner; the other owners still run; the exit code is the first failure's (0 when every
+#     owner either applied everything or stopped at a file that needs a person). Exit 7 (a hot-table file during an
+#     open rerun wave) is a deferral, not a failure: the owner stops, the next run retries.
+# One `MIGRATE auto: …` line per decision and a final `MIGRATE auto-result {json}` line that the workflow summarises.
+AUTO_OWNERS = ("cis", "booking", "tripplanner", "crm")            # never roles/ (master files stay manual)
+# replay_migrations.KEY_PREFIX / check_migration_copies.OWNERS (db/tests/test_aa993_apply_pending.py keeps them equal).
+AUTO_KEY_PREFIX = {"cis": "", "booking": "bk-", "tripplanner": "tp-", "crm": "crm-"}
+# Legacy gaps: unregistered copies at or below this number are never pending (CIS 232, 252, 263 ran by hand before
+# self-registration; AA-CIS-App api/core/readiness.py LEGACY_CIS_BASELINE = 263). The other owners have no gap.
+AUTO_APPLY_FLOOR = {"cis": 263}
+AUTO_LOCK_RETRY_S = (30, 90)            # 55P03: two more tries, after 30 s and 90 s
+BUNDLE_KIND = "aa993-apply-pending"
+REGISTERED_SQL = "SELECT version FROM shared.schema_versions"
+AUTO_FILE_RE = re.compile(r"^(cis|booking|tripplanner|crm)/([0-9]{3})_[a-z0-9_]+\.sql$")
+
+
+# Why a `stop` step ends an owner (AA-993 M3 review): every kind needs a person, so every stop reaches the run's manual
+# list and a note on the file's copy PR (db/apply_pending.py STOP_NOTES says what the person does for each kind).
+STOP_OUT_OF_ORDER = "out-of-order"      # below the owner's highest registered key
+STOP_NOT_COPIED = "not-copied"          # on the owner's main, its copy PR has not merged (bundle not_copied)
+STOP_DUPLICATE = "duplicate"            # two copies with one number
+STOP_GAP = "gap"                        # the owner's next number is neither registered nor copied
+STOP_CONTRACT = "contract"              # no expand header
+STOP_LINT = "lint"                      # expand header, lint error(s)
+STOP_REFUSED_BYTES = "refused-bytes"    # runner: the copy is not byte-identical to the owner's main (or no clone)
+STOP_REFUSED_CLASSIFY = "refused-classify"  # runner: expand_check --classify on the replay said contract
+STOP_NO_EVIDENCE = "no-evidence"        # runner: no classify result for the file
+STOP_REFUSED = "refused"                # runner: any other verdict (or none)
+STOP_KINDS = (STOP_OUT_OF_ORDER, STOP_NOT_COPIED, STOP_DUPLICATE, STOP_GAP, STOP_CONTRACT, STOP_LINT,
+              STOP_REFUSED_BYTES, STOP_REFUSED_CLASSIFY, STOP_NO_EVIDENCE, STOP_REFUSED)
+# The bundle's per-file `verdict_kind` (db/apply_pending.py build): "ok" or one of the runner refusal kinds.
+VERDICT_KINDS = ("ok", STOP_REFUSED_BYTES, STOP_REFUSED_CLASSIFY, STOP_NO_EVIDENCE, STOP_REFUSED)
+
+
+@dataclass
+class AutoStep:
+    path: str                           # owner/NNN_name.sql
+    version: str
+    action: str                         # apply | stop
+    reason: str = ""
+    kind: str = ""                      # stop only: one of STOP_KINDS
+
+
+def auto_version(owner: str, number: int) -> str:
+    return f"{AUTO_KEY_PREFIX[owner]}{number:03d}"
+
+
+def plan_pending(files: list, registered) -> dict:
+    """Pure (also the runner-side dry run): {owner: {"head": key or None, "steps": [AutoStep], "legacy": n}}.
+
+    files: [{"path", "sql", "verdict"}] (verdict "ok", or why the runner refuses the file), plus the runner's
+    {"path", "not_copied": True} entries (on the owner's main, not copied here yet); registered: every key in
+    shared.schema_versions. Per owner, the unregistered files above AUTO_APPLY_FLOOR in number order: `apply` while
+    each one is copied, the next number (head + 1, then + 1 per step: never past a gap, critic 2), expand (header,
+    lint), verdict ok and not below the owner's highest registered key; the first that is not ends the owner's steps
+    with `stop`."""
+    registered = set(registered)
+    out = {}
+    for owner in AUTO_OWNERS:
+        prefix = AUTO_KEY_PREFIX[owner]
+        mine = sorted(int(k[len(prefix):]) for k in registered
+                      if re.fullmatch(rf"{re.escape(prefix)}[0-9]{{3}}", k))
+        head = mine[-1] if mine else 0
+        floor = AUTO_APPLY_FLOOR.get(owner, 0)
+        entries = []
+        for f in files:
+            m = AUTO_FILE_RE.match(f["path"])
+            if m and m.group(1) == owner:
+                entries.append((int(m.group(2)), f))
+        entries.sort(key=lambda e: (e[0], e[1]["path"]))
+        steps, legacy = [], 0
+        expected = max(head, floor) + 1            # the only number that may run next (then + 1 per applied file)
+        for number, f in entries:
+            version = auto_version(owner, number)
+            if version in registered:
+                continue
+            if number <= floor:
+                legacy += 0 if f.get("not_copied") else 1
+                continue
+            reason, kind = "", ""
+            if number < head:
+                kind = STOP_OUT_OF_ORDER
+                reason = (f"out-of-order: below the owner's highest registered key {auto_version(owner, head)}; "
+                          f"manual DB Migrate apply")
+            elif f.get("not_copied"):
+                kind = STOP_NOT_COPIED
+                reason = (f"not copied yet: on the {owner} owner repo's main but not in db/migrations/{owner}/ (its "
+                          f"migration-sync copy PR has not merged); nothing after it runs before it")
+            elif number < expected:
+                kind = STOP_DUPLICATE
+                reason = f"duplicate number: {version} is already pending in this run; the copies must be fixed"
+            elif number > expected:
+                kind = STOP_GAP
+                reason = (f"gap: {auto_version(owner, expected)} is neither registered nor copied here; nothing past a "
+                          f"gap is applied (the owner's next file must be its head + 1)")
+            else:
+                d = parse_directives(f["sql"])
+                errs = lint(f["sql"], d, f["path"])[0]
+                if not d.expand:
+                    kind = STOP_CONTRACT
+                    reason = "contract (no `-- migrate: expand` header): manual DB Migrate apply"
+                elif errs:
+                    kind = STOP_LINT
+                    reason = f"expand header but {len(errs)} lint error(s): {errs[0]}"
+                elif f.get("verdict") != "ok":
+                    vk = f.get("verdict_kind")
+                    kind = vk if vk in VERDICT_KINDS and vk != "ok" else STOP_REFUSED
+                    reason = f"refused on the runner: {f.get('verdict') or 'no verdict'}"
+            if reason:
+                steps.append(AutoStep(f["path"], version, "stop", reason, kind))
+                break
+            steps.append(AutoStep(f["path"], version, "apply"))
+            expected = number + 1
+        out[owner] = {"head": auto_version(owner, head) if mine else None, "steps": steps, "legacy": legacy}
+    return out
+
+
+def not_copied_entry(path: str) -> dict:
+    """A plan_pending entry for an owner-main file that has no copy here yet: always a stop, never SQL to run."""
+    return {"path": path, "sql": "", "verdict": "not copied", "not_copied": True}
+
+
+def read_bundle(raw: bytes) -> list:
+    """The bundle's files after the shape and per-file sha256 checks, plus a not_copied_entry per path of the bundle's
+    `not_copied` list (owner-main files the runner found missing here; stops only, so the task may trust them as is);
+    ValueError names the first problem."""
+    data = json.loads(raw.decode("utf-8"))
+    if not isinstance(data, dict) or data.get("kind") != BUNDLE_KIND or data.get("format") != 1:
+        raise ValueError(f"not an apply-pending bundle (kind {BUNDLE_KIND}, format 1)")
+    files, seen, numbers = [], set(), set()
+    for f in data.get("files") or []:
+        path, sql = f.get("path", ""), f.get("sql")
+        if not AUTO_FILE_RE.match(path) or not isinstance(sql, str) or path in seen:
+            raise ValueError(f"bundle entry {path!r}: not an owner-dir copy path, no SQL, or listed twice")
+        if hashlib.sha256(sql.encode("utf-8")).hexdigest() != f.get("sha256"):
+            raise ValueError(f"bundle entry {path}: sha256 mismatch")
+        seen.add(path)
+        numbers.add(path[:path.index("_")])
+        vk = f.get("verdict_kind", STOP_REFUSED)
+        if vk not in VERDICT_KINDS:
+            raise ValueError(f"bundle entry {path}: verdict_kind {vk!r} is not one of {', '.join(VERDICT_KINDS)}")
+        files.append({"path": path, "sql": sql, "verdict": f.get("verdict", ""), "verdict_kind": vk})
+    missing = data.get("not_copied") or []
+    if not isinstance(missing, list):
+        raise ValueError("bundle not_copied: not a list of owner-dir paths")
+    for path in missing:
+        if not isinstance(path, str) or not AUTO_FILE_RE.match(path) or path[:path.index("_")] in numbers:
+            raise ValueError(f"bundle not_copied entry {path!r}: not an owner-dir path, or its number has a copy "
+                             f"or is listed twice")
+        numbers.add(path[:path.index("_")])
+        files.append(not_copied_entry(path))
+    return files
+
+
+async def run_apply_pending(env, fetch, connect, sleep, get_secret=_get_secret) -> int:
+    raw = fetch(env["MIGRATION_URL"])
+    digest = hashlib.sha256(raw).hexdigest()
+    if digest != env.get("MIGRATION_SHA256"):
+        log(f"sha256 mismatch: got {digest}")
+        return 2
+    try:
+        files = read_bundle(raw)
+    except (ValueError, UnicodeDecodeError) as e:
+        log(f"ERROR: apply-pending: {e}")
+        return 10
+    log(f"apply-pending: bundle sha256={digest[:12]} files={len(files)}")
+    # Never an idle override or a snapshot here: expand files skip the job-table wait by rule, never destructive.
+    file_env = {k: v for k, v in env.items() if k not in ("MIGRATION_IDLE_OVERRIDE", "MIGRATION_SNAPSHOT")}
+    lock_conn = await connect(env["DATABASE_URL"], dict(DEFAULT_SETTINGS))
+    result = {"bundle": digest[:12], "owners": {}, "exit": 0}
+    try:
+        if not await take_apply_lock(lock_conn, sleep, "apply-pending"):
+            result["exit"] = 17
+            log(f"auto-result {json.dumps(result, sort_keys=True)}")
+            return 17
+        registered = {r[0] for r in await lock_conn.fetch(REGISTERED_SQL)}
+        plan = plan_pending(files, registered)
+        code = 0
+        for owner, p in plan.items():
+            rows, failed = [], 0
+            if p["legacy"]:
+                log(f"auto: {owner}: {p['legacy']} legacy unregistered copy(ies) at or below "
+                    f"{auto_version(owner, AUTO_APPLY_FLOOR[owner])} ignored (hand-applied before self-registration)")
+            if not p["steps"]:
+                log(f"auto: {owner}: nothing pending (head {p['head']})")
+            for st in p["steps"]:
+                if failed:
+                    break
+                if st.action == "stop":
+                    log(f"auto: {owner}: STOP at {st.path} ({st.version}): {st.reason}")
+                    rows.append({"file": st.path, "version": st.version, "status": "manual", "kind": st.kind,
+                                 "reason": st.reason})
+                    break
+                sql = next(f["sql"] for f in files if f["path"] == st.path)
+                log(f"auto: {owner}: apply {st.path} ({st.version})")
+                rc = await _apply_with_retry(file_env, sql, st, connect, sleep, get_secret)
+                if rc == 7:
+                    # Q5: it names a hot table and a rerun wave is open. Not a failure: the next run applies it.
+                    log(f"auto: {owner}: DEFERRED {st.path}: a rerun wave is open; the next run retries it")
+                    rows.append({"file": st.path, "version": st.version, "status": "deferred", "exit": rc})
+                    break
+                if rc:
+                    failed = rc
+                    code = code or rc
+                    log(f"auto: {owner}: FAILED {st.path} exit {rc}; later {owner} files wait for the next run")
+                    rows.append({"file": st.path, "version": st.version, "status": "failed", "exit": rc})
+                else:
+                    rows.append({"file": st.path, "version": st.version, "status": "applied"})
+            result["owners"][owner] = {"head_before": p["head"], "legacy": p["legacy"], "files": rows}
+        result["exit"] = code
+        log(f"auto-result {json.dumps(result, sort_keys=True)}")
+        return code
+    finally:
+        await lock_conn.close()
+
+
+async def _apply_with_retry(env, sql: str, st: AutoStep, connect, sleep, get_secret) -> int:
+    for attempt, wait in enumerate((0,) + AUTO_LOCK_RETRY_S):
+        if wait:
+            log(f"auto: lock timeout on {st.path}; retry {attempt}/{len(AUTO_LOCK_RETRY_S)} in {wait} s")
+            await sleep(wait)
+        info = {}
+        rc = await apply_file(env, sql, st.path, st.version, "apply", connect=connect, sleep=sleep,
+                              get_secret=get_secret, lock_held=True, info=info)
+        if not (rc == 6 and info.get("sqlstate") == "55P03"):
+            return rc
+    return rc
 
 
 def inspect_script(path: str, out=sys.stdout) -> int:
