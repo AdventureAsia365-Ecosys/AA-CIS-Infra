@@ -201,6 +201,7 @@ owners:
       - {grantee: cis_app, privilege: "USAGE, SELECT", object: booking.v_supply_outbox,    status: contract, source: "bk-023 (AA-835)", expected_from: bk-023}
       - {grantee: cis_app, privilege: "USAGE, SELECT", object: booking.v_ops_data_totals,  status: contract, source: "bk-025 (AA-992)", expected_from: bk-025}
       - {grantee: cis_app, privilege: "USAGE, SELECT", object: booking.v_ops_trip_plan_keys, status: contract, source: "bk-025 (AA-992)", expected_from: bk-025}
+      - {grantee: cis_app, privilege: "USAGE, SELECT", object: booking.v_ops_inquiry_inbox, status: contract, source: "bk-035 (AA-1003)", expected_from: bk-035}
 
   tripplanner:
     repo: AA-TripPlanner-Web
@@ -236,6 +237,7 @@ owners:
       - {grantee: cis_app, privilege: "USAGE, SELECT", object: tripplanner.v_ops_data_totals, status: contract, source: "tp-020 (AA-992)", expected_from: tp-020}
       - {grantee: cis_app, privilege: "USAGE, SELECT", object: tripplanner.v_ops_pin_components, status: contract, source: "tp-020 (AA-992)", expected_from: tp-020}
       - {grantee: cis_app, privilege: "USAGE, SELECT", object: tripplanner.v_ops_component_id_map, status: contract, source: "tp-020 (AA-992)", expected_from: tp-020}
+      - {grantee: cis_app, privilege: "USAGE, SELECT", object: tripplanner.v_ops_inquiry_keys, status: contract, source: "tp-022 (AA-1003)", expected_from: tp-022}
 
   crm:
     # Partner CRM (AA-Partner, ADR 0010 / 0008a, data standards DM-6.8; AA-932 = design v3 card CRM-04). Born under
