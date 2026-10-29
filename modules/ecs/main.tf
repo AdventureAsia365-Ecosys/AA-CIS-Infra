@@ -496,6 +496,18 @@ resource "aws_iam_role_policy" "ecs_task_infra_status_readonly" {
         Effect   = "Allow"
         Action   = ["cloudwatch:DescribeAlarms"]
         Resource = "arn:aws:cloudwatch:${var.aws_region}:005097885195:alarm:*"
+      },
+      # AA-1003 R2 (DATA-01) — the daily KPI snapshot and the OPS-12 digest (worker, AA-CIS-App
+      # services/reports/probes.py) read the `SCRIPT verdict` line of the nightly DB probes (tour liveness gate,
+      # freshness probe) that the DB migrator task writes to this app's own log group (streams migrate/migrate/<task
+      # id>). Read-only search on that one log group only: the ARN comes from the log group resource (no account ID
+      # here), the bare form and the ":*" form both listed because IAM evaluates log-group actions against either.
+      # No per-call charge (one paged query a day for the snapshot, one for the digest).
+      {
+        Sid      = "FilterOwnLogGroup"
+        Effect   = "Allow"
+        Action   = ["logs:FilterLogEvents"]
+        Resource = [aws_cloudwatch_log_group.ecs.arn, "${aws_cloudwatch_log_group.ecs.arn}:*"]
       }
     ]
   })
