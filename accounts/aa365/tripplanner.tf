@@ -677,6 +677,7 @@ resource "aws_iam_role_policy" "tripplanner_app_deploy" {
         Resource = [
           aws_lambda_function.tripplanner_browse.arn,
           aws_lambda_function.tripplanner_assembly.arn,
+          aws_lambda_function.tripplanner_jobs.arn, # AA-861 (tripplanner_jobs.tf)
         ]
       },
     ]

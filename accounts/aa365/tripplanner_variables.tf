@@ -77,3 +77,16 @@ variable "tripplanner_lambda_reserved_concurrency" {
   description = "Reserved concurrent executions for the TripPlanner assembly Lambda (1 DB connection each)."
   default     = 5
 }
+
+# AA-861: the jobs Lambda (tripplanner_jobs.tf) is the single worker of tripplanner.job: one run at a time, one DB
+# connection (TripPlanner budget 15 + 5 + 1 = 21 of 30; db/connection_budget.json pool tp-jobs).
+variable "tripplanner_jobs_reserved_concurrency" {
+  type        = number
+  description = "Reserved concurrent executions for the TripPlanner jobs Lambda (1 DB connection; keep 1: one runner)."
+  default     = 1
+
+  validation {
+    condition     = var.tripplanner_jobs_reserved_concurrency == 1
+    error_message = "The jobs Lambda is the single tripplanner.job runner: reserved concurrency must stay 1."
+  }
+}
