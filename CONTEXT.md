@@ -368,8 +368,9 @@ accounts/
                     daily anomaly e-mail; cost_anomaly_immediate.tf: SNS topic aa3-cost-alerts +
                     IMMEDIATE anomaly subscription >= 15 USD; AA-896)
 modules/          ← reusable building blocks, consumed by the account roots
-  vpc, rds, ecs, alb, api_gateway, s3, secrets, waf, dynamodb, efs,
+  vpc, rds, ecs, alb, api_gateway, s3, secrets, waf, dynamodb,
   elasticache, eventbridge, langfuse, monitoring
+  (modules/efs removed in S257: aa-cis-dev-efs was mounted by no task definition, AA-697 drift finding)
 tools/
   github/         ← db_auto_apply_gate.sh + infra-main-ruleset.json (AA-993 I1): environment dev-db-auto (main only),
                     its AWS_ROLE_ARN secret and the ruleset on main (PR required, no direct push or force push, required

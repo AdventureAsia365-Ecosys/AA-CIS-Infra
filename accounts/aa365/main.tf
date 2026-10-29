@@ -142,19 +142,9 @@ module "elasticache" {
   depends_on = [module.vpc]
 }
 
-module "efs" {
-  source = "../../modules/efs"
-
-  project            = var.project
-  environment        = var.environment
-  vpc_id             = module.vpc.vpc_id
-  private_subnet_ids = module.vpc.private_subnet_ids
-  sg_app_id          = module.vpc.sg_app_id
-  ingress_sg_ids     = local.efs_ingress_sg_ids # ADR 0004b (X1 S11), app_security_groups.tf
-  tags               = local.cis_app_tags
-
-  depends_on = [module.vpc]
-}
+# module "efs" (aa-cis-dev-efs: file system, mount targets, chromadb + langgraph access points and its
+# security group) is removed (S257, AA-697 drift finding): no task definition mounted it since the
+# ChromaDB / LangGraph SqliteSaver era ended, and no app code reads it.
 
 module "alb" {
   source = "../../modules/alb"

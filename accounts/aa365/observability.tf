@@ -315,7 +315,7 @@ resource "aws_budgets_budget" "total_monthly" {
 #   - booking / tripplanner: their resources carry App via local.bk_tags /
 #     local.tp_tags (S235 Phase 0) and local.ecosys_tags overrides.
 #   - cis: local.common_tags carries App = "cis" (main.tf), and the CIS modules
-#     (ecs, s3, api_gateway incl. its stage, elasticache, efs, secrets, eventbridge)
+#     (ecs, s3, api_gateway incl. its stage, elasticache, secrets, eventbridge)
 #     get it through their tags input. The api/worker services propagate their
 #     tags to each Fargate task (propagate_tags = "SERVICE"); tasks started
 #     before that apply stay untagged until the next CIS deploy.
