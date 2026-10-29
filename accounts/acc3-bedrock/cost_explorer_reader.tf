@@ -1,10 +1,10 @@
 
 # =============================================================================
 # AA-623 — new AA3-CostExplorer-Reader role on account 3 (786888028788).
-# NOT an import — mirrors accounts/acc1-bedrock/cost_explorer_reader.tf
-# byte-for-byte except account ID/role name/ExternalId. See that file's
-# header for the full rationale (acc2 is not the Organizations payer, so
-# each satellite account needs its own CE-read grant).
+# NOT an import — copied from the former acc1 Cost Explorer reader (root
+# removed with acc1, AA-998) except account ID/role name/ExternalId.
+# Rationale: acc2 is not the Organizations payer, so each satellite account
+# needs its own CE-read grant.
 # =============================================================================
 
 resource "aws_iam_role" "cost_explorer_reader" {
