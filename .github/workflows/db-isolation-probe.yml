@@ -99,6 +99,15 @@ jobs:
           python -m pip install --quiet pyyaml==6.0.2
           python -m unittest discover -s db/tests
 
+      - name: Role secret present
+        env:
+          ROLE: ${{ secrets.AWS_ROLE_ARN }}
+        run: |
+          if [ -z "$ROLE" ]; then
+            echo "::error::AWS_ROLE_ARN is empty for environment ${{ inputs.environment || 'prod' }} (a caller must pass secrets: inherit)"
+            exit 1
+          fi
+
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v6
         with:
