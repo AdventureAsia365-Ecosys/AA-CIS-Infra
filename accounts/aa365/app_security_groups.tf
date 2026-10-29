@@ -2,7 +2,7 @@
 # ADR 0004b (AA-Ecosys docs/adr/0004b-per-app-security-groups.md) — one security group per caller.
 # X1 plan S11 (AA-852): EXPAND only. The six groups exist and are admitted by the RDS / Redis / EFS
 # groups next to the old shared app group (module.vpc.sg_app_id); no service, task or Lambda uses
-# them yet. S13 moves each caller onto its own group (three applies behind the job-idle gate), S14
+# them yet. (EFS and its group were removed in S257, AA-697: nothing mounted it.) S13 moves each caller onto its own group (three applies behind the job-idle gate), S14
 # drops the shared group from the data-store lists after the ENI gate.
 #
 # Ingress only where a caller serves traffic: cis-api and booking-api take tcp 8000 from the ALB group
@@ -29,10 +29,6 @@ locals {
     aws_security_group.db_migrate.id,
   ]
   redis_ingress_sg_ids = [
-    aws_security_group.cis_api.id,
-    aws_security_group.cis_worker.id,
-  ]
-  efs_ingress_sg_ids = [
     aws_security_group.cis_api.id,
     aws_security_group.cis_worker.id,
   ]
