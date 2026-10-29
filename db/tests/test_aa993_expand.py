@@ -163,14 +163,14 @@ class StaticLintTests(unittest.TestCase):
         self.assertNotEqual(errors(no_ine, "cis/241_x.sql"), [])
 
     def test_every_infra_copy_still_lints(self):
-        """No copy on main carries the header yet, and the new code changes nothing for them."""
+        """Every copy lints clean, with or without the expand header (bk-034, S258, is the first copy that carries
+        it); copies without the header are unchanged by the expand code."""
         files = sorted((ROOT / "db" / "migrations").glob("*/*.sql"))
         self.assertGreater(len(files), 100)
         for f in files:
             sql = f.read_text(encoding="utf-8")
             d = rm.parse_directives(sql)
             with self.subTest(file=f.name):
-                self.assertFalse(d.expand)
                 self.assertEqual(rm.lint(sql, d, str(f.relative_to(ROOT)))[0], [])
 
 
