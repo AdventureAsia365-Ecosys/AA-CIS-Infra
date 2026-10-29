@@ -187,6 +187,7 @@ def github_fetch(repo: str, path: str, attempts: int = 3) -> Optional[bytes]:
     token = _token()
     auths = ([token] if token else []) + [""]
     last = ""
+    not_found = 0
     for attempt in range(attempts):
         for auth in auths:
             headers = {
@@ -204,7 +205,11 @@ def github_fetch(repo: str, path: str, attempts: int = 3) -> Optional[bytes]:
                 if e.code == 404:
                     if auth:
                         continue        # an Actions token scoped to this repo answers 404 for another repo: ask anonymously
-                    return None
+                    # S258: the API sometimes answers 404 to an anonymous runner request for a file that exists
+                    # (Migration Apply 40916210939, Copy guard on Infra #501); only a 404 on every attempt is "not found".
+                    not_found += 1
+                    last = "HTTP 404"
+                    break
                 last = f"HTTP {e.code}"
                 if e.code in (401, 403, 429):
                     continue            # token refused or rate limited: try anonymous / next round
@@ -216,6 +221,8 @@ def github_fetch(repo: str, path: str, attempts: int = 3) -> Optional[bytes]:
                 break
         if attempt + 1 < attempts:
             time.sleep(2 * (attempt + 1))
+    if not_found == attempts:
+        return None
     hint = "" if token else " (anonymous: 60 requests/hour; set GITHUB_TOKEN or GH_TOKEN)"
     raise FetchError(f"could not read {repo}:{path} from GitHub: {last}{hint}")
 
