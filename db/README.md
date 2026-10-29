@@ -184,8 +184,9 @@ copy PR. Since S258 it does not wait for the cron: each owner repo's `migration-
 touching its migrations folder) comments, as ci-bot with an Issues-write-only token for this repo, on the open issue
 labelled `migration-sync-wake` (created by a scheduled or manual sync run), and that comment starts the sync; the
 comment text is never read. The end of the copy PR's `Terraform Plan` / `Migration Copy Guard` runs starts it again
-(`workflow_run`), so the merge pass follows the checks at once. The cron (`4-59/10`) is the backstop. It clones each public owner repo's `main` anonymously (no token for another repo, no payload from an app),
-and `db/migration_sync.py plan` lists the **set difference**: every owner file missing from `db/migrations/<owner>/`,
+(`workflow_run`), so the merge pass follows the checks at once. The cron (`4-59/10`) is the backstop. It clones each
+public owner repo's `main` anonymously (no token for another repo, no payload from an app), and
+`db/migration_sync.py plan` lists the **set difference**: every owner file missing from `db/migrations/<owner>/`,
 numbered at or above the owner's lowest copy here (below it is the history from before the copy flow: CIS 001-214,
 TripPlanner 001-006), so a lower-numbered file merged late is found too. Each one gets its own branch
 `bot/migration-copy/<owner>-<NNN>` (created from `main` through the GitHub API with the owner's raw bytes) and PR,

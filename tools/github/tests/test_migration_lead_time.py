@@ -34,8 +34,10 @@ class LeadTimeTest(unittest.TestCase):
              "completed_at": "2026-10-29T07:14:00Z"},
         ]
         self.assertEqual(lt.apply_from_jobs(jobs), ("2026-10-29T07:14:00Z", "auto+probe"))
+        # A failed blocking probe: the schema is on Dev, but no clean automated apply.
         jobs[2]["conclusion"] = "failure"
-        self.assertEqual(lt.apply_from_jobs(jobs), ("2026-10-29T07:10:00Z", "auto"))
+        self.assertEqual(lt.apply_from_jobs(jobs), ("2026-10-29T07:10:00Z", "auto (probe failure)"))
+        self.assertEqual(lt.apply_from_jobs(jobs[:2]), ("2026-10-29T07:10:00Z", "auto (no probe)"))
         jobs[1]["conclusion"] = "skipped"
         self.assertEqual(lt.apply_from_jobs(jobs), (None, "listed-only"))
         self.assertEqual(lt.apply_from_jobs(jobs[:1]), (None, "unknown"))
@@ -45,8 +47,26 @@ class LeadTimeTest(unittest.TestCase):
                    applied="2026-10-29T07:20:00Z", applied_how="auto+probe", copy_author="aa-ecosys-ci-bot[bot]")
         b = lt.Row("cis", "303_x.sql", "303", app_merged="2026-10-29T07:00:00Z",
                    applied="2026-10-29T08:00:00Z", applied_how="manual~", copy_author="app/aa-agent")
+        a.apply_event = "push"
         s = lt.summarise([a, b], 25)
         self.assertEqual((s["measured"], s["within_target"], s["no_hand_step"], s["max_min"]), (2, 1, 1, 60.0))
+        # Not a clean automated apply: probe red, or the applying run was dispatched by hand.
+        for how, event in (("auto (probe failure)", "push"), ("auto+probe via workflow_dispatch run", "workflow_dispatch")):
+            a.applied_how, a.apply_event = how, event
+            self.assertEqual(lt.summarise([a, b], 25)["no_hand_step"], 0)
+        a.applied_how, a.apply_event = "auto+probe via schedule run", "schedule"
+        self.assertEqual(lt.summarise([a, b], 25)["no_hand_step"], 1)
+
+    def test_apply_runs_after_puts_the_copy_run_first_then_later_runs(self):
+        merged = "2026-10-29T07:00:00Z"
+        runs = [
+            {"id": 1, "head_sha": "old", "created_at": "2026-10-29T06:00:00Z", "event": "schedule"},  # before: out
+            {"id": 2, "head_sha": "next", "created_at": "2026-10-29T08:00:00Z", "event": "push"},
+            {"id": 3, "head_sha": "cron", "created_at": "2026-10-29T07:30:00Z", "event": "schedule"},
+            {"id": 4, "head_sha": "m", "created_at": "2026-10-29T07:00:05Z", "event": "push"},
+            {"id": 5, "head_sha": "late", "created_at": "2026-10-31T07:00:00Z", "event": "schedule"},  # window: out
+        ]
+        self.assertEqual([r["id"] for r in lt.apply_runs_after(runs, "m", merged)], [4, 3, 2])
 
 
 if __name__ == "__main__":

@@ -7,12 +7,16 @@ through `gh api`):
   app merged   the owner repo's PR that added the file (the merge of the first commit on main that touches it)
   copy opened  the AA-CIS-Infra PR that added the copy (a bot/migration-copy/* PR of ci-bot, or a person's PR)
   copy merged  that PR's merge
-  applied      auto: the Migration Apply run on the copy's merge commit with "Apply on Dev" success (+ the blocking
-               Isolation Probe); manual: the first successful DB Migrate run after the copy merge (approximate: the
-               run's inputs are not in the API) or, exact, the key's shared.schema_versions.applied_at from
-               --applied-at (CSV "version,applied_at", e.g. from the S258 schema_versions read script)
+  applied      auto: the first Migration Apply run created at or after the copy's merge (the push run on the merge
+               commit first, then a later cron, push or manual run when that one only listed) whose "Apply on Dev"
+               job succeeded; "auto+probe" only when the blocking Isolation probe passed too, "auto (probe ...)"
+               otherwise; a run of another commit than the copy merge is marked "via <event> run"; manual: the first
+               successful DB Migrate run after the copy merge (approximate: the run's inputs are not in the API) or,
+               exact, the key's shared.schema_versions.applied_at from --applied-at (CSV "version,applied_at", e.g.
+               from the S258 schema_versions read script)
 
-and prints one row per file plus the median / max total and how many met the ADR 0017 target (default 25 min).
+and prints one row per file plus the median / max total, how many met the ADR 0017 target (default 25 min) and how
+many went through with no hand step (ci-bot copy, auto-applied by a push or cron run with the probe green).
 
   python3 tools/github/migration_lead_time.py --last 10
   python3 tools/github/migration_lead_time.py --last 5 --owner booking --applied-at applied.csv --json out.json
@@ -59,7 +63,8 @@ class Row:
     copy_opened: str | None = None
     copy_merged: str | None = None
     applied: str | None = None
-    applied_how: str = "unknown"          # auto | auto+probe | listed-only | manual~ | schema_versions | unknown
+    applied_how: str = "unknown"          # see apply_from_jobs, plus manual~ | schema_versions
+    apply_event: str | None = None        # event of the Migration Apply run that applied it (push | schedule | ...)
     notes: list[str] = field(default_factory=list)
 
     def minutes(self) -> dict[str, float | None]:
@@ -99,8 +104,10 @@ def version_key(owner: str, number: str) -> str:
 
 
 def apply_from_jobs(jobs: list[dict]) -> tuple[str | None, str]:
-    """(completed_at, how) of a Migration Apply run from its jobs: the apply job's end when it succeeded (with the
-    probe's end when that succeeded too); "listed-only" when the apply job was skipped (DB_AUTO_APPLY off)."""
+    """(completed_at, how) of a Migration Apply run from its jobs. The apply job succeeded: "auto+probe" with the
+    probe's end when every Isolation probe job succeeded, else "auto (probe <conclusion>)" / "auto (no probe)" with the
+    apply's end (the schema is on Dev, but the run is no clean automated apply). "listed-only" when the apply job was
+    skipped (DB_AUTO_APPLY off, or nothing pending)."""
     apply = next((j for j in jobs if j.get("name", "").startswith(APPLY_JOB)), None)
     if apply is None:
         return None, "unknown"
@@ -109,9 +116,18 @@ def apply_from_jobs(jobs: list[dict]) -> tuple[str | None, str]:
     if apply.get("conclusion") != "success":
         return None, f"apply {apply.get('conclusion')}"
     probes = [j for j in jobs if j.get("name", "").startswith(PROBE_JOB)]
-    if probes and all(p.get("conclusion") == "success" for p in probes):
-        return max(p["completed_at"] for p in probes), "auto+probe"
-    return apply.get("completed_at"), "auto"
+    if not probes:
+        return apply.get("completed_at"), "auto (no probe)"
+    bad = [p.get("conclusion") or p.get("status") for p in probes if p.get("conclusion") != "success"]
+    if bad:
+        return apply.get("completed_at"), f"auto (probe {bad[0]})"
+    return max(p["completed_at"] for p in probes), "auto+probe"
+
+
+def no_hand_step(row: "Row") -> bool:
+    """Copy opened by ci-bot and applied by a push or cron Migration Apply run with the probe green."""
+    return (row.applied_how.startswith("auto+probe") and row.apply_event in ("push", "schedule")
+            and (row.copy_author or "").startswith("aa-ecosys-ci-bot"))
 
 
 def summarise(rows: list[Row], target: float) -> dict:
@@ -124,8 +140,7 @@ def summarise(rows: list[Row], target: float) -> dict:
         "max_min": max(totals) if totals else None,
         "within_target": sum(1 for t in totals if t <= target),
         "target_min": target,
-        "no_hand_step": sum(1 for r in rows if r.applied_how.startswith("auto")
-                            and (r.copy_author or "").startswith("aa-ecosys-ci-bot")),
+        "no_hand_step": sum(1 for r in rows if no_hand_step(r)),
     }
 
 
@@ -161,12 +176,30 @@ def app_merge(owner: str, name: str) -> tuple[int | None, str | None, str]:
     return None, first["commit"]["committer"]["date"], "no PR for the adding commit (commit date used)"
 
 
+def apply_runs_after(runs: list[dict], merge_sha: str, since: str) -> list[dict]:
+    """Migration Apply runs that may have applied a copy merged at `since`: the run(s) on the merge commit first, then
+    every later run (cron, the next push, a manual one) created within MANUAL_WINDOW, oldest first. A run created
+    before the merge cannot have seen the file."""
+    t0 = parse_ts(since)
+    keep = [r for r in runs if r.get("head_sha") == merge_sha
+            or t0 <= parse_ts(r["created_at"]) <= t0 + MANUAL_WINDOW]
+    return sorted(keep, key=lambda r: (r.get("head_sha") != merge_sha, r["created_at"]))
+
+
 def applied_time(row: Row, merge_sha: str, applied_at: dict[str, str]) -> None:
-    runs = gh(f"repos/{INFRA}/actions/workflows/migration-apply.yml/runs?head_sha={merge_sha}&per_page=20")["workflow_runs"]
-    for run in sorted(runs, key=lambda r: r["created_at"]):
+    since = row.copy_merged
+    wf = f"repos/{INFRA}/actions/workflows/migration-apply.yml/runs"
+    runs = {r["id"]: r for q in (f"head_sha={merge_sha}&per_page=20", f"created=%3E%3D{since}&per_page=100")
+            for r in gh(f"{wf}?{q}")["workflow_runs"]}
+    for run in apply_runs_after(list(runs.values()), merge_sha, since):
         when, how = apply_from_jobs(gh(f"repos/{INFRA}/actions/runs/{run['id']}/jobs?per_page=50")["jobs"])
         if when:
-            row.applied, row.applied_how = when, how
+            row.applied, row.applied_how, row.apply_event = when, how, run.get("event")
+            if run.get("head_sha") != merge_sha:
+                # Apply-pending applies every pending expand file, so a later green run covers this one, but the
+                # run is not the copy's own (file not checked in the run log).
+                row.applied_how = f"{how} via {run.get('event')} run"
+                row.notes.append(f"Migration Apply run {run['id']} ({run.get('event')}, after the copy's own run)")
             return
         if how != "unknown":
             row.applied_how = how
@@ -174,7 +207,6 @@ def applied_time(row: Row, merge_sha: str, applied_at: dict[str, str]) -> None:
     if row.key in applied_at:
         row.applied, row.applied_how = applied_at[row.key], "schema_versions"
         return
-    since = row.copy_merged
     runs = gh(f"repos/{INFRA}/actions/workflows/db-migrate.yml/runs?status=success&created=%3E%3D{since}&per_page=100")["workflow_runs"]
     limit = parse_ts(since) + MANUAL_WINDOW
     runs = [r for r in runs if parse_ts(r["created_at"]) <= limit]

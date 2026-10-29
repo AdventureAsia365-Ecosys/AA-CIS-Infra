@@ -624,6 +624,10 @@ class WorkflowShapeTest(unittest.TestCase):
         # Job-level concurrency: a skipped run (someone else's comment) never replaces a pending real run.
         self.assertNotIn("concurrency", self.sync)
         self.assertEqual(job["concurrency"], {"group": "migration-sync", "cancel-in-progress": False})
+        # The doorbell issue is ensured before any step that can fail (clone, plan, mint, merge).
+        names = [s.get("name", "") for s in job["steps"]]
+        wake = names.index("Wake-up issue (find or create)")
+        self.assertLess(wake, next(i for i, n in enumerate(names) if n.startswith("Clone the owner repos")))
 
 
 if __name__ == "__main__":

@@ -36,7 +36,8 @@ name: Migration Sync (owner copies)
 #   - wake-up comment: each owner repo's "Migration sync wake-up" workflow (push to main touching its migrations
 #     folder) posts a comment, as aa-ecosys-ci-bot, on the open issue labelled migration-sync-wake here. Its token is
 #     minted for AA-CIS-Infra with Issues write only (no Contents, Pull requests or Actions: it cannot write code,
-#     open a PR or dispatch a workflow). The comment is a doorbell, not a payload: its text is never read, the run
+#     open a PR or dispatch a workflow; it can label PRs, see docs/implementation-notes/AA-993-sync-wake.md for the
+#     secret-scan-baseline-reviewed label). The comment is a doorbell, not a payload: its text is never read, the run
 #     still pulls the owners' main anonymously (critic 1). Comments by anyone else, or on any other issue, skip the job;
 #   - copy PR checks done: workflow_run of "Terraform Plan" and "Migration Copy Guard" on a bot/migration-copy/*
 #     branch of this repo, so the merge pass runs as soon as the slow required checks finish ("gitleaks" runs on
@@ -93,7 +94,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # Read by tools/github/migration_lead_time.py (which trigger opened or merged a copy).
+      # For people reading the run: which trigger started it (the run's event is in the Actions list too).
       - name: Trigger
         env:
           EVENT: ${{ github.event_name }}
@@ -107,6 +108,24 @@ jobs:
             *)             why="$EVENT" ;;
           esac
           echo "- trigger: $why" >> "$GITHUB_STEP_SUMMARY"
+
+      # The owner repos' "Migration sync wake-up" workflows comment on this issue; they never create it (their token
+      # is Issues write on this repo only, and one open labelled issue keeps the doorbell in one place). First step after
+      # the trigger line, so a later step failing on a scheduled or manual run still leaves the doorbell in place.
+      - name: Wake-up issue (find or create)
+        if: env.DRY_RUN != 'true' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          REPO="$GITHUB_REPOSITORY"
+          N=$(gh api "repos/$REPO/issues?state=open&labels=migration-sync-wake&per_page=1" --jq '.[0].number // empty')
+          if [ -n "$N" ]; then echo "wake-up issue #$N"; exit 0; fi
+          gh label create migration-sync-wake --repo "$REPO" --color ededed \
+            --description "AA-993: owner repos comment here to start Migration Sync" --force >/dev/null
+          N=$(gh issue create --repo "$REPO" --title "Migration sync wake-up (bot doorbell)" --label migration-sync-wake \
+            --body "Each owner repo's \"Migration sync wake-up\" workflow comments here (as aa-ecosys-ci-bot) after a push to main that touches its migrations folder; each such comment starts .github/workflows/migration-sync.yml. Comments by anyone else are ignored. Closing this issue is safe: the next scheduled Migration Sync run opens a new one. Refs AA-993." \
+            | sed 's#.*/##')
+          echo "- opened wake-up issue #$N" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Clone the owner repos' main (anonymous, migrations folders only)
         run: |
@@ -282,19 +301,3 @@ jobs:
             fi
           done
 
-      # The owner repos' "Migration sync wake-up" workflows comment on this issue; they never create it (their token
-      # is Issues write on this repo only, and one open labelled issue keeps the doorbell in one place).
-      - name: Wake-up issue (find or create)
-        if: env.DRY_RUN != 'true' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          REPO="$GITHUB_REPOSITORY"
-          N=$(gh api "repos/$REPO/issues?state=open&labels=migration-sync-wake&per_page=1" --jq '.[0].number // empty')
-          if [ -n "$N" ]; then echo "wake-up issue #$N"; exit 0; fi
-          gh label create migration-sync-wake --repo "$REPO" --color ededed \
-            --description "AA-993: owner repos comment here to start Migration Sync" --force >/dev/null
-          N=$(gh issue create --repo "$REPO" --title "Migration sync wake-up (bot doorbell)" --label migration-sync-wake \
-            --body "Each owner repo's \"Migration sync wake-up\" workflow comments here (as aa-ecosys-ci-bot) after a push to main that touches its migrations folder; each such comment starts .github/workflows/migration-sync.yml. Comments by anyone else are ignored. Closing this issue is safe: the next scheduled Migration Sync run opens a new one. Refs AA-993." \
-            | sed 's#.*/##')
-          echo "- opened wake-up issue #$N" >> "$GITHUB_STEP_SUMMARY"
