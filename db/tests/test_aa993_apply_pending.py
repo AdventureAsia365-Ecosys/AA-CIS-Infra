@@ -105,7 +105,7 @@ class PlanPendingTest(unittest.TestCase):
         plan = rm.plan_pending([entry("booking/291_e.sql", expand(291))], registered("booking", 289))["booking"]
         self.assertEqual([(s.action, s.path) for s in plan["steps"]], [("stop", "booking/291_e.sql")])
         self.assertIn("gap: bk-290 is neither registered nor copied", plan["steps"][0].reason)
-        self.assertFalse(ap.needs_person(plan["steps"][0].reason))         # it waits for the copy, not a person
+        self.assertEqual(plan["steps"][0].kind, rm.STOP_GAP)              # M3 review: a gap is a stop a person sees
 
     def test_a_gap_after_applied_files_stops_there(self):
         files = [entry("booking/290_e.sql", expand(290)), entry("booking/292_e.sql", expand(292))]
@@ -124,6 +124,30 @@ class PlanPendingTest(unittest.TestCase):
         self.assertEqual([(s.action, s.path) for s in plan], [("apply", "booking/290_a.sql"),
                                                               ("stop", "booking/290_b.sql")])
         self.assertIn("duplicate number", plan[1].reason)
+
+    def test_every_stop_has_an_enumerated_kind(self):
+        # M3 review: the stop reason is classified explicitly (run_migration.STOP_KINDS), never by its text.
+        reg = registered("booking", 289)
+        cases = [
+            ([entry("booking/290_c.sql", contract(290))], reg, rm.STOP_CONTRACT),
+            ([entry("booking/290_e.sql", expand(290))], reg | {"bk-291"}, rm.STOP_OUT_OF_ORDER),
+            ([rm.not_copied_entry("booking/290_x.sql")], reg, rm.STOP_NOT_COPIED),
+            ([entry("booking/291_e.sql", expand(291))], reg, rm.STOP_GAP),
+            ([entry("booking/290_a.sql", expand(290)), entry("booking/290_b.sql", expand(290))], reg,
+             rm.STOP_DUPLICATE),
+            ([entry("booking/290_e.sql", tx("UPDATE booking.trip SET note = 'x';", version="bk-290"))], reg,
+             rm.STOP_LINT),
+        ]
+        for verdict_kind in (rm.STOP_REFUSED_BYTES, rm.STOP_REFUSED_CLASSIFY, rm.STOP_NO_EVIDENCE):
+            cases.append(([dict(entry("booking/290_e.sql", expand(290), verdict="why"), verdict_kind=verdict_kind)],
+                          reg, verdict_kind))
+        cases.append(([entry("booking/290_e.sql", expand(290), verdict="why")], reg, rm.STOP_REFUSED))
+        cases.append(([dict(entry("booking/290_e.sql", expand(290), verdict="why"), verdict_kind="bogus")], reg,
+                      rm.STOP_REFUSED))
+        for files, keys, kind in cases:
+            stops = [s for s in rm.plan_pending(files, keys)["booking"]["steps"] if s.action == "stop"]
+            self.assertEqual([s.kind for s in stops], [kind], files[-1]["path"])
+        self.assertEqual(set(rm.STOP_KINDS), set(ap.STOP_NOTES))           # every kind has a person's note
 
     def test_owners_are_independent(self):
         files = [entry("booking/290_c.sql", contract(290)), entry("crm/024_e.sql", expand(24, "crm"))]
@@ -214,7 +238,8 @@ class RunApplyPendingTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(self.used, [])
         self.assertIn("auto: booking: STOP at booking/290_c.sql (bk-290): contract", self.log)
-        self.assertEqual(self.result()["owners"]["booking"]["files"][0]["status"], "manual")
+        row = self.result()["owners"]["booking"]["files"][0]
+        self.assertEqual((row["status"], row["kind"]), ("manual", rm.STOP_CONTRACT))
 
     def test_lock_held_by_another_run_is_exit_17_and_nothing_runs(self):
         files = [entry("booking/290_e.sql", expand(290))]
@@ -298,6 +323,9 @@ class RunApplyPendingTest(unittest.TestCase):
         self.assertIn("sha256 mismatch", self.log)
         self.assertEqual(self.run_pending(bundle([entry("roles/009_x.sql", expand(9))]), []), 10)
         self.assertEqual(self.run_pending(bundle([], kind="other"), []), 10)
+        bad = json.loads(raw)
+        bad["files"][0]["verdict_kind"] = "trust-me"
+        self.assertEqual(self.run_pending(json.dumps(bad).encode(), []), 10)
 
 
 class RunnerSideTest(unittest.TestCase):
@@ -321,11 +349,11 @@ class RunnerSideTest(unittest.TestCase):
                 + [{"file": f, "class": "contract", "header": "expand", "findings": ["relation x changed"]}
                    for f in contract_files]}
 
-    def run_plan(self, keys, classify=None):
+    def run_plan(self, keys, classify=None, extra=()):
         (self.repo / "keys.txt").write_text("\n".join(sorted(keys)))
         args = ["plan", "--repo-root", str(self.repo), "--source", f"booking={self.owner}",
                 "--registered", str(self.repo / "keys.txt"), "--bundle", str(self.repo / "bundle.json"),
-                "--github-output", str(self.repo / "out.txt"), "--plan-out", str(self.repo / "plan.json")]
+                "--github-output", str(self.repo / "out.txt"), "--plan-out", str(self.repo / "plan.json"), *extra]
         if classify is not None:
             (self.repo / "classify.json").write_text(json.dumps(classify))
             args += ["--classify", str(self.repo / "classify.json")]
@@ -340,6 +368,8 @@ class RunnerSideTest(unittest.TestCase):
         out, b = self.run_plan(registered("booking", 289), self.classify("booking/290_e.sql"))
         self.assertEqual(out["apply"], "false")
         self.assertTrue(b["files"][0]["verdict"].startswith("differs from the owner repo's main"))
+        self.assertEqual(b["files"][0]["verdict_kind"], rm.STOP_REFUSED_BYTES)
+        self.assertEqual(out["manual"], "refused-bytes:booking/290_e.sql")        # M3 review: a person must see it
         self.put("291_e.sql", expand(291), owner_sql=False)
         _, b = self.run_plan(registered("booking", 289), self.classify("booking/291_e.sql"))
         self.assertIn("not on the owner repo's main", b["files"][1]["verdict"])
@@ -349,11 +379,15 @@ class RunnerSideTest(unittest.TestCase):
         out, b = self.run_plan(registered("booking", 289))
         self.assertEqual((out["needs_classify"], out["apply"]), ("true", "false"))
         self.assertEqual(b["files"][0]["verdict"], ap.NO_EVIDENCE)
+        self.assertEqual(out["manual"], "no-evidence:booking/290_e.sql")
+        out, _ = self.run_plan(registered("booking", 289), extra=["--classify-skipped"])
+        self.assertEqual(out["manual"], "")              # scheduled list-only run: the classify was skipped on purpose
         out, b = self.run_plan(registered("booking", 289), self.classify("booking/290_e.sql"))
         self.assertEqual((out["apply"], b["files"][0]["verdict"]), ("true", "ok"))
         out, b = self.run_plan(registered("booking", 289), self.classify(contract_files=["booking/290_e.sql"]))
         self.assertEqual(out["apply"], "false")
         self.assertIn("classified contract on the replay: relation x changed", b["files"][0]["verdict"])
+        self.assertEqual(out["manual"], "refused-classify:booking/290_e.sql")
 
     def test_bundle_round_trips_into_the_task_reader(self):
         self.put("290_e.sql", expand(290))
@@ -372,7 +406,8 @@ class RunnerSideTest(unittest.TestCase):
         self.put("291_e.sql", expand(291))
         out, b = self.run_plan(registered("booking", 289), self.classify("booking/291_e.sql"))
         self.assertEqual(b["not_copied"], ["booking/290_x.sql"])
-        self.assertEqual((out["apply"], out["needs_classify"], out["manual"]), ("false", "false", ""))
+        self.assertEqual((out["apply"], out["needs_classify"], out["manual"]),
+                         ("false", "false", "not-copied:booking/290_x.sql"))
         plan = json.loads((self.repo / "plan.json").read_text())["owners"]["booking"]["steps"]
         self.assertEqual([(s["action"], s["file"]) for s in plan], [("stop", "booking/290_x.sql")])
         self.assertIn("booking/290_x.sql", [f["path"] for f in rm.read_bundle(json.dumps(b).encode())])
@@ -389,22 +424,78 @@ class RunnerSideTest(unittest.TestCase):
         res = {"bundle": "abc", "exit": 0, "owners": {
             "booking": {"head_before": "bk-289", "legacy": 0, "files": [
                 {"file": "booking/290_e.sql", "version": "bk-290", "status": "applied"},
-                {"file": "booking/291_c.sql", "version": "bk-291", "status": "manual", "reason": "contract (no header)"},
-                {"file": "booking/292_e.sql", "version": "bk-292", "status": "manual", "reason": "refused on the runner: x"}]},
-            "crm": {"head_before": "crm-023", "legacy": 0, "files": []}}}
+                {"file": "booking/291_c.sql", "version": "bk-291", "status": "manual", "kind": "contract",
+                 "reason": "contract (no header)"}]},
+            "crm": {"head_before": "crm-023", "legacy": 0, "files": [
+                {"file": "crm/024_e.sql", "version": "crm-024", "status": "manual", "kind": "refused-classify",
+                 "reason": "refused on the runner: classified contract on the replay: x"}]},
+            "tripplanner": {"head_before": "tp-020", "legacy": 0, "files": [
+                {"file": "tripplanner/021_e.sql", "version": "tp-021", "status": "manual",
+                 "reason": "refused on the runner: something new"}]},
+            "cis": {"head_before": "301", "legacy": 0, "files": []}}}
         log = self.repo / "task.log"
         log.write_text("MIGRATE something\nMIGRATE auto-result " + json.dumps(res) + "\n")
         summary, outp = self.repo / "s.md", self.repo / "o.txt"
-        ap.main(["report", "--log", str(log), "--summary", str(summary), "--github-output", str(outp)])
-        self.assertEqual(outp.read_text(), "applied=true\nmanual=booking/291_c.sql\nresult=found\n")
+        self.assertEqual(ap.main(["report", "--log", str(log), "--summary", str(summary), "--github-output",
+                                  str(outp)]), 0)
+        # M3 review: every stop reaches the manual list, runner refusals included (a row without a kind = refused).
+        self.assertEqual(outp.read_text(), "applied=true\nmanual=contract:booking/291_c.sql,"
+                         "refused-classify:crm/024_e.sql,refused:tripplanner/021_e.sql\nresult=found\n")
         text = summary.read_text()
         self.assertIn("| booking | bk-289 | `booking/291_c.sql` | manual | manual DB Migrate apply needed: contract (no header) |",
                       text)
-        self.assertIn("| crm | crm-023 | | nothing pending | |", text)
+        self.assertIn("| cis | 301 | | nothing pending | |", text)
+        self.assertIn("| tripplanner | tp-020 | `tripplanner/021_e.sql` | manual | refused on the runner: refused", text)
+
+    def test_missing_result_is_unknown_and_fails(self):
+        # M3 review: the task exited 0 but printed no auto-result line: never green, and the probe + dump still run.
+        log, outp, summary = self.repo / "task.log", self.repo / "o.txt", self.repo / "s.md"
         log.write_text("MIGRATE crashed\n")
+        self.assertEqual(ap.main(["report", "--log", str(log), "--github-output", str(outp), "--summary",
+                                  str(summary)]), 3)
+        self.assertEqual(outp.read_text(), "applied=unknown\nmanual=\nresult=missing\n")
+        self.assertIn("Result unknown", summary.read_text())
         outp.unlink()
-        ap.main(["report", "--log", str(log), "--github-output", str(outp)])
-        self.assertEqual(outp.read_text(), "applied=false\nmanual=\nresult=missing\n")
+        self.assertEqual(ap.main(["report", "--log", str(self.repo / "absent.log"), "--github-output", str(outp)]), 3)
+
+    def test_notes_name_the_pr_marker_and_body_per_kind(self):
+        with contextlib.redirect_stdout(io.StringIO()) as buf:
+            ap.main(["notes", "--manual", "contract:booking/291_c.sql,not-copied:crm/024_e.sql,"
+                     "refused-bytes:cis/302_x.sql", "--run-id", "42"])
+        notes = [json.loads(ln) for ln in buf.getvalue().splitlines()]
+        self.assertEqual([(n["branch"], n["on_main"]) for n in notes],
+                         [("bot/migration-copy/booking-291", True), ("bot/migration-copy/crm-024", False),
+                          ("bot/migration-copy/cis-302", True)])
+        self.assertEqual(notes[0]["marker"], "<!-- aa993-manual-apply:contract:booking/291_c.sql -->")
+        self.assertTrue(notes[0]["body"].startswith(notes[0]["marker"] + "\n**Manual DB Migrate apply needed**"))
+        self.assertIn("`migration=booking/291_c.sql`", notes[0]["body"])
+        self.assertIn("run 42", notes[2]["body"])
+        self.assertIn("not byte-identical", notes[2]["body"])
+        with contextlib.redirect_stdout(io.StringIO()) as buf:
+            ap.main(["notes", "--manual", "", "--run-id", "1"])
+        self.assertEqual(buf.getvalue(), "")
+        with self.assertRaises(SystemExit):
+            ap.parse_manual("booking/291_c.sql")                 # no kind: the old format is refused
+        with self.assertRaises(SystemExit):
+            ap.parse_manual("bogus:booking/291_c.sql")
+
+    def test_pick_pr_takes_the_merged_copy_pr_not_the_newest(self):
+        # M3 review: a later PR on the same bot branch (closed unmerged, or reopened) must not get the note.
+        br = {"ref": "bot/migration-copy/booking-291"}
+        pulls = [{"number": 90, "state": "closed", "merged_at": None, "head": br},
+                 {"number": 70, "state": "closed", "merged_at": "2026-10-20T10:00:00Z", "head": br},
+                 {"number": 60, "state": "closed", "merged_at": "2026-10-21T10:00:00Z",
+                  "head": {"ref": "fix/hand-copy"}},
+                 {"number": 95, "state": "open", "merged_at": None, "head": br}]
+        self.assertEqual(ap.pick_copy_pr(pulls, "booking/291_c.sql", merged=True), 70)    # bot branch first
+        self.assertEqual(ap.pick_copy_pr(pulls[2:3], "booking/291_c.sql", merged=True), 60)  # a hand copy PR
+        self.assertIsNone(ap.pick_copy_pr(pulls[:1], "booking/291_c.sql", merged=True))
+        self.assertEqual(ap.pick_copy_pr(pulls, "booking/291_c.sql", merged=False), 95)
+        self.assertIsNone(ap.pick_copy_pr(pulls[:3], "booking/291_c.sql", merged=False))
+        (self.repo / "pulls.json").write_text(json.dumps(pulls))
+        with contextlib.redirect_stdout(io.StringIO()) as buf:
+            ap.main(["pick-pr", "--pulls", str(self.repo / "pulls.json"), "--path", "booking/291_c.sql", "--merged"])
+        self.assertEqual(buf.getvalue(), "70\n")
 
     def test_explain_covers_every_runner_exit_code(self):
         for code in (2, 3, 4, 6, 7, 8, 9, 10, 14, 15, 16, 17):
@@ -447,6 +538,26 @@ class WorkflowShapeTest(unittest.TestCase):
         self.assertNotIn("MIGRATION_SNAPSHOT", self.apply_text)
         self.assertIn('{name: "MIGRATION_MODE", value: "apply-pending"}', self.apply_text)
 
+    def test_probe_gets_no_inherited_secrets(self):
+        # M3 review: the callee reads AWS_ROLE_ARN from its own environment (dev-db-auto); nothing else is passed.
+        self.assertNotIn("secrets", self.apply["jobs"]["probe"])
+        self.assertNotIn("secrets: inherit", self.apply_text)
+        self.assertNotIn("secrets", self.probe[True]["workflow_call"])
+        self.assertEqual(self.probe["jobs"]["probe"]["environment"], "${{ inputs.environment || 'prod' }}")
+
+    def test_missing_result_fails_and_still_probes_and_dumps(self):
+        self.assertIn('echo "applied=unknown" >> "$GITHUB_OUTPUT"', self.apply_text)
+        self.assertIn('if [ "$REPORT" != "0" ]; then', self.apply_text)
+        for job in ("probe", "dump"):
+            self.assertIn("needs.apply.outputs.applied == 'unknown'", self.apply["jobs"][job]["if"])
+
+    def test_summary_notes_the_merged_copy_pr(self):
+        text = yaml_dump = str(self.apply["jobs"]["summary"])
+        self.assertIn("pick-pr --pulls pulls.json --path \"$f\" --merged", text)
+        self.assertIn("--diff-filter=A", text)
+        self.assertNotIn("per_page=1&", yaml_dump)
+        self.assertEqual(self.apply["jobs"]["summary"]["steps"][0]["with"], {"fetch-depth": 0})
+
     def test_probe_is_blocking_with_the_same_role(self):
         probe = self.apply["jobs"]["probe"]
         self.assertEqual(probe["uses"], "./.github/workflows/db-isolation-probe.yml")
@@ -482,6 +593,10 @@ class WorkflowShapeTest(unittest.TestCase):
         self.assertIn('"\\(.head.ref) \\(.number)"\' \\\n            | LC_ALL=C sort', self.sync_text)
         self.assertIn("--repo-root .", self.sync_text)
         self.assertIn('cp head.sql "$F"', self.sync_text)
+        # M3 review: the close path closes only the ci-bot App's own PRs (exact login), not any Bot.
+        self.assertNotIn(".user.type", self.sync_text)
+        self.assertIn('[ "$(jq -r .user.login pr.json)" = "$BOT_LOGIN" ]', self.sync_text)
+        self.assertIn("BOT_LOGIN=$(python3 db/migration_sync.py bot-login)", self.sync_text)
         self.assertIn("steps.gate.outputs.merge == 'true'", self.sync_text)
         self.assertEqual(self.sync["permissions"], {"contents": "read"})
 

@@ -2716,12 +2716,31 @@ REGISTERED_SQL = "SELECT version FROM shared.schema_versions"
 AUTO_FILE_RE = re.compile(r"^(cis|booking|tripplanner|crm)/([0-9]{3})_[a-z0-9_]+\.sql$")
 
 
+# Why a `stop` step ends an owner (AA-993 M3 review): every kind needs a person, so every stop reaches the run's manual
+# list and a note on the file's copy PR (db/apply_pending.py STOP_NOTES says what the person does for each kind).
+STOP_OUT_OF_ORDER = "out-of-order"      # below the owner's highest registered key
+STOP_NOT_COPIED = "not-copied"          # on the owner's main, its copy PR has not merged (bundle not_copied)
+STOP_DUPLICATE = "duplicate"            # two copies with one number
+STOP_GAP = "gap"                        # the owner's next number is neither registered nor copied
+STOP_CONTRACT = "contract"              # no expand header
+STOP_LINT = "lint"                      # expand header, lint error(s)
+STOP_REFUSED_BYTES = "refused-bytes"    # runner: the copy is not byte-identical to the owner's main (or no clone)
+STOP_REFUSED_CLASSIFY = "refused-classify"  # runner: expand_check --classify on the replay said contract
+STOP_NO_EVIDENCE = "no-evidence"        # runner: no classify result for the file
+STOP_REFUSED = "refused"                # runner: any other verdict (or none)
+STOP_KINDS = (STOP_OUT_OF_ORDER, STOP_NOT_COPIED, STOP_DUPLICATE, STOP_GAP, STOP_CONTRACT, STOP_LINT,
+              STOP_REFUSED_BYTES, STOP_REFUSED_CLASSIFY, STOP_NO_EVIDENCE, STOP_REFUSED)
+# The bundle's per-file `verdict_kind` (db/apply_pending.py build): "ok" or one of the runner refusal kinds.
+VERDICT_KINDS = ("ok", STOP_REFUSED_BYTES, STOP_REFUSED_CLASSIFY, STOP_NO_EVIDENCE, STOP_REFUSED)
+
+
 @dataclass
 class AutoStep:
     path: str                           # owner/NNN_name.sql
     version: str
     action: str                         # apply | stop
     reason: str = ""
+    kind: str = ""                      # stop only: one of STOP_KINDS
 
 
 def auto_version(owner: str, number: int) -> str:
@@ -2760,29 +2779,37 @@ def plan_pending(files: list, registered) -> dict:
             if number <= floor:
                 legacy += 0 if f.get("not_copied") else 1
                 continue
-            reason = ""
+            reason, kind = "", ""
             if number < head:
+                kind = STOP_OUT_OF_ORDER
                 reason = (f"out-of-order: below the owner's highest registered key {auto_version(owner, head)}; "
                           f"manual DB Migrate apply")
             elif f.get("not_copied"):
+                kind = STOP_NOT_COPIED
                 reason = (f"not copied yet: on the {owner} owner repo's main but not in db/migrations/{owner}/ (its "
                           f"migration-sync copy PR has not merged); nothing after it runs before it")
             elif number < expected:
+                kind = STOP_DUPLICATE
                 reason = f"duplicate number: {version} is already pending in this run; the copies must be fixed"
             elif number > expected:
+                kind = STOP_GAP
                 reason = (f"gap: {auto_version(owner, expected)} is neither registered nor copied here; nothing past a "
                           f"gap is applied (the owner's next file must be its head + 1)")
             else:
                 d = parse_directives(f["sql"])
                 errs = lint(f["sql"], d, f["path"])[0]
                 if not d.expand:
+                    kind = STOP_CONTRACT
                     reason = "contract (no `-- migrate: expand` header): manual DB Migrate apply"
                 elif errs:
+                    kind = STOP_LINT
                     reason = f"expand header but {len(errs)} lint error(s): {errs[0]}"
                 elif f.get("verdict") != "ok":
+                    vk = f.get("verdict_kind")
+                    kind = vk if vk in VERDICT_KINDS and vk != "ok" else STOP_REFUSED
                     reason = f"refused on the runner: {f.get('verdict') or 'no verdict'}"
             if reason:
-                steps.append(AutoStep(f["path"], version, "stop", reason))
+                steps.append(AutoStep(f["path"], version, "stop", reason, kind))
                 break
             steps.append(AutoStep(f["path"], version, "apply"))
             expected = number + 1
@@ -2811,7 +2838,10 @@ def read_bundle(raw: bytes) -> list:
             raise ValueError(f"bundle entry {path}: sha256 mismatch")
         seen.add(path)
         numbers.add(path[:path.index("_")])
-        files.append({"path": path, "sql": sql, "verdict": f.get("verdict", "")})
+        vk = f.get("verdict_kind", STOP_REFUSED)
+        if vk not in VERDICT_KINDS:
+            raise ValueError(f"bundle entry {path}: verdict_kind {vk!r} is not one of {', '.join(VERDICT_KINDS)}")
+        files.append({"path": path, "sql": sql, "verdict": f.get("verdict", ""), "verdict_kind": vk})
     missing = data.get("not_copied") or []
     if not isinstance(missing, list):
         raise ValueError("bundle not_copied: not a list of owner-dir paths")
@@ -2860,7 +2890,8 @@ async def run_apply_pending(env, fetch, connect, sleep, get_secret=_get_secret) 
                     break
                 if st.action == "stop":
                     log(f"auto: {owner}: STOP at {st.path} ({st.version}): {st.reason}")
-                    rows.append({"file": st.path, "version": st.version, "status": "manual", "reason": st.reason})
+                    rows.append({"file": st.path, "version": st.version, "status": "manual", "kind": st.kind,
+                                 "reason": st.reason})
                     break
                 sql = next(f["sql"] for f in files if f["path"] == st.path)
                 log(f"auto: {owner}: apply {st.path} ({st.version})")

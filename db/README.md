@@ -189,7 +189,8 @@ opened as `aa-ecosys-ci-bot` (App token minted in the job: AA-CIS-Infra only, Co
 `migration:expand|contract|destructive`, plus `out-of-order` when the number is below the owner's highest registered
 key (latest DB Schema Dump artifact). A number already used here by another name is a conflict (warned, not copied).
 The merge pass goes per owner in ascending number order and squash-merges, pinned to the head commit, every open copy
-PR that `db/migration_sync.py merge-check` passes: opened by the bot, exactly one new file of that owner and number,
+PR that `db/migration_sync.py merge-check` passes: author exactly `aa-ecosys-ci-bot[bot]` (not any Bot), exactly one
+new file of that owner and number,
 byte-identical to the owner's `main`, no lower-numbered owner file (at or above the lowest copy) still missing from
 `main` (it waits: `291` never merges before `290`, even while `290`'s checks run or it is refused), every required
 check of `tools/github/infra-main-ruleset.json` green. Every class is merged (copy is not apply). The merge
@@ -214,12 +215,17 @@ pass runs only while the repo is public and `main` carries the ruleset; otherwis
    validity exit 16, 30 s statement timeout, no job-table idle wait, no override, no snapshot); a lock timeout (55P03)
    is retried after 30 s and 90 s; a file naming a hot table during an open rerun wave is deferred to the next run; a
    failed file stops its owner, the other owners still run. Task log: `MIGRATE auto: …` lines and one
-   `MIGRATE auto-result {json}` line, summarised by `db/apply_pending.py report`.
+   `MIGRATE auto-result {json}` line, summarised by `db/apply_pending.py report`. No such line (even with task exit 0)
+   = result unknown: the apply job is red and `applied=unknown` still runs the probe and the dump.
 3. `probe`: the DB Isolation Probe as a **blocking** job (`db-isolation-probe.yml` called as a reusable workflow with
-   the same environment and the `db-auto-apply/probe` prefix), only after a file was applied.
-4. `dump`: DB Schema Dump with `after_apply=true`.
-5. `summary`: each contract / out-of-order file that blocks an owner gets one comment on its copy PR, "manual DB
-   Migrate apply needed".
+   the same environment and the `db-auto-apply/probe` prefix; no secrets passed, the callee reads `AWS_ROLE_ARN` of
+   `dev-db-auto` itself), after a file was applied or when the result is unknown.
+4. `dump`: DB Schema Dump with `after_apply=true` (same condition).
+5. `summary`: every owner's stop is on the run's manual list as `kind:owner/file` (`run_migration.STOP_KINDS`:
+   contract, out-of-order, lint, refused-bytes, refused-classify, no-evidence, refused, not-copied, gap, duplicate)
+   and gets one note per kind on its copy PR (the MERGED PR that added the file, found from the commit that added it;
+   the open copy PR for a file not copied yet) saying what a person does (`db/apply_pending.py STOP_NOTES`). A
+   scheduled list-only run skips the classify on purpose, so its `no-evidence` stops are not noted.
 
 **Switch:** the repo variable `DB_AUTO_APPLY`. Anything but `true` (unset by default), a private repo, or a `main`
 without the ruleset = **list only**: the plan runs, the summary shows what would be applied, a person applies with

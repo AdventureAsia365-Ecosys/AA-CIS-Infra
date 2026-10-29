@@ -7,6 +7,8 @@ needs no AWS and no database, so every mode runs locally:
   python3 db/apply_pending.py plan --source cis=owners/AA-CIS-App/api/migrations … [--live schema.json | --registered keys.txt]
       [--classify classify.json] [--bundle bundle.json] [--plan-out plan.json] [--summary FILE] [--github-output FILE]
   python3 db/apply_pending.py report --log task.log [--summary FILE] [--github-output FILE]
+  python3 db/apply_pending.py notes --manual "contract:cis/301_x.sql,…" --run-id N
+  python3 db/apply_pending.py pick-pr --pulls pulls.json --path cis/301_x.sql (--merged | --open)
   python3 db/apply_pending.py explain 14
 
 plan (also the dry run): for every copy in db/migrations/<cis|booking|tripplanner|crm>/ above the owner's legacy floor
@@ -24,11 +26,20 @@ The expected plan comes from run_migration.plan_pending (the same code the task 
 latest DB Schema Dump artifact (`--live`) or a key list (`--registered`, one key per line). It is only a forecast: the
 task re-reads the keys under the apply lock. Outputs (`--github-output`): `needs_classify` (an expected `apply` step
 exists when classify evidence is assumed), `apply` (an expected `apply` step exists with the real verdicts), `pending`
-(count of expected steps), `manual` (expected stops a person must apply: contract, out-of-order). `--bundle` writes the task's input: kind, format, files (path, sha256, sql, verdict), not_copied (paths).
+(count of expected steps), `manual` (the expected stop of each owner as `kind:owner/file`, comma separated; every
+stop kind needs a person, run_migration.STOP_KINDS; with `--classify-skipped` a `no-evidence` stop is left out, because
+a scheduled list-only run skips the classify on purpose). `--bundle` writes the task's input: kind, format, files
+(path, sha256, sql, verdict, verdict_kind), not_copied (paths).
 
-report: reads the task log's `MIGRATE auto-result {json}` line, writes the run summary, and outputs `applied`
-(true when a file was applied) and `manual` (the copies a person must apply: contract or out-of-order, comma
-separated; the migration-apply summary job comments on their copy PRs).
+report: reads the task log's `MIGRATE auto-result {json}` line, writes the run summary, and outputs `applied` (true
+when a file was applied; `unknown` when the line is missing, so the workflow still runs the probe and the dump),
+`manual` (every owner's stop as `kind:owner/file`; the migration-apply summary job comments on the copy PRs) and
+`result` (found | missing). Exit 3 when the line is missing: the step must go red, never green on an unknown result.
+
+notes: one JSON line per `kind:owner/file` item: the copy PR to comment on (`on_main`: the merged PR that added the
+file, else the open copy PR of a file not copied yet), a marker unique to the kind and file, and the comment body.
+pick-pr: the PR number to comment on from a GitHub pulls list (`--merged`: merged_at set, the bot branch preferred,
+the latest merge; `--open`: the open PR on the bot branch); prints nothing when there is none.
 
 explain: the one-line ::error:: text for a task exit code (the same codes as DB Migrate).
 Standard library only (plus run_migration, which is standard library outside the task).
@@ -47,6 +58,42 @@ import run_migration as rm  # noqa: E402
 
 DB_DIR = Path(__file__).resolve().parent
 NO_EVIDENCE = "no classify evidence (no DB Schema Dump artifact, or classify did not run or did not reach the file)"
+MANUAL_MARK = "aa993-manual-apply"
+
+# What a person does for each stop kind (run_migration.STOP_KINDS): the summary line and the copy PR comment.
+STOP_NOTES = {
+    rm.STOP_CONTRACT: ("manual DB Migrate apply needed",
+                       "it is a contract file (no `-- migrate: expand` header), so migration-apply never applies it. "
+                       "Run DB Migrate `check` then `apply` with `migration={path}`."),
+    rm.STOP_OUT_OF_ORDER: ("manual DB Migrate apply needed",
+                           "its number is below the owner's highest registered key (out of order), so migration-apply "
+                           "never applies it. Run DB Migrate `check` then `apply` with `migration={path}`."),
+    rm.STOP_LINT: ("fix in the owner repo",
+                   "it has the expand header but fails the runner's lint. Fix the file in the owner repo (the sync "
+                   "updates the copy), or apply it by hand with DB Migrate as a contract file."),
+    rm.STOP_REFUSED_CLASSIFY: ("manual DB Migrate apply needed",
+                               "expand_check --classify on a replay of Dev found that it changes an existing object, so "
+                               "it is treated as a contract file. Change it in the owner repo, or run DB Migrate "
+                               "`check` then `apply` with `migration={path}`."),
+    rm.STOP_REFUSED_BYTES: ("copy differs from the owner's main",
+                            "the copy here is not byte-identical to the owner repo's main (or that main could not be "
+                            "read). Fix the copy so it matches the owner's main; nothing of this owner is applied "
+                            "until then."),
+    rm.STOP_NO_EVIDENCE: ("no classify evidence",
+                          "the run had no classify result for it (no DB Schema Dump artifact, or the classify step "
+                          "failed). Check the run's classify step; dispatch DB Schema Dump if its artifact expired."),
+    rm.STOP_NOT_COPIED: ("copy PR not merged yet",
+                         "it is on the owner repo's main but this copy PR has not merged, and every later file of the "
+                         "owner waits for it (never past a gap). Get this PR green and merged."),
+    rm.STOP_GAP: ("gap before this file",
+                  "the owner's next number before it is neither registered nor copied here, so nothing past the gap is "
+                  "applied. Copy (or apply by hand) the missing number first."),
+    rm.STOP_DUPLICATE: ("duplicate number",
+                        "another copy has the same number. Fix the copies so each number is used once."),
+    rm.STOP_REFUSED: ("refused on the runner",
+                      "the runner refused it (see the run summary). Fix the cause, or apply it by hand with DB "
+                      "Migrate."),
+}
 
 EXPLAIN = {
     2: "the bundle's sha256 does not match what the workflow uploaded: nothing ran",
@@ -82,16 +129,17 @@ def registered_from_live(live: dict) -> set:
 
 
 def classify_verdicts(classify: dict | None) -> dict:
-    """{"owner/file": verdict} from expand_check --classify JSON: "ok" for class expand, else why not."""
+    """{"owner/file": (verdict_kind, verdict)} from expand_check --classify JSON: ("ok", "ok") for class expand,
+    else the refused-classify kind and why not."""
     out = {}
     for e in (classify or {}).get("files") or []:
         if e.get("class") == "expand":
-            out[e["file"]] = "ok"
+            out[e["file"]] = ("ok", "ok")
         else:
             why = (e.get("findings") or []) + (e.get("lint_errors") or [])
             detail = "; ".join(why[:2]) or e.get("error") or (
                 "no `-- migrate: expand` header" if e.get("header") != "expand" else "not expand")
-            out[e["file"]] = f"classified contract on the replay: {detail}"[:400]
+            out[e["file"]] = (rm.STOP_REFUSED_CLASSIFY, f"classified contract on the replay: {detail}"[:400])
     return out
 
 
@@ -132,6 +180,7 @@ def not_copied(repo_root: Path, sources: dict) -> list:
 
 
 def byte_verdict(c: dict, sources: dict) -> str:
+    """"ok", or why the copy is refused (verdict kind run_migration.STOP_REFUSED_BYTES)."""
     src = sources.get(c["owner"])
     if src is None:
         return f"no clone of the {c['owner']} owner repo's main to compare with"
@@ -156,16 +205,18 @@ def build(repo_root: Path, sources: dict, classify: dict | None, assume_classifi
         except UnicodeDecodeError:
             continue                # the Copy Guard refuses it; never pending-applicable
         v = byte_verdict(c, sources)
+        vk = "ok" if v == "ok" else rm.STOP_REFUSED_BYTES
         if v == "ok":
-            v = verdicts.get(c["path"], "ok" if assume_classified else NO_EVIDENCE)
-        files.append({"path": c["path"], "sha256": hashlib.sha256(c["bytes"]).hexdigest(), "sql": sql, "verdict": v})
+            vk, v = verdicts.get(c["path"], ("ok", "ok") if assume_classified else (rm.STOP_NO_EVIDENCE, NO_EVIDENCE))
+        files.append({"path": c["path"], "sha256": hashlib.sha256(c["bytes"]).hexdigest(), "sql": sql, "verdict": v,
+                      "verdict_kind": vk})
     return files
 
 
 def plan_json(plan: dict) -> dict:
     return {o: {"head": p["head"], "legacy": p["legacy"],
-                "steps": [{"file": s.path, "version": s.version, "action": s.action, "reason": s.reason}
-                          for s in p["steps"]]} for o, p in plan.items()}
+                "steps": [{"file": s.path, "version": s.version, "action": s.action, "reason": s.reason,
+                           "kind": s.kind} for s in p["steps"]]} for o, p in plan.items()}
 
 
 def plan_lines(plan: dict, title: str) -> list:
@@ -179,9 +230,57 @@ def plan_lines(plan: dict, title: str) -> list:
     return lines
 
 
-def needs_person(reason: str) -> bool:
-    """A stop a person resolves with a manual DB Migrate apply (contract / out-of-order), not a runner refusal."""
-    return reason.startswith(("contract", "out-of-order"))
+def stop_kind(kind: str | None) -> str:
+    """The stop kind of a step or task row; anything unknown (or missing) is a plain runner refusal. Every stop kind
+    needs a person: it is on the manual list and gets a note on the copy PR."""
+    return kind if kind in rm.STOP_KINDS else rm.STOP_REFUSED
+
+
+def manual_item(kind: str | None, path: str) -> str:
+    return f"{stop_kind(kind)}:{path}"
+
+
+def parse_manual(value: str) -> list:
+    """[(kind, path)] from the `manual` output ("kind:owner/file,…"); an item without a known kind is refused."""
+    out = []
+    for item in (value or "").split(","):
+        item = item.strip()
+        if not item:
+            continue
+        kind, sep, path = item.partition(":")
+        if not sep or kind not in rm.STOP_KINDS or not rm.AUTO_FILE_RE.match(path):
+            raise SystemExit(f"manual item {item!r} is not kind:owner/NNN_name.sql")
+        out.append((kind, path))
+    return out
+
+
+def copy_branch(path: str) -> str:
+    m = rm.AUTO_FILE_RE.match(path)
+    return f"bot/migration-copy/{m.group(1)}-{m.group(2)}"
+
+
+def note(kind: str, path: str, run_id: str) -> dict:
+    """The copy PR note of one stop: where to find the PR, a marker unique to kind + file, the comment body."""
+    head, what = STOP_NOTES[stop_kind(kind)]
+    marker = f"<!-- {MANUAL_MARK}:{kind}:{path} -->"
+    body = (f"{marker}\n**{head[0].upper() + head[1:]}** for `{path}`: {what.format(path=path)} Every later file of "
+            f"this owner waits behind it (strict number order, root ADR 0017 d5). (migration-apply run {run_id})")
+    return {"path": path, "kind": kind, "branch": copy_branch(path), "on_main": kind != rm.STOP_NOT_COPIED,
+            "marker": marker, "head": head, "body": body}
+
+
+def pick_copy_pr(pulls: list, path: str, merged: bool) -> int | None:
+    """The PR to comment on for a stop at `path`. merged: the MERGED PR that added the file (merged_at set; the bot
+    copy branch preferred; the latest merge), never just the newest PR on the branch. not merged: the open PR on
+    the bot copy branch (a file not copied yet)."""
+    branch = copy_branch(path)
+    on_branch = [p for p in pulls or [] if ((p.get("head") or {}).get("ref")) == branch]
+    if merged:
+        done = [p for p in pulls or [] if p.get("merged_at")]
+        pool = [p for p in done if p in on_branch] or done
+        return max(pool, key=lambda p: p["merged_at"])["number"] if pool else None
+    live = [p for p in on_branch if p.get("state") == "open"]
+    return max(p["number"] for p in live) if live else None
 
 
 def _write_outputs(path: str | None, values: dict) -> None:
@@ -235,7 +334,8 @@ def cmd_plan(args) -> int:
     if args.summary:
         with open(args.summary, "a", encoding="utf-8") as fh:
             fh.write("\n".join(plan_lines(plan, f"### Expected plan ({basis}; the task re-reads the keys)")) + "\n")
-    manual = [s.path for p in plan.values() for s in p["steps"] if s.action == "stop" and needs_person(s.reason)]
+    manual = [manual_item(s.kind, s.path) for p in plan.values() for s in p["steps"] if s.action == "stop"
+              and not (args.classify_skipped and s.kind == rm.STOP_NO_EVIDENCE)]
     _write_outputs(args.github_output, {"needs_classify": str(needs_classify).lower(),
                                         "apply": str(has_apply).lower(), "pending": pending,
                                         "manual": ",".join(manual)})
@@ -256,8 +356,9 @@ def parse_result(log_text: str) -> dict | None:
 
 def report_lines(result: dict | None) -> list:
     if result is None:
-        return ["### Auto-apply result", "", "No `auto-result` line in the task log: the task did not finish (see the "
-                "log above)."]
+        return ["### Auto-apply result", "", "**Result unknown:** no `auto-result` line in the task log (the task did "
+                "not finish, or its log is incomplete). The run is red; the isolation probe and DB Schema Dump run "
+                "anyway. A person checks the task log and `shared.schema_versions`."]
     lines = ["### Auto-apply result", "", f"Task exit {result.get('exit')} (bundle {result.get('bundle')}).", "",
              "| Owner | Head before | File | Status | Note |", "|---|---|---|---|---|"]
     for owner, o in sorted((result.get("owners") or {}).items()):
@@ -267,7 +368,7 @@ def report_lines(result: dict | None) -> list:
         for r in rows:
             note = r.get("reason") or (EXPLAIN.get(r.get("exit"), f"exit {r.get('exit')}") if r.get("exit") else "")
             if r.get("status") == "manual":
-                note = f"manual DB Migrate apply needed: {note}" if needs_person(note) else f"stopped here: {note}"
+                note = f"{STOP_NOTES[stop_kind(r.get('kind'))][0]}: {note}"
             lines.append(f"| {owner} | {o.get('head_before') or '-'} | `{r['file']}` | {r['status']} | "
                          f"{note.replace('|', '/')[:250]} |")
     return lines
@@ -280,10 +381,25 @@ def cmd_report(args) -> int:
     if args.summary:
         with open(args.summary, "a", encoding="utf-8") as fh:
             fh.write("\n".join(report_lines(result)) + "\n")
+    applied = "unknown" if result is None else str(any(r.get("status") == "applied" for r in rows)).lower()
     _write_outputs(args.github_output, {
-        "applied": str(any(r.get("status") == "applied" for r in rows)).lower(),
-        "manual": ",".join(r["file"] for r in rows if r.get("status") == "manual" and needs_person(r.get("reason", ""))),
+        "applied": applied,
+        "manual": ",".join(manual_item(r.get("kind"), r["file"]) for r in rows if r.get("status") == "manual"),
         "result": "found" if result is not None else "missing"})
+    return 0 if result is not None else 3
+
+
+def cmd_notes(args) -> int:
+    for kind, path in parse_manual(args.manual):
+        print(json.dumps(note(kind, path, args.run_id), sort_keys=True))
+    return 0
+
+
+def cmd_pick_pr(args) -> int:
+    pulls = json.loads(Path(args.pulls).read_text(encoding="utf-8")) if Path(args.pulls).is_file() else []
+    n = pick_copy_pr(pulls if isinstance(pulls, list) else [], args.path, merged=args.merged)
+    if n is not None:
+        print(n)
     return 0
 
 
@@ -300,10 +416,21 @@ def main(argv: list | None = None) -> int:
     p.add_argument("--plan-out", help="write the expected plan JSON here")
     p.add_argument("--summary", help="append Markdown (GITHUB_STEP_SUMMARY)")
     p.add_argument("--github-output", help="append key=value outputs (GITHUB_OUTPUT)")
+    p.add_argument("--classify-skipped", action="store_true",
+                   help="the classify was skipped on purpose (scheduled list-only run): no-evidence stops are not manual")
     r = sub.add_parser("report", help="run summary from the task log")
     r.add_argument("--log", required=True)
     r.add_argument("--summary")
     r.add_argument("--github-output")
+    n = sub.add_parser("notes", help="one JSON line per manual item: copy PR lookup, marker, comment body")
+    n.add_argument("--manual", required=True, help="the `manual` output: kind:owner/file,…")
+    n.add_argument("--run-id", required=True)
+    k = sub.add_parser("pick-pr", help="the PR number to comment on, from a GitHub pulls list")
+    k.add_argument("--pulls", required=True)
+    k.add_argument("--path", required=True, help="owner/NNN_name.sql")
+    g = k.add_mutually_exclusive_group(required=True)
+    g.add_argument("--merged", action="store_true", help="the merged PR that added the file")
+    g.add_argument("--open", dest="merged", action="store_false", help="the open copy PR (a file not copied yet)")
     e = sub.add_parser("explain", help="the error text of a task exit code")
     e.add_argument("code", type=int)
     args = parser.parse_args(argv)
@@ -311,6 +438,10 @@ def main(argv: list | None = None) -> int:
         return cmd_plan(args)
     if args.cmd == "report":
         return cmd_report(args)
+    if args.cmd == "notes":
+        return cmd_notes(args)
+    if args.cmd == "pick-pr":
+        return cmd_pick_pr(args)
     print(EXPLAIN.get(args.code, f"migration task exited with {args.code}"))
     return 0
 

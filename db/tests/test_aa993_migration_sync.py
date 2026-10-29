@@ -159,6 +159,20 @@ class MergeCheckTest(unittest.TestCase):
         self.assertEqual(self.check(files=[{"filename": "db/migrations/booking/034_b.sql", "status": "modified"}])[0], 1)
         self.assertEqual(self.check(files=[{"filename": "db/migrations/booking/035_b.sql", "status": "added"}])[0], 1)
 
+    def test_only_the_ci_bot_app_author_merges(self):
+        # M3 review: exactly the aa-ecosys-ci-bot App, not any Bot (github-actions, dependabot, another App).
+        self.assertEqual(ms.CI_BOT_LOGIN, "aa-ecosys-ci-bot[bot]")
+        for user in ({"login": "github-actions[bot]", "type": "Bot"}, {"login": "dependabot[bot]", "type": "Bot"},
+                     {"login": "aa-agent[bot]", "type": "Bot"}, {"login": "aa-ecosys-ci-bot[bot]", "type": "User"},
+                     {"login": "aa-ecosys-ci-bot", "type": "User"}, {}):
+            code, why = self.check(pr(user=user))
+            self.assertEqual(code, 1, user)
+            self.assertIn("not aa-ecosys-ci-bot[bot]", why)
+        self.assertEqual(self.check(pr(user={"login": "aa-ecosys-ci-bot[bot]", "type": "Bot"}))[0], 0)
+        with contextlib.redirect_stdout(io.StringIO()) as buf:
+            self.assertEqual(ms.main(["bot-login"]), 0)
+        self.assertEqual(buf.getvalue(), "aa-ecosys-ci-bot[bot]\n")
+
     def test_only_bot_branches_from_this_repo_merge(self):
         self.assertEqual(self.check(pr(user={"login": "someone", "type": "User"}))[0], 1)
         fork = pr(head={"ref": "bot/migration-copy/booking-034", "sha": "abc", "repo": {"full_name": "x/y"}})

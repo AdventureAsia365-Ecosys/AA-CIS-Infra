@@ -18,7 +18,8 @@ is already used here by another file name is a conflict (listed, never copied: t
 
 merge-check: exit 0 when ci-bot may squash-merge the PR (ADR 0011a decision 1), 2 when it should wait (a check still
 running), 1 with the reason when it must not:
-  * an open, non-draft PR from a branch of this repo named bot/migration-copy/<owner>-<NNN>, opened by a bot, on main;
+  * an open, non-draft PR from a branch of this repo named bot/migration-copy/<owner>-<NNN>, on main, opened by
+    exactly the aa-ecosys-ci-bot App (author login CI_BOT_LOGIN; any other bot or user is refused);
   * exactly one changed file, status `added`, db/migrations/<owner>/<NNN>_name.sql of that owner and number;
   * the file at the PR head (`--head-file`) byte-identical to the owner repo's main (`--source`);
   * no gap below it (wait, critic 2): every lower-numbered file of that owner on the owner's main, at or above the
@@ -27,6 +28,7 @@ running), 1 with the reason when it must not:
     before a lower one, so migration-apply never sees a later file first (it also stops at any gap on its own);
   * every required check of the ruleset on main (`--ruleset`) present on the head commit and successful (or skipped),
     and no check run failed. The ruleset enforces the checks again at merge time.
+`bot-login` prints CI_BOT_LOGIN (the workflow's close path compares with it, one source).
 Standard library only.
 """
 from __future__ import annotations
@@ -51,6 +53,10 @@ FILE_RE = re.compile(r"^([0-9]{3})_[a-z0-9_]+\.sql$")
 LABELS = {"expand": "migration:expand", "contract": "migration:contract", "destructive": "migration:destructive",
           "out-of-order": "out-of-order"}
 DEFAULT_RULESET = REPO_ROOT / "tools" / "github" / "infra-main-ruleset.json"
+# The REST author login of a PR opened with the aa-ecosys-ci-bot App token (docs/security/github-apps.md: App
+# aa-ecosys-ci-bot, app id 5421877; `gh pr view` shows it as app/aa-ecosys-ci-bot). Not `user.type == "Bot"`: every
+# App (and github-actions) is a Bot.
+CI_BOT_LOGIN = "aa-ecosys-ci-bot[bot]"
 BAD_CONCLUSIONS = {"failure", "cancelled", "timed_out", "action_required", "startup_failure", "stale"}
 OK_CONCLUSIONS = {"success", "skipped", "neutral"}
 
@@ -178,6 +184,12 @@ def lower_missing(repo_root: Path, src: Path, owner: str, number: int) -> list:
             if floor <= n < number and n not in used]
 
 
+def is_ci_bot_pr(pr: dict) -> bool:
+    """True only when the PR's author is exactly the aa-ecosys-ci-bot App (login and type)."""
+    user = pr.get("user") or {}
+    return user.get("login") == CI_BOT_LOGIN and user.get("type") == "Bot"
+
+
 def merge_check(pr: dict, files: list, checks: list, head_file: bytes | None, sources: dict,
                 required: list, repo_root: Path = REPO_ROOT) -> tuple:
     """(code, reason): 0 merge, 2 wait, 1 refuse (see the module docstring)."""
@@ -192,8 +204,9 @@ def merge_check(pr: dict, files: list, checks: list, head_file: bytes | None, so
         return 1, "the PR does not target main"
     if (head.get("repo") or {}).get("full_name") != ((pr.get("base") or {}).get("repo") or {}).get("full_name"):
         return 1, "the head branch is not in this repository"
-    if (pr.get("user") or {}).get("type") != "Bot":
-        return 1, f"opened by {(pr.get('user') or {}).get('login')!r}, not a bot (ci-bot merges only its own PRs)"
+    if not is_ci_bot_pr(pr):
+        return 1, (f"opened by {(pr.get('user') or {}).get('login')!r}, not {CI_BOT_LOGIN} (ci-bot merges only its own "
+                   f"PRs)")
     if len(files) != 1:
         return 1, f"{len(files)} changed files; a copy PR changes exactly one"
     f = files[0]
@@ -247,7 +260,11 @@ def main(argv: list | None = None) -> int:
     m.add_argument("--source", action="append", default=[])
     m.add_argument("--repo-root", default=str(REPO_ROOT), help="checkout of Infra main (the copies already there)")
     m.add_argument("--ruleset", default=str(DEFAULT_RULESET))
+    sub.add_parser("bot-login", help="print the aa-ecosys-ci-bot App's PR author login")
     args = parser.parse_args(argv)
+    if args.cmd == "bot-login":
+        print(CI_BOT_LOGIN)
+        return 0
     if args.cmd == "plan":
         live = json.loads(Path(args.live).read_text(encoding="utf-8")) if args.live else None
         registered = {x["version"] for x in live.get("migrations") or []} if live else None

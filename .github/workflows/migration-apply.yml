@@ -1,8 +1,10 @@
 name: Migration Apply (expand auto-apply)
 # AA-993 Phase E slice M3 (root ADR 0017 decisions 5, 6, 8; design §2 M3; critic points 1, 2, 4, 11): applies the
 # pending EXPAND copies of db/migrations/<cis|booking|tripplanner|crm>/ to the Dev database before the apps deploy the
-# code that needs them. Contract, destructive and out-of-order files are never applied here: they are listed in the
-# summary and commented on their copy PR ("manual DB Migrate apply needed"). roles/ files are never touched.
+# code that needs them. Contract, destructive and out-of-order files are never applied here. Every file that stops an
+# owner (contract, out-of-order, a runner refusal: bytes differ from the owner's main, classified contract, no classify
+# evidence, lint; a gap or a copy PR not merged yet) is listed in the summary and noted on its copy PR, with what a
+# person does (db/apply_pending.py STOP_NOTES). roles/ files are never touched.
 #
 # Switch: the repo variable DB_AUTO_APPLY. Anything but 'true' (unset by default) = LIST ONLY: the plan job runs and
 # the summary shows what would be applied (a person applies it with DB Migrate). Auto-apply also needs AA-CIS-Infra
@@ -26,10 +28,12 @@ name: Migration Apply (expand auto-apply)
 #           Each file goes through the DB Migrate apply path: role switch, lock risk (exit 15), runtime post-check
 #           (exit 14), CIC validity (exit 16), statement_timeout 30 s, no job-table idle wait (ADR 0017 d5), but a file
 #           naming a hot table waits for an open rerun wave (deferred to the next run). 55P03 is retried twice.
-#   probe   BLOCKING DB Isolation Probe (reusable db-isolation-probe.yml, same narrow role), only after a file was
-#           applied. Red here = the run is red, and the app schema-gate (M4b) requires this run to be green.
+#   probe   BLOCKING DB Isolation Probe (reusable db-isolation-probe.yml, same narrow role), after a file was applied
+#           or when the task's result line is missing (applied=unknown: the apply job is red, and the probe and the
+#           dump still run). Red here = the run is red, and the app schema-gate (M4b) requires this run to be green.
 #   dump    dispatches DB Schema Dump with after_apply=true (its root PR merges itself when clean, AA-993 M1).
-#   summary comments on the copy PR of each contract / out-of-order file that blocks an owner (once per PR).
+#   summary notes each owner's stop on its copy PR (the merged PR that added the file; the open copy PR of a file not
+#           copied yet), once per PR, file and stop kind.
 #
 # Concurrency: its own group db-auto-apply, never db-migrate (critic 11: an auto-apply must never replace a person's
 # pending DB Migrate run). The apply lock in the database serializes this workflow and DB Migrate.
@@ -190,11 +194,14 @@ jobs:
         id: final
         env:
           LIVE: ${{ steps.live.outputs.path }}
+          CLASSIFY_OUTCOME: ${{ steps.classify.outcome }}
         run: |
           ARGS=(--source cis=owners/AA-CIS-App/api/migrations --source booking=owners/AA-Booking/migrations
                 --source tripplanner=owners/AA-TripPlanner-Web/migrations --source crm=owners/AA-Partner/api/migrations)
           [ -n "$LIVE" ] && ARGS+=(--live "$LIVE")
           [ -s classify.json ] && ARGS+=(--classify classify.json)
+          # A classify skipped on purpose (scheduled list-only run) is not a stop a person must look at.
+          [ "$CLASSIFY_OUTCOME" = "skipped" ] && ARGS+=(--classify-skipped)
           python3 db/apply_pending.py plan "${ARGS[@]}" --bundle bundle.json --plan-out plan.json \
             --summary "$GITHUB_STEP_SUMMARY" --github-output "$GITHUB_OUTPUT"
 
@@ -293,6 +300,8 @@ jobs:
         env:
           TASK_ARN: ${{ steps.task.outputs.arn }}
         run: |
+          # Until the report below says otherwise, what the task applied is unknown: the probe and the dump run.
+          echo "applied=unknown" >> "$GITHUB_OUTPUT"
           TASK_ID="${TASK_ARN##*/}"
           STREAM="migrate/migrate/$TASK_ID"
           : > task.log
@@ -310,8 +319,12 @@ jobs:
           done
           grep -v '^MIGRATE auto-result ' task.log || true
           grep '^MIGRATE auto: ' task.log >> "$GITHUB_STEP_SUMMARY" || true
-          # Outputs (applied, manual) before any exit below: the probe and the summary jobs read them.
+          # Outputs (applied, manual, result) before any exit below: the probe and the summary jobs read them. Exit 3 =
+          # no auto-result line: applied=unknown, and this step fails below (never green on an unknown result).
+          set +e
           python3 db/apply_pending.py report --log task.log --summary "$GITHUB_STEP_SUMMARY" --github-output "$GITHUB_OUTPUT"
+          REPORT=$?
+          set -e
           DESC=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$TASK_ARN" --output json)
           EXIT=$(jq -r '.tasks[0].containers[] | select(.name=="migrate") | .exitCode' <<<"$DESC")
           STATUS=$(jq -r '.tasks[0].lastStatus' <<<"$DESC")
@@ -324,6 +337,10 @@ jobs:
             echo "::error::auto-apply task exited $EXIT: $(python3 db/apply_pending.py explain "$EXIT")"
             exit 1
           fi
+          if [ "$REPORT" != "0" ]; then
+            echo "::error::the task exited 0 but its log has no MIGRATE auto-result line (report exit $REPORT): what it applied is unknown. The isolation probe and DB Schema Dump run anyway; a person checks $STREAM and shared.schema_versions"
+            exit 1
+          fi
 
       - name: Deregister the migrator revision
         if: always() && steps.td.outputs.arn != ''
@@ -334,11 +351,15 @@ jobs:
         run: aws s3 rm "s3://$BUCKET/${{ steps.task.outputs.prefix }}/" --recursive --only-show-errors
 
   # Blocking (critic 4): today DB Migrate only dispatches the probe (continue-on-error). Here a failing cell makes the
-  # run red, and the app schema-gate (M4b) requires the run that registered its keys to be green.
+  # run red, and the app schema-gate (M4b) requires the run that registered its keys to be green. applied=unknown (no
+  # result line) runs it too: conservative.
+  # No `secrets:` (never `inherit`): the probe's only secret is AWS_ROLE_ARN, and its job declares
+  # `environment: dev-db-auto`, so it reads that environment's secret itself (the narrow role); no repo or org secret
+  # is passed into the reusable workflow.
   probe:
     name: Isolation probe (blocking)
     needs: apply
-    if: always() && needs.apply.outputs.applied == 'true'
+    if: always() && (needs.apply.outputs.applied == 'true' || needs.apply.outputs.applied == 'unknown')
     permissions:
       id-token: write
       contents: read
@@ -347,12 +368,11 @@ jobs:
       reason: "after migration-apply run ${{ github.run_id }}"
       environment: dev-db-auto
       s3_root: db-auto-apply/probe
-    secrets: inherit
 
   dump:
     name: Regenerate the schema reference (DB Schema Dump)
     needs: [apply, probe]
-    if: always() && needs.apply.outputs.applied == 'true'
+    if: always() && (needs.apply.outputs.applied == 'true' || needs.apply.outputs.applied == 'unknown')
     runs-on: ubuntu-latest
     permissions:
       actions: write
@@ -374,9 +394,15 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: write   # one comment per blocking contract / out-of-order copy PR
+      pull-requests: write   # one note per blocking copy PR, file and stop kind
     steps:
-      - name: Comment "manual DB Migrate apply needed" on blocking copy PRs
+      # Full history: the note goes on the MERGED PR that added the file (the commit that added it on main), never on
+      # the newest PR of the bot branch (a later reopened or closed one).
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Note every owner's stop on its copy PR
         env:
           GH_TOKEN: ${{ github.token }}
           # The task's own list when it ran; the forecast when it did not (list only).
@@ -387,23 +413,32 @@ jobs:
             echo "- plan: ${{ needs.plan.result }}, apply: ${{ needs.apply.result }}, probe: ${{ needs.probe.result }}"
             echo "- auto-apply allowed: ${{ needs.plan.outputs.allowed }}"
           } >> "$GITHUB_STEP_SUMMARY"
-          MARK="<!-- aa993-manual-apply -->"
           OWNER="${GITHUB_REPOSITORY%%/*}"
-          IFS=',' read -ra FILES <<<"$MANUAL"
-          for f in "${FILES[@]}"; do
-            [ -n "$f" ] || continue
-            dir="${f%%/*}"; num="${f#*/}"; num="${num:0:3}"
-            BR="bot/migration-copy/${dir}-${num}"
-            N=$(gh api "repos/$GITHUB_REPOSITORY/pulls?state=all&head=$OWNER:$BR&per_page=1" --jq '.[0].number // empty')
+          python3 db/apply_pending.py notes --manual "$MANUAL" --run-id "${{ github.run_id }}" > notes.jsonl
+          while read -r n; do
+            f=$(jq -r .path <<<"$n"); BR=$(jq -r .branch <<<"$n"); HEAD=$(jq -r .head <<<"$n")
+            MARK=$(jq -r .marker <<<"$n")
+            if [ "$(jq -r .on_main <<<"$n")" = "true" ]; then
+              # The PR(s) of the commit that added the file on main; a merged PR on the bot branch as a fallback.
+              SHA=$(git log -1 --diff-filter=A --format=%H HEAD -- "db/migrations/$f" || true)
+              if [ -n "$SHA" ]; then
+                gh api "repos/$GITHUB_REPOSITORY/commits/$SHA/pulls" > pulls.json || echo '[]' > pulls.json
+              else
+                gh api "repos/$GITHUB_REPOSITORY/pulls?state=closed&head=$OWNER:$BR&per_page=100" > pulls.json || echo '[]' > pulls.json
+              fi
+              N=$(python3 db/apply_pending.py pick-pr --pulls pulls.json --path "$f" --merged)
+            else
+              gh api "repos/$GITHUB_REPOSITORY/pulls?state=open&head=$OWNER:$BR&per_page=100" > pulls.json || echo '[]' > pulls.json
+              N=$(python3 db/apply_pending.py pick-pr --pulls pulls.json --path "$f" --open)
+            fi
             if [ -z "$N" ]; then
-              echo "- \`$f\`: manual DB Migrate apply needed (no bot copy PR found, copied by hand)" >> "$GITHUB_STEP_SUMMARY"
+              echo "- \`$f\`: $HEAD (no copy PR found to note it on)" >> "$GITHUB_STEP_SUMMARY"
               continue
             fi
-            if gh api "repos/$GITHUB_REPOSITORY/issues/$N/comments?per_page=100" --jq '.[].body' | grep -qF "$MARK"; then
-              echo "- \`$f\`: manual DB Migrate apply needed (#$N, already noted)" >> "$GITHUB_STEP_SUMMARY"
+            if gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$N/comments?per_page=100" --jq '.[].body' | grep -qF "$MARK"; then
+              echo "- \`$f\`: $HEAD (#$N, already noted)" >> "$GITHUB_STEP_SUMMARY"
               continue
             fi
-            gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$N/comments" -f body="$MARK
-          **Manual DB Migrate apply needed** for \`$f\`: it is a contract (or out-of-order) file, so migration-apply never applies it and every later file of this owner waits behind it (strict number order, root ADR 0017 d5). Run DB Migrate \`check\` then \`apply\` with \`migration=$f\` (run ${{ github.run_id }})." >/dev/null
-            echo "- \`$f\`: manual DB Migrate apply needed (commented on #$N)" >> "$GITHUB_STEP_SUMMARY"
-          done
+            gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$N/comments" -f body="$(jq -r .body <<<"$n")" >/dev/null
+            echo "- \`$f\`: $HEAD (noted on #$N)" >> "$GITHUB_STEP_SUMMARY"
+          done < notes.jsonl

@@ -15,11 +15,12 @@ name: Migration Sync (owner copies)
 #      out-of-order) are set with this job's GITHUB_TOKEN. An open PR whose file no longer matches the owner's main is
 #      updated on its branch; a branch left over from a closed PR is recreated;
 #   4. merge pass, per owner in ascending number order (branch names sort that way): every open bot/migration-copy/*
-#      PR that db/migration_sync.py merge-check passes (opened by the bot, exactly one new file of that owner and
-#      number, byte-identical to the owner's main, no lower-numbered owner-main file still missing from main, every
-#      required check of the ruleset green) is squash-merged by ci-bot, pinned to the head commit it checked. So a copy
-#      never reaches main before a lower one of its owner (critic 2): 291 waits while 290 is unmerged, still running
-#      its checks, or refused. A PR whose file reached main some other way is closed. Every class is merged: copy is
+#      PR that db/migration_sync.py merge-check passes (author exactly aa-ecosys-ci-bot[bot], one new file of that
+#      owner and number, byte-identical to the owner's main, no lower-numbered owner-main file still missing from
+#      main, every required check of the ruleset green) is squash-merged by ci-bot, pinned to the head commit it
+#      checked. So a copy never reaches main before a lower one of its owner (critic 2): 291 waits while 290 is
+#      unmerged, still running its checks, or refused. A ci-bot PR whose file reached main some other way is closed;
+#      a PR by anyone else (another bot or a person) is never closed or merged here. Every class is merged: copy is
 #      not apply (migration-apply.yml decides what runs).
 #      The merge pass runs only while the repo is public and main carries the ruleset (pull request + required
 #      checks): on a private repo the ruleset is not enforced on GitHub Free, so a person merges the copy PRs
@@ -191,6 +192,7 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           REPO="$GITHUB_REPOSITORY"
+          BOT_LOGIN=$(python3 db/migration_sync.py bot-login)     # aa-ecosys-ci-bot[bot], not any user.type Bot
           SOURCES=(--source cis=owners/AA-CIS-App/api/migrations --source booking=owners/AA-Booking/migrations
                    --source tripplanner=owners/AA-TripPlanner-Web/migrations --source crm=owners/AA-Partner/api/migrations)
           # Per owner, lowest number first: the branch is bot/migration-copy/<owner>-<NNN> (3 digits), so a plain sort
@@ -204,7 +206,7 @@ jobs:
             gh api "repos/$REPO/pulls/$N/files?per_page=100" > files.json
             F=$(jq -r 'if length == 1 then .[0].filename else "" end' files.json)
             # The checkout is main at the start of this run: a file already there came in another way.
-            if [ -n "$F" ] && [ -f "$F" ] && [ "$(jq -r .user.type pr.json)" = "Bot" ]; then
+            if [ -n "$F" ] && [ -f "$F" ] && [ "$(jq -r .user.login pr.json)" = "$BOT_LOGIN" ]; then
               gh pr close "$N" --repo "$REPO" --comment "\`$F\` is already on main; this copy PR is no longer needed (migration-sync)." >/dev/null
               echo "- closed #$N: \`$F\` already on main" >> "$GITHUB_STEP_SUMMARY"
               continue
