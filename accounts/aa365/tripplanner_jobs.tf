@@ -211,7 +211,9 @@ resource "aws_cloudwatch_metric_alarm" "tripplanner_jobs_errors" {
 }
 
 # The schedule stopped (rule disabled or deleted, invoke role broken): no invocation for two whole days. Missing data
-# is breaching, so two days without the metric alarm.
+# is breaching, so two days without the metric alarm. It is therefore in ALARM from its creation until the first
+# invocation: after the first apply, once the app deploy has shipped the real code, invoke {"op":"status"} once
+# (AA-TripPlanner-Web docs/jobs-runbook.md "First deploy"; never before the code deploy, the placeholder fails).
 resource "aws_cloudwatch_metric_alarm" "tripplanner_jobs_not_run" {
   alarm_name          = "${local.tp_jobs_fn_name}-not-run"
   alarm_description   = "AA-861: the TripPlanner jobs Lambda was not invoked for 2 days (its daily EventBridge schedule ${local.tp_jobs_fn_name}-daily stopped). Outbox PII redaction (DM-6.6) is not running.${local.runbook_suffix.queue_stuck}"
@@ -231,6 +233,9 @@ resource "aws_cloudwatch_metric_alarm" "tripplanner_jobs_not_run" {
 }
 
 # ── EventBridge Scheduler → Lambda (dedicated invoke role) ───────────────────
+# First rollout: apply this file and deploy the app code on the same day, between two ticks (19:30 UTC). A tick that
+# reaches the placeholder zip fails with an import error (writes nothing) and fires the errors alarm; tp-021 must be
+# applied by DB Migrate before this apply (AA-861 implementation notes, "Order").
 resource "aws_iam_role" "tripplanner_jobs_scheduler" {
   name                 = "${local.tp_jobs_fn_name}-scheduler"
   permissions_boundary = aws_iam_policy.workload_boundary.arn
