@@ -211,7 +211,7 @@ owners:
     owner_role: tp_owner                 # X1 S3 (rl-001) + S7 (tp-013)
     owner_role_today: aa_cis_admin
     owner_transfer_key: tp-013
-    runtime_roles: [tripplanner]         # browse + assembly Lambdas
+    runtime_roles: [tripplanner]         # browse + assembly + jobs Lambdas (jobs: AA-861)
     runtime_roles_today: [tripplanner]
     runtime_secrets: {tripplanner: tripplanner/dev/database-url}
     # What each runtime role must hold in its schemas (isolation probe cells runtime_grants.<owner> and
@@ -225,7 +225,7 @@ owners:
         schemas: [tripplanner]
         objects: {relation: [SELECT], sequence: [USAGE], function: [EXECUTE]}
         default_acl: {tables: [DELETE, INSERT, SELECT, UPDATE], sequences: [SELECT, USAGE]}   # no functions (tp-008)
-    job_table: null                      # tripplanner.job comes with AA-861 (job template)
+    job_table: tripplanner.job           # tp-021 (AA-861, ADR 0003a template); worker = the jobs Lambda
     job_kind_prefix: tp_
     idle_exempt_kinds: []
     set_local_roles: []
