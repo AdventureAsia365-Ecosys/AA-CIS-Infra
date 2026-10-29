@@ -1,8 +1,8 @@
 # =============================================================================
 # AA-397 — account 3 (786888028788), us-west-1
 # Minimal root, separate state, scoped ONLY to the satellite-invoker IAM role
-# (mirrors accounts/acc1-bedrock/ structure/scope). Does NOT touch acc1-bedrock,
-# accounts/aa365, or repo root.
+# (same structure/scope as the former acc1 root, removed in AA-998). Does NOT
+# touch accounts/aa365 or the repo root.
 # =============================================================================
 
 terraform {

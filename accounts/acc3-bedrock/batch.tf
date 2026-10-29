@@ -1,16 +1,15 @@
 # =============================================================================
 # AA-399 — Bedrock Batch inference service role on acc3 (786888028788), same
-# shape as accounts/acc1-bedrock/main.tf's aa-bedrock-batch-inference-role.
+# shape as the former acc1 aa-bedrock-batch-inference-role (removed, AA-998).
 # roleArn passed to bedrock:CreateModelInvocationJob when the caller (acc2
 # ECS task, via AA3-Bedrock-Invoker) submits a Batch job through acc3. S3
 # input/output stays in account 2's bronze bucket (aa-cis-bronze-005097885195)
 # — cross-account access granted via bucket policy on that bucket
 # (modules/s3/main.tf's aws_s3_bucket_policy.bronze — a NEW statement added
-# for this role, parallel to acc1's existing grant, not a replacement).
+# for this role; the acc1 statements were removed in AA-998).
 #
-# Design: acc3 is the primary Batch account, acc1 stays as fallback (mirrors
-# the acc3-primary/acc1-fallback pattern already used for interactive
-# invoke_claude() calls, AA-397/399) — confirmed by Nghiep before writing this.
+# Design: acc3 is the only Batch account since AA-998 (S255); the former
+# acc3-primary/acc1-fallback pattern of AA-397/399 is gone.
 # =============================================================================
 
 resource "aws_iam_role" "bedrock_batch_inference" {
@@ -36,21 +35,21 @@ resource "aws_iam_role_policy" "bedrock_batch_s3_access" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid      = "ReadBatchInput"
-        Effect   = "Allow"
-        Action   = ["s3:GetObject"]
+        Sid    = "ReadBatchInput"
+        Effect = "Allow"
+        Action = ["s3:GetObject"]
         Resource = [
           "arn:aws:s3:::aa-cis-bronze-005097885195/batch-input/atom-decompose/*",
-          "arn:aws:s3:::aa-cis-bronze-005097885195/batch-input/s1-rewrite/*"  # AA-606
+          "arn:aws:s3:::aa-cis-bronze-005097885195/batch-input/s1-rewrite/*" # AA-606
         ]
       },
       {
-        Sid      = "WriteBatchOutput"
-        Effect   = "Allow"
-        Action   = ["s3:PutObject"]
+        Sid    = "WriteBatchOutput"
+        Effect = "Allow"
+        Action = ["s3:PutObject"]
         Resource = [
           "arn:aws:s3:::aa-cis-bronze-005097885195/batch-output/atom-decompose/*",
-          "arn:aws:s3:::aa-cis-bronze-005097885195/batch-output/s1-rewrite/*"  # AA-606
+          "arn:aws:s3:::aa-cis-bronze-005097885195/batch-output/s1-rewrite/*" # AA-606
         ]
       },
       {

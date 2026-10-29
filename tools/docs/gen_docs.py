@@ -817,7 +817,7 @@ def render_iam(doc: TfDoc) -> str:
 
     lines = [
         "IAM roles Terraform manages in `accounts/aa365` (acc2): who may assume each role, its permissions boundary,",
-        "and its policies. The Bedrock and Cost Explorer satellite roles in acc1 / acc3 live in their own roots and are",
+        "and its policies. The Bedrock and Cost Explorer satellite roles in acc3 live in their own root and are",
         "not listed. Access review: root `docs/security/` (SEC-05).",
         "",
         f"**Totals:** {len(roles)} roles, {sum(len(p) for p in inline.values())} inline policies, "

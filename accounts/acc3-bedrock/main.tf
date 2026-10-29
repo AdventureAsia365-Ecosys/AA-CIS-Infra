@@ -1,18 +1,17 @@
 # =============================================================================
 # AA-397 — new AA3-Bedrock-Invoker role on account 3 (786888028788).
-# NOT an import — this role does not exist yet on acc3. Mirrors the shape of
-# acc1's AA-Bedrock-Invoker (accounts/acc1-bedrock/bedrock_invoker_import.tf)
-# so the two accounts stay swappable from the client's point of view
-# (shared/llm_client/bedrock_satellite.py in AA-CIS-App).
+# NOT an import. It was built to mirror the former acc1 invoker role (root
+# removed with acc1, AA-998) so the two accounts were swappable for the client
+# (shared/llm_client/bedrock_satellite.py in AA-CIS-App). Since AA-998 (S255)
+# acc3 is the only Bedrock satellite: there is no cross-account fallback.
 #
 # ExternalId "aa296-satellite-bedrock-acc3" confirmed by Nghiep (AA-397, Bước 1b).
 #
 # AA-399 — Batch inference statements added below (originally scoped out of
 # AA-397 — see that issue's history — Nghiep confirmed acc3 should also serve
-# Batch, acc3-primary/acc1-fallback, same as the interactive tiers). Mirrors
-# accounts/acc1-bedrock/bedrock_invoker_import.tf's 3 Batch statements
-# byte-for-byte except account IDs/ARNs, pointing at the new acc3 Batch
-# service role (batch.tf, aa3-bedrock-batch-inference-role).
+# Batch). The 3 Batch statements were copied from the former acc1 invoker role
+# (removed with acc1, AA-998) except account IDs/ARNs, pointing at the acc3
+# Batch service role (batch.tf, aa3-bedrock-batch-inference-role).
 # =============================================================================
 
 resource "aws_iam_role" "bedrock_invoker" {
@@ -57,9 +56,9 @@ resource "aws_iam_role_policy" "bedrock_invoker_policy" {
   name = "InvokeApprovedClaudeModelsOnly"
   role = aws_iam_role.bedrock_invoker.id
 
-  # Same N-model x 3-ARN-form shape as acc1 (inference-profile, foundation-model
+  # N-model x 3-ARN-form shape (inference-profile, foundation-model
   # +region, foundation-model region-empty) — undocumented Bedrock IAM evaluation
-  # behavior under assumed-role sessions, confirmed live on acc1 2026-07-16 (see
+  # behavior under assumed-role sessions, confirmed live on 2026-07-16 (see
   # shared/llm_client/bedrock_satellite.py docstring in AA-CIS-App). Same lesson
   # applies here: whitelist both ARN forms per model, not just the region-scoped one.
   #
@@ -106,7 +105,7 @@ resource "aws_iam_role_policy" "bedrock_invoker_policy" {
         ]
       },
       # AA-803 (S246) — Claude Haiku 5.5 / Sonnet 5.5 (CIS migration 259: catalog rows haiku-5-5,
-      # sonnet-5-5 on the acc3 + acc1 global profiles). Same 3-ARN shape as the Claude models above
+      # sonnet-5-5 on the acc3 global profiles). Same 3-ARN shape as the Claude models above
       # (inference-profile, region-scoped and region-empty foundation-model). Separate statement so the
       # existing ones stay untouched. The Marketplace agreement for each model must be accepted on this
       # account too (get-foundation-model-availability), or calls fail with AccessDenied anyway.
@@ -127,7 +126,8 @@ resource "aws_iam_role_policy" "bedrock_invoker_policy" {
         ]
       },
       # AA-862 — Cohere Embed v4 as the second hop of the embed chain
-      # (acc2 -> acc3 -> acc1). acc2's global profile quota is 20 rpm; acc3 has
+      # (acc2 -> acc3; acc1 left the chain in AA-998). acc2's global
+      # profile quota is 20 rpm; acc3 has
       # 2,000 rpm on both us. and global. Same model id as acc2
       # (cohere.embed-v4:0), so vectors stay comparable. A cross-region profile
       # authorizes InvokeModel against the foundation-model ARN in whichever
@@ -147,8 +147,8 @@ resource "aws_iam_role_policy" "bedrock_invoker_policy" {
         ]
       },
       # AA-399 — Bedrock Batch job creation (model-scoped, same resource shape
-      # as InvokeModel above, plus the model-invocation-job/* ARN acc1 needed
-      # live — see accounts/acc1-bedrock/bedrock_invoker_import.tf's AA-303 note).
+      # as InvokeModel above, plus the model-invocation-job/* ARN that
+      # CreateModelInvocationJob needs live, AA-303).
       {
         Sid    = "AllowBedrockBatchJobCreate"
         Effect = "Allow"
@@ -164,7 +164,7 @@ resource "aws_iam_role_policy" "bedrock_invoker_policy" {
         ]
       },
       # AA-399 — Bedrock Batch job read/list, job resource (not model ARN) —
-      # same shape as acc1's AllowBedrockBatchJobRead.
+      # same shape as the former acc1 role's AllowBedrockBatchJobRead.
       {
         Sid    = "AllowBedrockBatchJobRead"
         Effect = "Allow"
