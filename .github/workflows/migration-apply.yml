@@ -364,6 +364,10 @@ jobs:
       id-token: write
       contents: read
     uses: ./.github/workflows/db-isolation-probe.yml
+    # S258: GitHub did not resolve the callee's environment secret AWS_ROLE_ARN (dev-db-auto) without this — the first two
+    # auto-applies ran the probe with no role-to-assume ("Credentials could not be loaded", runs 40916210939, 40922869610).
+    # The callee is this repo's own reviewed workflow; its environment still decides which role is assumed.
+    secrets: inherit
     with:
       reason: "after migration-apply run ${{ github.run_id }}"
       environment: dev-db-auto

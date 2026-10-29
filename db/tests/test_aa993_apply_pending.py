@@ -538,10 +538,10 @@ class WorkflowShapeTest(unittest.TestCase):
         self.assertNotIn("MIGRATION_SNAPSHOT", self.apply_text)
         self.assertIn('{name: "MIGRATION_MODE", value: "apply-pending"}', self.apply_text)
 
-    def test_probe_gets_no_inherited_secrets(self):
-        # M3 review: the callee reads AWS_ROLE_ARN from its own environment (dev-db-auto); nothing else is passed.
-        self.assertNotIn("secrets", self.apply["jobs"]["probe"])
-        self.assertNotIn("secrets: inherit", self.apply_text)
+    def test_probe_inherits_secrets_so_its_environment_secret_resolves(self):
+        # S258: live runs 40916210939 / 40922869610 showed the callee's environment secret empty without inheritance
+        # (the M3 review assumed otherwise); the callee still names no secrets and its environment picks the role.
+        self.assertEqual(self.apply["jobs"]["probe"].get("secrets"), "inherit")
         self.assertNotIn("secrets", self.probe[True]["workflow_call"])
         self.assertEqual(self.probe["jobs"]["probe"]["environment"], "${{ inputs.environment || 'prod' }}")
 
