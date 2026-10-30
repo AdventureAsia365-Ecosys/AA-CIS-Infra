@@ -6,12 +6,13 @@
 # a workload (SCPs do not apply to the management account, so workloads never live here).
 #
 # Separate root, separate state, separate account: it does NOT touch accounts/aa365 or accounts/acc3-bedrock.
-# Applied locally until the CI wiring of README.md §11 exists: first through the temporary AA-Bootstrap role
+# Applied locally until the CI wiring of README.md §11 is live (cicd.tf, bootstrap): first through the temporary AA-Bootstrap role
 # (chained from the nonprod admin role, MFA), then through an Identity Center AA-Admin session. Day-1 order, manual
 # console steps and SCP tests: README.md.
 #
 # No AWS account ID is written in this root (the repo is public): every ID is a variable, set in a local
-# terraform.tfvars (git-ignored, see terraform.tfvars.example) or, later, a GitHub environment variable.
+# terraform.tfvars (git-ignored, see terraform.tfvars.example) and, for CI, the repository secrets MGMT_ACCOUNT_ID
+# and MGMT_TFVARS (README §11).
 # =============================================================================
 
 terraform {

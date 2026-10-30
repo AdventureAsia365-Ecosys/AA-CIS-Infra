@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -193,6 +194,68 @@ def test_terraform_never_puts_dev_in_compliance():
     assert 'mode = var.crm_audit_compliance_enabled ? "COMPLIANCE" : "GOVERNANCE", days = 365' in tf
     assert 'audit-g = { mode = "GOVERNANCE", days = null, years = 7 }' in tf
     assert 'each.value.mode == "GOVERNANCE" || (each.key == "audit-c" && var.environment != "dev")' in tf
+
+
+# --- destroy-guarded types (AA-1004: organization, accounts, SCPs, trail, Identity Center) -----------------------
+
+
+@pytest.mark.parametrize(
+    "actions", [["delete"], ["delete", "create"], ["create", "delete"], ["forget"]],
+)
+@pytest.mark.parametrize("rtype", sorted(pg.DESTROY_GUARDED_TYPES))
+def test_removing_a_destroy_guarded_type_is_refused(rtype, actions):
+    found = pg.find_guarded_changes(_plan((f"{rtype}.x", rtype, actions)))
+    assert len(found) == 1 and found[0].action.startswith(",".join(actions))
+    if "delete" in actions and "create" in actions:
+        assert found[0].action.endswith("(replace)")
+
+
+@pytest.mark.parametrize("actions", [["create"], ["update"], ["no-op"], ["read"]])
+@pytest.mark.parametrize("rtype", sorted(pg.DESTROY_GUARDED_TYPES))
+def test_create_update_of_a_destroy_guarded_type_passes(rtype, actions):
+    assert pg.find_guarded_changes(_plan((f"{rtype}.x", rtype, actions))) == []
+
+
+def test_import_of_an_invited_account_passes():
+    # README §6 apply 3: an invited account is imported; that is ordinary work, not a removal.
+    plan = _plan(('aws_organizations_account.member["ai"]', "aws_organizations_account", ["no-op"]), importing=True)
+    assert pg.find_guarded_changes(plan) == []
+
+
+def test_destroy_guard_covers_the_high_risk_types_of_the_management_root():
+    for rtype in ("aws_organizations_organization", "aws_organizations_account", "aws_organizations_policy",
+                  "aws_organizations_policy_attachment", "aws_organizations_organizational_unit", "aws_cloudtrail",
+                  "aws_ssoadmin_permission_set", "aws_ssoadmin_account_assignment", "aws_identitystore_user",
+                  "aws_identitystore_group", "aws_identitystore_group_membership",
+                  "aws_iam_organizations_features"):
+        assert rtype in pg.DESTROY_GUARDED_TYPES, rtype
+    assert not pg.DESTROY_GUARDED_TYPES & pg.GUARDED_TYPES
+
+
+def test_every_destroy_guarded_type_exists_in_the_management_root():
+    # Each listed type that this repo uses must be spelled as in the code (a typo would silently guard nothing).
+    text = ""
+    for root in ("management", "aa365"):
+        d = os.path.join(REPO_ROOT, "accounts", root)
+        for name in os.listdir(d):
+            if name.endswith(".tf"):
+                text += open(os.path.join(d, name), encoding="utf-8").read()
+    used = set(re.findall(r'^resource "([a-z0-9_]+)"', text, re.M))
+    for rtype in ("aws_organizations_organization", "aws_organizations_organizational_unit",
+                  "aws_organizations_account", "aws_organizations_policy", "aws_organizations_policy_attachment",
+                  "aws_iam_organizations_features", "aws_cloudtrail", "aws_ssoadmin_permission_set",
+                  "aws_ssoadmin_account_assignment", "aws_ssoadmin_managed_policy_attachment",
+                  "aws_identitystore_user", "aws_identitystore_group", "aws_identitystore_group_membership"):
+        assert rtype in used, rtype
+
+
+def test_cli_refuses_an_scp_detach_and_names_it(tmp_path):
+    p = tmp_path / "plan.json"
+    p.write_text(json.dumps(_plan(('aws_organizations_policy_attachment.scp["a:nonprod"]',
+                                   "aws_organizations_policy_attachment", ["delete"]))), encoding="utf-8")
+    res = _run(str(p))
+    assert res.returncode == 1
+    assert "aws_organizations_policy_attachment" in res.stderr and "REFUSED" in res.stderr
 
 
 # --- CLI ------------------------------------------------------------------------------------------

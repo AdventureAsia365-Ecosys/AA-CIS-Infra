@@ -119,7 +119,9 @@ patterns_for() {
       printf '%s\n' 'tools/secrets/**' '.github/workflows/secrets-register-check-test.yml' ;;
     tf-plan-guard) # tf-plan-guard-test.yml
       printf '%s\n' 'tools/terraform/**' '.github/workflows/terraform-apply.yml' '.github/workflows/tf-plan-guard-test.yml' \
-        'accounts/aa365/crm_storage.tf' '.github/workflows/crm-key-policy-diff.yml' ;;
+        'accounts/aa365/crm_storage.tf' '.github/workflows/crm-key-policy-diff.yml' \
+        '.github/workflows/terraform-drift.yml' '.github/workflows/terraform-plan.yml' 'tools/docs/aws_mask.py' \
+        'accounts/management/**' ;;
     hook-self-test) # this hook
       printf '%s\n' 'scripts/pre-push.sh' 'scripts/install-hooks.sh' '.githooks/**' ;;
   esac
@@ -179,7 +181,7 @@ touched_roots() {
       modules/*/*)
         m=${f#modules/}; m=${m%%/*}
         [[ "$f" =~ \.tf$ ]] && roots_for_module "$m" ;;
-      .github/workflows/terraform-plan.yml) printf '%s\n' aa365 ;;
+      .github/workflows/terraform-plan.yml) printf '%s\n' aa365 management ;;
     esac
   done | awk '!seen[$0]++'
 }
@@ -265,12 +267,13 @@ self_test() {
   expect "crm migration copy" "db/migrations/crm/030_x.sql" "migration-guard"
   expect "plan guard tool" "tools/terraform/plan_guard.py" "alb-rule-order tf-plan-guard"
   expect "docs tool" "tools/docs/check_docs_text.py" "docs-gen docs-lint"
-  expect "aws_mask (shared by db)" "tools/docs/aws_mask.py" "docs-gen docs-lint migration-guard"
+  expect "aws_mask (shared by db)" "tools/docs/aws_mask.py" "docs-gen docs-lint migration-guard tf-plan-guard"
   expect "secrets tool" "tools/secrets/register_check.py" "secrets-register"
   expect "contracts" "tools/contracts/contract_copies.json" "contract-copy"
   expect "identity tool" "tools/identity/workforce_bootstrap.py" "identity-triggers"
   expect "workflow file" "README.md,.github/workflows/identity-triggers-test.yml" "docs-lint identity-triggers"
-  expect "terraform-plan workflow" ".github/workflows/terraform-plan.yml" "tf-validate:aa365"
+  expect "terraform-plan workflow" ".github/workflows/terraform-plan.yml" "tf-validate:aa365 tf-validate:management tf-plan-guard"
+  expect "management root (AA-1004)" "accounts/management/cicd.tf" "tf-fmt tf-validate:management docs-gen tf-plan-guard"
   expect "ci helper script" ".github/scripts/migrator-task.sh" "migration-guard"
   expect "this hook" "scripts/pre-push.sh,.githooks/pre-push" "hook-self-test"
   expect "untracked-like path" "dist/whatever.zip" ""

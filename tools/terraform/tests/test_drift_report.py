@@ -145,6 +145,59 @@ def test_long_lists_are_capped(tmp_path):
     assert f"... 5 more" in "\n".join(lines)
 
 
+# --- AA-1004: --mode plan / --mode apply, e-mail masking ------------------------------------------------------------
+
+def _applied(addr: str, action: str) -> str:
+    return json.dumps({"@level": "info", "@message": f"{addr}: complete", "type": "apply_complete",
+                       "hook": {"resource": {"addr": addr}, "action": action}})
+
+
+def _error(summary: str, detail: str) -> str:
+    return json.dumps({"@level": "error", "@message": summary, "type": "diagnostic",
+                       "diagnostic": {"severity": "error", "summary": summary, "detail": detail}})
+
+
+def test_plan_mode_changes_are_not_a_failure(tmp_path):
+    log = _log(tmp_path, VERSION, _change("planned_change", 'aws_identitystore_user.this["techlead"]', "create"),
+               SUMMARY_2)
+    summary = tmp_path / "s.md"
+    assert dr.run(log, 2, "accounts/management", str(summary), mode="plan") == 0
+    text = summary.read_text(encoding="utf-8")
+    assert "Terraform plan" in text and "**Changes**" in text and 'aws_identitystore_user.this["techlead"]' in text
+    assert dr.run(_log(tmp_path, VERSION), 0, "accounts/management", str(summary), mode="plan") == 0
+    assert "**No changes.**" in summary.read_text(encoding="utf-8")
+
+
+def test_plan_mode_failure_fails(tmp_path):
+    log = _log(tmp_path, VERSION, _error("AccessDenied", f"arn:aws:iam::{ACC}:role/aa-terraform-plan is not allowed"))
+    assert dr.run(log, 1, "accounts/management", str(tmp_path / "s.md"), mode="plan") == 1
+
+
+def test_apply_mode_lists_applied_and_fails_on_error(tmp_path):
+    summary = tmp_path / "s.md"
+    ok = _log(tmp_path, VERSION, _applied('aws_organizations_policy.scp["aa-scp-region-allowlist"]', "update"))
+    assert dr.run(ok, 0, "accounts/management", str(summary), mode="apply") == 0
+    assert "**Applied.**" in summary.read_text(encoding="utf-8")
+    bad = _log(tmp_path, VERSION, _error("creating budget", "x"))
+    assert dr.run(bad, 1, "accounts/management", str(summary), mode="apply") == 1
+    assert "**Apply failed**" in summary.read_text(encoding="utf-8")
+
+
+def test_apply_mode_rejects_exit_2(tmp_path):
+    assert dr.main(["--plan-log", _log(tmp_path, VERSION), "--exit-code", "2", "--root", "r", "--mode", "apply"]) == 3
+
+
+def test_emails_and_account_ids_never_reach_the_report(tmp_path):
+    log = _log(tmp_path, VERSION, _error("ValidationException",
+                                         f"user jane.doe@example.com in account {ACC} already exists"))
+    summary = tmp_path / "s.md"
+    for mode in ("drift", "plan", "apply"):
+        dr.run(log, 1, "accounts/management", str(summary), mode=mode)
+    text = summary.read_text(encoding="utf-8")
+    assert "jane.doe@example.com" not in text and ACC not in text
+    assert "{email}" in text
+
+
 # --- workflow shape ------------------------------------------------------------------------------------------------
 
 def _plan_wf_roots() -> set[tuple[str, str]]:

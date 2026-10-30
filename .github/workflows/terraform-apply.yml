@@ -18,7 +18,16 @@ on:
         description: "Self-test only: run the plan guard on the committed guarded fixture (expect a red run), no AWS access"
         type: boolean
         default: false
+      # AA-1004: which root to apply. aa365 = job terraform-apply (environment prod); management = job
+      # terraform-apply-management (environment org, required reviewer; accounts/management/README.md §11).
+      # guard_selftest always runs in the aa365 job (no AWS step, whatever the root).
+      root:
+        description: "Terraform root: aa365 (environment prod) or management (environment org, needs a reviewer)"
+        type: choice
+        options: [aa365, management]
+        default: aa365
 
+# One apply at a time across both roots (one Terraform process; the plans never race a lock).
 concurrency:
   group: terraform-apply-prod
   cancel-in-progress: false
@@ -36,7 +45,8 @@ jobs:
     # cannot carry a deployment-branch rule or a required reviewer. The repo is public now, so the
     # environment could carry those rules (follow-up, not set yet); until then this guard (plus the IAM
     # trust condition on the apply role, once trialled) is what keeps the near-admin apply role to main.
-    if: github.ref == 'refs/heads/main'
+    # AA-1004: root = management runs the job below instead (a self-test still runs here).
+    if: github.ref == 'refs/heads/main' && (inputs.root != 'management' || inputs.guard_selftest)
 
     # AA-893: true only after a real apply that changed something (read by docs-gen-dispatch below).
     # A failed apply fails this job, so docs-gen-dispatch (needs: success) does not run then.
@@ -174,6 +184,150 @@ jobs:
       - name: Print outputs
         if: env.GUARD_SELFTEST != 'true' && steps.plan.outputs.exitcode == '2'
         run: terraform output
+
+  # AA-1004: the management account root (accounts/management/README.md §11). Environment `org`: a required reviewer
+  # (the tech lead) approves the run before any step starts, and its deployment branch rule is main. Role
+  # aa-terraform-apply (accounts/management/cicd.tf) trusts only `environment:org` with ref main, under the boundary
+  # aa-terraform-apply-boundary; its ARN and the state bucket are built from the repo secret MGMT_ACCOUNT_ID, the inputs
+  # come from the repo secret MGMT_TFVARS.
+  #
+  # Same plan -> guard -> apply order as the aa365 job, but this root's plan and apply text never reach the public log
+  # (e-mail addresses, member account ids): Terraform runs with -json into RUNNER_TEMP and
+  # tools/terraform/drift_report.py (--mode plan / --mode apply) writes only addresses, actions and masked errors to
+  # the job summary. No `terraform output` either. The plan guard refuses, besides the aa365 types, any delete, replace
+  # or forget of an organization, OU, account, SCP (or its attachment), trail or Identity Center resource.
+  terraform-apply-management:
+    name: Terraform Apply (management)
+    runs-on: ubuntu-latest
+    environment: org
+    if: github.ref == 'refs/heads/main' && inputs.root == 'management' && !inputs.guard_selftest
+    timeout-minutes: 30
+
+    defaults:
+      run:
+        working-directory: accounts/management
+
+    env:
+      ROOT: accounts/management
+      TF_IN_AUTOMATION: "1"
+      ALLOW_GUARDED: ${{ inputs.allow_guarded && 'true' || 'false' }}
+      ALLOW_REASON: ${{ inputs.allow_reason }}
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Check guard inputs
+        run: |
+          if [ "$ALLOW_GUARDED" = "true" ] && [ -z "$(printf '%s' "$ALLOW_REASON" | tr -d '[:space:]')" ]; then
+            echo "allow_guarded=true needs a non-empty allow_reason" >&2
+            exit 1
+          fi
+
+      # Fails (not skips) when the wiring is missing: a dispatched apply must never look green without running.
+      - name: Write management inputs (masked)
+        env:
+          MGMT_ACCOUNT_ID: ${{ secrets.MGMT_ACCOUNT_ID }}
+          MGMT_TFVARS: ${{ secrets.MGMT_TFVARS }}
+        run: |
+          if [ -z "$MGMT_ACCOUNT_ID" ] || [ -z "$MGMT_TFVARS" ]; then
+            echo "::error::secrets MGMT_ACCOUNT_ID / MGMT_TFVARS are not set (accounts/management/README.md §11)"
+            exit 1
+          fi
+          umask 077
+          F="$RUNNER_TEMP/management.tfvars"
+          printf '%s\n' "$MGMT_TFVARS" > "$F"
+          for v in $(grep -oE '[0-9]{12}|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' "$F" | sort -u); do
+            echo "::add-mask::$v"
+          done
+          if grep -qE '^[[:space:]]*aws_profile[[:space:]]*=' "$F"; then
+            echo "::error::MGMT_TFVARS sets aws_profile; CI runs on OIDC credentials, remove that line from the secret"
+            exit 1
+          fi
+          echo "TF_CLI_ARGS_plan=-var-file=$F" >> "$GITHUB_ENV"
+
+      - name: Configure AWS credentials (OIDC, management apply role)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.MGMT_ACCOUNT_ID }}:role/aa-terraform-apply
+          aws-region: us-west-1
+          role-duration-seconds: 3600
+
+      - name: Verify the role is the management apply role
+        run: |
+          ARN=$(aws sts get-caller-identity --query Arn --output text)
+          case "$ARN" in
+            *:assumed-role/aa-terraform-apply/*) echo "role: aa-terraform-apply" ;;
+            *) echo "::error::the management apply must run with the role aa-terraform-apply"; exit 1 ;;
+          esac
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.15.5"
+          terraform_wrapper: false   # real exit codes, clean JSON on stdout
+
+      - name: Terraform Init
+        env:
+          MGMT_ACCOUNT_ID: ${{ secrets.MGMT_ACCOUNT_ID }}
+        run: |
+          terraform init -input=false -lockfile=readonly \
+            -backend-config="bucket=aa-tfstate-${MGMT_ACCOUNT_ID}-usw1" \
+            -backend-config="key=management/terraform.tfstate" \
+            -backend-config="region=us-west-1"
+
+      - name: Terraform Validate
+        run: terraform validate -no-color
+
+      - name: Terraform Plan
+        id: plan
+        run: |
+          umask 077
+          LOG="$RUNNER_TEMP/management-plan.jsonl"
+          trap 'rm -f "$LOG"' EXIT
+          set +e
+          terraform plan -input=false -detailed-exitcode -out="$RUNNER_TEMP/tfplan" -json > "$LOG"
+          RC=$?
+          set -e
+          echo "exitcode=$RC" >> "$GITHUB_OUTPUT"
+          echo "terraform plan exit code: $RC"
+          python3 -B "$GITHUB_WORKSPACE/tools/terraform/drift_report.py" --mode plan --plan-log "$LOG" \
+            --exit-code "$RC" --root "$ROOT" --summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Export plan JSON
+        if: steps.plan.outputs.exitcode == '2'
+        run: |
+          umask 077
+          terraform show -json "$RUNNER_TEMP/tfplan" > "$RUNNER_TEMP/tfplan.json"
+          echo "PLAN_JSON=$RUNNER_TEMP/tfplan.json" >> "$GITHUB_ENV"
+
+      - name: Plan guard
+        if: steps.plan.outputs.exitcode == '2'
+        working-directory: ${{ github.workspace }}
+        run: |
+          REASON=""
+          if [ "$ALLOW_GUARDED" = "true" ]; then REASON="$ALLOW_REASON"; fi
+          set +e
+          python3 tools/terraform/plan_guard.py "$PLAN_JSON" --allow-reason="$REASON" --summary "$GITHUB_STEP_SUMMARY"
+          RC=$?
+          set -e
+          rm -f "$PLAN_JSON"
+          exit $RC
+
+      - name: Terraform Apply
+        if: steps.plan.outputs.exitcode == '2'
+        run: |
+          umask 077
+          LOG="$RUNNER_TEMP/management-apply.jsonl"
+          trap 'rm -f "$LOG" "$RUNNER_TEMP/tfplan"' EXIT
+          set +e
+          terraform apply -input=false -auto-approve -json "$RUNNER_TEMP/tfplan" > "$LOG"
+          RC=$?
+          set -e
+          echo "terraform apply exit code: $RC"
+          python3 -B "$GITHUB_WORKSPACE/tools/terraform/drift_report.py" --mode apply --plan-log "$LOG" \
+            --exit-code "$RC" --root "$ROOT" --summary "$GITHUB_STEP_SUMMARY"
 
   # AA-893: regenerate the infra docs (root docs/generated/: alarms, network, inventory, IAM) from the
   # new state. A separate job so `actions: write` (needed to dispatch a workflow) never reaches the apply
