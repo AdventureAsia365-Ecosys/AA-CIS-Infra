@@ -99,9 +99,10 @@ resource "aws_ce_anomaly_monitor" "account" {
       MatchOptions = null
       Values       = [local.account_ids[each.key]]
     }
-    Not  = null
-    Or   = null
-    Tags = null
+    Not               = null
+    Or                = null
+    ProductAttributes = null # AWS returns this key; without it every plan replaces the monitor
+    Tags              = null
   })
 }
 
