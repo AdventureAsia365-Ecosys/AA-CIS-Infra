@@ -503,10 +503,13 @@ resource "aws_iam_role_policy" "ecs_task_infra_status_readonly" {
       # id>). Read-only search on that one log group only: the ARN comes from the log group resource (no account ID
       # here), the bare form and the ":*" form both listed because IAM evaluates log-group actions against either.
       # No per-call charge (one paged query a day for the snapshot, one for the digest).
+      # AA-1003 R4 part 2 — logs:DescribeLogStreams on the same group: the reader first lists the day's migrator
+      # streams (newest last event first, 2-3 pages a day) and then searches only those streams by name; a search by
+      # stream prefix alone scanned the api / worker streams too and timed out (18 s for 16 h on Dev, 30/10/2026).
       {
         Sid      = "FilterOwnLogGroup"
         Effect   = "Allow"
-        Action   = ["logs:FilterLogEvents"]
+        Action   = ["logs:FilterLogEvents", "logs:DescribeLogStreams"]
         Resource = [aws_cloudwatch_log_group.ecs.arn, "${aws_cloudwatch_log_group.ecs.arn}:*"]
       }
     ]
