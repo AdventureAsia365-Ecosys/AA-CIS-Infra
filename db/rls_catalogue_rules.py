@@ -181,6 +181,7 @@ ALLOWLIST: dict[str, dict[str, str]] = {
         "booking.v_supply_outbox:cis_app": "contract: the supply feed CIS pulls (bk-023)",
         "booking.v_ops_data_totals:cis_app": "contract: CIS data coverage page, counts only (bk-025)",
         "booking.v_ops_trip_plan_keys:cis_app": "contract: CIS data coverage page, plan catalog keys only (bk-025)",
+        "booking.v_ops_inquiry_inbox:cis_app": "contract: CIS TP-03 handoff check, keys and states (bk-035)",
         "tripplanner:booking": "contract: schema USAGE for the inquiry outbox (tp-009)",
         "tripplanner.v_inquiry_outbox:booking": "contract: Booking inquiry intake (tp-009)",
         "tripplanner:cis_app": "contract: schema USAGE for the CIS ops view (tp-015)",
@@ -188,6 +189,7 @@ ALLOWLIST: dict[str, dict[str, str]] = {
         "tripplanner.v_ops_data_totals:cis_app": "contract: CIS data coverage page, totals only (tp-020)",
         "tripplanner.v_ops_pin_components:cis_app": "contract: CIS data coverage page, pinned component ids (tp-020)",
         "tripplanner.v_ops_component_id_map:cis_app": "contract: CIS data coverage page, id-map edges (tp-020)",
+        "tripplanner.v_ops_inquiry_keys:cis_app": "contract: CIS TP-03 handoff check, keys and times (tp-022)",
     },
     "t": {
         "acp_contract.tour_atoms:catalog_owner_read": "catalog_owner views read every atom as before (CIS 266); D9 = 0 "
