@@ -404,8 +404,9 @@ class BuildCellsTest(unittest.TestCase):
         # AA-858: cis_app reads booking.v_ops_* (bk-017) and tripplanner.v_ops_traffic_daily (tp-015). Merged into
         # the registry before the DB Migrate apply, the views are absent: pending, never FAIL, and the always-expected
         # cell is unaffected.
-        # bk-023: AA-835 supply views; bk-025 / tp-020: AA-992 data coverage views.
-        self.assertEqual(p.CONSUMER_GRANT_KEYS, ("bk-017", "bk-023", "bk-025", "tp-015", "tp-020"))
+        # bk-023: AA-835 supply views; bk-025 / tp-020: AA-992 data coverage views; bk-035 / tp-022: AA-1003 TP-03 key
+        # views.
+        self.assertEqual(p.CONSUMER_GRANT_KEYS, ("bk-017", "bk-023", "bk-025", "bk-035", "tp-015", "tp-020", "tp-022"))
         for k in p.CONSUMER_GRANT_KEYS:
             self.assertIn(k, p.VERSION_KEYS)
             self.assertIn(k, p.KEY_TEXT)
@@ -462,6 +463,20 @@ class BuildCellsTest(unittest.TestCase):
         st, _ = statuses(f)
         self.assertEqual(st["consumer.contract_grants.bk-025"], "FAIL")
         self.assertEqual(st["consumer.contract_grants.bk-017"], "pending")
+
+    def test_inquiry_key_view_grants_are_their_own_cells(self):
+        # AA-1003 R2: the TP-03 key views wait for tp-022 / bk-035 (contract files, applied by hand); registering
+        # tp-022 with its view granted passes its cell and leaves bk-035 pending until that apply.
+        objs = {c[2]: c[3] for c in p.CONSUMER_GRANTS if c[3] in ("bk-035", "tp-022")}
+        self.assertEqual(objs, {"booking.v_ops_inquiry_inbox": "bk-035", "tripplanner.v_ops_inquiry_keys": "tp-022"})
+        f = today_facts()
+        f["catalog"]["registered"] = ["tp-022"]
+        for c in f["consumer"]["grants"]:
+            if c["from"] == "tp-022":
+                c["missing"] = []
+        st, _ = statuses(f)
+        self.assertEqual(st["consumer.contract_grants.tp-022"], "pass")
+        self.assertEqual(st["consumer.contract_grants.bk-035"], "pending")
 
     def test_cis_app_login_waits_for_set_password(self):
         f = today_facts()
