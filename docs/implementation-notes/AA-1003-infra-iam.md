@@ -18,3 +18,23 @@
   digest prints "Nightly probe results unavailable (not_permitted)" (AA-CIS-App `docs/implementation-notes/AA-1003.md`).
 - The log group also holds the api and worker application logs; the role could already read nothing there. With this
   grant the CIS task role can search its own application logs too (same app, same data class).
+
+# AA-1003 R4 part 2 — logs:DescribeLogStreams on the same log group
+
+## Decisions
+
+- `logs:DescribeLogStreams` added to the same `FilterOwnLogGroup` statement, same two resources (the action is
+  authorized on the log group). The CIS reader (AA-CIS-App `services/reports/probes.py`, `read_streams_day`) lists the
+  streams of `/ecs/aa-cis-<env>` ordered by LastEventTime back to the start of the ICT day, keeps the
+  `migrate/migrate/*` ones and runs FilterLogEvents with `logStreamNames` over the whole day.
+- Why: measured on Dev (30/10/2026, read-only) a FilterLogEvents with only the stream prefix took 18 s for 16 hours
+  (it scans every api / worker stream), and GitHub runs the probe crons 5-9 hours late, so the narrow time slices of
+  the S259 fix missed runs (read "missing"). Listing then searching by name: 3 list pages + 5 search pages, ~6 s.
+
+## Should know
+
+- Expected plan: exactly one in-place update, `module.ecs.aws_iam_role_policy.ecs_task_infra_status_readonly`.
+- Cost: $0 (DescribeLogStreams and FilterLogEvents have no per-call charge).
+- Apply before (or together with) the CIS PR; until applied the CIS reader falls back to the slice search and says so
+  (`window.mode = slices`, why "not permitted").
+- The stream names list the api / worker / migrator task IDs of the app's own group: same app, same data class.
