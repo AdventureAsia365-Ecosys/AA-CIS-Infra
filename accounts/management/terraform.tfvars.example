@@ -1,0 +1,66 @@
+# AA-1004 — copy to terraform.tfvars (git-ignored, never commit it: this repo is public) and fill the <...> values.
+# The management account ID comes from the tech lead; names and e-mails below are real people's, so they stay here.
+
+# Leave unset when running with exported credentials (README §4, the bash -c wrapper). Set it only for a profile
+# Terraform can use without an MFA prompt (an Identity Center session after `aws sso login`).
+# aws_profile = "aa-mgmt"
+
+management_account_id = "<12-digit management account id>"
+
+budget_alert_emails = ["<tech lead role mailbox>", "<business owner role mailbox>"]
+
+# org_budget_usd        = 300
+# management_budget_usd = 10
+# anomaly_threshold_usd = 15
+
+# Apply 1: false. Apply 2 onwards: true (after the Identity Center console click, README §2 step 4).
+identity_center_enabled = false
+
+# Principals that list-aws-service-access-for-organization prints and organization.tf does not declare (README §4).
+extra_service_access_principals = []
+
+# Identity Center users (apply 2 onwards). The tech lead first, in group admins.
+sso_users = {
+  # techlead = {
+  #   given_name  = "<given name>"
+  #   family_name = "<family name>"
+  #   email       = "<work e-mail>"
+  #   group       = "admins"
+  # }
+}
+
+# A legacy admin role that must still run bootstrap applies in the nonprod account after it joins an OU (README §6):
+# append it to the defaults here, not in variables.tf.
+# scp_exempt_role_arn_patterns = [
+#   "arn:aws:iam::*:role/OrganizationAccountAccessRole",
+#   "arn:aws:iam::*:role/aws-reserved/sso.amazonaws.com/*/AWSReservedSSO_AA-Admin_*",
+#   "arn:aws:iam::*:role/aa-cis-infra-tf-apply",
+#   "arn:aws:iam::*:role/aa-terraform-apply",
+#   "arn:aws:iam::*:role/<legacy-admin-role-name>",
+# ]
+
+# Add an entry only after the account is in the organization (README §6). Start with ou = "root" (transitional,
+# no SCP), move to its OU after one quiet week.
+member_accounts = {
+  # ai = {
+  #   name       = "aa-ai"
+  #   email      = "<root e-mail of the ai account>"
+  #   account_id = "<12-digit id>"   # invited: imported
+  #   ou         = "root"
+  #   budget_usd = 300
+  # }
+  # nonprod = {
+  #   name       = "aa-nonprod"
+  #   email      = "<root e-mail of the nonprod account>"
+  #   account_id = "<12-digit id>"   # invited: imported
+  #   ou         = "root"
+  #   budget_usd = 250
+  # }
+  # prod = {
+  #   name       = "aa-prod"
+  #   email      = "<new root e-mail, e.g. aws+prod@ company mailbox>"
+  #   account_id = null              # created by this root at go-live
+  #   ou         = "prod"
+  #   budget_usd = 650
+  # }
+}
