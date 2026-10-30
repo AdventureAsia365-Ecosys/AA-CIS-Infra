@@ -1,0 +1,38 @@
+# AA-1004 — copy to terraform.tfvars (git-ignored, never commit it: this repo is public) and fill the <...> values.
+# Account and organization IDs come from the console of the management account (README steps 1-2).
+
+aws_profile           = "aa-mgmt"
+management_account_id = "<12-digit management account id>"
+organization_id       = "<o-... from Organizations > Settings>"
+
+budget_alert_emails = ["<tech lead role mailbox>", "<business owner role mailbox>"]
+
+# org_budget_usd        = 300
+# management_budget_usd = 10
+# anomaly_threshold_usd = 15
+
+# Add an entry only after the account is in the organization (README §6). Start with ou = "root" (transitional,
+# no SCP), move to its OU after one quiet week.
+member_accounts = {
+  # ai = {
+  #   name       = "aa-ai"
+  #   email      = "<root e-mail of the ai account>"
+  #   account_id = "<12-digit id>"   # invited: imported
+  #   ou         = "root"
+  #   budget_usd = 300
+  # }
+  # nonprod = {
+  #   name       = "aa-nonprod"
+  #   email      = "<root e-mail of the nonprod account>"
+  #   account_id = "<12-digit id>"   # invited: imported
+  #   ou         = "root"
+  #   budget_usd = 250
+  # }
+  # prod = {
+  #   name       = "aa-prod"
+  #   email      = "<new root e-mail, e.g. aws+prod@ company mailbox>"
+  #   account_id = null              # created by this root at go-live
+  #   ou         = "prod"
+  #   budget_usd = 650
+  # }
+}

@@ -1,0 +1,50 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ProtectCloudTrail",
+      "Effect": "Deny",
+      "Action": [
+        "cloudtrail:StopLogging",
+        "cloudtrail:DeleteTrail",
+        "cloudtrail:UpdateTrail",
+        "cloudtrail:PutEventSelectors",
+        "cloudtrail:PutInsightSelectors"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "ArnNotLike": {
+          "aws:PrincipalArn": ${exempt_role_arn_patterns}
+        }
+      }
+    },
+    {
+      "Sid": "ProtectBillingSettings",
+      "Effect": "Deny",
+      "Action": [
+        "aws-portal:ModifyAccount",
+        "aws-portal:ModifyBilling",
+        "aws-portal:ModifyPaymentMethods",
+        "account:PutContactInformation",
+        "billing:Put*",
+        "billing:Update*",
+        "payments:Create*",
+        "payments:Delete*",
+        "payments:Make*",
+        "payments:Update*",
+        "tax:BatchPut*",
+        "tax:Delete*",
+        "tax:Put*",
+        "cur:DeleteReportDefinition",
+        "cur:ModifyReportDefinition",
+        "cur:PutReportDefinition"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "ArnNotLike": {
+          "aws:PrincipalArn": ${exempt_role_arn_patterns}
+        }
+      }
+    }
+  ]
+}
