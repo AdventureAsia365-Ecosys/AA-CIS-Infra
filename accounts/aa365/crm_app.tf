@@ -304,6 +304,26 @@ resource "aws_iam_role_policy" "crm_ecs_task" {
         }
       },
       {
+        # AA-955 (CRM-25, design v3 §4.1 / §5.7): the platform seal on signed envelopes (AA-Partner api/app/esign/seal.py):
+        # RSASSA-PSS SHA-256 over the envelope's SHA-256 (MessageType DIGEST) with the asymmetric seal key, and the
+        # check of a stored seal. The key policy's CrmRuntimeSign statement (crm_data.tf) delegates to IAM, so both must
+        # allow. Only that algorithm and digest messages: the key signs nothing else.
+        Sid      = "CrmSealSignVerify"
+        Effect   = "Allow"
+        Action   = ["kms:Sign", "kms:Verify"]
+        Resource = aws_kms_key.crm_seal.arn
+        Condition = {
+          "StringEquals" = { "kms:SigningAlgorithm" = "RSASSA_PSS_SHA_256", "kms:MessageType" = "DIGEST" }
+        }
+      },
+      {
+        # AA-955: the seal key's public key and description (an offline verify of a seal; the seal records the key ARN).
+        Sid      = "CrmSealPublicKey"
+        Effect   = "Allow"
+        Action   = ["kms:GetPublicKey", "kms:DescribeKey"]
+        Resource = aws_kms_key.crm_seal.arn
+      },
+      {
         # AA-937 (CRM-09, design v3 §4.1 Fix A7): agency documents. The app seals every object with the agency's docs
         # DEK before the PUT (AA-Partner api/app/documents), so the bucket only ever holds ciphertext; keys are
         # tenants/<tenant>/documents/<document>. Objects under that prefix only: no List, no bucket-level action, no
@@ -369,6 +389,9 @@ resource "aws_iam_role_policy" "crm_ecs_task" {
 # AA-946 (CRM-18 traveller portal): PORTAL_OTP_DEV_ECHO = "true" on dev only: the portal's e-mail code is also returned
 # in the API answer, because the synthetic Dev agencies have no mailbox to send it from (the Dev E2E signs in with it).
 # The API refuses to start with it on outside dev / test / local.
+# AA-955 (CRM-25 e-sign v1): KMS_SEAL_KEY_ID = the alias of the CRM seal key (an alias, like KMS_DATA_KEY_ID; the seal
+# stores the key ARN KMS returns): every signed envelope is sealed with it (task role grant CrmSealSignVerify above).
+# Without it the API seals with an HMAC dev stub on dev and refuses to sign on stg / prod.
 # GIT_SHA and APP_VERSION are baked into the image.
 # -----------------------------------------------------------------------------
 resource "aws_ecs_task_definition" "crm_api" {
@@ -401,6 +424,8 @@ resource "aws_ecs_task_definition" "crm_api" {
       { name = "RATE_LIMIT_XFF_HOPS", value = "2" },
       { name = "KEY_PROVIDER", value = "kms" },
       { name = "KMS_DATA_KEY_ID", value = aws_kms_alias.crm["data"].name },
+      # AA-955: the platform seal of signed envelopes (CrmSealSignVerify).
+      { name = "KMS_SEAL_KEY_ID", value = aws_kms_alias.crm["seal"].name },
       # AA-936: the public inquiry form (app.intake.public): pages on the client host may post; limits per
       # address per minute and per form per hour.
       { name = "INTAKE_PAGE_ORIGINS", value = local.crm_intake_origin },
