@@ -239,7 +239,10 @@ CRM_NOLOGIN_ROLES = ("crm_ai_reader", "crm_eraser", "crm_insights", "crm_support
 # crm-006; tables that do not exist yet are skipped (crm.trip_traveler must exist for the cell to pass).
 CRM_F1_TABLES = ("crm.traveler", "crm.traveler_health", "crm.traveler_relation", "crm.document", "crm.trip_traveler",
                  "crm.note", "crm.consent", "crm.form_submission", "crm.tenant_key", "crm.integration_credential",
-                 "crm.member")
+                 "crm.member",
+                 # AA-955 (crm-025): the signed evidence (client address, user agent, the sealed envelope with the
+                 # typed name), kept through erasure under the claim-period exception.
+                 "crm.signature_request", "crm.terms_acceptance", "crm.signature_event")
 CRM_VIEW_ONLY_READERS = ("crm_ai_reader", "crm_insights")
 # Password roles whose login cell waits for their DSN secret and the set-password marker.
 LOGIN_KEYS = {CIS_APP: CIS_APP_LOGIN_KEYS, CRM_APP: CRM_APP_LOGIN_KEYS}
