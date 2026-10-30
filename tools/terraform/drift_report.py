@@ -24,7 +24,10 @@ report:
                  report 0; exit 1 (plan failed) reports 1.
   --mode apply   the JSON log of applying a saved plan: exit 0 lists what was applied and reports 0; exit 1 lists
                  the errors and reports 1.
-E-mail addresses are masked (`{email}`) in every mode, besides the AWS identifiers aws_mask.py masks.
+E-mail addresses are masked (`{email}`) in every mode, besides the AWS identifiers aws_mask.py masks, and the index
+key of an aws_identitystore_* address is redacted (`aws_identitystore_user.this[{key}]`).
+--digest-out FILE writes the SHA-256 of the sorted "address<TAB>action" list of the planned resource and output
+changes (no values): the management apply job compares the reviewed plan's digest with its own re-plan's.
 
 Usage (the workflow, per root):
   terraform -chdir=accounts/aa365 plan -lock=false -input=false -detailed-exitcode -json > "$RUNNER_TEMP/plan.jsonl"
@@ -34,6 +37,7 @@ Usage (the workflow, per root):
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -47,6 +51,7 @@ import aws_mask  # noqa: E402
 DETAIL_MAX = 400
 LIST_MAX = 100  # rows per table; the rest is counted, not listed (a summary page has a size limit)
 MODES = ("drift", "plan", "apply")
+IDENTITYSTORE_KEY_RE = re.compile(r'(aws_identitystore_[a-z_]+\.[A-Za-z0-9_-]+)\[[^\]]*\]')
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}")
 
 
@@ -121,7 +126,7 @@ def parse_plan_log(lines: Iterable[str]) -> PlanReport:
 
 
 def _cell(text: str) -> str:
-    text = EMAIL_RE.sub("{email}", text)
+    text = IDENTITYSTORE_KEY_RE.sub(r"\1[{key}]", EMAIL_RE.sub("{email}", text))
     return aws_mask.mask_text(text).replace("|", "\\|").replace("\n", " ").strip()
 
 
@@ -227,7 +232,14 @@ def render(root: str, exit_code: int, rep: PlanReport, mode: str = "drift") -> t
     return 1, lines, notes
 
 
-def run(plan_log: str, exit_code: int, root: str, summary: Optional[str], mode: str = "drift") -> int:
+def plan_digest(rep: PlanReport) -> str:
+    """SHA-256 of the sorted planned resource and output changes (address/name + action only)."""
+    rows = sorted([f"resource\t{a}\t{b}" for a, b in rep.planned] + [f"output\t{a}\t{b}" for a, b in rep.outputs])
+    return hashlib.sha256("\n".join(rows).encode("utf-8")).hexdigest()
+
+
+def run(plan_log: str, exit_code: int, root: str, summary: Optional[str], mode: str = "drift",
+        digest_out: Optional[str] = None) -> int:
     if mode not in MODES:
         raise InputError(f"mode {mode!r} is not one of {', '.join(MODES)}")
     if mode == "apply" and exit_code not in (0, 1):
@@ -240,6 +252,11 @@ def run(plan_log: str, exit_code: int, root: str, summary: Optional[str], mode: 
     except OSError as exc:
         raise InputError(f"cannot read the plan log: {exc.__class__.__name__}") from exc
     code, lines, notes = render(root, exit_code, rep, mode)
+    if digest_out:
+        digest = plan_digest(rep)
+        with open(digest_out, "w", encoding="utf-8") as fh:
+            fh.write(digest + "\n")
+        lines += [f"Plan digest (sorted addresses and actions): `{digest}`", ""]
     text = "\n".join(lines) + "\n"
     leaks = aws_mask.find_leaks(text + "\n".join(notes))
     if EMAIL_RE.search(text + "\n".join(notes)):
@@ -264,9 +281,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--summary", help="append the Markdown report here (GITHUB_STEP_SUMMARY); stdout otherwise")
     ap.add_argument("--mode", default="drift", choices=MODES,
                     help="drift (default; exit 2 fails), plan (exit 2 = changes, not a failure) or apply (AA-1004)")
+    ap.add_argument("--digest-out", help="write the SHA-256 of the sorted planned address/action list here (AA-1004)")
     args = ap.parse_args(argv)
     try:
-        return run(args.plan_log, args.exit_code, args.root, args.summary, args.mode)
+        return run(args.plan_log, args.exit_code, args.root, args.summary, args.mode, args.digest_out)
     except InputError as exc:
         print(f"::error title=Terraform drift check failed::{args.root}: {exc}")
         return 3

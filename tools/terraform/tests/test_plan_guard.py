@@ -258,6 +258,66 @@ def test_cli_refuses_an_scp_detach_and_names_it(tmp_path):
     assert "aws_organizations_policy_attachment" in res.stderr and "REFUSED" in res.stderr
 
 
+def _org_update(before: dict, after: dict, after_unknown: dict | None = None) -> dict:
+    change = {"actions": ["update"], "before": before, "after": after, "after_unknown": after_unknown or {}}
+    return {"format_version": "1.2", "planned_values": {}, "resource_changes": [
+        {"address": "aws_organizations_organization.this", "type": "aws_organizations_organization",
+         "change": change}]}
+
+
+ORG_BEFORE = {"enabled_policy_types": ["SERVICE_CONTROL_POLICY"],
+              "aws_service_access_principals": ["cloudtrail.amazonaws.com", "sso.amazonaws.com"]}
+
+
+@pytest.mark.parametrize("after", [
+    {"enabled_policy_types": [], "aws_service_access_principals": ORG_BEFORE["aws_service_access_principals"]},
+    {"enabled_policy_types": ["SERVICE_CONTROL_POLICY"], "aws_service_access_principals": ["cloudtrail.amazonaws.com"]},
+])
+def test_organization_update_that_shrinks_is_refused(after):
+    found = pg.find_guarded_changes(_org_update(ORG_BEFORE, after))
+    assert len(found) == 1 and found[0].action.startswith("update (")
+
+
+def test_organization_update_with_unknown_list_is_refused():
+    found = pg.find_guarded_changes(_org_update(ORG_BEFORE, {"enabled_policy_types": ["SERVICE_CONTROL_POLICY"]},
+                                                {"aws_service_access_principals": True}))
+    assert [c.action for c in found] == ["update (aws_service_access_principals unknown)"]
+
+
+def test_organization_update_that_only_adds_passes():
+    after = {"enabled_policy_types": ["SERVICE_CONTROL_POLICY", "TAG_POLICY"],
+             "aws_service_access_principals": ORG_BEFORE["aws_service_access_principals"] + ["account.amazonaws.com"]}
+    assert pg.find_guarded_changes(_org_update(ORG_BEFORE, after)) == []
+
+
+def _bucket_policy(actions, bucket):
+    change = {"actions": actions, "before": {"bucket": bucket, "policy": "{}"}, "after": None}
+    return {"format_version": "1.2", "planned_values": {}, "resource_changes": [
+        {"address": "aws_s3_bucket_policy.x", "type": "aws_s3_bucket_policy", "change": change}]}
+
+
+@pytest.mark.parametrize("bucket", ["aa-org-cloudtrail-111122223333", "aa-cis-dev-cloudtrail-logs-111122223333"])
+@pytest.mark.parametrize("actions", [["delete"], ["delete", "create"], ["create", "delete"], ["forget"]])
+def test_removing_a_trail_bucket_policy_is_refused(bucket, actions):
+    found = pg.find_guarded_changes(_bucket_policy(actions, bucket))
+    assert len(found) == 1 and found[0].type == "aws_s3_bucket_policy"
+
+
+def test_other_bucket_policies_and_trail_policy_updates_pass():
+    assert pg.find_guarded_changes(_bucket_policy(["delete"], "aa-cis-bronze-111122223333")) == []
+    assert pg.find_guarded_changes(_bucket_policy(["update"], "aa-org-cloudtrail-111122223333")) == []
+
+
+def test_identitystore_keys_are_redacted_in_the_report(tmp_path):
+    p = tmp_path / "plan.json"
+    p.write_text(json.dumps(_plan(('aws_identitystore_user.this["jane"]', "aws_identitystore_user", ["delete"]))),
+                 encoding="utf-8")
+    res = _run(str(p))
+    assert res.returncode == 1
+    assert "jane" not in res.stderr and "aws_identitystore_user.this[{key}]" in res.stderr
+    assert pg.redact_address('aws_organizations_account.member["ai"]') == 'aws_organizations_account.member["ai"]'
+
+
 # --- CLI ------------------------------------------------------------------------------------------
 
 

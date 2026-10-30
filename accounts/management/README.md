@@ -281,30 +281,48 @@ Evidence (command output) goes into `docs/audits/<date>-S<nnn>-aa1004-scp-tests/
 
 Built in code (AA-1004): `cicd.tf` here, plus jobs in `terraform-plan.yml`, `terraform-apply.yml` and
 `terraform-drift.yml`. It goes live after the one-time steps 11.1 and 11.2. Until then the plan and drift jobs of this
-root warn and skip, and the root is applied as in §4.
+root warn and skip (they fail instead once the repo variable `MGMT_CI_LIVE` is `true`), and the root is applied as in
+§4.
 
 | Workflow | When | Role in the management account | OIDC subject (immutable form) |
 |---|---|---|---|
 | Terraform Plan, job "Terraform Plan (management)" | A PR touching `accounts/management/**`, `terraform-plan.yml` or `drift_report.py` | `aa-terraform-plan` (read only) | `...:pull_request` |
 | Terraform Drift, matrix entry `accounts/management` | Nightly 05:37 UTC and by hand, from `main` | `aa-terraform-plan` | `...:ref:refs/heads/main` |
-| Terraform Apply Prod, input `root = management` | Manual dispatch from `main`; the `org` environment's reviewer approves first | `aa-terraform-apply` (boundary `aa-terraform-apply-boundary`) | `...:environment:org`, plus the `ref` claim `refs/heads/main` |
+| Terraform Apply Prod, `root = management`, job "Terraform Plan (management, for review)" | Manual dispatch from `main` | `aa-terraform-plan` | `...:ref:refs/heads/main` |
+| Same run, job "Terraform Apply (management)" | After the `org` environment's reviewer approves | `aa-terraform-apply` (boundary `aa-terraform-apply-boundary`) | `...:environment:org`, plus the `ref` claim `refs/heads/main` |
 
+- **No blind approval.** The review-plan job writes the masked plan summary and a digest (SHA-256 of the sorted
+  planned address/action list). The reviewer reads that summary, then approves the `org` deployment. The apply job
+  first checks that `org` carries a required reviewer and a branch policy (an environment GitHub auto-creates on a first
+  run has neither) and stops before any secret or credential if not; then it re-plans with the apply role and fails
+  when the digest differs from the reviewed one; then the plan guard; then it applies exactly that saved plan. The
+  digest covers addresses and actions, not attribute values: a value-only difference between the two plans (same
+  resources, same actions) is not caught.
 - **No plan text in the logs.** This root's plan holds e-mail addresses and member account IDs, and the repo's run
   logs are public. Terraform runs with `-json` into `RUNNER_TEMP`; `tools/terraform/drift_report.py` (`--mode plan`,
-  `--mode apply`, drift) writes only resource addresses, actions and masked errors to the job summary. Every 12-digit
-  number and e-mail in the inputs is masked in the log before Terraform starts. No `terraform output` in CI.
+  `--mode apply`, drift) writes only resource addresses, actions and masked errors to the job summary; the index key
+  of an `aws_identitystore_*` address is redacted (`[{key}]`), and `sso_users` keys must be handles `u1`, `u2`, ...
+  (validated). Every 12-digit number and e-mail in the inputs is masked in the log before Terraform starts. No
+  `terraform output` in CI.
 - **Plan guard.** Besides the aa365 types, `plan_guard.py` refuses any delete, replace or forget of an organization,
-  OU, member account, SCP or SCP attachment, trail, centralized root access, permission set (or its policy),
-  account assignment, Identity Center user, group or membership. Create, update and import pass. An intended removal
-  (a user who leaves, README §8 trail removal) is dispatched with `allow_guarded=true` and an `allow_reason`.
-- **Apply role scope.** Organizations, identity store, Identity Center (AWS managed `AWSSSOMasterAccountAdministrator`),
-  budgets, anomaly detection, CloudTrail, the trail key and bucket settings, this root's state objects, plus
-  `ReadOnlyAccess` for refresh. Its boundary denies: every role write outside the Identity Center
-  `aws-reserved/sso.amazonaws.com/` path (so CI cannot edit the CI roles), identity-provider writes, users, keys,
-  groups and customer managed policies, leaving / closing / removing accounts, deleting the organization, invitations,
-  delegated administrators, `account:*`, switching off centralized root access, `cloudtrail:StopLogging`, deleting the
-  trail bucket or any log object, governance bypass, disabling or deleting the trail key, `sts:AssumeRole` and
-  `sts:AssumeRoot`.
+  OU, member account, SCP or SCP attachment, trail, trail bucket policy, centralized root access, permission set (or its
+  policy), account assignment, Identity Center user, group or membership, and an update of the organization that drops
+  an enabled policy type or a trusted-access principal (or leaves either unknown). Create, other updates and import
+  pass. An intended change (a user who leaves, README §8 trail removal) is dispatched with `allow_guarded=true` and an
+  `allow_reason`.
+- **Apply role scope.** Organizations, identity store, Identity Center (`sso:*` through AWS managed
+  `AWSSSOMasterAccountAdministrator`), budgets, anomaly detection, CloudTrail, the trail key and bucket settings, this
+  root's state objects, plus `ReadOnlyAccess` for refresh. Its boundary denies: **every IAM role write and PassRole**
+  (`UpdateAssumeRolePolicy` included, on every role, the Identity Center `aws-reserved/sso.amazonaws.com/` roles too:
+  Identity Center provisions those itself), every SAML / OIDC provider write, users, keys, groups and customer managed
+  policies, leaving / closing / removing accounts, deleting the organization, invitations, delegated administrators,
+  `account:*`, switching off centralized root access, `cloudtrail:StopLogging`, deleting the trail bucket or any log
+  object, governance bypass, disabling, deleting or decrypting with the trail key, `sts:AssumeRole` and
+  `sts:AssumeRoot`. If a CI apply of an account assignment in this (management) account ever fails with an IAM
+  AccessDenied, that assignment change is a local apply (§4).
+- **`account:*` is local only.** Alternate contacts, the account name and other Account Management settings (of this
+  or a member account) are never changed by CI; they stay console or local-apply steps (§2 step 1). The trusted access
+  for `account.amazonaws.com` in `organization.tf` only lets a local session set them from here.
 - **Bootstrap objects.** Everything in `cicd.tf` (OIDC provider, both roles, their policies, the boundary) is changed
   only by a local apply (§4 wrapper). A CI apply of such a change fails with AccessDenied by design.
 
@@ -313,14 +331,18 @@ root warn and skip, and the root is applied as in §4.
 After apply 2 of §4 (the organization exists; `AA-Bootstrap` or an `AA-Admin` session), from the commit that holds
 `cicd.tf`, in `accounts/management/`, with the usual `terraform.tfvars`:
 
-1. Plan with the §4 wrapper (`plan -out=mgmt.tfplan`). Expected: **9 to add, 0 to change, 0 to destroy** when the rest
-   of the root is in sync: `aws_iam_openid_connect_provider.github_actions`, `aws_iam_role.ci_plan`,
-   `aws_iam_role_policy_attachment.ci_plan_readonly`, `aws_iam_role_policy.ci_plan`,
+1. **Rename the `sso_users` key** of the tech lead from `techlead` to `u1` in the local `terraform.tfvars` (keys must
+   match `^u[0-9]+$`, the plan fails otherwise). `identity_center.tf` carries `moved` blocks for exactly that rename, so
+   the plan shows the user and its group membership as **moved**, not destroyed and created: the user keeps its ID,
+   password and MFA device. Any other key needs its own `moved` block in a PR first.
+2. Plan with the §4 wrapper (`plan -out=mgmt.tfplan`). Expected: **9 to add, 0 to change, 0 to destroy** (plus the two
+   moves of step 1) when the rest of the root is in sync: `aws_iam_openid_connect_provider.github_actions`,
+   `aws_iam_role.ci_plan`, `aws_iam_role_policy_attachment.ci_plan_readonly`, `aws_iam_role_policy.ci_plan`,
    `aws_iam_policy.ci_apply_boundary`, `aws_iam_role.ci_apply`, `aws_iam_role_policy_attachment.ci_apply_managed`
    (2: `ReadOnlyAccess`, `AWSSSOMasterAccountAdministrator`) and `aws_iam_role_policy.ci_apply`. Anything else in the
    plan: stop and find out why.
-2. Apply that plan with the same wrapper (`apply mgmt.tfplan`).
-3. Verify (one line each):
+3. Apply that plan with the same wrapper (`apply mgmt.tfplan`).
+4. Verify (one line each):
 
    ```bash
    aws iam get-role --role-name aa-terraform-apply --profile aa-mgmt --query "Role.[MaxSessionDuration,PermissionsBoundary.PermissionsBoundaryArn]" --output text
@@ -331,31 +353,12 @@ After apply 2 of §4 (the organization exists; `AA-Bootstrap` or an `AA-Admin` s
 
 Rollback: remove `cicd.tf` in a PR and apply that locally (a CI apply cannot remove the CI roles: bootstrap objects).
 
-### 11.2 GitHub settings (once, repo AdventureAsia365-Ecosys/AA-CIS-Infra)
+### 11.2 GitHub settings (once, repo AdventureAsia365-Ecosys/AA-CIS-Infra), in this order
 
-1. **Repository secret `MGMT_ACCOUNT_ID`**: the 12-digit management account ID. CI builds both role ARNs and the
-   state bucket name (`aa-tfstate-<id>-usw1`, §3) from it, so there is no bucket setting. The value is typed at the
-   prompt, never on the command line:
+The environment comes **first**: a dispatch that names a missing environment makes GitHub create it with no
+protection rule, and the apply job would then run unreviewed (its own check stops it, but do not rely on one guard).
 
-   ```bash
-   gh secret set MGMT_ACCOUNT_ID --repo AdventureAsia365-Ecosys/AA-CIS-Infra
-   ```
-
-2. **Repository secret `MGMT_TFVARS`**: the content of the local `terraform.tfvars` without the `aws_profile` line
-   (CI refuses a secret that sets it). Run from `accounts/management/`:
-
-   ```bash
-   grep -vE '^[[:space:]]*aws_profile[[:space:]]*=' terraform.tfvars | gh secret set MGMT_TFVARS --repo AdventureAsia365-Ecosys/AA-CIS-Infra
-   ```
-
-   Set it again after every change of `terraform.tfvars` (users, member accounts, flags), before the next CI plan;
-   otherwise CI plans against old inputs and shows changes that undo the local ones.
-
-   Secrets, not variables: GitHub masks secrets in the public logs, not variables. Repository level, not environment:
-   the PR plan and the drift run have no environment (their OIDC subjects are `pull_request` and `ref:refs/heads/main`,
-   which is what the plan role trusts), and an environment's secrets reach only jobs in that environment. Fork PRs
-   get neither the secrets nor an OIDC token.
-3. **Environment `org`** with a required reviewer (the tech lead) and deployment branches limited to `main`. The
+1. **Environment `org`** with a required reviewer (the tech lead) and deployment branches limited to `main`. The
    reviewer's numeric user ID comes from `gh api users/<login> --jq .id`. Write
    `{"reviewers":[{"type":"User","id":<user id>}],"prevent_self_review":false,"deployment_branch_policy":{"protected_branches":false,"custom_branch_policies":true}}`
    to a scratch file `env-org.json`, then:
@@ -370,6 +373,34 @@ Rollback: remove `cicd.tf` in a PR and apply that locally (a CI apply cannot rem
    `prevent_self_review` is off on purpose: the gate is there to stop an unattended (agent or bot) dispatch, and the
    tech lead may dispatch and approve their own run. No `org-plan` environment: a reviewer in front of every PR plan
    adds nothing to a read-only role.
+2. **Repository secret `MGMT_ACCOUNT_ID`**: the 12-digit management account ID. CI builds both role ARNs and the
+   state bucket name (`aa-tfstate-<id>-usw1`, §3) from it, so there is no bucket setting. The value is typed at the
+   prompt, never on the command line:
+
+   ```bash
+   gh secret set MGMT_ACCOUNT_ID --repo AdventureAsia365-Ecosys/AA-CIS-Infra
+   ```
+
+3. **Repository secret `MGMT_TFVARS`**: the content of the local `terraform.tfvars` (with the `u1` key of 11.1) without
+   the `aws_profile` line (CI refuses a secret that sets it). Run from `accounts/management/`:
+
+   ```bash
+   grep -vE '^[[:space:]]*aws_profile[[:space:]]*=' terraform.tfvars | gh secret set MGMT_TFVARS --repo AdventureAsia365-Ecosys/AA-CIS-Infra
+   ```
+
+   Set it again after every change of `terraform.tfvars` (users, member accounts, flags), before the next CI plan;
+   otherwise CI plans against old inputs and shows changes that undo the local ones.
+
+   Secrets, not variables: GitHub masks secrets in the public logs, not variables. Repository level, not environment:
+   the PR plan, the drift run and the review plan have no environment (their OIDC subjects are `pull_request` and
+   `ref:refs/heads/main`, which is what the plan role trusts), and an environment's secrets reach only jobs in that
+   environment. Fork PRs get neither the secrets nor an OIDC token.
+4. **Repository variable `MGMT_CI_LIVE` = `true`**, last: from then on a missing secret fails the management plan and
+   drift jobs instead of warning.
+
+   ```bash
+   gh variable set MGMT_CI_LIVE --body true --repo AdventureAsia365-Ecosys/AA-CIS-Infra
+   ```
 
 ### 11.3 First CI runs to expect
 
@@ -381,6 +412,7 @@ Rollback: remove `cicd.tf` in a PR and apply that locally (a CI apply cannot rem
    or someone changed the account outside Terraform. Do not apply until the difference is explained. An AccessDenied
    during refresh names a read missing from `aa-terraform-plan` (`PlanRefreshReads` in `cicd.tf`): add it and repeat
    11.1 (local apply).
-4. **First CI apply** only for a real change: Terraform Apply Prod, `root = management`; the tech lead approves the
-   `org` deployment; the summary lists the plan, the guard result and what was applied.
+4. **First CI apply** only for a real change: Terraform Apply Prod, `root = management`. Read the summary of
+   "Terraform Plan (management, for review)", then approve the `org` deployment; the apply job's summary shows the
+   environment check, the re-plan (same digest), the guard result and what was applied.
 

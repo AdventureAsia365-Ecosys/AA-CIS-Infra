@@ -159,3 +159,16 @@ resource "aws_identitystore_group_membership" "this" {
   group_id          = aws_identitystore_group.this[each.value.group].group_id
   member_id         = aws_identitystore_user.this[each.key].user_id
 }
+
+# AA-1004 review (S259): sso_users keys became non-identifying handles (u1, u2, ...). The first local tfvars used the key
+# "techlead"; these blocks rename its two instances in place, so the user keeps its identity-store ID, password and MFA
+# (no destroy/create). No-op when "techlead" is not in the state. Remove once every state has moved.
+moved {
+  from = aws_identitystore_user.this["techlead"]
+  to   = aws_identitystore_user.this["u1"]
+}
+
+moved {
+  from = aws_identitystore_group_membership.this["techlead"]
+  to   = aws_identitystore_group_membership.this["u1"]
+}

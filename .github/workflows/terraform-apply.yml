@@ -185,23 +185,127 @@ jobs:
         if: env.GUARD_SELFTEST != 'true' && steps.plan.outputs.exitcode == '2'
         run: terraform output
 
-  # AA-1004: the management account root (accounts/management/README.md §11). Environment `org`: a required reviewer
-  # (the tech lead) approves the run before any step starts, and its deployment branch rule is main. Role
-  # aa-terraform-apply (accounts/management/cicd.tf) trusts only `environment:org` with ref main, under the boundary
-  # aa-terraform-apply-boundary; its ARN and the state bucket are built from the repo secret MGMT_ACCOUNT_ID, the inputs
-  # come from the repo secret MGMT_TFVARS.
+  # AA-1004: the management account root (accounts/management/README.md §11), in two jobs so nobody approves blind:
   #
-  # Same plan -> guard -> apply order as the aa365 job, but this root's plan and apply text never reach the public log
-  # (e-mail addresses, member account ids): Terraform runs with -json into RUNNER_TEMP and
-  # tools/terraform/drift_report.py (--mode plan / --mode apply) writes only addresses, actions and masked errors to
-  # the job summary. No `terraform output` either. The plan guard refuses, besides the aa365 types, any delete, replace
-  # or forget of an organization, OU, account, SCP (or its attachment), trail or Identity Center resource.
+  #   plan-management              no environment, read-only role aa-terraform-plan (sub ref:refs/heads/main). Writes
+  #                                the masked plan summary the reviewer reads, and outputs a digest (SHA-256 of the
+  #                                sorted planned address/action list, no values).
+  #   terraform-apply-management   environment `org`: its required reviewer (the tech lead) approves after reading that
+  #                                summary. Checks first that `org` really carries a required reviewer and a branch
+  #                                policy (an environment GitHub auto-created by a first run has neither), then
+  #                                re-plans with aa-terraform-apply and FAILS if the digest differs from the reviewed
+  #                                one. Then the plan guard, then the apply of exactly that saved plan.
+  #
+  # Role ARNs and the state bucket are built from the repo secret MGMT_ACCOUNT_ID; the inputs come from MGMT_TFVARS.
+  # This root's plan and apply text never reach the public log (e-mail addresses, member account ids): Terraform runs
+  # with -json into RUNNER_TEMP and tools/terraform/drift_report.py writes only addresses (identity-store keys
+  # redacted), actions and masked errors to the job summary. No `terraform output` either. The plan guard refuses,
+  # besides the aa365 types, any delete, replace or forget of an organization, OU, account, SCP (or its attachment),
+  # trail, trail bucket policy or Identity Center resource, and an organization update that drops a policy type or a
+  # trusted-access principal.
+  plan-management:
+    name: Terraform Plan (management, for review)
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && inputs.root == 'management' && !inputs.guard_selftest
+    timeout-minutes: 20
+
+    outputs:
+      digest: ${{ steps.plan.outputs.digest }}
+
+    defaults:
+      run:
+        working-directory: accounts/management
+
+    env:
+      ROOT: accounts/management
+      TF_IN_AUTOMATION: "1"
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Write management inputs (masked)
+        env:
+          MGMT_ACCOUNT_ID: ${{ secrets.MGMT_ACCOUNT_ID }}
+          MGMT_TFVARS: ${{ secrets.MGMT_TFVARS }}
+        run: |
+          if [ -z "$MGMT_ACCOUNT_ID" ] || [ -z "$MGMT_TFVARS" ]; then
+            echo "::error::secrets MGMT_ACCOUNT_ID / MGMT_TFVARS are not set (accounts/management/README.md §11)"
+            exit 1
+          fi
+          umask 077
+          F="$RUNNER_TEMP/management.tfvars"
+          printf '%s\n' "$MGMT_TFVARS" > "$F"
+          for v in $(grep -oE '[0-9]{12}|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' "$F" | sort -u); do
+            echo "::add-mask::$v"
+          done
+          if grep -qE '^[[:space:]]*aws_profile[[:space:]]*=' "$F"; then
+            echo "::error::MGMT_TFVARS sets aws_profile; CI runs on OIDC credentials, remove that line from the secret"
+            exit 1
+          fi
+          echo "TF_CLI_ARGS_plan=-var-file=$F" >> "$GITHUB_ENV"
+
+      - name: Configure AWS credentials (OIDC, management plan role)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.MGMT_ACCOUNT_ID }}:role/aa-terraform-plan
+          aws-region: us-west-1
+          role-duration-seconds: 3600
+
+      - name: Verify the role is the management plan role
+        run: |
+          ARN=$(aws sts get-caller-identity --query Arn --output text)
+          case "$ARN" in
+            *:assumed-role/aa-terraform-plan/*) echo "role: aa-terraform-plan" ;;
+            *) echo "::error::the review plan must run with the read-only role aa-terraform-plan"; exit 1 ;;
+          esac
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.15.5"
+          terraform_wrapper: false
+
+      - name: Terraform Init
+        env:
+          MGMT_ACCOUNT_ID: ${{ secrets.MGMT_ACCOUNT_ID }}
+        run: |
+          terraform init -input=false -lockfile=readonly \
+            -backend-config="bucket=aa-tfstate-${MGMT_ACCOUNT_ID}-usw1" \
+            -backend-config="key=management/terraform.tfstate" \
+            -backend-config="region=us-west-1"
+
+      - name: Terraform Plan (for review)
+        id: plan
+        run: |
+          umask 077
+          LOG="$RUNNER_TEMP/management-plan.jsonl"
+          DIGEST="$RUNNER_TEMP/plan-digest.txt"
+          trap 'rm -f "$LOG"' EXIT
+          set +e
+          terraform plan -input=false -detailed-exitcode -json > "$LOG"
+          RC=$?
+          set -e
+          echo "terraform plan exit code: $RC"
+          python3 -B "$GITHUB_WORKSPACE/tools/terraform/drift_report.py" --mode plan --plan-log "$LOG" \
+            --exit-code "$RC" --root "$ROOT" --summary "$GITHUB_STEP_SUMMARY" --digest-out "$DIGEST"
+          echo "digest=$(cat "$DIGEST")" >> "$GITHUB_OUTPUT"
+          echo "Approve the \`org\` deployment only if the list above is what you expect." >> "$GITHUB_STEP_SUMMARY"
+
   terraform-apply-management:
     name: Terraform Apply (management)
+    needs: plan-management
     runs-on: ubuntu-latest
     environment: org
     if: github.ref == 'refs/heads/main' && inputs.root == 'management' && !inputs.guard_selftest
     timeout-minutes: 30
+
+    # actions: read for the environment check below (GET repos/{repo}/environments/org with GITHUB_TOKEN).
+    permissions:
+      id-token: write
+      contents: read
+      actions: read
 
     defaults:
       run:
@@ -212,8 +316,34 @@ jobs:
       TF_IN_AUTOMATION: "1"
       ALLOW_GUARDED: ${{ inputs.allow_guarded && 'true' || 'false' }}
       ALLOW_REASON: ${{ inputs.allow_reason }}
+      REVIEWED_DIGEST: ${{ needs.plan-management.outputs.digest }}
 
     steps:
+      # Before any secret or credential: if `org` was auto-created by a run (no protection rules) or lost its reviewer,
+      # this job is already running unreviewed; stop it here.
+      - name: Check the org environment is protected
+        working-directory: ${{ github.workspace }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set +e
+          RULES=$(gh api "repos/$REPO/environments/org" \
+            --jq '[([.protection_rules[]? | select(.type == "required_reviewers" and ((.reviewers // []) | length) > 0)] | length > 0), (.deployment_branch_policy != null)] | @tsv')
+          RC=$?
+          set -e
+          if [ "$RC" -ne 0 ]; then
+            echo "::error::cannot read the org environment (gh api exit $RC); refusing to apply"
+            exit 1
+          fi
+          REVIEWERS=$(cut -f1 <<<"$RULES")
+          BRANCHES=$(cut -f2 <<<"$RULES")
+          if [ "$REVIEWERS" != "true" ] || [ "$BRANCHES" != "true" ]; then
+            echo "::error::environment org must have a required reviewer and a deployment branch policy (README §11.2); refusing to apply"
+            exit 1
+          fi
+          echo "org environment: required reviewer and branch policy present"
+
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
@@ -222,6 +352,10 @@ jobs:
         run: |
           if [ "$ALLOW_GUARDED" = "true" ] && [ -z "$(printf '%s' "$ALLOW_REASON" | tr -d '[:space:]')" ]; then
             echo "allow_guarded=true needs a non-empty allow_reason" >&2
+            exit 1
+          fi
+          if ! grep -qE '^[0-9a-f]{64}$' <<<"$REVIEWED_DIGEST"; then
+            echo "::error::no reviewed plan digest from plan-management; refusing to apply"
             exit 1
           fi
 
@@ -280,11 +414,14 @@ jobs:
       - name: Terraform Validate
         run: terraform validate -no-color
 
+      # Re-plan with the apply role and compare with the plan the reviewer approved: a different address/action list
+      # (state or inputs changed in between, or a different commit) fails here, before the guard and the apply.
       - name: Terraform Plan
         id: plan
         run: |
           umask 077
           LOG="$RUNNER_TEMP/management-plan.jsonl"
+          DIGEST="$RUNNER_TEMP/plan-digest.txt"
           trap 'rm -f "$LOG"' EXIT
           set +e
           terraform plan -input=false -detailed-exitcode -out="$RUNNER_TEMP/tfplan" -json > "$LOG"
@@ -293,7 +430,12 @@ jobs:
           echo "exitcode=$RC" >> "$GITHUB_OUTPUT"
           echo "terraform plan exit code: $RC"
           python3 -B "$GITHUB_WORKSPACE/tools/terraform/drift_report.py" --mode plan --plan-log "$LOG" \
-            --exit-code "$RC" --root "$ROOT" --summary "$GITHUB_STEP_SUMMARY"
+            --exit-code "$RC" --root "$ROOT" --summary "$GITHUB_STEP_SUMMARY" --digest-out "$DIGEST"
+          if [ "$(cat "$DIGEST")" != "$REVIEWED_DIGEST" ]; then
+            echo "::error::the plan differs from the reviewed plan (digest mismatch); nothing applied, dispatch again"
+            exit 1
+          fi
+          echo "plan matches the reviewed plan"
 
       - name: Export plan JSON
         if: steps.plan.outputs.exitcode == '2'

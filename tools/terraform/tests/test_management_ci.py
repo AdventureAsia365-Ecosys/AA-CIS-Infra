@@ -87,8 +87,7 @@ def test_plan_role_writes_only_the_lockfile():
 
 def test_apply_boundary_keeps_ci_off_its_own_roles_and_the_org_exits():
     text = _cicd()
-    for needle in ("DenyRoleWritesOutsideIdentityCenter", "not_resources = [local.sso_reserved_role_arn]",
-                   "DenyOidcProviderWrites", "organizations:LeaveOrganization", "organizations:CloseAccount",
+    for needle in ("DenyAllRoleWrites", "DenyOidcProviderWrites", "DenySamlProviderWrites", "organizations:LeaveOrganization", "organizations:CloseAccount",
                    "organizations:RemoveAccountFromOrganization", "organizations:DeleteOrganization",
                    "cloudtrail:StopLogging", "s3:BypassGovernanceRetention", "sts:AssumeRoot", "iam:CreatePolicy"):
         assert needle in text, needle
@@ -158,3 +157,71 @@ def test_management_inputs_are_masked_and_never_set_a_profile():
         step = _steps(_wf(name)["jobs"][job])["Write management inputs (masked)"]["run"]
         for needle in ("umask 077", "::add-mask::", "aws_profile", "TF_CLI_ARGS_plan=-var-file=", "$RUNNER_TEMP"):
             assert needle in step, (name, needle)
+
+
+# --- review fixes (S259) ---------------------------------------------------------------------------------------------
+
+def _boundary_statement(text: str, sid: str) -> str:
+    start = text.index(f'sid       = "{sid}"')
+    return text[start:text.index("}", start)]
+
+
+def test_ci_apply_cannot_write_any_role_including_identity_center_ones():
+    text = _cicd()
+    deny = _boundary_statement(text, "DenyAllRoleWrites")
+    assert 'resources = ["*"]' in deny and "not_resources" not in deny
+    role_writes = text.split("ci_role_write_actions = [", 1)[1].split("]", 1)[0]
+    for action in ("iam:UpdateAssumeRolePolicy", "iam:CreateRole", "iam:PutRolePolicy", "iam:AttachRolePolicy",
+                   "iam:DetachRolePolicy", "iam:DeleteRolePolicy", "iam:PutRolePermissionsBoundary", "iam:PassRole"):
+        assert f'"{action}"' in role_writes, action
+    saml = _boundary_statement(text, "DenySamlProviderWrites")
+    assert 'resources = ["*"]' in saml
+    # The apply role's own policy grants no IAM role or SAML write at all, and nothing on the aws-reserved path.
+    inline = _resource(text, "aws_iam_role_policy", "ci_apply")
+    assert "aws-reserved" not in inline and "saml-provider" not in inline
+    for action in ("iam:CreateRole", "iam:PutRolePolicy", "iam:AttachRolePolicy", "iam:DetachRolePolicy",
+                   "iam:DeleteRolePolicy", "iam:PutRolePermissionsBoundary", "iam:UpdateAssumeRolePolicy",
+                   "iam:PassRole", "iam:CreateSAMLProvider"):
+        assert f'"{action}"' not in inline, action
+
+
+def test_apply_is_preceded_by_a_read_only_review_plan_with_a_digest():
+    jobs = _wf("terraform-apply.yml")["jobs"]
+    review = jobs["plan-management"]
+    assert "environment" not in review  # sub ref:refs/heads/main = the read-only plan role
+    rsteps = _steps(review)
+    assert rsteps["Configure AWS credentials (OIDC, management plan role)"]["with"]["role-to-assume"].endswith(
+        ":role/aa-terraform-plan")
+    assert "--digest-out" in rsteps["Terraform Plan (for review)"]["run"]
+    assert review["outputs"]["digest"] == "${{ steps.plan.outputs.digest }}"
+    apply = jobs["terraform-apply-management"]
+    assert apply["needs"] == "plan-management"
+    assert apply["env"]["REVIEWED_DIGEST"] == "${{ needs.plan-management.outputs.digest }}"
+    plan = _steps(apply)["Terraform Plan"]["run"]
+    assert "--digest-out" in plan and '!= "$REVIEWED_DIGEST"' in plan and "exit 1" in plan
+
+
+def test_apply_checks_the_org_environment_before_any_secret_or_credential():
+    apply = _wf("terraform-apply.yml")["jobs"]["terraform-apply-management"]
+    first = apply["steps"][0]
+    assert first["name"] == "Check the org environment is protected"
+    assert "repos/$REPO/environments/org" in first["run"] and "required_reviewers" in first["run"]
+    assert "deployment_branch_policy" in first["run"]
+    assert "secrets." not in yaml.safe_dump(first)
+    assert apply["permissions"] == {"id-token": "write", "contents": "read", "actions": "read"}
+
+
+def test_missing_secrets_fail_once_mgmt_ci_live_is_set():
+    for name, job in (("terraform-plan.yml", "terraform-plan-management"), ("terraform-drift.yml", "drift")):
+        step = _steps(_wf(name)["jobs"][job])["Check CI wiring"]
+        assert step["env"]["MGMT_CI_LIVE"] == "${{ vars.MGMT_CI_LIVE }}"
+        assert '"$MGMT_CI_LIVE" = "true"' in step["run"] and "exit 1" in step["run"]
+
+
+def test_sso_user_keys_are_handles_and_the_techlead_key_is_moved():
+    with open(os.path.join(MGMT, "variables.tf"), encoding="utf-8") as fh:
+        assert 'can(regex("^u[0-9]+$", k))' in fh.read()
+    with open(os.path.join(MGMT, "identity_center.tf"), encoding="utf-8") as fh:
+        ic = fh.read()
+    for rtype in ("aws_identitystore_user", "aws_identitystore_group_membership"):
+        assert f'from = {rtype}.this["techlead"]' in ic and f'to   = {rtype}.this["u1"]' in ic

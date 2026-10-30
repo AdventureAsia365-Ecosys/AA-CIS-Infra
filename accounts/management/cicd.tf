@@ -11,9 +11,14 @@
 #                        by the permissions boundary aa-terraform-apply-boundary, like aa-cis-infra-tf-apply.
 #
 # Bootstrap objects (this file): the OIDC provider, both roles, their policies and the boundary. The apply role cannot
-# change any of them (the boundary denies every role write outside the Identity Center reserved path, every customer
-# managed policy write and every identity-provider write), so a change here is a local apply in the tech lead's
-# session (README §4 wrapper), as for the aa365 CI roles. A CI apply of such a change fails with AccessDenied by design.
+# change any of them (the boundary denies every IAM role write and PassRole, every customer managed policy write and
+# every identity-provider write), so a change here is a local apply in the tech lead's session (README §4 wrapper), as
+# for the aa365 CI roles. A CI apply of such a change fails with AccessDenied by design.
+#
+# Review fix (S259): the apply role writes no IAM role at all, not even under aws-reserved/sso.amazonaws.com/. Identity
+# Center provisions its AWSReservedSSO_* roles and AWSSSO_ SAML providers itself, through its service-linked role; a
+# role write grant there would let CI re-trust (UpdateAssumeRolePolicy) or widen (Put/AttachRolePolicy) an AA-Admin role.
+# AWSSSOMasterAccountAdministrator still carries such IAM grants; the boundary removes them.
 #
 # No account ID is written here (public repo): every ARN is built from var.management_account_id. The GitHub org and
 # repo IDs in var.github_oidc_subject_prefix are not secrets (the same prefix is in accounts/aa365/cicd_split.tf).
@@ -47,12 +52,8 @@ locals {
   state_object_arn   = "${local.state_bucket_arn}/management/terraform.tfstate"
   state_lockfile_arn = "${local.state_object_arn}.tflock"
 
-  # Roles and SAML providers Identity Center itself provisions in this account when a permission set is assigned to
-  # it (AA-Admin, AA-Billing). The only IAM principals the apply role may write.
-  sso_reserved_role_arn = "arn:aws:iam::${var.management_account_id}:role/aws-reserved/sso.amazonaws.com/*"
-  sso_saml_provider_arn = "arn:aws:iam::${var.management_account_id}:saml-provider/AWSSSO_*"
 
-  # Every IAM role write plus PassRole (same list as accounts/aa365, plus boundary removal).
+  # Every IAM role write plus PassRole (same list as accounts/aa365, plus boundary removal). All denied to CI apply.
   ci_role_write_actions = [
     "iam:CreateRole", "iam:DeleteRole", "iam:UpdateRole", "iam:UpdateRoleDescription",
     "iam:UpdateAssumeRolePolicy", "iam:PutRolePolicy", "iam:DeleteRolePolicy",
@@ -148,17 +149,18 @@ data "aws_iam_policy_document" "ci_apply_boundary" {
     resources = ["*"]
   }
 
-  # The only roles this root writes are the ones Identity Center provisions here. The CI roles, any future role and
-  # the temporary AA-Bootstrap role are out of reach (bootstrap objects, local apply).
+  # No role write anywhere: not the CI roles, not AA-Bootstrap, not the aws-reserved Identity Center roles (Identity
+  # Center provisions those itself; UpdateAssumeRolePolicy or a policy write on AWSReservedSSO_AA-Admin_* would be an
+  # escalation), not a new role, and no PassRole. Everything IAM in this root is a bootstrap object (local apply).
   statement {
-    sid           = "DenyRoleWritesOutsideIdentityCenter"
-    effect        = "Deny"
-    actions       = local.ci_role_write_actions
-    not_resources = [local.sso_reserved_role_arn]
+    sid       = "DenyAllRoleWrites"
+    effect    = "Deny"
+    actions   = local.ci_role_write_actions
+    resources = ["*"]
   }
 
   # A new identity provider (or a new client id on the GitHub one) would let a trust policy accept tokens from
-  # someone else. Identity Center's own AWSSSO_* SAML providers stay writable.
+  # someone else. SAML providers too, Identity Center's AWSSSO_* ones included (Identity Center writes those itself).
   statement {
     sid    = "DenyOidcProviderWrites"
     effect = "Deny"
@@ -172,10 +174,10 @@ data "aws_iam_policy_document" "ci_apply_boundary" {
   }
 
   statement {
-    sid           = "DenySamlProviderWritesOutsideIdentityCenter"
-    effect        = "Deny"
-    actions       = ["iam:CreateSAMLProvider", "iam:UpdateSAMLProvider", "iam:DeleteSAMLProvider"]
-    not_resources = [local.sso_saml_provider_arn]
+    sid       = "DenySamlProviderWrites"
+    effect    = "Deny"
+    actions   = ["iam:CreateSAMLProvider", "iam:UpdateSAMLProvider", "iam:DeleteSAMLProvider"]
+    resources = ["*"]
   }
 
   # No IAM users, keys, groups or customer managed policies (this boundary included): this root creates none through
@@ -283,9 +285,9 @@ resource "aws_iam_role" "ci_apply" {
   })
 }
 
-# Refresh reads (every Describe/Get/List this root needs) and Identity Center administration as AWS documents it for
-# the management account (permission sets, assignments, and the aws-reserved roles + AWSSSO_ SAML providers it
-# provisions here). The inline policy below adds the writes of the other services this root manages.
+# Refresh reads (every Describe/Get/List this root needs) and Identity Center administration (sso:* for permission
+# sets and assignments). The IAM role / SAML writes this AWS managed policy also carries are removed by the boundary.
+# The inline policy below adds the writes of the other services this root manages.
 resource "aws_iam_role_policy_attachment" "ci_apply_managed" {
   for_each = toset([
     "arn:aws:iam::aws:policy/ReadOnlyAccess",
@@ -316,25 +318,6 @@ resource "aws_iam_role_policy" "ci_apply" {
         Effect   = "Allow"
         Action   = ["identitystore:*"]
         Resource = "*"
-      },
-      {
-        # Assigning a permission set to this account provisions an aws-reserved role (and an AWSSSO_ SAML provider)
-        # here. Also in AWSSSOMasterAccountAdministrator; stated so it does not hang on that policy's contents.
-        Sid    = "IdentityCenterReservedRoles"
-        Effect = "Allow"
-        Action = [
-          "iam:CreateRole", "iam:DeleteRole", "iam:GetRole", "iam:UpdateRole", "iam:UpdateRoleDescription",
-          "iam:PutRolePolicy", "iam:DeleteRolePolicy", "iam:GetRolePolicy", "iam:ListRolePolicies",
-          "iam:AttachRolePolicy", "iam:DetachRolePolicy", "iam:ListAttachedRolePolicies",
-          "iam:PutRolePermissionsBoundary", "iam:DeleteRolePermissionsBoundary",
-        ]
-        Resource = local.sso_reserved_role_arn
-      },
-      {
-        Sid      = "IdentityCenterSamlProviders"
-        Effect   = "Allow"
-        Action   = ["iam:CreateSAMLProvider", "iam:GetSAMLProvider", "iam:UpdateSAMLProvider", "iam:DeleteSAMLProvider"]
-        Resource = local.sso_saml_provider_arn
       },
       {
         # Trusted access and the organization trail create these service-linked roles on first use.

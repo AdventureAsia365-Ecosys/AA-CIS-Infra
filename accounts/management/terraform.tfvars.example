@@ -21,7 +21,7 @@ extra_service_access_principals = []
 
 # Identity Center users (apply 2 onwards). The tech lead first, in group admins.
 sso_users = {
-  # techlead = {
+  # u1 = {   # handles u1, u2, ... only (validated): keys appear in resource addresses
   #   given_name  = "<given name>"
   #   family_name = "<family name>"
   #   email       = "<work e-mail>"

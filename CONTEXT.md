@@ -637,9 +637,11 @@ makes CI Terraform Plan fail with 403.
   `docs/waf-count-review.md`.
 - **Management account root (AA-1004)**: `accounts/management/cicd.tf` holds its own GitHub OIDC provider and two
   roles, `aa-terraform-plan` (read only; subs `pull_request` and `ref:refs/heads/main`) and `aa-terraform-apply`
-  (sub `environment:org` + `ref` main; boundary `aa-terraform-apply-boundary`), both 1-hour sessions. Jobs:
-  "Terraform Plan (management)" in `terraform-plan.yml` (only when that root changes; not a required check), the
-  drift matrix, and `terraform-apply.yml` input `root = management` (environment `org`, required reviewer). This
+  (sub `environment:org` + `ref` main; boundary `aa-terraform-apply-boundary`, which denies every IAM role write),
+  both 1-hour sessions. Jobs: "Terraform Plan (management)" in `terraform-plan.yml` (only when that root changes; not a
+  required check), the drift matrix, and `terraform-apply.yml` input `root = management`: a read-only review plan
+  (summary + digest), then the apply job in environment `org` (required reviewer; checks the environment's
+  protection, re-plans, fails on a digest mismatch). This
   root's plan/apply text never reaches the public logs (JSON + `drift_report.py --mode plan|apply` summaries). Inputs:
   repo secrets `MGMT_ACCOUNT_ID` and `MGMT_TFVARS`. One-time setup: `accounts/management/README.md` §11.
 - This repo has **branch protection** (CI Terraform Plan among the required checks). Terraform

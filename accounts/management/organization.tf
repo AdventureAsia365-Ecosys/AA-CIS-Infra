@@ -25,7 +25,7 @@ resource "aws_organizations_organization" "this" {
   aws_service_access_principals = distinct(concat(
     [
       "cloudtrail.amazonaws.com", # organization trail (cloudtrail.tf)
-      "account.amazonaws.com",    # alternate contacts of member accounts, set from here
+      "account.amazonaws.com",    # alternate contacts of member accounts, set from here (local only, README §11)
       "iam.amazonaws.com",        # centralized root access (aws_iam_organizations_features below)
     ],
     var.identity_center_enabled ? ["sso.amazonaws.com"] : [],

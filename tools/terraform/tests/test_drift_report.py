@@ -158,12 +158,12 @@ def _error(summary: str, detail: str) -> str:
 
 
 def test_plan_mode_changes_are_not_a_failure(tmp_path):
-    log = _log(tmp_path, VERSION, _change("planned_change", 'aws_identitystore_user.this["techlead"]', "create"),
+    log = _log(tmp_path, VERSION, _change("planned_change", 'aws_organizations_account.member["ai"]', "create"),
                SUMMARY_2)
     summary = tmp_path / "s.md"
     assert dr.run(log, 2, "accounts/management", str(summary), mode="plan") == 0
     text = summary.read_text(encoding="utf-8")
-    assert "Terraform plan" in text and "**Changes**" in text and 'aws_identitystore_user.this["techlead"]' in text
+    assert "Terraform plan" in text and "**Changes**" in text and 'aws_organizations_account.member["ai"]' in text
     assert dr.run(_log(tmp_path, VERSION), 0, "accounts/management", str(summary), mode="plan") == 0
     assert "**No changes.**" in summary.read_text(encoding="utf-8")
 
@@ -196,6 +196,28 @@ def test_emails_and_account_ids_never_reach_the_report(tmp_path):
     text = summary.read_text(encoding="utf-8")
     assert "jane.doe@example.com" not in text and ACC not in text
     assert "{email}" in text
+
+
+def test_identitystore_keys_are_redacted(tmp_path):
+    log = _log(tmp_path, VERSION, _change("planned_change", 'aws_identitystore_user.this["jane"]', "delete"),
+               _change("planned_change", 'aws_organizations_account.member["ai"]', "update"))
+    summary = tmp_path / "s.md"
+    dr.run(log, 2, "accounts/management", str(summary), mode="plan")
+    text = summary.read_text(encoding="utf-8")
+    assert "jane" not in text and "aws_identitystore_user.this[{key}]" in text
+    assert 'aws_organizations_account.member["ai"]' in text
+
+
+def test_digest_is_order_independent_and_tracks_actions(tmp_path):
+    a = _change("planned_change", "aws_organizations_policy.scp", "update")
+    b = _change("planned_change", "aws_cloudtrail.organization", "create")
+    d1, d2, d3 = tmp_path / "1", tmp_path / "2", tmp_path / "3"
+    assert dr.run(_log(tmp_path, VERSION, a, b), 2, "r", str(tmp_path / "s.md"), "plan", str(d1)) == 0
+    assert dr.run(_log(tmp_path, VERSION, b, a), 2, "r", str(tmp_path / "s.md"), "plan", str(d2)) == 0
+    c = _change("planned_change", "aws_cloudtrail.organization", "delete")
+    dr.run(_log(tmp_path, VERSION, a, c), 2, "r", str(tmp_path / "s.md"), "plan", str(d3))
+    assert d1.read_text() == d2.read_text() != d3.read_text()
+    assert re.fullmatch(r"[0-9a-f]{64}\n", d1.read_text())
 
 
 # --- workflow shape ------------------------------------------------------------------------------------------------

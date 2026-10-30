@@ -61,7 +61,7 @@ jobs:
   # The plan text of this root is never printed (it holds e-mail addresses and member account ids): Terraform writes
   # JSON into RUNNER_TEMP and tools/terraform/drift_report.py --mode plan writes only addresses and actions, masked, to
   # the job summary. Before the one-time local bootstrap (README §11) the secrets do not exist: the job then warns and
-  # skips, so this very PR does not go red.
+  # skips, so this very PR does not go red; once the repo variable MGMT_CI_LIVE is `true`, a missing secret fails.
   terraform-plan-management:
     name: Terraform Plan (management)
     runs-on: ubuntu-latest
@@ -99,8 +99,14 @@ jobs:
         env:
           MGMT_ACCOUNT_ID: ${{ secrets.MGMT_ACCOUNT_ID }}
           MGMT_TFVARS: ${{ secrets.MGMT_TFVARS }}
+          MGMT_CI_LIVE: ${{ vars.MGMT_CI_LIVE }}
         run: |
           if [ -z "$MGMT_ACCOUNT_ID" ] || [ -z "$MGMT_TFVARS" ]; then
+            # Repo variable MGMT_CI_LIVE=true (README §11.2, after the bootstrap): a missing secret is then an error.
+            if [ "$MGMT_CI_LIVE" = "true" ]; then
+              echo "::error::MGMT_CI_LIVE=true but secrets MGMT_ACCOUNT_ID / MGMT_TFVARS are missing (accounts/management/README.md §11)"
+              exit 1
+            fi
             echo "::warning title=Management plan skipped::secrets MGMT_ACCOUNT_ID / MGMT_TFVARS are not set (accounts/management/README.md §11)"
             echo "Management plan skipped: CI wiring not set up yet (README §11)." >> "$GITHUB_STEP_SUMMARY"
             echo "ok=false" >> "$GITHUB_OUTPUT"
