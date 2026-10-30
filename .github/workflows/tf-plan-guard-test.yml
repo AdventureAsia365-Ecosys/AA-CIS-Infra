@@ -8,6 +8,8 @@ name: Terraform Plan Guard Tests
 # read-only, nightly, plan role), so those paths trigger this workflow too.
 # AA-879: plus the scheduled drift report (tools/terraform/drift_report.py): its shape test reads terraform-drift.yml and
 # terraform-plan.yml (same roots), and the report masks through tools/docs/aws_mask.py, so those paths trigger it too.
+# AA-1004: plus the management account CI wiring (test_management_ci.py reads accounts/management/cicd.tf and the
+# three Terraform workflows; the plan guard's destroy-guarded types are checked against that root's resource types).
 # The guarded fixture must exit non-zero, the clean and no-op fixtures must exit 0, and the guard
 # must stay wired in front of the apply step in terraform-apply.yml. Offline, no AWS access.
 
@@ -23,6 +25,7 @@ on:
       - ".github/workflows/terraform-drift.yml"
       - ".github/workflows/terraform-plan.yml"
       - "tools/docs/aws_mask.py"
+      - "accounts/management/**"
   push:
     branches: [main]
     paths:
@@ -34,6 +37,7 @@ on:
       - ".github/workflows/terraform-drift.yml"
       - ".github/workflows/terraform-plan.yml"
       - "tools/docs/aws_mask.py"
+      - "accounts/management/**"
 
 permissions:
   contents: read

@@ -17,6 +17,24 @@ Object Lock (AA-932, the CRM audit buckets), guarded by rule rather than by type
   aws_s3_bucket                             refused when the plan deletes or replaces a bucket that has
                                             object_lock_enabled = true.
 
+Organization, account, SCP, trail and Identity Center resources (AA-1004, the accounts/management root; the nonprod
+account's own trail in accounts/aa365 too), guarded against removal only:
+
+  aws_organizations_* (organization, OU, account, policy, policy attachment, delegated admin, resource policy),
+  aws_iam_organizations_features, aws_cloudtrail, aws_ssoadmin_* (permission sets, their policies, assignments),
+  aws_identitystore_* (users, groups, memberships)
+                                            refused on delete, replace (delete+create either order) and forget.
+                                            Create, update and import pass: adding a user, an SCP edit or importing
+                                            an invited account is ordinary work; removing one is not.
+  aws_organizations_organization            also refused on an update that removes an entry from
+                                            enabled_policy_types (e.g. SCPs switched off) or aws_service_access_principals
+                                            (a service's trusted access switched off), or leaves either unknown.
+  aws_s3_bucket_policy on a trail bucket    refused on delete, replace and forget (a bucket whose name contains
+                                            "cloudtrail": the organization trail bucket and the nonprod account's own).
+
+Identity-store addresses are printed with their index key redacted (aws_identitystore_user.this[{key}]): the keys
+of sso_users are handles, but a public summary should not carry even those.
+
 Matching is on the resource type, so module addresses (module.rds.aws_db_instance.main) count too.
 `forget` (a `removed` block) and imports of a guarded type are refused as well: they change what
 Terraform owns, which deserves the same explicit opt-in.
@@ -38,6 +56,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from dataclasses import dataclass
 from typing import Iterable, Optional
@@ -49,6 +68,42 @@ GUARDED_TYPES = frozenset(
         "aws_db_instance",
     }
 )
+
+# AA-1004: refused only when the plan removes them (delete, replace, forget); see the module docstring.
+DESTROY_GUARDED_TYPES = frozenset(
+    {
+        "aws_organizations_organization",
+        "aws_organizations_organizational_unit",
+        "aws_organizations_account",
+        "aws_organizations_policy",
+        "aws_organizations_policy_attachment",
+        "aws_organizations_delegated_administrator",
+        "aws_organizations_resource_policy",
+        "aws_iam_organizations_features",
+        "aws_cloudtrail",
+        "aws_ssoadmin_permission_set",
+        "aws_ssoadmin_account_assignment",
+        "aws_ssoadmin_managed_policy_attachment",
+        "aws_ssoadmin_customer_managed_policy_attachment",
+        "aws_ssoadmin_permission_set_inline_policy",
+        "aws_ssoadmin_permissions_boundary_attachment",
+        "aws_identitystore_user",
+        "aws_identitystore_group",
+        "aws_identitystore_group_membership",
+    }
+)
+_REMOVING_ACTIONS = frozenset({"delete", "forget"})
+
+ORGANIZATION_TYPE = "aws_organizations_organization"
+_ORG_SHRINK_ATTRS = ("enabled_policy_types", "aws_service_access_principals")
+BUCKET_POLICY_TYPE = "aws_s3_bucket_policy"
+_TRAIL_BUCKET_MARK = "cloudtrail"
+_IDENTITYSTORE_KEY_RE = re.compile(r'(aws_identitystore_[a-z_]+\.[A-Za-z0-9_-]+)\[[^\]]*\]')
+
+
+def redact_address(address: str) -> str:
+    """aws_identitystore_*.<name>[<key>] -> aws_identitystore_*.<name>[{key}] (AA-1004); other addresses unchanged."""
+    return _IDENTITYSTORE_KEY_RE.sub(r"\1[{key}]", address)
 
 OBJECT_LOCK_CONFIG_TYPE = "aws_s3_bucket_object_lock_configuration"
 BUCKET_TYPE = "aws_s3_bucket"
@@ -78,8 +133,12 @@ def _action_label(actions: list[str], importing: bool) -> Optional[str]:
     return label
 
 
-def find_guarded_changes(plan: dict, guarded_types: Iterable[str] = GUARDED_TYPES) -> list[GuardedChange]:
-    """Every resource change on a guarded type whose action is not no-op/read."""
+def find_guarded_changes(
+    plan: dict,
+    guarded_types: Iterable[str] = GUARDED_TYPES,
+    destroy_guarded_types: Iterable[str] = DESTROY_GUARDED_TYPES,
+) -> list[GuardedChange]:
+    """Every change on a guarded type whose action is not no-op/read, and every removal of a destroy-guarded type."""
     if not isinstance(plan, dict) or "format_version" not in plan:
         raise InputError("not a Terraform plan JSON (no format_version); use `terraform show -json <planfile>`")
     if "planned_values" not in plan and "resource_changes" not in plan:
@@ -92,6 +151,7 @@ def find_guarded_changes(plan: dict, guarded_types: Iterable[str] = GUARDED_TYPE
         raise InputError("resource_changes is not a list")
 
     guarded = frozenset(guarded_types)
+    destroy_guarded = frozenset(destroy_guarded_types)
     found: list[GuardedChange] = []
     for rc in changes:
         if not isinstance(rc, dict):
@@ -102,6 +162,19 @@ def find_guarded_changes(plan: dict, guarded_types: Iterable[str] = GUARDED_TYPE
             if lock is not None:
                 found.append(lock)
             continue
+        if rtype == BUCKET_POLICY_TYPE:
+            if _is_trail_bucket_policy(rc):
+                removal = _removal_change(rc)
+                if removal is not None:
+                    found.append(removal)
+            continue
+        if rtype in destroy_guarded and rtype not in guarded:
+            removal = _removal_change(rc)
+            if removal is None and rtype == ORGANIZATION_TYPE:
+                removal = _organization_shrink(rc)
+            if removal is not None:
+                found.append(removal)
+            continue
         if rtype not in guarded:
             continue
         change = rc.get("change")
@@ -111,6 +184,61 @@ def find_guarded_changes(plan: dict, guarded_types: Iterable[str] = GUARDED_TYPE
         if label is not None:
             found.append(GuardedChange(address=str(rc.get("address", "?")), type=rtype, action=label))
     return found
+
+
+def _removal_change(rc: dict) -> Optional[GuardedChange]:
+    """A destroy-guarded type (AA-1004): a GuardedChange when the plan deletes, replaces or forgets it, else None."""
+    change = rc.get("change")
+    if not isinstance(change, dict) or not isinstance(change.get("actions"), list):
+        raise InputError(f"{rc.get('address', '?')}: change.actions missing")
+    actions = change["actions"]
+    if not _REMOVING_ACTIONS.intersection(actions):
+        return None
+    label = ",".join(actions)
+    if "delete" in actions and "create" in actions:
+        label += " (replace)"
+    return GuardedChange(address=str(rc.get("address", "?")), type=str(rc["type"]), action=label)
+
+
+def _as_set(value: object) -> Optional[frozenset]:
+    """A list/set attribute as a frozenset of strings, or None when it is not a list (unknown, missing)."""
+    if isinstance(value, (list, tuple)):
+        return frozenset(str(v) for v in value)
+    return None
+
+
+def _organization_shrink(rc: dict) -> Optional[GuardedChange]:
+    """An update of the organization that removes a policy type or a trusted-access principal (or makes one unknown)."""
+    change = rc["change"]
+    if "update" not in change["actions"]:
+        return None
+    before = change.get("before") if isinstance(change.get("before"), dict) else {}
+    after = change.get("after") if isinstance(change.get("after"), dict) else {}
+    unknown = change.get("after_unknown") if isinstance(change.get("after_unknown"), dict) else {}
+    shrunk = []
+    for attr in _ORG_SHRINK_ATTRS:
+        old = _as_set(before.get(attr)) or frozenset()
+        new = _as_set(after.get(attr))
+        if unknown.get(attr) or new is None:
+            if old:
+                shrunk.append(f"{attr} unknown")
+        elif old - new:
+            shrunk.append(f"{attr} -{len(old - new)}")
+    if not shrunk:
+        return None
+    return GuardedChange(address=str(rc.get("address", "?")), type=ORGANIZATION_TYPE,
+                         action="update (" + ", ".join(shrunk) + ")")
+
+
+def _is_trail_bucket_policy(rc: dict) -> bool:
+    change = rc.get("change")
+    if not isinstance(change, dict):
+        raise InputError(f"{rc.get('address', '?')}: change missing")
+    for side in ("before", "after"):
+        val = change.get(side)
+        if isinstance(val, dict) and _TRAIL_BUCKET_MARK in str(val.get("bucket") or ""):
+            return True
+    return False
 
 
 def _compliance_mode(after: object) -> bool:
@@ -151,10 +279,11 @@ def _object_lock_change(rc: dict) -> Optional[GuardedChange]:
 
 def render(changes: list[GuardedChange], allow_reason: Optional[str]) -> tuple[str, int]:
     """Report text (Markdown-friendly) and the exit code."""
-    types = ", ".join(sorted(GUARDED_TYPES) + ["Object Lock rule"])
+    types = ", ".join(sorted(GUARDED_TYPES) + ["Object Lock rule", "removal of organization/trail/Identity Center types",
+                                               "organization policy-type/trusted-access shrink", "trail bucket policy"])
     if not changes:
         return f"Plan guard: OK, no change on a guarded type ({types}).", 0
-    lines = [f"- `{c.address}` ({c.type}): {c.action}" for c in changes]
+    lines = [f"- `{redact_address(c.address)}` ({c.type}): {c.action}" for c in changes]
     if allow_reason:
         head = (
             f"Plan guard: ALLOWED by dispatch input (allow_guarded) with reason: {allow_reason}\n"

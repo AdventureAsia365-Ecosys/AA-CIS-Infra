@@ -45,7 +45,8 @@ variable "sso_users" {
   description = <<-EOT
     Identity Center users created by Terraform, keyed by a short handle, each in one group (admins, developers,
     billing). Only in the git-ignored terraform.tfvars: names and e-mails never go into this public repo.
-    The first entry is the tech lead (group admins); it replaces the AA-Bootstrap role (README §4).
+    Keys are handles u1, u2, ... (validated; they appear in resource addresses). The first entry (u1) is the tech lead
+    (group admins); it replaces the AA-Bootstrap role (README §4).
   EOT
   type = map(object({
     given_name  = string
@@ -58,6 +59,13 @@ variable "sso_users" {
   validation {
     condition     = alltrue([for u in values(var.sso_users) : contains(["admins", "developers", "billing"], u.group)])
     error_message = "sso_users[*].group must be admins, developers or billing."
+  }
+
+  # AA-1004 review (S259): keys show up in resource addresses, which CI writes to public job summaries (redacted there
+  # as well). Non-identifying handles only: u1, u2, ...
+  validation {
+    condition     = alltrue([for k in keys(var.sso_users) : can(regex("^u[0-9]+$", k))])
+    error_message = "sso_users keys must be non-identifying handles u1, u2, ... (they appear in resource addresses)."
   }
 }
 

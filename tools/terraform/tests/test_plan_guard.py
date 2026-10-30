@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -193,6 +194,128 @@ def test_terraform_never_puts_dev_in_compliance():
     assert 'mode = var.crm_audit_compliance_enabled ? "COMPLIANCE" : "GOVERNANCE", days = 365' in tf
     assert 'audit-g = { mode = "GOVERNANCE", days = null, years = 7 }' in tf
     assert 'each.value.mode == "GOVERNANCE" || (each.key == "audit-c" && var.environment != "dev")' in tf
+
+
+# --- destroy-guarded types (AA-1004: organization, accounts, SCPs, trail, Identity Center) -----------------------
+
+
+@pytest.mark.parametrize(
+    "actions", [["delete"], ["delete", "create"], ["create", "delete"], ["forget"]],
+)
+@pytest.mark.parametrize("rtype", sorted(pg.DESTROY_GUARDED_TYPES))
+def test_removing_a_destroy_guarded_type_is_refused(rtype, actions):
+    found = pg.find_guarded_changes(_plan((f"{rtype}.x", rtype, actions)))
+    assert len(found) == 1 and found[0].action.startswith(",".join(actions))
+    if "delete" in actions and "create" in actions:
+        assert found[0].action.endswith("(replace)")
+
+
+@pytest.mark.parametrize("actions", [["create"], ["update"], ["no-op"], ["read"]])
+@pytest.mark.parametrize("rtype", sorted(pg.DESTROY_GUARDED_TYPES))
+def test_create_update_of_a_destroy_guarded_type_passes(rtype, actions):
+    assert pg.find_guarded_changes(_plan((f"{rtype}.x", rtype, actions))) == []
+
+
+def test_import_of_an_invited_account_passes():
+    # README §6 apply 3: an invited account is imported; that is ordinary work, not a removal.
+    plan = _plan(('aws_organizations_account.member["ai"]', "aws_organizations_account", ["no-op"]), importing=True)
+    assert pg.find_guarded_changes(plan) == []
+
+
+def test_destroy_guard_covers_the_high_risk_types_of_the_management_root():
+    for rtype in ("aws_organizations_organization", "aws_organizations_account", "aws_organizations_policy",
+                  "aws_organizations_policy_attachment", "aws_organizations_organizational_unit", "aws_cloudtrail",
+                  "aws_ssoadmin_permission_set", "aws_ssoadmin_account_assignment", "aws_identitystore_user",
+                  "aws_identitystore_group", "aws_identitystore_group_membership",
+                  "aws_iam_organizations_features"):
+        assert rtype in pg.DESTROY_GUARDED_TYPES, rtype
+    assert not pg.DESTROY_GUARDED_TYPES & pg.GUARDED_TYPES
+
+
+def test_every_destroy_guarded_type_exists_in_the_management_root():
+    # Each listed type that this repo uses must be spelled as in the code (a typo would silently guard nothing).
+    text = ""
+    for root in ("management", "aa365"):
+        d = os.path.join(REPO_ROOT, "accounts", root)
+        for name in os.listdir(d):
+            if name.endswith(".tf"):
+                text += open(os.path.join(d, name), encoding="utf-8").read()
+    used = set(re.findall(r'^resource "([a-z0-9_]+)"', text, re.M))
+    for rtype in ("aws_organizations_organization", "aws_organizations_organizational_unit",
+                  "aws_organizations_account", "aws_organizations_policy", "aws_organizations_policy_attachment",
+                  "aws_iam_organizations_features", "aws_cloudtrail", "aws_ssoadmin_permission_set",
+                  "aws_ssoadmin_account_assignment", "aws_ssoadmin_managed_policy_attachment",
+                  "aws_identitystore_user", "aws_identitystore_group", "aws_identitystore_group_membership"):
+        assert rtype in used, rtype
+
+
+def test_cli_refuses_an_scp_detach_and_names_it(tmp_path):
+    p = tmp_path / "plan.json"
+    p.write_text(json.dumps(_plan(('aws_organizations_policy_attachment.scp["a:nonprod"]',
+                                   "aws_organizations_policy_attachment", ["delete"]))), encoding="utf-8")
+    res = _run(str(p))
+    assert res.returncode == 1
+    assert "aws_organizations_policy_attachment" in res.stderr and "REFUSED" in res.stderr
+
+
+def _org_update(before: dict, after: dict, after_unknown: dict | None = None) -> dict:
+    change = {"actions": ["update"], "before": before, "after": after, "after_unknown": after_unknown or {}}
+    return {"format_version": "1.2", "planned_values": {}, "resource_changes": [
+        {"address": "aws_organizations_organization.this", "type": "aws_organizations_organization",
+         "change": change}]}
+
+
+ORG_BEFORE = {"enabled_policy_types": ["SERVICE_CONTROL_POLICY"],
+              "aws_service_access_principals": ["cloudtrail.amazonaws.com", "sso.amazonaws.com"]}
+
+
+@pytest.mark.parametrize("after", [
+    {"enabled_policy_types": [], "aws_service_access_principals": ORG_BEFORE["aws_service_access_principals"]},
+    {"enabled_policy_types": ["SERVICE_CONTROL_POLICY"], "aws_service_access_principals": ["cloudtrail.amazonaws.com"]},
+])
+def test_organization_update_that_shrinks_is_refused(after):
+    found = pg.find_guarded_changes(_org_update(ORG_BEFORE, after))
+    assert len(found) == 1 and found[0].action.startswith("update (")
+
+
+def test_organization_update_with_unknown_list_is_refused():
+    found = pg.find_guarded_changes(_org_update(ORG_BEFORE, {"enabled_policy_types": ["SERVICE_CONTROL_POLICY"]},
+                                                {"aws_service_access_principals": True}))
+    assert [c.action for c in found] == ["update (aws_service_access_principals unknown)"]
+
+
+def test_organization_update_that_only_adds_passes():
+    after = {"enabled_policy_types": ["SERVICE_CONTROL_POLICY", "TAG_POLICY"],
+             "aws_service_access_principals": ORG_BEFORE["aws_service_access_principals"] + ["account.amazonaws.com"]}
+    assert pg.find_guarded_changes(_org_update(ORG_BEFORE, after)) == []
+
+
+def _bucket_policy(actions, bucket):
+    change = {"actions": actions, "before": {"bucket": bucket, "policy": "{}"}, "after": None}
+    return {"format_version": "1.2", "planned_values": {}, "resource_changes": [
+        {"address": "aws_s3_bucket_policy.x", "type": "aws_s3_bucket_policy", "change": change}]}
+
+
+@pytest.mark.parametrize("bucket", ["aa-org-cloudtrail-111122223333", "aa-cis-dev-cloudtrail-logs-111122223333"])
+@pytest.mark.parametrize("actions", [["delete"], ["delete", "create"], ["create", "delete"], ["forget"]])
+def test_removing_a_trail_bucket_policy_is_refused(bucket, actions):
+    found = pg.find_guarded_changes(_bucket_policy(actions, bucket))
+    assert len(found) == 1 and found[0].type == "aws_s3_bucket_policy"
+
+
+def test_other_bucket_policies_and_trail_policy_updates_pass():
+    assert pg.find_guarded_changes(_bucket_policy(["delete"], "aa-cis-bronze-111122223333")) == []
+    assert pg.find_guarded_changes(_bucket_policy(["update"], "aa-org-cloudtrail-111122223333")) == []
+
+
+def test_identitystore_keys_are_redacted_in_the_report(tmp_path):
+    p = tmp_path / "plan.json"
+    p.write_text(json.dumps(_plan(('aws_identitystore_user.this["jane"]', "aws_identitystore_user", ["delete"]))),
+                 encoding="utf-8")
+    res = _run(str(p))
+    assert res.returncode == 1
+    assert "jane" not in res.stderr and "aws_identitystore_user.this[{key}]" in res.stderr
+    assert pg.redact_address('aws_organizations_account.member["ai"]') == 'aws_organizations_account.member["ai"]'
 
 
 # --- CLI ------------------------------------------------------------------------------------------
