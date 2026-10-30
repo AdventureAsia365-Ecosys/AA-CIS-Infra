@@ -242,7 +242,9 @@ CRM_F1_TABLES = ("crm.traveler", "crm.traveler_health", "crm.traveler_relation",
                  "crm.member",
                  # AA-955 (crm-025): the signed evidence (client address, user agent, the sealed envelope with the
                  # typed name), kept through erasure under the claim-period exception.
-                 "crm.signature_request", "crm.terms_acceptance", "crm.signature_event")
+                 "crm.signature_request", "crm.terms_acceptance", "crm.signature_event",
+                 # AA-961 (crm-027): the members' ICS feed token hashes (conf:credential).
+                 "crm.calendar_feed")
 CRM_VIEW_ONLY_READERS = ("crm_ai_reader", "crm_insights")
 # Password roles whose login cell waits for their DSN secret and the set-password marker.
 LOGIN_KEYS = {CIS_APP: CIS_APP_LOGIN_KEYS, CRM_APP: CRM_APP_LOGIN_KEYS}
