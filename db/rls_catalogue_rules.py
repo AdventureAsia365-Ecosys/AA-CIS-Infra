@@ -114,6 +114,10 @@ ALLOWLIST: dict[str, dict[str, str]] = {
         "shared.tenant_members": f"CIS membership directory (AA-978, 276), served over HTTP only; {_CIS_ONLY}",
         "shared.tenant_membership_event": f"tenant.membership.v1 feed (AA-978, 276), HTTP only; {_CIS_ONLY}",
         "acp_shared.acp_output_rules": "RLS on with the X1 cis_app parity policy only (CIS 244); no tenant-pool grant",
+        # AA-923 WM-34 (CIS 316): the same table quarantined in `retired` (no grant to any role), dropped after 14 days.
+        # The acp_shared key above goes stale once 316 is applied on Dev (reported, not fatal); remove both with the
+        # drop migration.
+        "retired.acp_output_rules": "quarantined by CIS 316 (AA-923, DM-3.9): no grant to any role; dropped later",
         "acp_shared.acp_quota_ledger": f"tenant quota ledger; {_CIS_ONLY}",
         "acp_shared.audit_log": f"tenant action audit log; {_CIS_ONLY}",
         "acp_shared.debate_brand_fit_cache": f"pipeline cache keyed by tenant; {_CIS_ONLY}",
