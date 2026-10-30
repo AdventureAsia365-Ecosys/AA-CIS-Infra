@@ -10,7 +10,7 @@
 # (LINKED_ACCOUNT), so they do not collide with the one AWS-managed services monitor an account may already have.
 # Existing guards inside the member accounts (accounts/aa365 observability.tf + cost_anomaly.tf,
 # accounts/acc3-bedrock cost_guard.tf) keep running; these add the payer's view.
-# Pre-condition: Cost Explorer opened once in this account (README step 4); a monitor cannot be created before.
+# Pre-condition: Cost Explorer opened once in this account (README §2 step 5); a monitor cannot be created before.
 # =============================================================================
 
 locals {

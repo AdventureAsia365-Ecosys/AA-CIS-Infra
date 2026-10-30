@@ -2,7 +2,7 @@
 # AA-1004 — the 3 service control policies of the lean model (blueprint S258 §0 "Quản trị tối thiểu").
 #
 # Policy text: policies/*.json.tftpl (plain JSON with template slots), minified here so the 5,120-character SCP
-# limit counts no whitespace (today 0.25k / 1.2k / 1.5k characters).
+# limit counts no whitespace (today 0.25k / 2.1k / 1.6k characters with the default variables).
 #
 # Attached to the OUs NonProd, Prod and Suspended only, NEVER to the root: an invited account first sits directly
 # under the root (the transitional place) where no SCP of ours applies, so it can still leave the organization
@@ -20,11 +20,16 @@ locals {
       content     = templatefile("${path.module}/policies/scp-deny-leave-close.json.tftpl", {})
     }
 
-    # SCP 2. Why: the audit trail and the billing settings must not be changeable by the people and pipelines
-    # they audit or bill. Only the listed admin / Terraform apply roles may touch a trail (the nonprod account
-    # still manages its own trail in Terraform until the organization trail replaces it) or billing settings.
+    # SCP 2. Why: the audit trail and the billing and account settings must not be changeable by the people and
+    # pipelines they audit or bill. Only the exempt admin / Terraform apply roles may touch a trail (the nonprod
+    # account still manages its own trail in Terraform until the organization trail replaces it), billing, tax,
+    # contact or account-name settings. A third statement protects the exempt roles themselves (AWS "protect IAM
+    # roles" SCP example): without it, AdministratorAccess in a member account (AA-Developer) could create a role
+    # with an exempt name, or rewrite the trust of OrganizationAccountAccessRole, and assume it to bypass the rest.
+    # The retired aws-portal:Modify* actions are not listed: AWS replaced them with the billing/payments/tax/account
+    # actions below.
     "aa-scp-protect-audit-billing" = {
-      description = "No trail stop/delete/update and no billing, payment or tax change outside the admin roles (AA-1004)."
+      description = "No trail, billing, tax or account-setting change and no edit of the exempt roles outside those roles (AA-1004)."
       content = templatefile("${path.module}/policies/scp-protect-audit-billing.json.tftpl", {
         exempt_role_arn_patterns = jsonencode(var.scp_exempt_role_arn_patterns)
       })
@@ -32,13 +37,14 @@ locals {
 
     # SCP 3. Why: everything we run is in us-west-1 (+ us-east-1 for ACM, us-west-2 for backup copies); a
     # resource started anywhere else is a mistake or an attacker, and is easy to miss on the bill. Global
-    # services are exempt (NotAction). Bedrock gets its own statement with the cross-Region inference
-    # destinations, because the LLM routes use inference profiles that answer from other regions.
+    # services are exempt (NotAction). Bedrock gets its own statement: a call outside the allowed regions is
+    # denied unless it carries bedrock:InferenceProfileArn, i.e. unless it is a geographic ("us.") or global
+    # ("global.") cross-Region inference request, which Bedrock routes to destination regions itself (the
+    # condition the Bedrock cross-Region inference SCP guidance uses).
     "aa-scp-region-allowlist" = {
       description = "Deny regions outside the allow-list; global services and Bedrock cross-Region inference exempt (AA-1004)."
       content = templatefile("${path.module}/policies/scp-region-allowlist.json.tftpl", {
         allowed_regions = jsonencode(var.allowed_regions)
-        bedrock_regions = jsonencode(distinct(concat(var.allowed_regions, var.bedrock_extra_regions)))
       })
     }
   }

@@ -1,8 +1,9 @@
 # =============================================================================
 # AA-1004 — the organization, its OUs and its member accounts.
 #
-# The organization already exists when this root first runs: enabling IAM Identity Center in the console (README
-# step 2) creates it with all features. It is imported here (import block below), never created by Terraform.
+# The organization is CREATED by this root (apply 1, from the AA-Bootstrap role; README §4). The management account
+# is brand new, so there is nothing to import, and creating it here is simpler than a CLI create-organization
+# followed by an import. Identity Center is enabled by the tech lead in the console only after that (README §2).
 #
 # Member accounts:
 #   - nonprod and ai are INVITED (README §6). Once an account has accepted, set member_accounts.<key>.account_id
@@ -12,21 +13,24 @@
 # destroy of aws_organizations_account removes the account from the organization (or closes it).
 # =============================================================================
 
-import {
-  to = aws_organizations_organization.this
-  id = var.organization_id
-}
-
 resource "aws_organizations_organization" "this" {
   feature_set = "ALL"
 
   # Trusted access. Free; each line is a service that acts across the organization from this account.
-  aws_service_access_principals = [
-    "sso.amazonaws.com",        # IAM Identity Center (already on: the console enabled it with the org)
-    "cloudtrail.amazonaws.com", # organization trail (cloudtrail.tf)
-    "account.amazonaws.com",    # alternate contacts of member accounts, set from here
-    "iam.amazonaws.com",        # centralized root access (aws_iam_organizations_features below)
-  ]
+  # This argument REPLACES the whole list: a principal another service switched on by itself (for example when the
+  # tech lead enables Identity Center) must be added through var.extra_service_access_principals, or the next apply
+  # turns it off. README §4 says how to check before each apply.
+  # sso.amazonaws.com is left to the Identity Center console click (AWS asks to enable a service's trusted access
+  # from that service), and only declared once var.identity_center_enabled says the click happened.
+  aws_service_access_principals = distinct(concat(
+    [
+      "cloudtrail.amazonaws.com", # organization trail (cloudtrail.tf)
+      "account.amazonaws.com",    # alternate contacts of member accounts, set from here
+      "iam.amazonaws.com",        # centralized root access (aws_iam_organizations_features below)
+    ],
+    var.identity_center_enabled ? ["sso.amazonaws.com"] : [],
+    var.extra_service_access_principals,
+  ))
 
   enabled_policy_types = ["SERVICE_CONTROL_POLICY"]
 

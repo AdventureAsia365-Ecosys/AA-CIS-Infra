@@ -8,7 +8,7 @@ variable "region" {
 }
 
 variable "aws_profile" {
-  description = "Local AWS CLI profile (IAM Identity Center session) for a human apply, e.g. aa-mgmt. Null in CI (OIDC)."
+  description = "Local AWS CLI profile for a human or agent apply: aa-mgmt (the AA-Bootstrap role, then an AA-Admin session). Null in CI (OIDC)."
   type        = string
   default     = null
 }
@@ -23,13 +23,41 @@ variable "management_account_id" {
   }
 }
 
-variable "organization_id" {
-  description = "ID (o-...) of the organization created when IAM Identity Center was enabled in the console (README step 2). Imported, not created."
-  type        = string
+variable "extra_service_access_principals" {
+  description = <<-EOT
+    Service principals that already have trusted access in the organization but are not in the base list of
+    organization.tf (aws_service_access_principals replaces the whole list, so a principal missing here would be
+    switched OFF). Before every apply that touches the organization, run
+    aws organizations list-aws-service-access-for-organization --profile aa-mgmt
+    and add any principal it prints that the base list lacks (README §4).
+  EOT
+  type        = list(string)
+  default     = []
+}
+
+variable "identity_center_enabled" {
+  description = "False for apply 1 (the organization does not exist yet). True once the tech lead has enabled the Identity Center organization instance in the home region (README §2 step 4)."
+  type        = bool
+  default     = false
+}
+
+variable "sso_users" {
+  description = <<-EOT
+    Identity Center users created by Terraform, keyed by a short handle, each in one group (admins, developers,
+    billing). Only in the git-ignored terraform.tfvars: names and e-mails never go into this public repo.
+    The first entry is the tech lead (group admins); it replaces the AA-Bootstrap role (README §4).
+  EOT
+  type = map(object({
+    given_name  = string
+    family_name = string
+    email       = string
+    group       = string
+  }))
+  default = {}
 
   validation {
-    condition     = can(regex("^o-[a-z0-9]{10,32}$", var.organization_id))
-    error_message = "organization_id must look like o-xxxxxxxxxx."
+    condition     = alltrue([for u in values(var.sso_users) : contains(["admins", "developers", "billing"], u.group)])
+    error_message = "sso_users[*].group must be admins, developers or billing."
   }
 }
 
@@ -103,22 +131,14 @@ variable "allowed_regions" {
   default     = ["us-west-1", "us-east-1", "us-west-2"]
 }
 
-variable "bedrock_extra_regions" {
-  description = <<-EOT
-    SCP 3: extra values of aws:RequestedRegion allowed for bedrock:* only, on top of allowed_regions, so
-    cross-Region inference profiles keep working: us-east-2 (a destination of the "us." profiles) and
-    "unspecified" (what a "global." inference profile reports). Check against the Bedrock cross-Region inference
-    page before apply; test with one real call per route (README §7).
-  EOT
-  type        = list(string)
-  default     = ["us-east-2", "unspecified"]
-}
-
 variable "scp_exempt_role_arn_patterns" {
   description = <<-EOT
-    SCP 2 exemptions (ArnLike on aws:PrincipalArn): the roles allowed to change trails and billing settings in a
-    member account. Patterns with a wildcard account, never a literal ID. Defaults: the cross-account admin role,
-    the Identity Center AA-Admin role, the current and the planned Terraform apply roles.
+    SCP 2 exemptions (ArnLike on aws:PrincipalArn): the roles allowed to change trails, billing and account
+    settings in a member account, and the only principals allowed to create or edit these same roles (SCP 2
+    statement ProtectExemptRoles). Patterns with a wildcard account, never a literal ID. Defaults: the
+    cross-account admin role, the Identity Center AA-Admin role, the current and the planned Terraform apply
+    roles. A legacy admin role that must keep running bootstrap applies in the nonprod account after it joins an
+    OU is appended in the git-ignored terraform.tfvars, not here.
   EOT
   type        = list(string)
   default = [

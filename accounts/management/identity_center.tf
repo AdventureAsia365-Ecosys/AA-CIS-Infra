@@ -1,10 +1,11 @@
 # =============================================================================
 # AA-1004 — IAM Identity Center: 3 groups, 4 permission sets, the group x account matrix.
 #
-# The Identity Center instance is enabled by hand in the console (README step 2): Terraform cannot create an
-# organization instance. Its ARN and identity store ID come from the data source below. Users and group
-# membership are NOT managed here (people's e-mails stay out of this public repo): the tech lead adds users in
-# the console and puts them in a group (README step 5).
+# The Identity Center instance is enabled by the tech lead with one console click (README §2 step 4): Terraform
+# cannot create an organization instance. Everything here is gated on var.identity_center_enabled (false for
+# apply 1, before the organization exists). The instance ARN and identity store ID come from the data source.
+# Users and their group membership come from var.sso_users, set only in the git-ignored terraform.tfvars, so no
+# name or e-mail lands in this public repo; the first user is the tech lead, who replaces the AA-Bootstrap role.
 #
 # Groups (lean blueprint): Admin = tech lead, Developer = 2-3 engineers, Billing = business owner.
 # Permission sets: 4, not 3, because a session duration belongs to the permission set, not to the assignment:
@@ -19,17 +20,19 @@
 # =============================================================================
 
 data "aws_ssoadmin_instances" "this" {
+  count = var.identity_center_enabled ? 1 : 0
+
   lifecycle {
     postcondition {
       condition     = length(self.arns) == 1
-      error_message = "IAM Identity Center is not enabled in this region of the management account: do README step 2 first."
+      error_message = "IAM Identity Center is not enabled in this region of the management account: do README §2 step 4 first, or set identity_center_enabled = false."
     }
   }
 }
 
 locals {
-  sso_instance_arn  = tolist(data.aws_ssoadmin_instances.this.arns)[0]
-  identity_store_id = tolist(data.aws_ssoadmin_instances.this.identity_store_ids)[0]
+  sso_instance_arn  = try(tolist(data.aws_ssoadmin_instances.this[0].arns)[0], null)
+  identity_store_id = try(tolist(data.aws_ssoadmin_instances.this[0].identity_store_ids)[0], null)
 
   sso_groups = {
     admins     = { name = "aa-admins", description = "Tech lead: administers the organization and every account." }
@@ -75,7 +78,7 @@ locals {
   )
 
   # Static keys (account key / group / permission set) so for_each never depends on an unknown ID.
-  sso_assignments = merge([
+  sso_assignments_all = merge([
     for acct, groups in local.access_matrix : merge([
       for group, sets in groups : {
         for ps in sets : "${acct}/${group}/${ps}" => { account = acct, group = group, permission_set = ps }
@@ -83,10 +86,16 @@ locals {
     ]...)
     if acct == "management" || contains(keys(var.member_accounts), acct)
   ]...)
+
+  # Nothing of Identity Center exists before the console click.
+  sso_groups_on      = var.identity_center_enabled ? local.sso_groups : {}
+  permission_sets_on = var.identity_center_enabled ? local.permission_sets : {}
+  sso_assignments    = var.identity_center_enabled ? local.sso_assignments_all : {}
+  sso_users_on       = var.identity_center_enabled ? var.sso_users : {}
 }
 
 resource "aws_identitystore_group" "this" {
-  for_each = local.sso_groups
+  for_each = local.sso_groups_on
 
   identity_store_id = local.identity_store_id
   display_name      = each.value.name
@@ -94,7 +103,7 @@ resource "aws_identitystore_group" "this" {
 }
 
 resource "aws_ssoadmin_permission_set" "this" {
-  for_each = local.permission_sets
+  for_each = local.permission_sets_on
 
   instance_arn     = local.sso_instance_arn
   name             = each.key
@@ -103,7 +112,7 @@ resource "aws_ssoadmin_permission_set" "this" {
 }
 
 resource "aws_ssoadmin_managed_policy_attachment" "this" {
-  for_each = local.permission_sets
+  for_each = local.permission_sets_on
 
   instance_arn       = local.sso_instance_arn
   permission_set_arn = aws_ssoadmin_permission_set.this[each.key].arn
@@ -122,4 +131,31 @@ resource "aws_ssoadmin_account_assignment" "this" {
 
   # Provision only once the policy is on the permission set, so a first sign-in never lands in an empty role.
   depends_on = [aws_ssoadmin_managed_policy_attachment.this]
+}
+
+# Users (MFA is enforced by the Identity Center authentication settings, README §2 step 4) and their one group.
+resource "aws_identitystore_user" "this" {
+  for_each = local.sso_users_on
+
+  identity_store_id = local.identity_store_id
+  user_name         = each.value.email
+  display_name      = "${each.value.given_name} ${each.value.family_name}"
+
+  name {
+    given_name  = each.value.given_name
+    family_name = each.value.family_name
+  }
+
+  emails {
+    value   = each.value.email
+    primary = true
+  }
+}
+
+resource "aws_identitystore_group_membership" "this" {
+  for_each = local.sso_users_on
+
+  identity_store_id = local.identity_store_id
+  group_id          = aws_identitystore_group.this[each.value.group].group_id
+  member_id         = aws_identitystore_user.this[each.key].user_id
 }

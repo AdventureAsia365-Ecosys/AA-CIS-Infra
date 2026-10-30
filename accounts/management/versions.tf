@@ -6,8 +6,9 @@
 # a workload (SCPs do not apply to the management account, so workloads never live here).
 #
 # Separate root, separate state, separate account: it does NOT touch accounts/aa365 or accounts/acc3-bedrock.
-# Applied by a human (tech lead, IAM Identity Center session with MFA) until the CI wiring listed in README.md
-# §"CI wiring" exists. Day-1 order, manual console steps and SCP tests: README.md.
+# Applied locally until the CI wiring of README.md §11 exists: first through the temporary AA-Bootstrap role
+# (chained from the nonprod admin role, MFA), then through an Identity Center AA-Admin session. Day-1 order, manual
+# console steps and SCP tests: README.md.
 #
 # No AWS account ID is written in this root (the repo is public): every ID is a variable, set in a local
 # terraform.tfvars (git-ignored, see terraform.tfvars.example) or, later, a GitHub environment variable.
@@ -26,9 +27,10 @@ terraform {
   }
 
   # Partial backend: the bucket name carries the management account ID, which this public repo does not hold.
-  # Init (README §3): terraform init -backend-config="bucket=<state-bucket>" -backend-config="profile=aa-mgmt"
-  # The provider's profile does not apply to backend init (CONTEXT.md "State backend"), so pass it here too
-  # when running locally; CI passes no profile (OIDC credentials in the environment).
+  # Init (README §4): -backend-config="bucket=<state-bucket>", with exported credentials in the environment (the
+  # chained bootstrap profile needs an MFA prompt Terraform cannot answer). The provider's profile does not apply to
+  # backend init (CONTEXT.md "State backend"): if a profile is used instead, pass -backend-config="profile=..." too.
+  # CI passes no profile (OIDC credentials in the environment).
   backend "s3" {
     key          = "management/terraform.tfstate"
     region       = "us-west-1"

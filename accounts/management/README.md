@@ -1,8 +1,8 @@
 # accounts/management: the management account root (AA-1004)
 
 > [!WARNING]
-> UNTESTED - prepared before the management account ID exists; nothing here has been planned or applied. Do not
-> follow a step without checking it, and read every plan for destroys.
+> UNTESTED - prepared for a brand-new management account; nothing here has been planned or applied. Do not follow
+> a step without checking it, and read every plan for destroys.
 
 Terraform root for the management account of the lean AWS model (root ADR 0018, Proposed; S258 blueprint
 `docs/audits/2026-10-29-S258-aws-org-blueprint/` §0 in the root repo). It holds governance only. No workload ever
@@ -10,12 +10,12 @@ runs in the management account, because SCPs do not apply there.
 
 | File | Holds |
 |---|---|
-| `organization.tf` | The organization (imported), OUs `NonProd` / `Prod` / `Suspended`, member accounts (invited ones imported, prod created), centralized root access |
+| `organization.tf` | The organization (created by apply 1), OUs `NonProd` / `Prod` / `Suspended`, member accounts (invited ones imported, prod created), centralized root access |
 | `scp.tf` + `policies/*.json.tftpl` | 3 SCPs, attached to the three OUs, never to the root |
-| `identity_center.tf` | Groups `aa-admins` / `aa-developers` / `aa-billing`, permission sets `AA-Admin` / `AA-Developer` / `AA-ReadOnly` / `AA-Billing`, the group x account matrix |
+| `identity_center.tf` | Groups `aa-admins` / `aa-developers` / `aa-billing`, permission sets `AA-Admin` / `AA-Developer` / `AA-ReadOnly` / `AA-Billing`, the group x account matrix, users from `sso_users` (all gated on `identity_center_enabled`) |
 | `budgets.tf` | Organization budget, one budget per account, one Cost Anomaly Detection monitor + daily e-mail per account |
 | `cloudtrail.tf` | Organization trail `aa-org-trail`, its KMS key and its bucket (Object Lock GOVERNANCE, 365 days) |
-| `terraform.tfvars.example` | Every input; copy to `terraform.tfvars` (git-ignored: the repo is public, no account ID is committed) |
+| `terraform.tfvars.example` | Every input; copy to `terraform.tfvars` (git-ignored: the repo is public, no account ID, name or e-mail is committed) |
 
 Access matrix (permission sets per group and account):
 
@@ -25,22 +25,23 @@ Access matrix (permission sets per group and account):
 | `aa-developers` (engineers) | none | AA-Developer | AA-Developer | AA-ReadOnly |
 | `aa-billing` (business owner) | AA-Billing | none | none | none |
 
-CI roles and the agent never get an Identity Center assignment: they use IAM roles inside each member account.
+CI roles and the agent never get an Identity Center assignment: they use IAM roles inside each member account. The
+agent reaches the management account only through the temporary `AA-Bootstrap` role during bootstrap (§2-§4).
 
 ## 1. Before you start
 
-- The tech lead has the management account ID and its root sign-in (the account was created by the tech lead on
-  2026-10-30 as a fresh, empty account). The ID goes only into the local, git-ignored `terraform.tfvars` (and later
-  into a GitHub environment variable for CI, §11); never into a committed file.
-- No root access key, ever: the only credential Terraform uses is an IAM Identity Center session (§2 step 4).
+- The tech lead created the management account on 2026-10-30 (fresh, empty). Its ID goes only into the local,
+  git-ignored `terraform.tfvars` and the local `~/.aws/config` (later also into a GitHub environment variable of the
+  `org` environment for CI, §11); never into a committed file.
+- No root access key and no IAM user, ever. Bootstrap runs through a temporary IAM role `AA-Bootstrap` in the
+  management account, assumed from the nonprod account's admin role (itself MFA-protected). Once an Identity Center
+  sign-in works, the role is deleted and everyone signs in through Identity Center.
 - Two FIDO2 security keys: one for the tech lead, one for the business owner's safe.
-- The billing model (blueprint §5) decides whether, and when, the ai and nonprod accounts are invited (§6). The
-  first apply needs no member account.
+- The billing model (blueprint §5) decides whether, and when, the ai and nonprod accounts are invited (§6). Applies
+  1 and 2 need no member account.
 - One Terraform process at a time; Terraform `1.15.5` exactly (`versions.tf`).
 
-## 2. Day 1: console steps only a human can do
-
-These cannot be Terraform: they happen before any credential for Terraform exists.
+## 2. Day 1: steps only a human can do
 
 1. **Root user (tech lead with the business owner).** Sign in as root. Register both FIDO2 keys as MFA. Rename the
    account to `aa-management` (Account settings; it was created under another display name, and the name is what
@@ -48,37 +49,50 @@ These cannot be Terraform: they happen before any credential for Terraform exist
    The business owner adds the company card and tax details (Billing, Payment preferences, Tax settings).
    - Verify: IAM, Security credentials shows two MFA devices and no access key.
 2. **Activate IAM access to billing.** Account settings, "IAM user and role access to Billing information",
-   Activate. Without it the `AA-Billing` permission set shows "access denied" on every billing page.
-3. **Enable IAM Identity Center in us-west-1.** A new account's console opens in another region (this one showed
-   eu-north-1). **Switch the region selector to US West (N. California) us-west-1 first**: an Identity Center
-   instance lives in the region where it is enabled, and moving it later means deleting it with every user,
-   group and assignment. Then open IAM Identity Center, Enable, choose the organization instance. This creates
-   the organization with all features. Note the organization ID (`o-...`) from Organizations, Settings.
-   - Verify: the Identity Center dashboard shows region us-west-1 and an AWS access portal URL.
-   - In Identity Center settings: identity source stays the Identity Center directory; Authentication, MFA
-     "every time they sign in", allowed types security keys and authenticator apps, users without MFA must
-     register one at sign-in.
-   - Verify: Organizations shows the organization, feature set "All features", this account as management.
-4. **Bootstrap sign-in for Terraform.** In Identity Center create the tech lead's user (register its MFA at first
-   sign-in), then a temporary permission set `AA-Bootstrap` (AdministratorAccess, 1 hour) assigned to that user on
-   this account. Do not create IAM users or access keys, and never a root access key. On the laptop, run
-   `aws configure sso` with the access portal URL, SSO region us-west-1, the management account, role
-   `AA-Bootstrap`, default region us-west-1, and name the profile `aa-mgmt`. Sign in again later with
-   `aws sso login --profile aa-mgmt`.
-   - Verify (expected: the management account ID and an `AWSReservedSSO_AA-Bootstrap_...` role):
+   Activate. Without it `AA-Bootstrap` cannot create budgets and `AA-Billing` sees "access denied".
+3. **Create the bootstrap role `AA-Bootstrap`** (root user, IAM console, Roles, Create role, custom trust policy).
+   Attach `AdministratorAccess`, maximum session 1 hour. Trust only the nonprod account's admin role, the role the
+   `aa365-admin` profile assumes (look its ARN up locally; never paste it into a repo):
 
-     ```bash
-     aws sts get-caller-identity --profile aa-mgmt
-     ```
+   ```json
+   {
+     "Version": "2012-10-17",
+     "Statement": [
+       {
+         "Effect": "Allow",
+         "Principal": { "AWS": "<arn-of-the-nonprod-admin-role>" },
+         "Action": "sts:AssumeRole"
+       }
+     ]
+   }
+   ```
 
-5. **Open Cost Explorer once** (Billing and Cost Management, Cost Explorer, Launch). AWS needs up to 24 hours
-   before Cost Anomaly Detection monitors can be created. Do this on day 1, apply on day 2 if the first apply
-   fails on `aws_ce_anomaly_monitor`.
+   IAM is global, so the console's default region does not matter here. It does matter in step 4: a new account's
+   console opens outside our region (this one showed eu-north-1).
+4. **After apply 1 (§4): enable IAM Identity Center, one click.** Switch the region selector to **US West
+   (N. California) us-west-1 first**: an instance lives where it is enabled, and moving it means deleting it with
+   every user, group and assignment. Open IAM Identity Center, Enable, organization instance. Then in its settings:
+   identity source stays the Identity Center directory; Authentication, MFA "every time they sign in", security
+   keys and authenticator apps, users without MFA register one at sign-in.
+   - Verify: the dashboard shows region us-west-1 and an AWS access portal URL.
+5. **Open Cost Explorer once** (Billing and Cost Management, Cost Explorer, Launch), as root or through
+   `AA-Bootstrap`. Anomaly monitors can be created only once it is ready (up to 24 hours); if apply 1 fails on
+   `aws_ce_anomaly_monitor`, run it again the next day.
 
-## 3. State bucket (bootstrap, once)
+## 3. Local profile and state bucket (bootstrap, once)
 
-Same layout as the blueprint (§7 "Bố trí state"): one bucket per account, in that account. Replace
-`<management-account-id>` with the 12-digit ID from step 1.
+The local profile chains from the nonprod admin profile into `AA-Bootstrap`. Role chaining caps a session at
+1 hour. Add to `~/.aws/config` on the laptop (a local file, not a repo):
+
+```ini
+[profile aa-mgmt]
+role_arn = arn:aws:iam::<management-account-id>:role/AA-Bootstrap
+source_profile = aa365-admin
+region = us-west-1
+duration_seconds = 3600
+```
+
+Same bucket layout as the blueprint (§7 "Bố trí state"): one bucket per account, in that account.
 
 ```bash
 aws sts get-caller-identity --profile aa-mgmt
@@ -89,39 +103,51 @@ aws s3api put-bucket-ownership-controls --bucket aa-tfstate-<management-account-
 aws s3api put-bucket-encryption --bucket aa-tfstate-<management-account-id>-usw1 --server-side-encryption-configuration "{\"Rules\":[{\"ApplyServerSideEncryptionByDefault\":{\"SSEAlgorithm\":\"AES256\"},\"BucketKeyEnabled\":true}]}" --region us-west-1 --profile aa-mgmt  # WRITE
 ```
 
-Verify: `aws s3api get-bucket-versioning --bucket aa-tfstate-<management-account-id>-usw1 --region us-west-1 --profile aa-mgmt`
+Verify: the first command prints the management account and an `assumed-role/AA-Bootstrap/...` ARN, and
+`aws s3api get-bucket-versioning --bucket aa-tfstate-<management-account-id>-usw1 --region us-west-1 --profile aa-mgmt`
 prints `"Status": "Enabled"`. Rollback: the bucket is empty, delete it.
 
 ## 4. Plan and apply order
 
-All commands run from `accounts/management/`. Fill `terraform.tfvars` first (`cp terraform.tfvars.example terraform.tfvars`;
-leave `member_accounts` empty for apply 1).
+All commands run from `accounts/management/`. Fill `terraform.tfvars` first (`cp terraform.tfvars.example terraform.tfvars`).
 
-What the console created is adopted, not recreated:
-
-- **The organization** is imported by the `import` block in `organization.tf` (same effect as
-  `terraform import aws_organizations_organization.this <organization-id>`, but reviewed in the plan and needing no
-  separate command). The plan shows it as "1 to import".
-- **The Identity Center instance** is not a Terraform resource (the provider can only read it), so there is nothing
-  to import: `data.aws_ssoadmin_instances` finds it, and the plan stops with a clear error if step 3 was skipped.
-- The manual `AA-Bootstrap` permission set and the tech lead's user stay outside Terraform; delete the permission
-  set after apply 1.
+Terraform cannot answer the MFA prompt of the source profile, so export the chained session first and pass it as
+environment credentials (the workspace pattern; it refuses to run when the export is empty). Leave `aws_profile`
+unset in `terraform.tfvars` for this path. Each line is one command; the last word is the Terraform step
+(`init -backend-config="bucket=aa-tfstate-<management-account-id>-usw1"`, then `plan -out=mgmt.tfplan`, then
+`apply mgmt.tfplan`):
 
 ```bash
-terraform init -backend-config="bucket=aa-tfstate-<management-account-id>-usw1" -backend-config="profile=aa-mgmt"
-terraform plan -out=mgmt.tfplan
-terraform apply mgmt.tfplan
+bash -c 'C=$(aws configure export-credentials --profile aa-mgmt --format env-no-export </dev/null) ; grep -q "^AWS_ACCESS_KEY_ID=" <<<"$C" || exit 1 ; env -u AWS_PROFILE $(tr "\n" " " <<<"$C") terraform init -backend-config="bucket=aa-tfstate-<management-account-id>-usw1"'
+bash -c 'C=$(aws configure export-credentials --profile aa-mgmt --format env-no-export </dev/null) ; grep -q "^AWS_ACCESS_KEY_ID=" <<<"$C" || exit 1 ; env -u AWS_PROFILE $(tr "\n" " " <<<"$C") terraform plan -out=mgmt.tfplan'
 ```
+
+Then the same wrapper with `terraform apply mgmt.tfplan` after reading the plan.
+
+**Trusted access check before every apply after apply 1.** `aws_service_access_principals` replaces the whole
+list. Run the command below. Every principal it prints that is not in the base list of `organization.tf` (and is
+not `sso.amazonaws.com` once `identity_center_enabled = true`) goes into `extra_service_access_principals`, so the
+plan only adds and never switches a service off.
+
+```bash
+aws organizations list-aws-service-access-for-organization --profile aa-mgmt --region us-west-1 --query "EnabledServicePrincipals[].ServicePrincipal" --output text
+```
+
+The organization is **created by Terraform** in apply 1: the account is new, so there is nothing to import, and this
+is simpler than a CLI `create-organization` followed by an import. The Identity Center instance is not a Terraform
+resource; after the console click, `data.aws_ssoadmin_instances` reads it.
 
 | Apply | When | Expected plan | Check after |
 |---|---|---|---|
-| 1. Governance | Day 1-2, no member account yet | 1 to import (the organization), 1 in-place change (its trusted access list), about 44 to add (3 OUs, 3 SCPs + 9 attachments, 3 groups, 4 permission sets + 4 policy attachments, 2 assignments, 2 budgets, 1 monitor + 1 subscription, KMS key + alias, trail bucket + 7 bucket settings, the trail, root access features), **0 to destroy** | Trail delivers (`aws cloudtrail get-trail-status --name aa-org-trail --region us-west-1 --profile aa-mgmt`, `LatestDeliveryError` empty); sign in through the access portal with `AA-Admin`, then delete the manual `AA-Bootstrap` permission set |
-| 2. Each invited account | After it accepted the invitation (§6) | 1 to import (the account, stays under the root), its budget, monitor, subscription and assignments to add, 0 to destroy | Developers and admins see the account in the access portal |
-| 3. Move to its OU | One quiet week after apply 2: set `ou` to `nonprod` (the nonprod and ai accounts, open question in the PR) | 1 in-place change (`parent_id`) | The SCP tests in §7 |
-| 4. Prod account | At go-live (ADR 0018): add `prod` with `account_id = null`, a new root e-mail, `ou = "prod"` | 1 account to create, its budget, monitor, subscription, assignments | Account in OU Prod; `OrganizationAccountAccessRole` exists in it |
+| 1. Organization and guards | Day 1, `identity_center_enabled = false`, `member_accounts = {}` | About 32 to add (the organization, 3 OUs, root access features, 3 SCPs + 9 attachments, 2 budgets, 1 monitor + 1 subscription, KMS key + alias, trail bucket + 7 bucket settings, the trail), **0 to change, 0 to destroy** | Organizations shows "All features" with this account as management; `aws cloudtrail get-trail-status --name aa-org-trail --region us-west-1 --profile aa-mgmt` has an empty `LatestDeliveryError` |
+| (human) | After apply 1 | §2 step 4: enable Identity Center in us-west-1 | Access portal URL shown |
+| 2. Identity Center | Same day: `identity_center_enabled = true`, `sso_users` with the tech lead in group `admins` | No change on the organization when the trusted access check is clean (`sso.amazonaws.com` is now declared); 3 groups, 4 permission sets + 4 policy attachments, 2 assignments (management: `AA-Admin`, `AA-Billing`), 1 user + 1 membership per entry; 0 to destroy | Identity Center, Users, the tech lead, Reset password, send an e-mail. The tech lead signs in, registers MFA and opens the management account as `AA-Admin`. Then point `aa-mgmt` at that session (`aws configure sso`, role `AA-Admin`) and **delete the `AA-Bootstrap` role** |
+| 3. Each invited account | After it accepted the invitation (§6) | 1 to import (the account, stays under the root), its budget, monitor, subscription and assignments; 0 to destroy | Developers and admins see the account in the access portal |
+| 4. Move to its OU | One quiet week after apply 3: set `ou` to `nonprod` (the nonprod and ai accounts, open question in the PR) | 1 in-place change (`parent_id`) | The SCP tests in §7 |
+| 5. Prod account | At go-live (ADR 0018): add `prod` with `account_id = null`, a new root e-mail, `ou = "prod"` | 1 account to create, its budget, monitor, subscription, assignments | Account in OU Prod; `OrganizationAccountAccessRole` exists in it |
 
-After apply 1, add people: Identity Center, Users, create each person, add to `aa-admins`, `aa-developers` or
-`aa-billing`. Membership is not in Terraform, so no personal e-mail lands in the public repo.
+After `AA-Bootstrap` is gone, the same wrapper works with `aa-mgmt` as an Identity Center `AA-Admin` session (run
+`aws sso login --profile aa-mgmt` first). Other people are added as `sso_users` entries in `terraform.tfvars`.
 
 A plan that wants to destroy the organization, an account or the trail bucket fails on `prevent_destroy`. That is
 intended: stop and find out why.
@@ -133,14 +159,15 @@ intended: stop and find out why.
 | Root MFA (2 FIDO2 keys), alternate contacts, account name | Tech lead + business owner | §2 step 1 |
 | Payment method and tax details of the management account | Business owner | §2 step 1 |
 | Activate IAM access to billing | Tech lead | §2 step 2 |
-| Enable Identity Center in us-west-1 (creates the organization), MFA settings | Tech lead | §2 step 3 |
-| Bootstrap permission set and `aws configure sso` | Tech lead | §2 step 4 |
+| Create the `AA-Bootstrap` role trusting the nonprod admin role | Tech lead | §2 step 3 |
+| Enable Identity Center in us-west-1 (one click) and its MFA settings | Tech lead | §2 step 4 |
 | Launch Cost Explorer | Tech lead | §2 step 5 |
-| State bucket | Tech lead | §3 |
-| Applies 1-4 (MFA session) | Tech lead | §4 |
-| Users and group membership | Tech lead | §4 |
+| MFA prompt of the `aa365-admin` session behind every chained command | Tech lead | §3, §4 |
+| First sign-in, MFA registration, then delete `AA-Bootstrap` | Tech lead | §4 apply 2 |
 | Send invitations, accept them in the member accounts, vendor and billing paperwork | Tech lead + business owner | §6 |
-| `OrganizationAccountAccessRole` in each invited account | Tech lead | §6 |
+
+The local profile, the state bucket, applies 1-5 and the `OrganizationAccountAccessRole` of invited accounts can be
+run by the tech lead or by the agent inside the tech lead's MFA session.
 
 ## 6. Inviting the existing accounts
 
@@ -157,20 +184,22 @@ organization and goes only after that reseller has released it (an account belon
 
 2. Accept in the member account (console: Organizations, Invitations; or `aws organizations accept-handshake --handshake-id <handshake-id>`
    with that account's profile). The account lands under the root: no SCP of ours applies, so it can still leave.
-3. Add its entry to `member_accounts` with `account_id` and `ou = "root"`, then apply 2.
+3. Add its entry to `member_accounts` with `account_id` and `ou = "root"`, then apply 3.
 4. Create `OrganizationAccountAccessRole` in the invited account (it does not get one): trust the management
    account, AdministratorAccess. For the nonprod account this goes into `accounts/aa365` as a local MFA bootstrap
-   apply (follow-up PR); for the ai account into `accounts/acc3-bedrock`.
+   apply (follow-up PR); for the ai account into `accounts/acc3-bedrock`. Do it **before apply 4**: once the account
+   is in an OU, SCP 2 lets only the exempt roles create or change that role.
 5. Smoke the account (blueprint §3 step 16 for nonprod; one real LLM call per route for ai), wait one week, then
-   apply 3.
+   apply 4.
 
-Rollback before apply 3: the account can leave (`aws organizations leave-organization` from the member, needs its
-own payment method) or be removed from the management side. After apply 3, set `ou = "root"` again and apply.
+Rollback before apply 4: the account can leave (from the member, needs its own payment method) or be removed from
+the management side. After apply 4, set `ou = "root"` again and apply.
 
 ## 7. Testing the SCPs
 
-Run these once per account right after apply 3, with an `AA-Developer` session in that account (profile names
+Run these once per account right after apply 4, with an `AA-Developer` session in that account (profile names
 from blueprint §8, for example `aa-nonprod`). Positive controls first, so a failure means the SCP, not the session.
+No test below changes anything when the SCP is missing.
 
 1. **Positive control.** `aws sts get-caller-identity --profile aa-nonprod` and
    `aws ec2 describe-vpcs --region us-west-1 --profile aa-nonprod` both succeed.
@@ -190,27 +219,36 @@ from blueprint §8, for example `aa-nonprod`). Positive controls first, so a fai
    aws cloudtrail stop-logging --name aa-scp-test-does-not-exist --region us-west-1 --profile aa-nonprod
    ```
 
-4. **Leave-organization is denied.** Check without side effects first: IAM console of the member account, Policy
-   simulator, action `organizations:LeaveOrganization` for the `AWSReservedSSO_AA-Developer_*` role, expected
-   "denied" by an Organizations SCP. Then, only if the simulator says denied, the live call (expected
-   `AccessDeniedException` naming a service control policy):
+4. **Leave-organization is denied, checked without calling it.** Never run `leave-organization` as a test: if the
+   SCP were missing, the account would leave. Instead:
+   - the account sits in the expected OU and the OU carries the SCP (management side):
 
-   ```bash
-   aws organizations leave-organization --profile aa-nonprod
-   ```
+     ```bash
+     aws organizations list-parents --child-id <member-account-id> --profile aa-mgmt --region us-west-1
+     aws organizations list-policies-for-target --target-id <ou-id> --filter SERVICE_CONTROL_POLICY --profile aa-mgmt --region us-west-1
+     ```
 
-   If it ever succeeds, the account has left: invite it again (§6) and file an incident.
-5. **Bedrock still answers (ai and nonprod).** One real call per route through `LLMClient` (stage
+     Expected: the parent is the `NonProd` (or `Prod`) OU from the `ou_ids` output, and the list holds
+     `FullAWSAccess` plus the three `aa-scp-*` policies;
+   - IAM console of the member account, Policy simulator, the `AWSReservedSSO_AA-Developer_*` role, action
+     `organizations:LeaveOrganization`: expected "denied" by an Organizations SCP.
+5. **Exempt roles are protected.** Same simulator, same role, action `iam:UpdateAssumeRolePolicy` on
+   `OrganizationAccountAccessRole` and `iam:CreateRole` on a role named `aa-terraform-apply`: both denied by an
+   Organizations SCP.
+6. **Bedrock still answers (ai and nonprod).** One real call per route through `LLMClient` (stage
    `adhoc_aa1004`, logged in `shared.llm_call_log`), including a `global.` inference profile. AccessDenied naming a
-   service control policy means `bedrock_extra_regions` is wrong: set `ou = "root"` for that account, apply, fix.
+   service control policy means the inference-profile exception of SCP 3 does not cover that route: set
+   `ou = "root"` for that account, apply, fix.
 
 Evidence (command output) goes into `docs/audits/<date>-S<nnn>-aa1004-scp-tests/` in the root repo.
 
 ## 8. After the organization trail runs
 
-- After 7 days of clean delivery, remove the nonprod account's own trail `aa-cis-dev-trail` in `accounts/aa365`
-  (a PR). Until then the nonprod account pays the second copy of its management events (2 USD per 100k events).
-  Keep its old bucket until its Object Lock retention ends.
+- After 7 days of clean delivery, remove the nonprod account's own trail `aa-cis-dev-trail` from `accounts/aa365`
+  in a PR and apply it **through the CI apply role** (`aa-cis-infra-tf-apply`, Terraform Apply workflow): once the
+  account is in an OU, SCP 2 denies `DeleteTrail` to every other principal. Until then the nonprod account pays the
+  second copy of its management events (2 USD per 100k events). Keep its old bucket until its Object Lock retention
+  ends.
 - Later, optional: delete the root credentials of invited accounts through centralized root access, once their root
   e-mail is confirmed as company-owned.
 
@@ -221,9 +259,10 @@ Evidence (command output) goes into `docs/audits/<date>-S<nnn>-aa1004-scp-tests/
 | An SCP blocks real work in an account | Set that account's `ou = "root"` and apply (no SCP of ours there), or in the console detach the one policy from the OU. Then fix the policy text in a PR |
 | An SCP breaks every account at once | Management console, Organizations, Policies: detach it from the three OUs (SCPs never bind the management account, so this always works) |
 | Identity Center sign-in broken | Root of the management account (FIDO2), fix Identity Center; member accounts through `OrganizationAccountAccessRole` |
-| Organization trail fails | Remove `aws_cloudtrail.organization` in a PR and apply; the bucket stays (`prevent_destroy`, Object Lock) |
+| Organization trail fails | Remove `aws_cloudtrail.organization` in a PR and apply; the bucket stays (`prevent_destroy`) |
+| The trail bucket itself must go | Not within 365 days of the last log file without a GOVERNANCE bypass: every object version is locked, and deleting one needs `s3:BypassGovernanceRetention` plus the bypass header, object by object. Plan for the bucket to live a year after the last write |
 | A member must leave the organization | Not through Terraform (`prevent_destroy`): remove it from the management side or leave from the member, then drop its entry and `terraform state rm` it |
-| Abandon the whole root before members join | Possible while the organization has no member: remove the `prevent_destroy` lines deliberately in a PR, destroy, close the organization |
+| Abandon the whole root before members join | Possible while the organization has no member: remove the `prevent_destroy` lines deliberately in a PR, destroy, close the organization (the trail bucket stays until its locks expire) |
 
 ## 10. Cost
 
@@ -237,14 +276,14 @@ Evidence (command output) goes into `docs/audits/<date>-S<nnn>-aa1004-scp-tests/
 
 ## 11. CI wiring (not enabled)
 
-The root is applied by the tech lead until these exist, each in its own PR:
+The root is applied by the tech lead (or the agent in the tech lead's session) until these exist, each in its own PR:
 
 1. Bootstrap in the management account (local MFA apply): GitHub OIDC provider, roles `aa-terraform-plan`
    (read-only, trusts `pull_request` and `ref:refs/heads/main` of AA-CIS-Infra by the immutable subject, see
    `CONTEXT.md` "CI/CD and OIDC") and `aa-terraform-apply` (trusts only `environment:org` and `main`), each with a
    permissions boundary, max session 2 hours.
 2. GitHub environments `org` (apply) and `org-plan` with the tech lead as required reviewer; environment variables
-   for the management account ID, organization ID, state bucket and alert e-mails (masked in logs).
+   for the management account ID, state bucket, Identity Center users and alert e-mails (masked in logs).
 3. `terraform-plan.yml`: a second job (or matrix entry) for `accounts/management`, run only when
    `accounts/management/**` changes, with the plan role of the management account; summary only, no plan file.
 4. `terraform-apply.yml`: a `root` input (`aa365` or `management`); `management` runs in environment `org`.

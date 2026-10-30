@@ -75,7 +75,7 @@
       }
     },
     {
-      "Sid": "DenyBedrockOutsideInferenceRegions",
+      "Sid": "DenyBedrockOutsideRegionsExceptInferenceProfiles",
       "Effect": "Deny",
       "Action": [
         "bedrock:*"
@@ -83,7 +83,10 @@
       "Resource": "*",
       "Condition": {
         "StringNotEquals": {
-          "aws:RequestedRegion": ${bedrock_regions}
+          "aws:RequestedRegion": ${allowed_regions}
+        },
+        "Null": {
+          "bedrock:InferenceProfileArn": "true"
         }
       }
     }

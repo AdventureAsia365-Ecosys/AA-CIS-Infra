@@ -22,9 +22,9 @@
       "Sid": "ProtectBillingSettings",
       "Effect": "Deny",
       "Action": [
-        "aws-portal:ModifyAccount",
-        "aws-portal:ModifyBilling",
-        "aws-portal:ModifyPaymentMethods",
+        "account:DeleteAlternateContact",
+        "account:PutAccountName",
+        "account:PutAlternateContact",
         "account:PutContactInformation",
         "billing:Put*",
         "billing:Update*",
@@ -40,6 +40,32 @@
         "cur:PutReportDefinition"
       ],
       "Resource": "*",
+      "Condition": {
+        "ArnNotLike": {
+          "aws:PrincipalArn": ${exempt_role_arn_patterns}
+        }
+      }
+    },
+    {
+      "Sid": "ProtectExemptRoles",
+      "Effect": "Deny",
+      "Action": [
+        "iam:AttachRolePolicy",
+        "iam:CreateRole",
+        "iam:DeleteRole",
+        "iam:DeleteRolePermissionsBoundary",
+        "iam:DeleteRolePolicy",
+        "iam:DetachRolePolicy",
+        "iam:PassRole",
+        "iam:PutRolePermissionsBoundary",
+        "iam:PutRolePolicy",
+        "iam:TagRole",
+        "iam:UntagRole",
+        "iam:UpdateAssumeRolePolicy",
+        "iam:UpdateRole",
+        "iam:UpdateRoleDescription"
+      ],
+      "Resource": ${exempt_role_arn_patterns},
       "Condition": {
         "ArnNotLike": {
           "aws:PrincipalArn": ${exempt_role_arn_patterns}
