@@ -635,6 +635,15 @@ makes CI Terraform Plan fail with 403.
   (`tripplanner_variables.tf`). A new LLM-backed path needs its own route + `route_settings`. HTTP APIs
   cannot carry a WAF web ACL, so this is the only edge cap. WAF count review runbook:
   `docs/waf-count-review.md`.
+- **Management account root (AA-1004)**: `accounts/management/cicd.tf` holds its own GitHub OIDC provider and two
+  roles, `aa-terraform-plan` (read only; subs `pull_request` and `ref:refs/heads/main`) and `aa-terraform-apply`
+  (sub `environment:org` + `ref` main; boundary `aa-terraform-apply-boundary`, which denies every IAM role write),
+  both 1-hour sessions. Jobs: "Terraform Plan (management)" in `terraform-plan.yml` (only when that root changes; not a
+  required check), the drift matrix, and `terraform-apply.yml` input `root = management`: a read-only review plan
+  (summary + digest), then the apply job in environment `org` (required reviewer; checks the environment's
+  protection, re-plans, fails on a digest mismatch). This
+  root's plan/apply text never reaches the public logs (JSON + `drift_report.py --mode plan|apply` summaries). Inputs:
+  repo secrets `MGMT_ACCOUNT_ID` and `MGMT_TFVARS`. One-time setup: `accounts/management/README.md` §11.
 - This repo has **branch protection** (CI Terraform Plan among the required checks). Terraform
   Plan runs on PRs; PRs are merged after CI passes. There is no auto-merge on this repo.
 
@@ -649,7 +658,10 @@ makes CI Terraform Plan fail with 403.
     the plan changes an `aws_secretsmanager_secret_version`, a `random_password` or an
     `aws_db_instance` with any action other than no-op/read (forget and import included), or (AA-932) creates an
     Object Lock configuration in COMPLIANCE mode, changes / deletes / imports any Object Lock configuration, or
-    deletes a bucket with Object Lock enabled (a GOVERNANCE create passes). An
+    deletes a bucket with Object Lock enabled (a GOVERNANCE create passes), or (AA-1004) deletes, replaces or forgets
+    an organization, OU, member account, SCP or SCP attachment, CloudTrail trail, centralized root access setting,
+    Identity Center permission set / assignment or identity-store user / group / membership (create, update and
+    import pass). An
     intended change is dispatched with `allow_guarded=true` plus a non-empty `allow_reason`, which
     is written to the job summary. `guard_selftest=true` runs only the guard, on the committed
     fixture `tools/terraform/tests/fixtures/plan_guarded.json`, with no AWS step; the expected
@@ -667,8 +679,9 @@ makes CI Terraform Plan fail with 403.
 ### Scheduled drift check (AA-879)
 
 - `terraform-drift.yml` runs nightly (05:37 UTC) and by hand: `terraform plan -detailed-exitcode -lock=false -json`
-  of `main` for every root `terraform-plan.yml` covers (today `accounts/aa365`), with the read-only plan role
-  `aa-cis-infra-tf-plan` (sub `ref:refs/heads/main`, no environment). `tools/terraform/drift_report.py` writes
+  of `main` for every root `terraform-plan.yml` covers (`accounts/aa365`, and `accounts/management` since AA-1004), with
+  the read-only plan role of that root's account: `aa-cis-infra-tf-plan`, or `aa-terraform-plan` in the management
+  account (sub `ref:refs/heads/main`, no environment). `tools/terraform/drift_report.py` writes
   the job summary: green = in sync; **red, exit 2** = not in sync, listing the resources changed outside Terraform
   and the actions an apply of `main` would take; **red, exit 1** = the plan failed (errors listed, account ids and
   ARNs masked). No plan file is saved or uploaded.

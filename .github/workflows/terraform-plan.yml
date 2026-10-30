@@ -49,3 +49,140 @@ jobs:
         env:
           TF_VAR_db_password: ${{ secrets.TF_VAR_DB_PASSWORD }}
         run: terraform plan
+
+  # AA-1004: the management account root (accounts/management/README.md §11). Runs only when the PR touches that
+  # root, this workflow or the report tool. Not a required check (the ruleset names "Terraform Plan (dev)" only).
+  #
+  # Role aa-terraform-plan in the management account (accounts/management/cicd.tf: read only, trusts the immutable
+  # `pull_request` subject of this repo). Its ARN is built from the repo secret MGMT_ACCOUNT_ID, the state bucket name
+  # too (README §3 naming); the inputs come from the repo secret MGMT_TFVARS (the content of the git-ignored local
+  # terraform.tfvars, without aws_profile). Secrets, not variables: GitHub masks secrets in this public repo's logs.
+  #
+  # The plan text of this root is never printed (it holds e-mail addresses and member account ids): Terraform writes
+  # JSON into RUNNER_TEMP and tools/terraform/drift_report.py --mode plan writes only addresses and actions, masked, to
+  # the job summary. Before the one-time local bootstrap (README §11) the secrets do not exist: the job then warns and
+  # skips, so this very PR does not go red; once the repo variable MGMT_CI_LIVE is `true`, a missing secret fails.
+  terraform-plan-management:
+    name: Terraform Plan (management)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      ROOT: accounts/management
+      TF_IN_AUTOMATION: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Changed paths
+        id: paths
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          # A file, not a pipe: with pipefail, `grep -q` closing the pipe early could fail `git diff` (SIGPIPE).
+          git diff --name-only "$BASE_SHA"...HEAD > "$RUNNER_TEMP/changed.txt"
+          if grep -qE '^(accounts/management/|\.github/workflows/terraform-plan\.yml$|tools/terraform/drift_report\.py$)' \
+              "$RUNNER_TEMP/changed.txt"; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "accounts/management not touched: no management plan." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Check CI wiring
+        id: wiring
+        if: steps.paths.outputs.run == 'true'
+        env:
+          MGMT_ACCOUNT_ID: ${{ secrets.MGMT_ACCOUNT_ID }}
+          MGMT_TFVARS: ${{ secrets.MGMT_TFVARS }}
+          MGMT_CI_LIVE: ${{ vars.MGMT_CI_LIVE }}
+        run: |
+          if [ -z "$MGMT_ACCOUNT_ID" ] || [ -z "$MGMT_TFVARS" ]; then
+            # Repo variable MGMT_CI_LIVE=true (README §11.2, after the bootstrap): a missing secret is then an error.
+            if [ "$MGMT_CI_LIVE" = "true" ]; then
+              echo "::error::MGMT_CI_LIVE=true but secrets MGMT_ACCOUNT_ID / MGMT_TFVARS are missing (accounts/management/README.md §11)"
+              exit 1
+            fi
+            echo "::warning title=Management plan skipped::secrets MGMT_ACCOUNT_ID / MGMT_TFVARS are not set (accounts/management/README.md §11)"
+            echo "Management plan skipped: CI wiring not set up yet (README §11)." >> "$GITHUB_STEP_SUMMARY"
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Masks every 12-digit number and e-mail address of the inputs, refuses an aws_profile (CI uses OIDC credentials
+      # from the environment), and points `terraform plan` at the file through TF_CLI_ARGS_plan.
+      - name: Write management inputs (masked)
+        if: steps.wiring.outputs.ok == 'true'
+        env:
+          MGMT_TFVARS: ${{ secrets.MGMT_TFVARS }}
+        run: |
+          umask 077
+          F="$RUNNER_TEMP/management.tfvars"
+          printf '%s\n' "$MGMT_TFVARS" > "$F"
+          for v in $(grep -oE '[0-9]{12}|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' "$F" | sort -u); do
+            echo "::add-mask::$v"
+          done
+          if grep -qE '^[[:space:]]*aws_profile[[:space:]]*=' "$F"; then
+            echo "::error::MGMT_TFVARS sets aws_profile; CI runs on OIDC credentials, remove that line from the secret"
+            exit 1
+          fi
+          echo "TF_CLI_ARGS_plan=-var-file=$F" >> "$GITHUB_ENV"
+
+      - name: Configure AWS credentials (OIDC, management plan role)
+        if: steps.wiring.outputs.ok == 'true'
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.MGMT_ACCOUNT_ID }}:role/aa-terraform-plan
+          aws-region: us-west-1
+          role-duration-seconds: 3600
+
+      - name: Verify the role is the management plan role
+        if: steps.wiring.outputs.ok == 'true'
+        run: |
+          ARN=$(aws sts get-caller-identity --query Arn --output text)
+          case "$ARN" in
+            *:assumed-role/aa-terraform-plan/*) echo "role: aa-terraform-plan" ;;
+            *) echo "::error::the management plan must run with the read-only role aa-terraform-plan"; exit 1 ;;
+          esac
+
+      - name: Setup Terraform
+        if: steps.wiring.outputs.ok == 'true'
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.15.5"
+          terraform_wrapper: false
+
+      - name: Terraform Init
+        if: steps.wiring.outputs.ok == 'true'
+        working-directory: accounts/management
+        env:
+          MGMT_ACCOUNT_ID: ${{ secrets.MGMT_ACCOUNT_ID }}
+        run: |
+          terraform init -input=false -lockfile=readonly \
+            -backend-config="bucket=aa-tfstate-${MGMT_ACCOUNT_ID}-usw1" \
+            -backend-config="key=management/terraform.tfstate" \
+            -backend-config="region=us-west-1"
+
+      - name: Terraform Validate
+        if: steps.wiring.outputs.ok == 'true'
+        working-directory: accounts/management
+        run: terraform validate -no-color
+
+      - name: Terraform Plan (summary only)
+        if: steps.wiring.outputs.ok == 'true'
+        run: |
+          umask 077
+          LOG="$RUNNER_TEMP/management-plan.jsonl"
+          trap 'rm -f "$LOG"' EXIT
+          set +e
+          terraform -chdir="$ROOT" plan -input=false -detailed-exitcode -json > "$LOG"
+          RC=$?
+          set -e
+          echo "terraform plan exit code: $RC"
+          python3 -B tools/terraform/drift_report.py --mode plan --plan-log "$LOG" --exit-code "$RC" --root "$ROOT" \
+            --summary "$GITHUB_STEP_SUMMARY"

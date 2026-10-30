@@ -1,7 +1,8 @@
 name: Terraform Drift
 # AA-879 part B: a scheduled `terraform plan -detailed-exitcode` of `main` against the live account, for every root
-# terraform-plan.yml covers (today only accounts/aa365, state key dev/terraform.tfstate). The PR plan only shows what a
-# PR would change; this run shows whether the account still matches `main`.
+# terraform-plan.yml covers (accounts/aa365, state key dev/terraform.tfstate; accounts/management, state key
+# management/terraform.tfstate since AA-1004). The PR plan only shows what a PR would change; this run shows whether
+# the account still matches `main`.
 #   exit 0  in sync                                     -> green
 #   exit 2  not in sync (drift, or a merged change never applied) -> the job fails (GitHub e-mails it); the summary
 #           lists each resource changed outside Terraform and each action an apply of main would take
@@ -9,8 +10,12 @@ name: Terraform Drift
 # Report: tools/terraform/drift_report.py (stdlib only). What to do when red: CONTEXT.md, "Scheduled drift check".
 #
 # Read-only, like docs-gen.yml and crm-key-policy-diff.yml: no environment, so the OIDC sub is `ref:refs/heads/main`,
-# trusted only by the read-only plan role aa-cis-infra-tf-plan (cicd_split.tf, AA-893; no IAM change for this job).
-# The repo-level secret AWS_ROLE_ARN names that role; a step fails closed if it ever names another one.
+# trusted only by the read-only plan roles: aa-cis-infra-tf-plan (aa365, cicd_split.tf, AA-893) and aa-terraform-plan
+# (management account, accounts/management/cicd.tf, AA-1004). The repo-level secret AWS_ROLE_ARN names the aa365 one;
+# the management one is built from the repo secret MGMT_ACCOUNT_ID. A step fails closed if either is another role.
+# Until the management CI wiring exists (accounts/management/README.md §11: secrets MGMT_ACCOUNT_ID and MGMT_TFVARS),
+# the management entry warns and skips instead of going red every night; once the repo variable MGMT_CI_LIVE is
+# `true` (set after the bootstrap), a missing secret fails the run instead.
 #
 # State lock: `-lock=false`. A plan never writes the state, and this run must not get in the way of an apply: with the
 # default lock it would hold <key>.tflock for the whole refresh (~1-2 min), and an apply or PR plan starting then fails
@@ -20,13 +25,15 @@ name: Terraform Drift
 # No plan file is written (`-json` streams messages, not a plan): nothing with secret values exists to upload. The JSON
 # log stays in RUNNER_TEMP (umask 077), is never printed or uploaded, and is deleted at the end of the step; only
 # resource addresses, actions and error text reach the summary, masked by tools/docs/aws_mask.py (public repo logs).
+# The management inputs (MGMT_TFVARS: e-mail addresses, member account ids) are written to RUNNER_TEMP the same way,
+# every 12-digit number and e-mail in them is masked in the log first, and drift_report.py masks e-mails as well.
 #
 # Roots not here: accounts/acc3-bedrock is another account, applied only by a human with MFA (the plan role cannot
 # read it). A new CI-planned root goes into terraform-plan.yml and into the matrix below (the shape test compares them).
 #
 # Cost: $0 AWS (read-only API calls; CloudTrail management events, first copy free). About 10k management events a
 # run (S255 FinOps audit); if GuardDuty is ever switched on (~4.40 USD per million events) make the cron weekly
-# (~1.3 USD/month nightly vs ~0.2 weekly). GitHub Actions about 2 minutes a night.
+# (~1.3 USD/month nightly vs ~0.2 weekly). GitHub Actions about 2 minutes a night per root.
 on:
   workflow_dispatch:
   schedule:
@@ -44,7 +51,7 @@ jobs:
   drift:
     name: Terraform drift (${{ matrix.root }})
     runs-on: ubuntu-latest
-    # No environment: the OIDC sub is `ref:refs/heads/main`, trusted only by the read-only plan role.
+    # No environment: the OIDC sub is `ref:refs/heads/main`, trusted only by the read-only plan roles.
     if: github.ref == 'refs/heads/main'
     timeout-minutes: 20
     strategy:
@@ -53,50 +60,107 @@ jobs:
         include:
           - root: accounts/aa365
             state_key: dev/terraform.tfstate
+          - root: accounts/management
+            state_key: management/terraform.tfstate
     env:
       ROOT: ${{ matrix.root }}
       TF_IN_AUTOMATION: "1"
+      IS_MGMT: ${{ matrix.root == 'accounts/management' }}
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
+      # AA-1004: the management entry needs its secrets (README §11). Missing -> warn and skip, not red.
+      - name: Check CI wiring
+        id: wiring
+        env:
+          MGMT_ACCOUNT_ID: ${{ secrets.MGMT_ACCOUNT_ID }}
+          MGMT_TFVARS: ${{ secrets.MGMT_TFVARS }}
+          MGMT_CI_LIVE: ${{ vars.MGMT_CI_LIVE }}
+        run: |
+          if [ "$IS_MGMT" = "true" ] && { [ -z "$MGMT_ACCOUNT_ID" ] || [ -z "$MGMT_TFVARS" ]; }; then
+            # Repo variable MGMT_CI_LIVE=true (README §11.2, after the bootstrap): a missing secret is then an error.
+            if [ "$MGMT_CI_LIVE" = "true" ]; then
+              echo "::error::MGMT_CI_LIVE=true but secrets MGMT_ACCOUNT_ID / MGMT_TFVARS are missing (accounts/management/README.md §11)"
+              exit 1
+            fi
+            echo "::warning title=Management drift skipped::secrets MGMT_ACCOUNT_ID / MGMT_TFVARS are not set (accounts/management/README.md §11)"
+            echo "### Terraform drift: \`$ROOT\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "Skipped: CI wiring not set up yet (README §11)." >> "$GITHUB_STEP_SUMMARY"
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # AA-1004: management inputs to RUNNER_TEMP, masked in the log first; aws_profile refused (CI uses OIDC).
+      - name: Write management inputs (masked)
+        if: steps.wiring.outputs.ok == 'true' && env.IS_MGMT == 'true'
+        env:
+          MGMT_TFVARS: ${{ secrets.MGMT_TFVARS }}
+        run: |
+          umask 077
+          F="$RUNNER_TEMP/management.tfvars"
+          printf '%s\n' "$MGMT_TFVARS" > "$F"
+          for v in $(grep -oE '[0-9]{12}|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' "$F" | sort -u); do
+            echo "::add-mask::$v"
+          done
+          if grep -qE '^[[:space:]]*aws_profile[[:space:]]*=' "$F"; then
+            echo "::error::MGMT_TFVARS sets aws_profile; CI runs on OIDC credentials, remove that line from the secret"
+            exit 1
+          fi
+          echo "TF_CLI_ARGS_plan=-var-file=$F" >> "$GITHUB_ENV"
+
       - name: Configure AWS credentials (OIDC, read-only plan role)
+        if: steps.wiring.outputs.ok == 'true'
         uses: aws-actions/configure-aws-credentials@v6
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ matrix.root == 'accounts/management' && format('arn:aws:iam::{0}:role/aa-terraform-plan', secrets.MGMT_ACCOUNT_ID) || secrets.AWS_ROLE_ARN }}
           aws-region: us-west-1
 
-      # Fail closed if the repo-level secret ever names a role with write rights. Mask the account id (public logs).
+      # Fail closed if a secret ever names a role with write rights. Mask the account id (public logs).
       - name: Verify the role is the read-only plan role
+        if: steps.wiring.outputs.ok == 'true'
         run: |
           ACC=$(aws sts get-caller-identity --query Account --output text)
           echo "::add-mask::$ACC"
           ARN=$(aws sts get-caller-identity --query Arn --output text)
-          case "$ARN" in
-            *:assumed-role/aa-cis-infra-tf-plan/*) echo "role: aa-cis-infra-tf-plan" ;;
-            *) echo "::error::terraform-drift must run with the read-only role aa-cis-infra-tf-plan (got another role)"; exit 1 ;;
-          esac
+          if [ "$IS_MGMT" = "true" ]; then
+            case "$ARN" in
+              *:assumed-role/aa-terraform-plan/*) echo "role: aa-terraform-plan" ;;
+              *) echo "::error::terraform-drift (management) must run with the read-only role aa-terraform-plan (got another role)"; exit 1 ;;
+            esac
+          else
+            case "$ARN" in
+              *:assumed-role/aa-cis-infra-tf-plan/*) echo "role: aa-cis-infra-tf-plan" ;;
+              *) echo "::error::terraform-drift must run with the read-only role aa-cis-infra-tf-plan (got another role)"; exit 1 ;;
+            esac
+          fi
 
       - name: Setup Terraform
+        if: steps.wiring.outputs.ok == 'true'
         uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: "1.15.5"
           terraform_wrapper: false   # the real exit code of plan -detailed-exitcode, clean JSON on stdout
 
       - name: Terraform Init (read-only lockfile)
+        if: steps.wiring.outputs.ok == 'true'
         working-directory: ${{ matrix.root }}
         env:
           STATE_KEY: ${{ matrix.state_key }}
+          # The management state bucket is named after its account (README §3); aa365 keeps its repo secret.
+          STATE_BUCKET: ${{ matrix.root == 'accounts/management' && format('aa-tfstate-{0}-usw1', secrets.MGMT_ACCOUNT_ID) || secrets.TF_STATE_BUCKET }}
         run: |
           terraform init -input=false -lockfile=readonly \
-            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="bucket=$STATE_BUCKET" \
             -backend-config="key=$STATE_KEY" \
             -backend-config="region=us-west-1"
 
       - name: Terraform Plan (detailed exit code, no state lock)
+        if: steps.wiring.outputs.ok == 'true'
         env:
-          TF_VAR_db_password: ${{ secrets.TF_VAR_DB_PASSWORD }}
+          TF_VAR_db_password: ${{ matrix.root == 'accounts/aa365' && secrets.TF_VAR_DB_PASSWORD || '' }}
         run: |
           umask 077
           LOG="$RUNNER_TEMP/drift-plan.jsonl"
