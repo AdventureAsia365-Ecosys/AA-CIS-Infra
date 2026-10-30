@@ -1,0 +1,94 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DenyOutsideAllowedRegions",
+      "Effect": "Deny",
+      "NotAction": [
+        "a4b:*",
+        "access-analyzer:*",
+        "account:*",
+        "acm:*",
+        "aws-marketplace-management:*",
+        "aws-marketplace:*",
+        "aws-portal:*",
+        "bedrock:*",
+        "billing:*",
+        "budgets:*",
+        "ce:*",
+        "chime:*",
+        "cloudfront:*",
+        "config:*",
+        "consolidatedbilling:*",
+        "cost-optimization-hub:*",
+        "cur:*",
+        "directconnect:*",
+        "ec2:DescribeRegions",
+        "ec2:DescribeTransitGateways",
+        "ec2:DescribeVpnGateways",
+        "fms:*",
+        "freetier:*",
+        "globalaccelerator:*",
+        "health:*",
+        "iam:*",
+        "identitystore:*",
+        "importexport:*",
+        "invoicing:*",
+        "kms:*",
+        "networkmanager:*",
+        "notifications:*",
+        "organizations:*",
+        "payments:*",
+        "pricing:*",
+        "route53-recovery-cluster:*",
+        "route53-recovery-control-config:*",
+        "route53-recovery-readiness:*",
+        "route53:*",
+        "route53domains:*",
+        "s3:CreateMultiRegionAccessPoint",
+        "s3:DeleteMultiRegionAccessPoint",
+        "s3:DescribeMultiRegionAccessPointOperation",
+        "s3:GetAccountPublic*",
+        "s3:GetBucketLocation",
+        "s3:GetMultiRegionAccessPoint*",
+        "s3:ListAllMyBuckets",
+        "s3:ListMultiRegionAccessPoints",
+        "s3:PutAccountPublic*",
+        "savingsplans:*",
+        "shield:*",
+        "sso:*",
+        "sts:*",
+        "support:*",
+        "supportplans:*",
+        "tax:*",
+        "trustedadvisor:*",
+        "waf-regional:*",
+        "waf:*",
+        "wafv2:*",
+        "wellarchitected:*"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringNotEquals": {
+          "aws:RequestedRegion": ${allowed_regions}
+        }
+      }
+    },
+    {
+      "Sid": "DenyBedrockOutsideRegionsExceptInferenceProfiles",
+      "Effect": "Deny",
+      "Action": [
+        "bedrock:*"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringNotEquals": {
+          "aws:RequestedRegion": ${allowed_regions}
+        },
+        "Null": {
+          "bedrock:InferenceProfileArn": "true"
+        }
+      }
+    }
+  ]
+}
