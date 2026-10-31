@@ -19,22 +19,8 @@
 # Allow. A future EXTERNAL invitation grant (AdminCreateUser/ListUsers/AdminDisableUser/
 # AdminUserGlobalSignOut) does not overlap this Deny list.
 #
-# RESIDUAL RISK (not expressible in IAM; review finding, S242): AdminCreateUser accepts
-# TemporaryPassword, and Cognito has no IAM condition key to force MessageAction=SUPPRESS or forbid
-# TemporaryPassword. PASSWORD is a pool-wide first factor (identity.tf "DELIBERATE DEVIATIONS") and
-# the pre-token trigger checks domain / email_verified / groups, not the auth method. So a
-# compromised CIS task role can still
-#   (1) create a new @adventure.asia user with email_verified=true, a password of its choosing and
-#       SUPPRESS, add it to booking-admin / cis-admin, then sign in with that password and answer
-#       NEW_PASSWORD_REQUIRED, getting staff tokens without any mailbox; and
-#   (2) per the AdminCreateUser API reference ("RESEND ... reset the temporary-password duration
-#       with a new temporary password"), call RESEND with its own TemporaryPassword on an existing
-#       staff user still in FORCE_CHANGE_PASSWORD (every admin-created user while
-#       identity_ses_enabled = false) and take that account over.
-# The "SUPPRESS on every AdminCreateUser" rule holds only by procedure for an honest caller. The
-# mitigations (CloudTrail/EventBridge alarm on WORKFORCE AdminCreateUser with a password or
-# RESEND, reconcile flagging users outside the directory or with a password set) are tracked
-# outside this file; the IAM grant itself cannot close the gap.
+# Residual (review finding, S242): IAM cannot constrain AdminCreateUser parameters; detective alarm A8 in
+# identity_alerts.tf; details in Linear AA-873.
 #
 # Role: module.ecs task role (aa-cis-<env>-ecs-task-role). The api AND worker task definitions use
 # the same role (modules/ecs/main.tf aws_ecs_task_definition.api / .worker, task_role_arn =

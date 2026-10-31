@@ -6,8 +6,10 @@ AA-Ecosys session logs, not here.
 **Read [`CONTEXT.md`](../CONTEXT.md) before any change** — layout, accounts, every module, OIDC roles,
 how a change is applied and the boundaries ("apps own code, Infra owns resources"). The ecosystem view
 is `AA-Ecosys/docs/ecosystem-architecture.md`; data rules are `AA-Ecosys/docs/architecture/data-standards/`.
-This repo is private (the app repos are public): inventories, ARNs and security notes belong here or in
-the root repo, never in an app repo.
+This repo is **public** for now (root ADR 0014 amendment), like the app repos. Account IDs and resource
+names are accepted here, but never write step-by-step privilege paths, which principal can read which
+secret, or a statement that a protection is missing: put one line pointing to the Linear issue and keep
+the detail in Linear or a private root audit.
 
 ## Where things are
 
