@@ -1266,24 +1266,35 @@ async def analyze_unknown(conn, table: str, role: "str | None", log=print) -> "i
     """S261: a table that was never vacuumed or analyzed has reltuples -1 (a new, still small table autovacuum has not
     reached yet). ANALYZE samples at most 300 x default_statistics_target rows and takes SHARE UPDATE EXCLUSIVE, which
     blocks no read or write, so the runner analyzes it (as the file's owner role, the only role allowed to besides the
-    database owner) and reads the estimate again. Any failure leaves the count unknown, i.e. lock risk."""
+    database owner) and reads the estimate again. Check mode does this too, so a check predicts the apply. Any failure
+    leaves the count unknown, i.e. lock risk (fail-safe)."""
     if not SAFE_REL_RE.match(table):
+        log(f"expand: ANALYZE {table} not attempted (name not schema-qualified lower case); row count stays unknown")
+        return -1
+    if role and not SAFE_ROLE_RE.match(role):
+        log(f"expand: ANALYZE {table} not attempted (odd role name {role!r}); row count stays unknown")
         return -1
     schema, name = table.split(".", 1)
     rel = f'"{schema}"."{name}"'
-    switch = bool(role) and bool(SAFE_ROLE_RE.match(role or ""))
+    who = role or "the login role"
     try:
-        await conn.execute(f'SET ROLE "{role}"; ANALYZE {rel}; RESET ROLE' if switch else f"ANALYZE {rel}")
+        await conn.execute(f'SET ROLE "{role}"; ANALYZE {rel}; RESET ROLE' if role else f"ANALYZE {rel}")
     except Exception as e:                      # noqa: BLE001 - the check stays fail-safe: unknown = lock risk
-        log(f"expand: ANALYZE {table} failed ({type(e).__name__}); row count stays unknown")
-        if switch:
+        state = getattr(e, "sqlstate", None)
+        why = "lock wait, retry later" if state == "55P03" else (state or type(e).__name__)
+        log(f"expand: ANALYZE {table} as {who} failed ({type(e).__name__}, {why}); row count stays unknown")
+        if role:
             try:
                 await conn.execute("RESET ROLE")
             except Exception:                   # noqa: BLE001 - best effort; the session is closed after exit 15
                 pass
         return -1
     rows = await conn.fetchval(RELTUPLES_SQL, table)
-    log(f"expand: {table} was never analyzed; ANALYZE as {role or 'the login role'} -> ~{rows} rows")
+    if rows is not None and rows < 0:
+        log(f"expand: ANALYZE {table} as {who} left no estimate (PostgreSQL 15 skips, with only a WARNING, a table "
+            f"the role does not own); row count stays unknown")
+    else:
+        log(f"expand: {table} was never analyzed; ANALYZE as {who} -> ~{rows} rows")
     return rows
 
 

@@ -212,6 +212,9 @@ def obj(kind, name, owner, mine=True, schema_owner="bk_owner", oid=None):
             "schema_owner": schema_owner}
 
 
+ANALYZE_RE = re.compile(r'^(SET ROLE "[a-z_][a-z0-9_]*"; )?ANALYZE "[a-z_][a-z0-9_$]*"\."[a-z_][a-z0-9_$]*"(; RESET ROLE)?$')
+
+
 class FakeConn:
     """`states` is one (jobs, waves) pair per idle check, the last one repeating: jobs maps an owner
     schema to its job rows (job()), or to an Exception raised on read; waves is the number of open
@@ -307,7 +310,7 @@ class FakeConn:
         return self.applied
 
     async def execute(self, sql):
-        if "ANALYZE " in sql:                       # S261: analyze_unknown; after_analyze = reltuples it then reads
+        if ANALYZE_RE.match(sql):                   # S261: analyze_unknown; after_analyze = reltuples it then reads
             self.analyzed = getattr(self, "analyzed", []) + [sql]
             if getattr(self, "analyze_fails", None):
                 raise self.analyze_fails

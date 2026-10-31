@@ -262,10 +262,11 @@ class RunTaskExpandTests(unittest.TestCase):
     def test_analyze_failure_keeps_lock_risk(self):
         conn = FakeConn()
         conn.reltuples = {"booking.trip": -1}
-        conn.analyze_fails = RuntimeError("permission denied")
+        conn.analyze_fails = RuntimeError("canceling statement due to lock timeout")
+        conn.analyze_fails.sqlstate = "55P03"
         code, conn, log = self.run_task(EXPAND_OK, conn=conn)
         self.assertEqual((code, conn.executed), (15, []), log)
-        self.assertIn("ANALYZE booking.trip failed (RuntimeError)", log)
+        self.assertIn("ANALYZE booking.trip as the login role failed (RuntimeError, lock wait, retry later)", log)
         self.assertIn("booking.trip: row count unknown", log)
 
     def test_analyze_unknown_switches_to_the_owner_role(self):
@@ -273,6 +274,18 @@ class RunTaskExpandTests(unittest.TestCase):
         conn.reltuples, conn.after_analyze = {"crm.invoice": -1}, {"crm.invoice": 7}
         rows = asyncio.run(rm.analyze_unknown(conn, "crm.invoice", "crm_owner", log=lambda m: None))
         self.assertEqual((rows, conn.analyzed), (7, ['SET ROLE "crm_owner"; ANALYZE "crm"."invoice"; RESET ROLE']))
+
+    def test_analyze_that_sets_no_estimate_says_so(self):
+        conn = FakeConn()
+        conn.reltuples = {"booking.trip": -1}                  # PG15: a role that does not own the table only warns
+        code, conn, log = self.run_task(EXPAND_OK, conn=conn)
+        self.assertEqual(code, 15, log)
+        self.assertIn("left no estimate", log)
+
+    def test_analyze_unknown_refuses_odd_role(self):
+        conn = FakeConn()
+        rows = asyncio.run(rm.analyze_unknown(conn, "crm.invoice", "Crm-Owner", log=lambda m: None))
+        self.assertEqual((rows, getattr(conn, "analyzed", [])), (-1, []))
 
     def test_analyze_unknown_refuses_odd_names(self):
         conn = FakeConn()
