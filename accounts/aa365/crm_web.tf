@@ -29,8 +29,9 @@
 # AA-1019: the AA staff console (/staff on the agency host) signs in with the WORKFORCE crm-staff client (root ADR 0006b
 # decision 6): STAFF_COGNITO_DOMAIN / STAFF_COGNITO_CLIENT_ID here, STAFF_COGNITO_CLIENT_SECRET / STAFF_SESSION_SECRET
 # from two more keys of crm/dev/web. ORDER: write those keys (crm_dev_identity.py staff-web-secret --apply) BEFORE the
-# next web deploy after this apply; a task whose secret lacks a mapped key fails to start (the service ignores
-# task_definition changes, so the apply alone never restarts the running task).
+# AA-1019 Terraform apply (tools/identity/README.md runbook); a task whose secret lacks a mapped key fails to start.
+# (The service ignores task_definition changes, so the apply alone never restarts the running task: writing the keys
+# after the apply and before the next web deploy would also work, but the runbook uses one order.)
 #
 # Order of applies: after AA-933 (crm_app.tf, crm_edge.tf). The secret value must exist before the first task starts
 # (a task whose secret has no value fails to start): apply -> `crm_dev_identity.py web-secret --apply` -> deploy the

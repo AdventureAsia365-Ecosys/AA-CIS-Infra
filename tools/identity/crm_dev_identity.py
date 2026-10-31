@@ -32,7 +32,8 @@ Subcommands
       Adds / updates the AA staff console's two keys in crm/<env>/web: staff_cognito_client_secret (read from the
       WORKFORCE client aa-workforce-<env>-crm-staff) and staff_session_secret (random, kept on a re-run unless
       --rotate-staff-session, which signs every staff console user out). The agency keys are kept as they are. Run it
-      BEFORE the first web deploy after the AA-1019 Terraform apply: the task maps both keys and fails to start without.
+      BEFORE the AA-1019 Terraform apply (tools/identity/README.md runbook): the task maps both keys and fails to start
+      without them.
   e2e-staff [--apply]   (AA-1019, root ADR 0006a A10c; WORKFORCE pool, dev only)
       The Dev-only AA-Partner staff E2E user e2e-crm-staff@e2e-mail.<zone> in groups crm-ops + crm-support exactly:
       AdminCreateUser with MessageAction=SUPPRESS and email_verified=true, no password (sign-in is the e-mail code,
