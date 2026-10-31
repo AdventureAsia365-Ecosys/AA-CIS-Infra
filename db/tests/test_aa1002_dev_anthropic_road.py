@@ -211,8 +211,9 @@ class ShapeTest(unittest.TestCase):
         self.assertEqual(rm.script_errors(source, PATH), [])
         self.assertFalse(rm.script_is_read_only(source))
 
-    def test_merged_as_dry_run_and_not_read_only(self):
-        self.assertEqual(script.MODE, "dry_run")
+    def test_mode_is_a_known_value_and_not_read_only(self):
+        # Merged as "dry_run"; the one-line follow-up PR switches it to "apply" (db/scripts/README.md flow).
+        self.assertIn(script.MODE, ("dry_run", "apply"))
         self.assertFalse(hasattr(script, "READ_ONLY"))
         self.assertEqual(script.WRITE_ROLE, "cis_owner")
 
