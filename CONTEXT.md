@@ -89,7 +89,9 @@ Cross-account pieces added 15-25/09/2026 (same assume-role pattern as the Bedroc
   crm since AA-932, identity since S255, shared; their sum must fit the account budget, a precondition checks it)
   (`accounts/aa365/observability.tf`) and an IMMEDIATE anomaly subscription to the alerts topic
   (`accounts/aa365/cost_anomaly.tf`). An `App`-tag anomaly monitor is not possible on acc2: AWS allows
-  cost-allocation-tag monitors only in the management (payer) account. acc3, where almost all LLM spend
+  cost-allocation-tag monitors only in the management (payer) account. The management root holds them, one per `App`
+  value, off until the nonprod account joins the organization and `App` is active there
+  (`accounts/management/cost_anomaly_app_tag.tf`, `app_tag_anomaly_monitors_enabled`, AA-896 S262). acc3, where almost all LLM spend
   lands, has its own monthly budget (credits excluded), a DAILY anomaly e-mail on the AWS-created services
   monitor (`accounts/acc3-bedrock/cost_guard.tf`) and, since S255, an IMMEDIATE subscription (impact >= 15 USD)
   to its own SNS topic `aa3-cost-alerts` with an e-mail subscriber (`accounts/acc3-bedrock/cost_anomaly_immediate.tf`). acc1 (retired, AA-998) keeps only hand-made console budgets of its owner; it is outside the ecosystem.

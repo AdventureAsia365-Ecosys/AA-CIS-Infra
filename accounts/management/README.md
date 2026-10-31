@@ -14,6 +14,7 @@ runs in the management account, because SCPs do not apply there.
 | `scp.tf` + `policies/*.json.tftpl` | 3 SCPs, attached to the three OUs, never to the root |
 | `identity_center.tf` | Groups `aa-admins` / `aa-developers` / `aa-billing`, permission sets `AA-Admin` / `AA-Developer` / `AA-ReadOnly` / `AA-Billing`, the group x account matrix, users from `sso_users` (all gated on `identity_center_enabled`) |
 | `budgets.tf` | Organization budget, one budget per account, one Cost Anomaly Detection monitor + daily e-mail per account |
+| `cost_anomaly_app_tag.tf` | One anomaly monitor per `App` tag value + one daily e-mail, off until the nonprod account joins and `App` is active here (`app_tag_anomaly_monitors_enabled`, AA-896) |
 | `cloudtrail.tf` | Organization trail `aa-org-trail`, its KMS key and its bucket (Object Lock GOVERNANCE, 365 days) |
 | `cicd.tf` | GitHub OIDC provider, CI roles `aa-terraform-plan` (read only) and `aa-terraform-apply` (+ boundary `aa-terraform-apply-boundary`); bootstrap objects, applied locally (§11) |
 | `terraform.tfvars.example` | Every input; copy to `terraform.tfvars` (git-ignored: the repo is public, no account ID, name or e-mail is committed) |
