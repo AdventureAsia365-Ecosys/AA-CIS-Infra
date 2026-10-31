@@ -183,7 +183,11 @@ INSERT INTO acp_contract.route (route_id, tour_id, ordered_segment_ids, first_da
 INSERT INTO geo.tour_place (source_id, tour_id, atom_ids) VALUES
  ('k1', '{T[1]}', ARRAY['a1']), ('k2', '{T[2]}', ARRAY['a3old']), ('k4', '{T[4]}', ARRAY['a7']);
 INSERT INTO acp_shared.atom_place_card (atom_id, card_id) VALUES
- ('a1', gen_random_uuid()), ('a2', NULL), ('a3old', gen_random_uuid());
+ ('a1', gen_random_uuid()), ('a2', NULL), ('a3old', gen_random_uuid()), ('a71', gen_random_uuid());
+-- S262: `needs_draft` rows (the $0 relink left the place for a paid draft). a72: T7 is carded (a71), its row keeps it
+-- out of place_card_links_missing. a6: T3's only row, which must not make T3 "carded before" (a5 would count).
+INSERT INTO acp_shared.atom_place_card (atom_id, card_id, miss_reason) VALUES
+ ('a72', NULL, 'needs_draft'), ('a6', NULL, 'needs_draft');
 INSERT INTO gold_aa_internal.tenant_tour_versions (published_tour_id, created_at)
  SELECT id, now() - interval '4 days' FROM gold_aa_internal.published_tours WHERE tour_id = '{T[1]}'
  UNION ALL SELECT id, now() - interval '2 days' FROM gold_aa_internal.published_tours WHERE tour_id = '{T[1]}';
@@ -219,7 +223,7 @@ EXPECTED = {
     "routes_differ": (1, 1), "active_tours_without_route": (3, 2), "current_routes_older_than_atoms": (1, 1),
     "routes_with_dead_segment": (1, 1), "geo_tour_place_rows_on_inactive_atoms": (2, 2),
     "geo_tour_place_stale_rows": (1, 1), "place_card_links_missing": (1, 1),
-    "active_place_atoms_without_card_link": (5, 3), "tenant_versions_older_than_master": (1, 1),
+    "place_card_needs_draft": (2, 1), "active_place_atoms_without_card_link": (2, 1), "tenant_versions_older_than_master": (1, 1),
     "angle_gate_requests_on_inactive_atoms": (2, 1), "seo_context_expired": (4, 3),
     "seo_context_expired_active_tours": (1, 1),
     "dead_member_rows": (3, 2), "live_sources_without_place_build": (2, 1), "live_sources_place_build_failed": (1, 1),
@@ -318,6 +322,9 @@ class ProbeOnPostgresTest(unittest.TestCase):
         self.assertEqual(m["live_sources_without_place_build"]["sample"], [G[3], G[5]])
         self.assertEqual(m["live_sources_place_build_failed"]["sample"], [T[2]])
         self.assertEqual(m["active_place_atoms_card_miss"]["sample"], ["a2"])
+        self.assertEqual(m["place_card_needs_draft"]["sample"], ["a6", "a72"])
+        self.assertEqual(m["place_card_needs_draft"]["sample_aged"], ["a72"])
+        self.assertEqual(m["active_place_atoms_without_card_link"]["sample"], ["a3", "a5"])
 
     def test_totals_jobs_and_route_parity(self):
         t = self.res["totals"]
