@@ -331,25 +331,9 @@ resource "aws_iam_role_policy" "ecs_task_policy" {
         ]
         Resource = "arn:aws:secretsmanager:${var.aws_region}:005097885195:secret:aa-cis/dev/e2e-tenant/*"
       },
-      # X1 S19 (AA-860, plan XD5): the GetSecretValue grant above is on "*", so without this a compromised
-      # CIS runtime could read the RDS master DSN and every other app's DSN, and the DB role split (cis_app,
-      # S18) would be cosmetic. An explicit Deny wins over any Allow. Secrets Manager ARNs end in "-" plus 6
-      # random characters, so `rds-??????` matches only the master secret aa-cis/<env>/rds, never rds-app-user
-      # or rds-cis-app (more characters after "rds-"); likewise db-migrator-??????. The CIS code reads only
-      # aa-cis/<env>/{rds-app-user, e2e-tenant/*, gdrive-photo-reader, geoapify, jwt-secret, sentry-dsn-api,
-      # typesafe, dataforseo} and acp/{cms,social}/* (grep 19/10/2026; booking-jwt-signing-key goes away with
-      # the CIS to Booking bridge, AA-911): none is denied. DATABASE_URL itself is injected by the EXECUTION
-      # role, which this does not touch. The only
-      # code naming the master secret is services/acp_produce/sweeper_lambda.py, a Lambda handler that is
-      # neither deployed nor imported by the api / worker. Master-level scripts go through DB Migrate
-      # mode=run-script (db/scripts/README.md), no longer through ECS exec.
-      # AA-873 (S261, architecture review F1): plus every prefix that belongs to another owner and that no CIS
-      # code reads: aa-ecosys/* (the aa-agent GitHub App key, the Linear key, ops credentials; reading the App key
-      # from a compromised CIS task gave write access to every repo), aa-identity/* (the WORKFORCE break-glass
-      # login) and aa-crm/* (the CRM M2M client). Derived from a grep of AA-CIS-App main and 30 days of CloudTrail
-      # GetSecretValue by this role (01-31/10/2026): it read only aa-cis/<env>/*, acp/{cms,social}/* and
-      # aa-llm/<env>/* (the LLM gateway's connection secrets, shared/llm_client/connections.py), none of them denied.
-      # aa-llm/* stays readable: it is the CIS gateway's own namespace.
+      # Deny-list for other owners' secrets (AA-860, AA-873). Secrets Manager ARNs end in "-" plus 6 random
+      # characters, so `rds-??????` matches only aa-cis/<env>/rds, never rds-app-user or rds-cis-app; likewise
+      # db-migrator-??????.
       {
         Sid    = "DenyMasterAndOtherAppSecrets"
         Effect = "Deny"

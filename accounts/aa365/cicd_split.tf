@@ -637,12 +637,9 @@ resource "aws_iam_role" "tf_apply" {
       Action    = "sts:AssumeRoleWithWebIdentity"
       Condition = {
         # terraform-apply.yml and db-migrate.yml both run in the `prod` environment ->
-        # `environment:prod`. Correction (AA-866, S241): the repo is private on GitHub Free, so `prod`
-        # has NO deployment-branch rule and NO required reviewer (the API returns none). Today the
-        # only main-only gate is the job-level `if: github.ref == 'refs/heads/main'` in both
-        # workflows; a branch that edits the workflow can drop it, so the `ref` claim below is the
-        # real gate (AA-866; AWS evaluates it, scratch-role trial run 39033922112). Every workflow
-        # on this role runs from main: terraform-apply / db-migrate (job `if`), db-schema-dump and
+        # `environment:prod`. Main-only is enforced by the IAM `ref` condition below (AA-866; AWS
+        # evaluates it); environment rules tracked in Linear AA-873 (TL-7). Every workflow on this
+        # role runs from main: terraform-apply / db-migrate (job `if`), db-schema-dump and
         # db-isolation-probe (schedule = default branch, or dispatched by db-migrate with --ref main).
         StringEquals = {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
