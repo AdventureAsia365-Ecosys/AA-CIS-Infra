@@ -109,6 +109,32 @@ Verify: the first command prints the management account and an `assumed-role/AA-
 `aws s3api get-bucket-versioning --bucket aa-tfstate-<management-account-id>-usw1 --region us-west-1 --profile aa-mgmt`
 prints `"Status": "Enabled"`. Rollback: the bucket is empty, delete it.
 
+## 3a. Day-to-day access after bootstrap (Identity Center, S261)
+
+The bootstrap chain in §3 (`AA-Bootstrap`) was removed after day 1. Day-to-day access is through IAM Identity Center:
+
+- AWS access portal: `https://d-9167778552.awsapps.com/start` (us-west-1). Permission set `AA-Admin` on `aa-management`.
+- Local CLI (added S261, 31/10/2026), in `~/.aws/config`:
+
+```ini
+[sso-session aa-mgmt-sso]
+sso_start_url = https://d-9167778552.awsapps.com/start
+sso_region = us-west-1
+sso_registration_scopes = sso:account:access
+
+[profile aa-mgmt]
+sso_session = aa-mgmt-sso
+sso_account_id = <management account id>
+sso_role_name = AA-Admin
+region = us-west-1
+```
+
+- Sign in (device code, approve in the browser): `aws sso login --sso-session aa-mgmt-sso --no-browser --use-device-code`.
+  Check: `aws sts get-caller-identity --profile aa-mgmt`. The session lasts about 8 hours.
+- Local Terraform with this profile uses the same env-no-export recipe as §4 with `--profile aa-mgmt`.
+- Done with this profile in S261: the Anthropic use-case form for the organization (raw JSON through
+  `aws bedrock put-use-case-for-model-access --form-data fileb://ftu.json --region us-west-1 --profile aa-mgmt`).
+
 ## 4. Plan and apply order
 
 All commands run from `accounts/management/`. Fill `terraform.tfvars` first (`cp terraform.tfvars.example terraform.tfvars`).
