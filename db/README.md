@@ -673,7 +673,8 @@ delta, sample) and keeps `task.log` + `gate.json` as the artifact (30 days).
 | `routes_with_dead_segment` | stale | current routes listing a segment with no active atom | 0 |
 | `geo_tour_place_rows_on_inactive_atoms` | info | S251 query: rows none of whose `atom_ids` is active (all tours) | 2,038 of 2,480 |
 | `geo_tour_place_stale_rows` | stale | the same, rows of active tours only | first run |
-| `place_card_links_missing` | stale | active place atoms without an `atom_place_card` row in tours carded before | first run |
+| `place_card_links_missing` | stale | active place atoms without an `atom_place_card` row in tours carded before (S262: a `needs_draft` row is a row, and a tour whose only rows are `needs_draft` is not "carded before") | first run |
+| `place_card_needs_draft` | info | S262: active place atoms whose `atom_place_card` row is `needs_draft` (card_id NULL): the $0 relink after atomize or a build over its 40-place cap left the place for a paid draft (AA-CIS-App `place_cards.NEEDS_DRAFT`) | first run (≈ 106 expected after the S262 relink) |
 | `active_place_atoms_without_card_link` | info | every active place atom without a link (coverage: AA-784) | first run (105 active atoms linked) |
 | `tenant_versions_older_than_master` | info | tenant versions created before their Master's update; by design (AA-990 / AA-986: the tenant is told, nothing is overwritten) | 2 of 55 |
 | `angle_gate_requests_on_inactive_atoms` | info | T8 angle requests on an atom that is not active; by design since AA-990 D2 (S252): the portal shows `atom_replaced` + the replacement, T8/T9 answer the typed 409, the tenant decides (S253: 5 repointed once, 3 with no replacement left) | 14 of 25 |
@@ -682,7 +683,7 @@ delta, sample) and keeps `task.log` + `gate.json` as the artifact (30 days).
 | `dead_member_rows` | stale | `atom_segment_member` rows on a dead atom (`tour_atoms.deleted` or `is_empty_marker`); aged by the later of the tour's change and the atom's own update | 10,547 of 27,712 (S252 audit, before the one-time cleanup) |
 | `live_sources_without_place_build` | info | live sources with no `geo.tour_build` row other than `retired` (AA-905 coverage; `totals.live_sources` / `live_sources_built` give the ratio) | first run (S252 audit: 769 before the AA-905 backfill) |
 | `live_sources_place_build_failed` | info | live sources whose build row is `failed` | first run |
-| `active_place_atoms_card_miss` | info | active place atoms whose `atom_place_card` row has no card (a resolved miss); with `active_place_atoms_without_card_link` (no row) and `totals.active_place_atoms` this is the card coverage (AA-784) | first run |
+| `active_place_atoms_card_miss` | info | active place atoms whose `atom_place_card` row has no card (a resolved miss; `needs_draft` rows are `place_card_needs_draft`); with `active_place_atoms_without_card_link` (no row) and `totals.active_place_atoms` this is the card coverage (AA-784) | first run |
 
 Baselines live in `freshness_gate.BASELINE`; "first run" rows get their number from the first nightly report (record
 it here in the follow-up PR that sets them). Not in the probe: atom embeddings and `published_tours.content_embedding`

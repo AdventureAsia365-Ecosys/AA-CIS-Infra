@@ -49,7 +49,12 @@ enforces; `info` = coverage or by-design number, reported against the S251 basel
   geo_tour_place_rows_on_inactive_atoms info  S251 query: geo.tour_place rows none of whose atom_ids is active
   geo_tour_place_stale_rows            stale  the same, rows of active tours only
   place_card_links_missing             stale  active place atoms without an atom_place_card row, in tours whose
-                                              atoms were carded before (a re-atomize that lost the links)
+                                              atoms were carded before (a re-atomize that lost the links). S262: a
+                                              `needs_draft` row (AA-CIS-App place_cards.NEEDS_DRAFT: the $0 relink
+                                              left the place for a paid draft) is a row, so its atom is not missing,
+                                              and it alone never makes a tour "carded before"
+  place_card_needs_draft               info   S262: active place atoms whose atom_place_card row is `needs_draft`
+                                              (card_id NULL): waiting for the paid place_cards_build / T8 draft
   active_place_atoms_without_card_link info   every active place atom without an atom_place_card row (AA-784)
   tenant_versions_older_than_master    info   S251 query: tenant versions created before their Master's update
                                               (by design: AA-990 / AA-986, the tenant is told, nothing overwritten)
@@ -72,8 +77,9 @@ Coverage metrics (S252 propagation audit §6 item 14; the audit's hand-run cover
                                               (enqueue.source_is_built false: AA-905 coverage)
   live_sources_place_build_failed      info   live sources whose place build row has status `failed`
   active_place_atoms_card_miss         info   active place atoms whose atom_place_card row has no card (card_id
-                                              NULL, a resolved miss); with active_place_atoms_without_card_link
-                                              (no row at all) and totals.active_place_atoms this is the card
+                                              NULL, a resolved miss; `needs_draft` rows are place_card_needs_draft);
+                                              with active_place_atoms_without_card_link (no row at all),
+                                              place_card_needs_draft and totals.active_place_atoms this is the card
                                               coverage (AA-784)
 
 Routes and ranking are checked by parity, not timestamps: derive_routes() below is a verbatim port of
@@ -190,6 +196,9 @@ LIVE_SOURCES = f"""
 # AA-CIS-App services/seo_intelligence/s1_prefetch.py: SEO_FORMAT and REUSE_DAYS (env S1_SEO_REUSE_DAYS, default 180).
 SEO_FORMAT = "ideas_v3"
 S1_REUSE_DAYS = 180
+# AA-CIS-App services/acp_shared/place_cards.py NEEDS_DRAFT (S262): the atom_place_card marker of a place left for a
+# paid draft (card_id NULL; not a resolved miss).
+NEEDS_DRAFT = "needs_draft"
 
 # name -> (gate, unit, inner query returning text `id` + boolean `aged`; $1 = the cutoff timestamptz).
 METRICS = {
@@ -288,7 +297,13 @@ METRICS = {
            AND NOT EXISTS (SELECT 1 FROM acp_shared.atom_place_card k WHERE k.atom_id = a.atom_id)
            AND EXISTS (SELECT 1 FROM acp_contract.tour_atoms t
                          JOIN acp_shared.atom_place_card k ON k.atom_id = t.atom_id
-                        WHERE t.tour_id = a.tour_id)"""),
+                        WHERE t.tour_id = a.tour_id AND k.miss_reason IS DISTINCT FROM '{NEEDS_DRAFT}')"""),
+    "place_card_needs_draft": ("info", "atoms", f"""
+        SELECT a.atom_id AS id, c.changed_at < $1 AS aged
+          FROM acp_contract.v_active_tour_atoms a
+          JOIN chg c ON c.tour_id = a.tour_id
+          JOIN acp_shared.atom_place_card k ON k.atom_id = a.atom_id
+         WHERE {PLACE_ATOM} AND k.card_id IS NULL AND k.miss_reason = '{NEEDS_DRAFT}'"""),
     "active_place_atoms_without_card_link": ("info", "atoms", f"""
         SELECT a.atom_id AS id, c.changed_at < $1 AS aged
           FROM acp_contract.v_active_tour_atoms a
@@ -343,7 +358,7 @@ METRICS = {
           FROM acp_contract.v_active_tour_atoms a
           JOIN chg c ON c.tour_id = a.tour_id
           JOIN acp_shared.atom_place_card k ON k.atom_id = a.atom_id
-         WHERE {PLACE_ATOM} AND k.card_id IS NULL"""),
+         WHERE {PLACE_ATOM} AND k.card_id IS NULL AND k.miss_reason IS DISTINCT FROM '{NEEDS_DRAFT}'"""),
 }
 # Computed in Python from MOMENTS_SQL + CURRENT_ROUTES_SQL (route parity); listed here for the order and the gate.
 ROUTE_METRICS = {"routes_missing": ("stale", "tours"), "routes_differ": ("stale", "tours")}
@@ -352,7 +367,8 @@ ORDER = ["atoms_older_than_master", "active_tours_without_atoms", "active_atoms_
          "ranking_missing", "ranking_off_active_pairs",
          "active_tours_without_ranking", "routes_missing", "routes_differ", "active_tours_without_route",
          "current_routes_older_than_atoms", "routes_with_dead_segment", "geo_tour_place_rows_on_inactive_atoms",
-         "geo_tour_place_stale_rows", "place_card_links_missing", "active_place_atoms_without_card_link",
+         "geo_tour_place_stale_rows", "place_card_links_missing", "place_card_needs_draft",
+         "active_place_atoms_without_card_link",
          "tenant_versions_older_than_master", "angle_gate_requests_on_inactive_atoms", "seo_context_expired",
          "seo_context_expired_active_tours", "dead_member_rows", "live_sources_without_place_build",
          "live_sources_place_build_failed", "active_place_atoms_card_miss"]

@@ -55,6 +55,7 @@ BASELINE = {
     "geo_tour_place_rows_on_inactive_atoms": 2038,  # of 2,480 rows, 123 tours
     "geo_tour_place_stale_rows": None,
     "place_card_links_missing": None,
+    "place_card_needs_draft": None,                 # info (S262): waiting for a paid card draft
     "active_place_atoms_without_card_link": None,   # S251: only 105 active atoms linked to a card
     "tenant_versions_older_than_master": 2,         # of 55 versions
     "angle_gate_requests_on_inactive_atoms": 14,    # of 25 requests

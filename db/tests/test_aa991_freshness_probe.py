@@ -193,6 +193,16 @@ class ProbeShapeTest(unittest.TestCase):
         self.assertIn("b.status <> 'retired'", probe.METRICS["live_sources_without_place_build"][2])
         self.assertIn("b.status = 'failed'", probe.METRICS["live_sources_place_build_failed"][2])
         self.assertIn("k.card_id IS NULL", probe.METRICS["active_place_atoms_card_miss"][2])
+        # S262: a `needs_draft` row (CIS place_cards.NEEDS_DRAFT) is its own info metric, not a resolved miss, and
+        # never makes a tour "carded before" for place_card_links_missing
+        self.assertEqual(probe.NEEDS_DRAFT, "needs_draft")
+        self.assertEqual(probe.METRICS["place_card_needs_draft"][:2], ("info", "atoms"))
+        self.assertIn("k.card_id IS NULL AND k.miss_reason = 'needs_draft'", probe.METRICS["place_card_needs_draft"][2])
+        self.assertIn("k.miss_reason IS DISTINCT FROM 'needs_draft'", probe.METRICS["active_place_atoms_card_miss"][2])
+        links = " ".join(probe.METRICS["place_card_links_missing"][2].split())
+        self.assertEqual(probe.METRICS["place_card_links_missing"][0], "stale")
+        self.assertIn("WHERE t.tour_id = a.tour_id AND k.miss_reason IS DISTINCT FROM 'needs_draft'", links)
+        self.assertIn("AND NOT EXISTS (SELECT 1 FROM acp_shared.atom_place_card k WHERE k.atom_id = a.atom_id)", links)
         for k in ("segment_member_rows", "active_place_atoms", "live_sources", "live_sources_built"):
             self.assertIn(f" AS {k}", probe.TOTALS_SQL)
 
