@@ -91,6 +91,9 @@ locals {
   # still reads the version (GetSecretValue), so the plan role needs it like any other version.
   # AA-908: + the TripPlanner BFF's WAF header value (identity.tf, only while identity_waf_enabled) and its sign-up
   # proof key (only while traveller native sign-up is on).
+  # AA-873 (S261): + the EXTERNAL Google / Facebook IdP secrets (identity.tf data sources), each only while its IdP
+  # variables are set, so turning an IdP on needs no hand edit here. Both are off today: no change to the list.
+  # The apply boundary (DenySecretValuesTerraformDoesNotRefresh below) uses this same list as its only exception.
   tf_plan_secret_arns = concat(
     [
       aws_secretsmanager_secret.tripplanner_db.arn,
@@ -99,7 +102,18 @@ locals {
     ],
     aws_secretsmanager_secret.identity_traveller_bff[*].arn,
     aws_secretsmanager_secret.identity_traveller_signup_proof[*].arn,
+    local.id_ext_google ? [var.identity_external_google_client_secret_arn] : [],
+    local.id_facebook ? [var.identity_facebook_app_secret_arn] : [],
   )
+
+  # AA-873 (S261 review fix): the ecosystem ops secrets (aa-ecosys/*: the aa-agent GitHub App key, the Linear key)
+  # and the identity secrets (aa-identity/*: the WORKFORCE break-glass login). Only the MFA admin role reads them
+  # (CloudTrail 01-31/10/2026; secrets register consumers); no workload, CI role or Terraform refresh does. Any
+  # region: a replica created in another region carries the same name but not the source's resource policy.
+  ecosystem_guarded_secret_arns = [
+    "arn:aws:secretsmanager:*:${var.account_id}:secret:aa-ecosys/*",
+    "arn:aws:secretsmanager:*:${var.account_id}:secret:aa-identity/*",
+  ]
 
   # CIS app objects the app deploy role may touch.
   cis_task_families = ["${local.name_prefix}-api", "${local.name_prefix}-worker"]
@@ -151,6 +165,19 @@ data "aws_iam_policy_document" "workload_boundary" {
     effect    = "Deny"
     actions   = ["account:*", "organizations:*"]
     resources = ["*"]
+  }
+
+  # AA-873 (S261 review fix): no bounded role ever reads the ecosystem ops or identity secrets, whatever its
+  # identity policy or the secret's resource policy says. This closes the PassRole leg of the apply role: it may
+  # still PutRolePolicy a GetSecretValue Allow onto an aa-*-dev-* role and RunTask / exec into it, but every such
+  # role carries this boundary (DenyCreateRoleWithoutWorkloadBoundary, DenyRolePolicyWritesWithoutWorkloadBoundary),
+  # including roles CI creates later, and CI cannot edit this policy (DenyBoundaryPolicyEdits). Bootstrap object:
+  # apply it locally with the MFA admin profile.
+  statement {
+    sid       = "DenyEcosystemGuardedSecretValues"
+    effect    = "Deny"
+    actions   = ["secretsmanager:GetSecretValue"]
+    resources = local.ecosystem_guarded_secret_arns
   }
 }
 
@@ -319,6 +346,39 @@ data "aws_iam_policy_document" "tf_apply_boundary" {
       "iam:PutGroupPolicy", "iam:CreateGroup", "account:*", "organizations:*",
     ]
     resources = ["*"]
+  }
+
+  # AA-873 (S261, architecture review F2): the identity policy carries SecretsManagerReadWrite, so without this the
+  # apply role (trusted for environment:prod + ref main) could read every secret value in the account: the RDS
+  # master, every app DSN, the WORKFORCE break-glass login, the aa-agent GitHub App key and the Linear key.
+  # Terraform itself only needs the values it refreshes, which are exactly local.tf_plan_secret_arns (the plan
+  # role's read list): every other GetSecretValue is denied. BatchGetSecretValue checks GetSecretValue per
+  # secret, so it is covered too. CloudTrail 01-31/10/2026: after the AA-878 removed blocks (19/10) the apply role
+  # read no other secret value; DB Migrate and the probes read secrets from their ECS task roles, not from this role.
+  # Effect on a change: a NEW aws_secretsmanager_secret_version (or secret-version data source) must join
+  # local.tf_plan_secret_arns before its first CI apply, as the plan role already requires. This policy is a
+  # bootstrap object (DenyBoundaryPolicyEdits): apply it locally with the MFA admin profile.
+  statement {
+    sid           = "DenySecretValuesTerraformDoesNotRefresh"
+    effect        = "Deny"
+    actions       = ["secretsmanager:GetSecretValue"]
+    not_resources = local.tf_plan_secret_arns
+  }
+
+  # AA-873 (S261 review fix): the Deny above stops the apply role reading a value itself, not changing who else may
+  # read it. Without this it could delete the resource policy on the aa-agent App key or the break-glass login, or
+  # rewrite it to trust another account (after pointing the secret at a KMS key it controls), or replicate the
+  # secret to a region where no policy exists. Consequence: the resource policies on these secrets
+  # (aws_secretsmanager_secret_policy.ops, .identity_breakglass) are local-apply only (MFA admin profile), like the
+  # boundaries. Tags and description (UpdateSecret) stay CI-appliable.
+  statement {
+    sid    = "DenyEcosystemGuardedSecretPolicyEdits"
+    effect = "Deny"
+    actions = [
+      "secretsmanager:PutResourcePolicy", "secretsmanager:DeleteResourcePolicy",
+      "secretsmanager:ReplicateSecretToRegions",
+    ]
+    resources = local.ecosystem_guarded_secret_arns
   }
 
   # Terraform never assumes another role from this root. Denying it closes the direct path "rewrite
