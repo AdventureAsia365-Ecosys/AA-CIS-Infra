@@ -40,6 +40,5 @@ open or recently closed privilege paths in operational detail. This change trims
 - Several older notes still say "this repo is private" (historical wording from before the ADR 0014 amendment);
   they do not describe privilege paths and are not changed here.
 - `terraform fmt -check -recursive modules` reports `modules/monitoring/main.tf` on main already; untouched here.
-- Rotation of the credential behind the `.gitleaksignore` history pins is not in this branch (provider dashboard
-  login + Secrets Manager write). It should happen before or together with this merge; once done, the secrets
-  register in the root repo records it.
+- The credential behind the `.gitleaksignore` history pins was already rotated in S251 (25/10/2026); the root
+  secrets register records it (corrected in S261).
