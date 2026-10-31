@@ -25,9 +25,12 @@
 -- 'jev' is already allowed by spend_budget_provider_check (migration 168), so no constraint change.
 -- No route change: shared.llm_role_config, llm_model_deployment, llm_provider_connection and the catalog are untouched.
 --
--- Class: contract (root ADR 0017 d3: config-row inserts are not expand). Applied by hand through DB Migrate before the
--- app PR merges. The code reads shared.spend_budget with a fallback (no row = no cap), so the readiness requirement is
--- not raised here.
+-- Class: contract (root ADR 0017 d3: config-row inserts are not expand, so no "-- migrate: expand" header and no
+-- auto-apply). Order (ADR 0017 d1, MIG-4): (1) this migration-only PR merges to AA-CIS-App main; (2) the byte copy in
+-- AA-CIS-Infra db/migrations/cis/ merges (Copy Guard green); (3) a manual DB Migrate apply (check, then apply) once
+-- every job table is idle; (4) only then the AA-642 S0 code PR merges. Until (3) runs, Migration Apply stops at 318
+-- and applies no later CIS expand file. The code reads shared.spend_budget with a fallback (no row = no cap), so the
+-- readiness requirement is not raised here.
 --
 -- Rollback (a new forward migration): DELETE FROM shared.spend_budget WHERE updated_by = 'migration-318';
 --
