@@ -6,8 +6,12 @@
 #   1. aws_secretsmanager_secret_policy: explicit Deny of GetSecretValue / PutSecretValue for every
 #      principal except the MFA admin role (aws:PrincipalArn). Nothing else is denied: Terraform
 #      refresh needs DescribeSecret + GetResourcePolicy, and the CI apply role needs
-#      PutResourcePolicy / UpdateSecret (tags, description) — it never reads or writes the value
+#      UpdateSecret (tags, description) — it never reads or writes the value
 #      (the value is set out-of-band; there is no aws_secretsmanager_secret_version for it).
+#      AA-873 (S261 review fix): the apply boundary now denies PutResourcePolicy / DeleteResourcePolicy /
+#      ReplicateSecretToRegions on aa-identity/* (DenyEcosystemGuardedSecretPolicyEdits, cicd_split.tf), so a
+#      change to this resource policy is LOCAL-APPLY ONLY (MFA admin profile); the workload boundary denies
+#      GetSecretValue on aa-identity/* to every bounded role (DenyEcosystemGuardedSecretValues).
 #   2. EventBridge rule on the default bus: CloudTrail management events for the secret
 #      (GetSecretValue / PutSecretValue, plus the calls that could bypass or weaken the guard) ->
 #      SNS aws_sns_topic.alerts (e-mail). GetSecretValue is a READ-ONLY management event, which a

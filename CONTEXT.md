@@ -192,6 +192,12 @@ accounts/
                                    alerts topic policy = AWS default statement + events.amazonaws.com;
                                    AA-816 S243: root ADR 0006a A8 rule on CloudTrail AdminCreateUser on
                                    the WORKFORCE pool with a temporary password / RESEND / no SUPPRESS)
+    ops_secret_guard.tf           (AA-873 S261: resource policies on the CLI-created aa-ecosys/github/aa-agent-app-key and
+                                   aa-ecosys/ops/linear-api-key (data source, never imported): value calls denied to every
+                                   principal except the MFA admin role, break-glass pattern; LOCAL-APPLY ONLY since the
+                                   apply boundary denies Put/DeleteResourcePolicy and ReplicateSecretToRegions on
+                                   aa-ecosys/* + aa-identity/*, and the workload boundary denies GetSecretValue on both
+                                   prefixes; offline guard tools/terraform/tests/test_secret_read_guards.py)
     security_baseline.tf          (AA-873 PR 1, S255: account S3 Block Public Access (4 flags); IAM Access Analyzer
                                    aa-sec-<env>-external-access (ACCOUNT, external access only; no paid unused-access
                                    analyzer) + rule on ACTIVE findings; EventBridge rules aa-sec-<env>-* on CloudTrail
@@ -442,8 +448,12 @@ a wider CI-role grant). ECS runs the CIS API service
 (`aa-cis-dev-api` on cluster `aa-cis-dev-cluster`) with `stopTimeout = 90` so in-flight requests
 drain on deploy (AA-310, `modules/ecs/main.tf`). The CIS api and worker `DATABASE_URL` is the DSN of
 the runtime role `cis_app` (`secret_rds_arn` → `aws_secretsmanager_secret.rds_cis_app`, X1 S18), and the CIS task
-role has an explicit Deny on `GetSecretValue` for the master, `db-migrator`, `booking/*`, `tripplanner/*` and `crm/*` (AA-932) secrets
-(`DenyMasterAndOtherAppSecrets`, X1 S19), so ECS-exec scripts run as `cis_app` too. A Terraform Apply that touches
+role has an explicit Deny on `GetSecretValue` for the master, `db-migrator`, `booking/*`, `tripplanner/*` and `crm/*` (AA-932) secrets,
+and since AA-873 S261 `aa-crm/*`, `aa-ecosys/*` and `aa-identity/*` (`aa-llm/*` stays readable: the LLM gateway's own namespace)
+(`DenyMasterAndOtherAppSecrets`, X1 S19), so ECS-exec scripts run as `cis_app` too. The Terraform apply role's boundary
+denies every `GetSecretValue` except `local.tf_plan_secret_arns` (`DenySecretValuesTerraformDoesNotRefresh`, AA-873 S261) and every
+resource-policy edit or replication of `aa-ecosys/*` / `aa-identity/*` (`DenyEcosystemGuardedSecretPolicyEdits`), and the workload
+boundary denies `GetSecretValue` on those two prefixes to every bounded role (`DenyEcosystemGuardedSecretValues`). A Terraform Apply that touches
 `aws_ecs_service`, `aws_ecs_task_definition` or `aws_lambda_function` rolls services and has no job guard: run the
 manual idle gate first (root `skill/aa-ship`, X1 plan standing rules). Env on the CIS task definitions comes only
 from `modules/ecs/main.tf` (e.g. AA-847 `PLACE_SHAPES_ENABLED` from `place_shapes_enabled`; AA-839

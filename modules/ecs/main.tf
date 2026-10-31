@@ -343,6 +343,13 @@ resource "aws_iam_role_policy" "ecs_task_policy" {
       # code naming the master secret is services/acp_produce/sweeper_lambda.py, a Lambda handler that is
       # neither deployed nor imported by the api / worker. Master-level scripts go through DB Migrate
       # mode=run-script (db/scripts/README.md), no longer through ECS exec.
+      # AA-873 (S261, architecture review F1): plus every prefix that belongs to another owner and that no CIS
+      # code reads: aa-ecosys/* (the aa-agent GitHub App key, the Linear key, ops credentials; reading the App key
+      # from a compromised CIS task gave write access to every repo), aa-identity/* (the WORKFORCE break-glass
+      # login) and aa-crm/* (the CRM M2M client). Derived from a grep of AA-CIS-App main and 30 days of CloudTrail
+      # GetSecretValue by this role (01-31/10/2026): it read only aa-cis/<env>/*, acp/{cms,social}/* and
+      # aa-llm/<env>/* (the LLM gateway's connection secrets, shared/llm_client/connections.py), none of them denied.
+      # aa-llm/* stays readable: it is the CIS gateway's own namespace.
       {
         Sid    = "DenyMasterAndOtherAppSecrets"
         Effect = "Deny"
@@ -353,6 +360,9 @@ resource "aws_iam_role_policy" "ecs_task_policy" {
           "arn:aws:secretsmanager:${var.aws_region}:005097885195:secret:booking/*",
           "arn:aws:secretsmanager:${var.aws_region}:005097885195:secret:tripplanner/*",
           "arn:aws:secretsmanager:${var.aws_region}:005097885195:secret:crm/*", # AA-932 partner CRM
+          "arn:aws:secretsmanager:${var.aws_region}:005097885195:secret:aa-crm/*",
+          "arn:aws:secretsmanager:${var.aws_region}:005097885195:secret:aa-ecosys/*",
+          "arn:aws:secretsmanager:${var.aws_region}:005097885195:secret:aa-identity/*",
         ]
       },
       # AA-894 scope 2 — the admin data-model view (AA-CIS-App GET /admin/data-model) reads the ERD model that

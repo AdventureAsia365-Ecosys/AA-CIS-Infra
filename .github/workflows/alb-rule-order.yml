@@ -12,6 +12,8 @@ on:
     paths:
       - "accounts/aa365/**"
       - "modules/alb/**"
+      - "modules/ecs/**"
+      - "modules/elasticache/**"
       - "tools/terraform/**"
       - ".github/workflows/alb-rule-order.yml"
   push:
@@ -19,6 +21,8 @@ on:
     paths:
       - "accounts/aa365/**"
       - "modules/alb/**"
+      - "modules/ecs/**"
+      - "modules/elasticache/**"
       - "tools/terraform/**"
       - ".github/workflows/alb-rule-order.yml"
 
@@ -45,8 +49,10 @@ jobs:
       # AA-932: the CRM KMS alarm patterns (crm_data.tf) against the live-check events, offline.
       # AA-873 (S256): every GitHub OIDC role is triaged in the Access Analyzer archive rule with a pinned subject, and
       # the iam-change alert covers every IAM write verb of tools/terraform/sec_alert_check.py.
-      - name: Unit tests (rule-order checker + CRM edge live check + CRM KMS alarm patterns + security alerts)
-        run: python -B -m pytest -p no:cacheprovider -q tools/terraform/tests/test_alb_rule_order.py tools/terraform/tests/test_crm_edge_live_check.py tools/terraform/tests/test_crm_kms_alarm_check.py tools/terraform/tests/test_sec_access_analyzer.py
+      # AA-873 (S261): who may read secret values (CIS task role Deny, apply boundary Deny, ops key resource policies);
+      # it reads modules/ecs and modules/elasticache too, hence those paths above.
+      - name: Unit tests (rule-order checker + CRM edge live check + CRM KMS alarm patterns + security alerts + secret read guards)
+        run: python -B -m pytest -p no:cacheprovider -q tools/terraform/tests/test_alb_rule_order.py tools/terraform/tests/test_crm_edge_live_check.py tools/terraform/tests/test_crm_kms_alarm_check.py tools/terraform/tests/test_sec_access_analyzer.py tools/terraform/tests/test_secret_read_guards.py
 
       - name: Check accounts/aa365 listener rules
         run: python3 -B tools/terraform/alb_rule_order.py --source accounts/aa365
