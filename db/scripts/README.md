@@ -312,3 +312,17 @@ candidate narrower view (`cand_a` / `cand_b`, a possible CIS `catalog.v_tour_des
 `geo.name_norm(name)`, the planner settings and `pg_stat_statements` for every v_tour_place statement. Counts and
 timings only; ~1–5 minutes, budget 20 minutes; always returns 0. Notes: AA-TripPlanner-Web
 `docs/implementation-notes/AA-995.md` (S257).
+
+`aa1002_dev_anthropic_road.py` (AA-1002, S261, Dev only; merged `MODE = "dry_run"`, apply by a one-line PR): prepares
+the Dev LLM road on the Anthropic API without the key. As `cis_owner`, from the live routes, deployments and catalog:
+inserts a migration-306-style `anthropic-direct` deployment (priority 100, behind acc3) for an Anthropic Converse model a
+CIS route names that lacks one; sets `allowed_scopes = {aws_only, vendor_direct}` on every CIS stage whose route then
+reaches an Anthropic model through `anthropic-direct` (admin and tenant T-stages in separate `group=` lines; `tp_*`
+stages reported, never changed); sets the connection's MONTHLY budget to 150 USD when it is NULL (S10 has no daily
+per-connection budget). Never enables the connection or reads a secret. Refuses unless the data looks like Dev (every
+`aa-llm/` secret name under `aa-llm/dev/`, `anthropic-direct` naming `aa-llm/dev/anthropic-direct`, migration 311
+applied). `SCRIPT gap` lines name Anthropic models a route uses that cannot go to the API (the legacy keys `haiku` /
+`sonnet`: the gateway never sends them to an Anthropic connection). Idempotent; re-run it after a route change that
+brings an Anthropic Converse model to a stage. Tests: `db/tests/test_aa1002_dev_anthropic_road.py` (fake
+connection), `db/tests/test_aa1002_dev_anthropic_road_pg.py` (real PostgreSQL, local only). Runbook: root
+`docs/ops/runbooks/llm-anthropic-api-key.md`.
