@@ -27,7 +27,18 @@ Subcommands
       The client secret is read from the `cis-portal` client (DescribeUserPoolClient) and kept in memory; the
       session secret is random (secrets.token_urlsafe) and kept on a re-run unless --rotate-session (which signs
       every CRM web user out). Values are never printed: the output is the secret name, the version id and which
-      keys changed.
+      keys changed. AA-1019: every other key of the secret (the staff console's) is kept as it is.
+  staff-web-secret [--apply] [--rotate-staff-session]   (AA-1019; always the WORKFORCE pool, --pool is ignored)
+      Adds / updates the AA staff console's two keys in crm/<env>/web: staff_cognito_client_secret (read from the
+      WORKFORCE client aa-workforce-<env>-crm-staff) and staff_session_secret (random, kept on a re-run unless
+      --rotate-staff-session, which signs every staff console user out). The agency keys are kept as they are. Run it
+      BEFORE the first web deploy after the AA-1019 Terraform apply: the task maps both keys and fails to start without.
+  e2e-staff [--apply]   (AA-1019, root ADR 0006a A10c; WORKFORCE pool, dev only)
+      The Dev-only AA-Partner staff E2E user e2e-crm-staff@e2e-mail.<zone> in groups crm-ops + crm-support exactly:
+      AdminCreateUser with MessageAction=SUPPRESS and email_verified=true, no password (sign-in is the e-mail code,
+      which lands in the e2e mailbox prefix inbound-admin/, MFA admin reads only), then AdminAddUserToGroup for each
+      missing group. A re-run creates nothing new. The pre sign-up trigger accepts the address only while its Dev
+      flag is on (workforce.py E2E_DEV_ONLY_TEST_STAFF), and the pre token trigger refuses any other group set.
 
   invitee-reset [--invitee crm|studio-viewer|studio-editor] [--apply]   (AA-939, --pool partner)
       Deletes the partner-pool account of an invitee address (AdminDeleteUser) so its next invitation starts from no
@@ -70,6 +81,11 @@ INVITEE_TARGETS = ("crm", *(f"studio-{r}" for r in STUDIO_ROLES))
 SESSION_SECRET_BYTES = 48
 POOLS = ("external", "partner")
 WEB_CLIENT = {"external": "cis-portal", "partner": "partner-web"}
+# AA-1019 (root ADR 0006a A10c): the Dev-only staff E2E user; local part and groups must equal the WORKFORCE trigger's
+# E2E_CRM_STAFF_TEST_STAFF_EMAIL / _GROUPS (accounts/aa365/lambda_src/identity_triggers/workforce.py).
+E2E_STAFF_LOCAL = "e2e-crm-staff"
+E2E_STAFF_GROUPS = ("crm-ops", "crm-support")
+STAFF_CLIENT = "crm-staff"
 PASSWORD_SYMBOLS = "!#$%&*+-=?@^_"
 
 
@@ -424,12 +440,93 @@ def web_secret(
     if not apply:
         result["action"] = "would_write"
         return result
-    resp = sm.put_secret_value(
-        SecretId=name, SecretString=json.dumps({"cognito_client_secret": client_secret, "session_secret": session})
-    )
+    # AA-1019: keep every other key (the staff console's) as it is.
+    value = {**current, "cognito_client_secret": client_secret, "session_secret": session}
+    resp = sm.put_secret_value(SecretId=name, SecretString=json.dumps(value))
     result["action"] = "written"
     result["version_id"] = resp.get("VersionId")
     return result
+
+
+def staff_web_secret(
+    idp: Any, sm: Any, workforce_pool_id: str, client_name: str, *, env: str, apply: bool, rotate_session: bool
+) -> dict[str, Any]:
+    """AA-1019: the staff console's two keys of crm/<env>/web; the agency keys are kept as they are."""
+    name = f"crm/{env}/web"
+    if not _secret_exists(sm, name):
+        raise ToolError(f"{name} does not exist: apply AA-CIS-Infra crm_web.tf first (the secret shell)")
+    client_id = find_client_id(idp, workforce_pool_id, client_name)
+    client_secret = idp.describe_user_pool_client(UserPoolId=workforce_pool_id, ClientId=client_id)[
+        "UserPoolClient"
+    ].get("ClientSecret")
+    if not client_secret:
+        raise ToolError(f"{client_name} has no client secret (it must be a confidential client)")
+    current = _current_secret(sm, name) or {}
+    session = current.get("staff_session_secret")
+    changed = []
+    if rotate_session or not isinstance(session, str) or len(session) < 32 or session == current.get("session_secret"):
+        session = secrets.token_urlsafe(SESSION_SECRET_BYTES)
+        changed.append("staff_session_secret")
+    if current.get("staff_cognito_client_secret") != client_secret:
+        changed.append("staff_cognito_client_secret")
+    result: dict[str, Any] = {"secret": name, "client": client_name, "changed": changed}
+    if not changed:
+        result["action"] = "unchanged"
+        return result
+    if not apply:
+        result["action"] = "would_write"
+        return result
+    value = {**current, "staff_cognito_client_secret": client_secret, "staff_session_secret": session}
+    resp = sm.put_secret_value(SecretId=name, SecretString=json.dumps(value))
+    result["action"] = "written"
+    result["version_id"] = resp.get("VersionId")
+    return result
+
+
+def e2e_staff(idp: Any, workforce_pool_id: str, *, env: str, zone: str, apply: bool) -> dict[str, Any]:
+    """AA-1019 (A10c): the Dev-only staff E2E user in crm-ops + crm-support (SUPPRESS, no password, idempotent)."""
+    if env != "dev":
+        raise ToolError("e2e-staff is Dev only (root ADR 0006a A10c)")
+    email = f"{E2E_STAFF_LOCAL}@e2e-mail.{zone}"
+    found = find_user(idp, workforce_pool_id, email)
+    action = "exists"
+    if found is None:
+        if not apply:
+            return {"email": email, "action": "would_create", "groups": list(E2E_STAFF_GROUPS), "sub": None}
+        created = idp.admin_create_user(
+            UserPoolId=workforce_pool_id,
+            Username=email,
+            UserAttributes=[
+                {"Name": "email", "Value": email},
+                {"Name": "email_verified", "Value": "true"},
+                {"Name": "name", "Value": "E2E CRM staff"},
+            ],
+            # Never mail a temporary password (identity.tf: every AdminCreateUser passes SUPPRESS).
+            MessageAction="SUPPRESS",
+        )
+        found = created["User"]
+        action = "created"
+    sub = _attr(found, "sub")
+    if not sub:
+        raise ToolError(f"{email}: no sub attribute")
+    username = found.get("Username") or email
+    have = {g["GroupName"] for g in idp.admin_list_groups_for_user(UserPoolId=workforce_pool_id, Username=username).get("Groups", [])}
+    extra = sorted(have - set(E2E_STAFF_GROUPS))
+    if extra:
+        # The token trigger would refuse every token anyway; say so instead of adding more.
+        raise ToolError(f"{email} is in other groups too ({', '.join(extra)}): remove them by hand first")
+    missing = [g for g in E2E_STAFF_GROUPS if g not in have]
+    if missing and apply:
+        for g in missing:
+            idp.admin_add_user_to_group(UserPoolId=workforce_pool_id, Username=username, GroupName=g)
+    return {
+        "email": email,
+        "action": action,
+        "sub": sub,
+        "groups": list(E2E_STAFF_GROUPS),
+        "groups_added": missing if apply else [],
+        "groups_missing": [] if apply else missing,
+    }
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
@@ -448,6 +545,11 @@ def build_parser() -> argparse.ArgumentParser:
     w = sub.add_parser("web-secret", help="write crm/<env>/web for the CRM web task")
     w.add_argument("--apply", action="store_true")
     w.add_argument("--rotate-session", action="store_true")
+    ws = sub.add_parser("staff-web-secret", help="AA-1019: the staff console's keys of crm/<env>/web (WORKFORCE crm-staff)")
+    ws.add_argument("--apply", action="store_true")
+    ws.add_argument("--rotate-staff-session", action="store_true")
+    es = sub.add_parser("e2e-staff", help="AA-1019: the Dev-only staff E2E user (crm-ops + crm-support)")
+    es.add_argument("--apply", action="store_true")
     r = sub.add_parser("invitee-reset", help="delete the invitee account(s) before the timed invitation E2E (--pool partner)")
     r.add_argument("--invitee", choices=INVITEE_TARGETS, default="crm",
                    help="crm (default): the CRM invitation E2E address; studio-<role>: one AA-979 studio invitee")
@@ -468,6 +570,17 @@ def main(argv: list[str] | None = None, clients: tuple[Any, Any, Any] | None = N
         account = sts.get_caller_identity()["Account"]
         if args.expect_account and account != args.expect_account:
             raise ToolError(f"refused: credentials are for account {account}, expected {args.expect_account}")
+        if args.command in ("staff-web-secret", "e2e-staff"):
+            if args.command == "e2e-staff" and args.env != "dev":
+                raise ToolError("e2e-staff is Dev only (root ADR 0006a A10c)")
+            workforce_pool = f"aa-workforce-{args.env}"
+            workforce_id = find_pool_id(idp, workforce_pool)
+            if args.command == "e2e-staff":
+                out(e2e_staff(idp, workforce_id, env=args.env, zone=args.zone, apply=args.apply))
+            else:
+                out(staff_web_secret(idp, sm, workforce_id, f"{workforce_pool}-{STAFF_CLIENT}", env=args.env,
+                                     apply=args.apply, rotate_session=args.rotate_staff_session))
+            return 0
         pool_name = f"aa-{args.pool}-{args.env}"
         pool_id = find_pool_id(idp, pool_name)
         client_name = f"{pool_name}-{WEB_CLIENT[args.pool]}"
