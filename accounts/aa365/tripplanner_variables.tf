@@ -90,3 +90,16 @@ variable "tripplanner_jobs_reserved_concurrency" {
     error_message = "The jobs Lambda is the single tripplanner.job runner: reserved concurrency must stay 1."
   }
 }
+
+# -----------------------------------------------------------------------------
+# AA-1015: the daily cap on TripPlanner's customer-facing model spend (tp_compose + tp_search_embed, UTC day),
+# enforced by the app (backend/shared/llm_gateway.py budget_status). Set explicitly on browse and assembly so the live
+# value is in Terraform, not an implicit code default. Same value as the app default (5.0): no behaviour change.
+# The CIS Apps board mirrors it (AA-CIS-App api/core/app_registry.py TP_DEFAULT_DAILY_CAP_USD); change both together.
+# Optional per-stage caps (TP_DAILY_SPEND_CAP_SEARCH_USD / _COMPOSE_USD) stay unset: combined cap only.
+# -----------------------------------------------------------------------------
+variable "tripplanner_daily_spend_cap_usd" {
+  type        = string
+  description = "TripPlanner daily customer-facing AI spend cap in USD (TP_DAILY_SPEND_CAP_USD on the browse and assembly Lambdas). The app default is 5.0."
+  default     = "5.0"
+}
