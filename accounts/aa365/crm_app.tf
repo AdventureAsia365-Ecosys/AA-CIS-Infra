@@ -74,6 +74,17 @@ variable "crm_booking_api_url" {
   }
 }
 
+variable "crm_booking_admin_url" {
+  description = "AA-956 (CRM-26, design v3 Fix B3): BOOKING_ADMIN_URL of the AA-Partner task, the origin of the AA-Booking staff admin (Vercel project aa-booking-admin). The S-02 ops release links AA ops to <this>/b2b-desk (tab Departures & incidents) to flag an incident on a departure; the CRM never flags one itself. No path, no trailing slash. Empty: S-02 shows the departure ids without the link."
+  type        = string
+  default     = "https://booking.lumiguides.it.com"
+
+  validation {
+    condition     = var.crm_booking_admin_url == "" || can(regex("^https://[a-z0-9.-]+$", var.crm_booking_admin_url))
+    error_message = "crm_booking_admin_url must be empty or an https origin without a path or trailing slash."
+  }
+}
+
 variable "crm_sentry_enabled" {
   description = "AA-933: map secret crm/<env>/sentry-dsn into the AA-Partner task (SENTRY_DSN) and set SENTRY_REQUIRED=true. Turn on only AFTER the secret has a value (Sentry project aa-partner-api): a task whose secret has no value fails to start."
   type        = bool
@@ -441,6 +452,8 @@ resource "aws_ecs_task_definition" "crm_api" {
       { name = "CIS_API_URL", value = var.crm_cis_api_url },
       # AA-947: booking.b2b.v1 (crm_booking_sync, the AA product look-up); the same M2M_CLIENT secret.
       { name = "BOOKING_API_URL", value = var.crm_booking_api_url },
+      # AA-956: the Booking staff admin origin, the S-02 link to flag an incident on a departure (Fix B3).
+      { name = "BOOKING_ADMIN_URL", value = var.crm_booking_admin_url },
       # AA-946: the portal code echo, Dev only (synthetic agencies, no mailbox); the API refuses it elsewhere.
       { name = "PORTAL_OTP_DEV_ECHO", value = var.environment == "dev" ? "true" : "false" },
       ], local.crm_identity_env, local.crm_scrub_env, local.crm_mail_env, var.crm_sentry_enabled ? [
