@@ -136,54 +136,21 @@ local apply too), plus the plan role's secret list (`local.tf_plan_secret_arns` 
    statement denies `DetachRolePolicy` / `DeleteRolePolicy` on any role without the workload
    boundary, which includes the legacy `aa-cis-dev-role` that step 3 dismantles through CI. Flip it
    in the step-3 PR or after it. Only steps 3 + 4 + phase 3 together close the escalation path
-   below. (S239: flipped in the step-3 PR, which is applied locally, so the deny never meets the
-   legacy role.)
+   (closed in S239; see Residual risk below). (S239: flipped in the step-3 PR, which is applied
+   locally, so the deny never meets the legacy role.)
 
    After step 4 is applied, every **local admin apply** (bootstrap PRs such as the agent-session
    boundary) must run from a branch that already contains step 4. The admin profile is not bound by
    `DenyBoundaryRemoval`, so a plan from an older base shows `- permissions_boundary` on these roles
    and would silently strip them: stop and rebase if the plan shows that.
 
-## Residual risk until steps 3 + 4 + phase 3
+## Residual risk
 
-After step 4 every CI-managed workload role carries the workload boundary, so a role the apply
-role rewrites and passes yields at most workload-boundary rights (no IAM writes). What is left until
-step 3 and phase 3: the apply role may still *rewrite* those roles' policies (broad non-IAM rights),
-and the agent session role stays unbounded until its local bootstrap apply. The text below is the
-situation before step 4.
+Steps 3 + 4 + phase 3 are applied (S239): every role the apply role can write or pass carries the
+workload boundary (no IAM writes), and policy writes on unbounded roles are denied.
 
-**The apply role can still escalate through IAM.** Every `aa-*-dev-*` workload role except the
-bootstrap ones has no boundary yet, and the apply role may rewrite its inline policy, attachments
-or trust, then `iam:PassRole` it to something it can start (it has `AWSLambda_FullAccess` /
-`AmazonECS_FullAccess`; DB Migrate already runs ECS tasks with command overrides). Example: put
-`iam:*` on `aa-cis-dev-ecs-task-role`, run a task with it, and that task can remove the apply
-role's boundary. The `sts:AssumeRole` deny does not stop this — no AssumeRole call is involved.
-What the boundary does close now: the legacy role, the app deploy and agent session roles, the
-`aa-cis-infra-tf-*` roles, the boundary policies, the OIDC provider, users/keys and other systems'
-roles.
+Main-only for the apply role is enforced by the IAM OIDC `ref` condition (`refs/heads/main`) in its
+trust policy (AA-866); GitHub environment rules are tracked in Linear AA-873 (TL-7). Review every IAM
+policy/trust diff in a PR with the apply role's reach in mind.
 
-The mitigation until then is procedural: the apply role only runs from the `prod` environment
-(main + required reviewer), so this needs a reviewed, merged Terraform change. Review every IAM
-policy/trust diff in a PR with that in mind.
-
-After steps 3 + 4 + phase 3: every role the apply role can write or pass carries the workload
-boundary (no IAM writes), and policy writes on unbounded roles are denied. `UpdateAssumeRolePolicy`
-and `PassRole` cannot be conditioned on `iam:PermissionsBoundary` (AWS does not set that key for
-them), so they stay name-scoped only; with every role bounded, re-trusting or passing one yields at
-most workload-boundary rights.
-
-## Residual risk — plan role
-
-`aa-cis-infra-tf-plan` is assumed by `pull_request` runs, and a PR can edit
-`terraform-plan.yml` itself, so any collaborator with push access to a branch of AA-CIS-Infra can
-run arbitrary AWS calls as the plan role: read everything `ReadOnlyAccess` covers (including S3
-objects such as the Terraform state, which holds the TripPlanner API key and other values) and the
-secret values in `local.tf_plan_secret_arns` (the admin secret is no longer one of them since
-AA-878, S243). This is the same
-exposure as today's `aa-cis-dev-role` (which is far broader) and is not a regression. It is narrowed
-to the secrets Terraform actually reads — the RDS DSN, JWT and OpenAI secrets are no longer
-readable from a PR. The CIS Redis AUTH token (`aa-cis/dev/redis-auth`, AA-874) is written write-only
-and never lands in the state, but it is on that list, so a PR can still read it through the plan
-role's GetSecretValue; on its own it is of no use outside the VPC (the cache security group admits
-only the CIS api and worker task groups). Further hardening, if wanted: run plan only after a label / from a protected
-environment, or move state-only secrets out of the state file.
+Residual risks (apply role and plan role): Linear AA-873.

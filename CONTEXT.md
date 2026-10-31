@@ -424,8 +424,7 @@ tools/
 
 The **active dev stack** is `accounts/aa365` — it is the root Terraform actually applies against
 today. The old `envs/{dev,staging,prod}` scaffold was removed in AA-841 (S238): nothing applied
-from it (`envs/dev/main.tf` was empty, staging/prod were 0-byte files) and its
-`envs/dev/terraform.tfvars` held plaintext acc1-era credentials. Do not recreate per-env roots
+from it (`envs/dev/main.tf` was empty, staging/prod were 0-byte files). Do not recreate per-env roots
 there; a new environment gets its own `accounts/<name>/` root. Only the aa365 root keeps a tracked
 `terraform.tfvars` (placeholders for anything secret, see `.gitignore`).
 

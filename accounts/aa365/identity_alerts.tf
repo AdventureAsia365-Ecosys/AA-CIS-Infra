@@ -312,14 +312,9 @@ resource "aws_sns_topic_policy" "alerts" {
 }
 
 # ── 4. A8 detective alarm: AdminCreateUser with a caller-set password ────────
-# Root ADR 0006a A8 (AA-816, S243). IAM has no condition key for MessageAction / TemporaryPassword,
-# and PASSWORD is a pool-wide first factor (break-glass needs it), so a compromised CIS task role
-# (identity_iam.tf allows AdminCreateUser) could mint a staff login without a mailbox:
-#   - AdminCreateUser with its own TemporaryPassword, then NEW_PASSWORD_REQUIRED; or
-#   - MessageAction=RESEND, which sets a new temporary password on a FORCE_CHANGE_PASSWORD user.
-# Every legitimate WORKFORCE create (CIS directory, staff_directory.py; tools/identity create-staff
-# and breakglass-init) sends MessageAction=SUPPRESS and no TemporaryPassword, so this rule should
-# never fire in normal operation.
+# Root ADR 0006a A8 (AA-816, S243): IAM cannot constrain the AdminCreateUser parameters, so this
+# rule e-mails on any WORKFORCE AdminCreateUser that does not look like a legitimate create
+# (legitimate creates send MessageAction=SUPPRESS and no TemporaryPassword). Residual risk: Linear AA-873.
 #
 # CloudTrail shape (read live 19/10/2026, 3 AdminCreateUser events of 18/10): requestParameters
 # carries userPoolId and messageAction in clear; username / userAttributes (and, by the same rule,
