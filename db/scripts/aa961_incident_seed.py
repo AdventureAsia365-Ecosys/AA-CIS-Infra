@@ -5,7 +5,8 @@ Why a script: the only Booking staff identity an agent can sign in with is read-
 `e2e_read_only` on `POST /booking/b2b-desk/departures/<id>/incidents`). The row is written the way the Booking API
 writes it: as the app role `booking` (INSERT on the table, UPDATE on cleared_at / cleared_by only), so the
 `departure_incidents_outbox` trigger fans the event out to the partners with seats on the departure exactly as in
-production. No Booking audit row on this path.
+production. No Booking audit row on this path. `flagged_by` / `cleared_by` reference booking.staff_users, so the row is
+attributed to the synthetic E2E staff user (active, e-mail starting with "e2e"); the script refuses without one.
 
 Target: the synthetic departure of 13 Nov 2026 that the S261 evidence prepared (one synthetic CRM agency holds a
 confirmed AA line on it; root docs/audits/2026-10-31-S261-evidence/AA-961/README.md).
@@ -24,7 +25,9 @@ import asyncio
 MODE = "flag"
 
 SCRIPT_NAME = "aa961_incident_seed"
-ACTOR = "seed:S261-AA-961"
+STAFF_SQL = (
+    "SELECT cis_user_id FROM booking.staff_users WHERE active AND email ILIKE 'e2e%' ORDER BY created_at LIMIT 1"
+)
 DEPARTURE_ID = "9f7d807d-1b10-4477-9136-02a7911f4875"
 INCIDENT_CODE = "other"
 WRITE_ROLE = "booking"
@@ -56,6 +59,11 @@ async def run(conn, mode: str) -> int:
         if exists != 1:
             out("refuse", why="departure not found")
             return 1
+        actor = await conn.fetchval(STAFF_SQL)
+        if actor is None:
+            out("refuse", why="no active synthetic e2e staff user")
+            return 1
+        out("actor", staff="synthetic e2e staff user")
         open_ids = [
             r["id"]
             for r in await conn.fetch(
@@ -71,7 +79,7 @@ async def run(conn, mode: str) -> int:
             incident_id = await conn.fetchval(
                 "INSERT INTO booking.departure_incidents (departure_id, incident_code, flagged_by)"
                 " VALUES ($1::uuid, $2, $3) RETURNING id::text",
-                DEPARTURE_ID, INCIDENT_CODE, ACTOR,
+                DEPARTURE_ID, INCIDENT_CODE, actor,
             )  # fmt: skip
             out("flagged", incident_id=incident_id, code=INCIDENT_CODE)
         elif mode == "clear":
@@ -80,7 +88,7 @@ async def run(conn, mode: str) -> int:
                 return 1
             await conn.execute(
                 "UPDATE booking.departure_incidents SET cleared_at = now(), cleared_by = $2 WHERE id = $1::uuid",
-                open_ids[0], ACTOR,
+                open_ids[0], actor,
             )  # fmt: skip
             out("cleared", incident_id=open_ids[0])
         else:
