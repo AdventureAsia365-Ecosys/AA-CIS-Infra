@@ -38,8 +38,8 @@ predecessor carried exactly one card.
 - Before the CIS PR is deployed and the 12 tours are relinked, the probe stays red: their atoms still have no row.
 
 ## Should know
-- Expected after the CIS deploy + `relink.py APPLY=1`: `place_card_links_missing` 0, `place_card_needs_draft` ≈ 106
-  (111 minus the ~5 carried over), `active_place_atoms_card_miss` unchanged.
+- Expected after the CIS deploy + `relink.py APPLY=1`: `place_card_links_missing` 0, `place_card_needs_draft` between 106 and 111
+  (111 minus the carried-over atoms; the S262 review fix carries fewer), `active_place_atoms_card_miss` unchanged.
 - Local PG test: PostgreSQL 16 binaries in a scratch dir (TCP only, `-k ''`), asyncpg from the CIS venv:
   `AA991_TEST_PG_DSN=postgresql://postgres@127.0.0.1:55491/postgres python -m unittest db.tests.test_aa991_freshness_probe_pg`
   → 6 OK. `python3 -m unittest discover -s db/tests -p 'test_aa991*'` → 41 OK (6 skipped without a DSN).
