@@ -109,6 +109,7 @@ ALLOWLIST: dict[str, dict[str, str]] = {
         "geo.geocode_call": f"Geoapify cost log (CIS 319, AA-804); tenant_id is attribution; {_CIS_ONLY}",
         "shared.decision_log": f"Jev decision audit; tenant_id is attribution; {_CIS_ONLY}",
         "shared.jev_tenant_allowlist": f"Jev rollout switch per tenant (admin-managed); {_CIS_ONLY}",
+        "shared.tenant_ai_budget": f"AI spend budget per tenant (AA-1016, CIS 321; admin-managed); {_CIS_ONLY}",
         "shared.tenant_export_config": f"tenant export settings, admin + pipeline only; {_CIS_ONLY}",
         "shared.tenant_rewrite_usage": f"rewrite quota counter; {_CIS_ONLY}",
         "shared.unmapped_market_requests": f"admin triage list of market requests; {_CIS_ONLY}",
