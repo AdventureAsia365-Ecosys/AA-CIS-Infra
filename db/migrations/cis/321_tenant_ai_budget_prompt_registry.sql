@@ -16,7 +16,9 @@
 --      (stage, prompt_sha256). Stores NO prompt text: only the sha256 of the prompt file and its repository path.
 --      NO ROWS (the CI prompt-registry gate of AA-900 registers them). cis_app SELECT only: rows come by migration.
 --   3. Register 321.
---   tripplanner and the tenant pool (aa_app_user) get nothing.
+--   tripplanner and the tenant pool (aa_app_user) get nothing. Each table's grants start with REVOKE ALL from PUBLIC,
+--   cis_app, aa_app_user and catalog_owner: on Dev DB Migrate creates the tables as cis_owner, whose default privileges
+--   in shared (CIS 245) would otherwise leave cis_app INSERT / UPDATE / DELETE on prompt_version.
 --
 -- Behaviour. None on apply: two new empty tables, nothing reads them yet.
 --
@@ -70,6 +72,8 @@ COMMENT ON TABLE shared.tenant_ai_budget IS
     'No row = no budget (unlimited). alert_pct = bell; approval_pct = new T-stage jobs wait for staff approval when '
     'hard_stop. Admin-written, erased with the tenant.';
 
+REVOKE ALL ON shared.tenant_ai_budget FROM PUBLIC;
+REVOKE ALL ON shared.tenant_ai_budget FROM cis_app, aa_app_user, catalog_owner;   -- cis_owner's default privileges
 GRANT SELECT, INSERT, UPDATE, DELETE ON shared.tenant_ai_budget TO cis_app;
 
 -- ── 2. shared.prompt_version (no prompt text) ────────────────────────────────────────────────────────────────────
@@ -98,6 +102,8 @@ COMMENT ON TABLE shared.prompt_version IS
     'AA-900: the prompt register. One row per (stage, version): the sha256 of the prompt file and its path in the '
     'repository. Never the prompt text. Resolves llm_call_log.prompt_version from a prompt hash. Changed by migration.';
 
+REVOKE ALL ON shared.prompt_version FROM PUBLIC;
+REVOKE ALL ON shared.prompt_version FROM cis_app, aa_app_user, catalog_owner;   -- cis_owner's default privileges
 GRANT SELECT ON shared.prompt_version TO cis_app;
 
 -- ── 3. register ──────────────────────────────────────────────────────────────────────────────────────────────────

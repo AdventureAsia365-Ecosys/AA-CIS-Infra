@@ -29,7 +29,10 @@
 --   7. shared.llm_role_config.route_deadline_s integer, NULL = no deadline (every row; read from AA-1018 part 2).
 --      Migration-only: no cis_app column grant.
 --   8. Register 320.
---   Grants: cis_app SELECT on the two new tables; tripplanner none (it reads the catalog, which keeps its columns).
+--   Grants: REVOKE ALL from PUBLIC, cis_app, aa_app_user and catalog_owner first (on Dev DB Migrate creates the
+--   tables as cis_owner, whose default privileges in shared (CIS 245) give cis_app SELECT / INSERT / UPDATE / DELETE;
+--   the REVOKE takes that away, as 277 / 280 / 304 do), then cis_app SELECT on the two new tables; tripplanner none
+--   (it reads the catalog, which keeps its columns).
 --
 -- Behaviour. None on apply: the route snapshot (Q0 of the S262 plan: role config, deployment, connection, catalog
 -- model_key / enabled / api_style / profiles, alias rows) is unchanged, no row of an existing table changes except
@@ -157,6 +160,9 @@ COMMENT ON TABLE shared.stage_model_params IS
     'this row, then the protocol default (shared/llm_client/stage_params.py). NULL = not set. Empty = today''s '
     'behaviour. Changed by migration only.';
 
+REVOKE ALL ON shared.llm_model_family, shared.stage_model_params FROM PUBLIC;
+REVOKE ALL ON shared.llm_model_family, shared.stage_model_params
+    FROM cis_app, aa_app_user, catalog_owner;                     -- cis_owner's default privileges (CIS 245)
 GRANT SELECT ON shared.llm_model_family TO cis_app;
 GRANT SELECT ON shared.stage_model_params TO cis_app;
 
