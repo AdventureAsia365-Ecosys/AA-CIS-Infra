@@ -1258,12 +1258,55 @@ def if_not_exists_relations(sql: str, d: "Directives") -> list:
     return out
 
 
-async def lock_risk_findings(conn, sql: str, d: "Directives") -> list:
+SAFE_REL_RE = re.compile(r"^[a-z_][a-z0-9_$]*\.[a-z_][a-z0-9_$]*$")
+SAFE_ROLE_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
+
+
+async def analyze_unknown(conn, table: str, role: "str | None", log=print) -> "int | None":
+    """S261: a table that was never vacuumed or analyzed has reltuples -1 (a new, still small table autovacuum has not
+    reached yet). ANALYZE samples at most 300 x default_statistics_target rows and takes SHARE UPDATE EXCLUSIVE, which
+    blocks no read or write, so the runner analyzes it (as the file's owner role, the only role allowed to besides the
+    database owner) and reads the estimate again. Check mode does this too, so a check predicts the apply. Any failure
+    leaves the count unknown, i.e. lock risk (fail-safe)."""
+    if not SAFE_REL_RE.match(table):
+        log(f"expand: ANALYZE {table} not attempted (name not schema-qualified lower case); row count stays unknown")
+        return -1
+    if role and not SAFE_ROLE_RE.match(role):
+        log(f"expand: ANALYZE {table} not attempted (odd role name {role!r}); row count stays unknown")
+        return -1
+    schema, name = table.split(".", 1)
+    rel = f'"{schema}"."{name}"'
+    who = role or "the login role"
+    try:
+        await conn.execute(f'SET ROLE "{role}"; ANALYZE {rel}; RESET ROLE' if role else f"ANALYZE {rel}")
+    except Exception as e:                      # noqa: BLE001 - the check stays fail-safe: unknown = lock risk
+        state = getattr(e, "sqlstate", None)
+        why = "lock wait, retry later" if state == "55P03" else (state or type(e).__name__)
+        log(f"expand: ANALYZE {table} as {who} failed ({type(e).__name__}, {why}); row count stays unknown")
+        if role:
+            try:
+                await conn.execute("RESET ROLE")
+            except Exception:                   # noqa: BLE001 - best effort; the session is closed after exit 15
+                pass
+        return -1
+    rows = await conn.fetchval(RELTUPLES_SQL, table)
+    if rows is not None and rows < 0:
+        log(f"expand: ANALYZE {table} as {who} left no estimate (PostgreSQL 15 skips, with only a WARNING, a table "
+            f"the role does not own); row count stays unknown")
+    else:
+        log(f"expand: {table} was never analyzed; ANALYZE as {who} -> ~{rows} rows")
+    return rows
+
+
+async def lock_risk_findings(conn, sql: str, d: "Directives", role: "str | None" = None, log=print) -> list:
     """ADR 0017 d4: read the size of every table an expand file locks, BEFORE any statement runs. A table above
-    EXPAND_MAX_ROWS (pg_class.reltuples, the planner estimate) is lock risk -> contract (exit 15)."""
+    EXPAND_MAX_ROWS (pg_class.reltuples, the planner estimate) is lock risk -> contract (exit 15). A table never
+    analyzed (reltuples -1) is analyzed first (analyze_unknown); still unknown afterwards = lock risk."""
     found = []
     for table, what in lock_risk_targets(sql, d):
         rows = await conn.fetchval(RELTUPLES_SQL, table)
+        if rows is not None and rows < 0:
+            rows = await analyze_unknown(conn, table, role, log)
         if rows is not None and rows < 0:
             found.append(f"{table}: row count unknown (never vacuumed or analyzed; ANALYZE it first), {what}")
         elif rows is not None and rows > EXPAND_MAX_ROWS:
@@ -2608,7 +2651,7 @@ async def apply_file(env, sql: str, file: str, version: str, mode: str, connect,
             log("expand: version already registered, lock-risk check skipped")
         elif d.expand:
             # ADR 0017 d4: sizes are read before any statement (check mode too, so a check predicts the apply).
-            risk = await lock_risk_findings(conn, sql, d)
+            risk = await lock_risk_findings(conn, sql, d, role=plan.run_as if plan.switch else None, log=log)
             if risk:
                 log(f"ERROR: expand: lock risk -> contract: {'; '.join(risk)}. Nothing ran: use CREATE INDEX "
                     f"CONCURRENTLY in a no-transaction file, or drop the expand header and apply it by hand")
