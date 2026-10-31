@@ -133,6 +133,27 @@ variable "anomaly_threshold_usd" {
   default     = 15
 }
 
+variable "app_tag_anomaly_monitors_enabled" {
+  description = <<-EOT
+    AA-896: one Cost Anomaly Detection monitor per App cost allocation tag value (cost_anomaly_app_tag.tf). Keep false
+    until the nonprod account is a member of this organization AND App is an active cost allocation tag in this
+    account; before that a tag monitor here sees none of the workload spend.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "app_tag_values" {
+  description = "App tag values that get their own anomaly monitor (root data standards DM-10.1). One subscription carries them all."
+  type        = list(string)
+  default     = ["cis", "booking", "tripplanner", "crm", "identity", "shared"]
+
+  validation {
+    condition     = length(var.app_tag_values) > 0 && length(var.app_tag_values) <= 10 && alltrue([for v in var.app_tag_values : can(regex("^[a-z][a-z0-9-]{1,30}$", v))])
+    error_message = "app_tag_values: 1 to 10 lowercase App tag values (one subscription takes at most 10 monitors)."
+  }
+}
+
 variable "allowed_regions" {
   description = "SCP 3 allow-list: us-west-1 (all workloads), us-east-1 (ACM for CloudFront/Cognito), us-west-2 (backup copy)."
   type        = list(string)
