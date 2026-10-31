@@ -13,6 +13,10 @@ budget_alert_emails = ["<tech lead role mailbox>", "<business owner role mailbox
 # management_budget_usd = 10
 # anomaly_threshold_usd = 15
 
+# AA-896: per-App anomaly monitors. true only after the nonprod account joined and App is an active cost
+# allocation tag in this account (cost_anomaly_app_tag.tf).
+# app_tag_anomaly_monitors_enabled = false
+
 # Apply 1: false. Apply 2 onwards: true (after the Identity Center console click, README §2 step 4).
 identity_center_enabled = false
 
