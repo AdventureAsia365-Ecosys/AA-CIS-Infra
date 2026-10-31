@@ -54,6 +54,14 @@ locals {
     { name = "PLACE_PIPELINE_AUTO", value = var.place_pipeline_auto ? "on" : "off" },
   ]
 
+  # AA-1018: the daily LLM connection probe (AA-CIS-App services/jobs/llm_probe_job.py, default off). The api's ops
+  # metrics sampler queues one llm_connection_probe job per UTC day from 05:00 and the admin's live run is refused
+  # while it is off; the job re-checks it on the worker before any call. So api and worker carry the same value.
+  # One tiny call (32 output tokens) per enabled text deployment of every enabled connection, at most 30 a run.
+  llm_daily_probe_env = [
+    { name = "LLM_DAILY_PROBE", value = var.llm_daily_probe ? "on" : "off" },
+  ]
+
   # AA-839: the data_erasure job's apply switch and the tenant retention window (AA-CIS-App
   # services/jobs/erasure_job.py). The api checks the flag before it enqueues an apply (403) and the job
   # re-checks both on the worker, so api and worker carry the same values. Apply is on only for the
@@ -601,6 +609,7 @@ resource "aws_ecs_task_definition" "api" {
       local.segment_gc_env,
       local.place_pipeline_auto_env,
       local.erasure_env,
+      local.llm_daily_probe_env,
       local.redis_env,
       local.job_test_kinds_env,
     )
@@ -825,6 +834,7 @@ resource "aws_ecs_task_definition" "worker" {
       local.t9_faq_filter_env,
       local.supply_photo_purge_env,
       local.s1_writer_env,
+      local.llm_daily_probe_env,
       local.redis_env,
       local.job_test_kinds_env,
     )

@@ -478,7 +478,7 @@ from `modules/ecs/main.tf` (e.g. AA-847 `PLACE_SHAPES_ENABLED` from `place_shape
 the latest revision and swaps the image, so a Terraform env change ships with the next CIS deploy. The reverse also
 holds: an env set by hand on a running revision is lost when any apply touching `module.ecs` registers a new
 template revision, so every runtime switch lives in the module (AA-645 `S1_WRITER_V2` from `s1_writer_v2_enabled`,
-added after the S250 near miss; AA-905 / AA-989 `PLACE_PIPELINE_AUTO` from `place_pipeline_auto`, on since S252); after such an apply, diff the env names of the newest revision against the running
+added after the S250 near miss; AA-905 / AA-989 `PLACE_PIPELINE_AUTO` from `place_pipeline_auto`, on since S252; AA-1018 `LLM_DAILY_PROBE` from `llm_daily_probe`, api and worker, on since S262); after such an apply, diff the env names of the newest revision against the running
 one before the next deploy. Redis (AA-874 S5): api and worker get `REDIS_HOST` = the TLS primary endpoint of
 `aws_elasticache_replication_group.main` (`aa-cis-dev-cache`, Valkey, AUTH + TLS + at-rest), `REDIS_TLS=true`,
 `REDIS_CLUSTER_ID` = its member node and the secret `REDIS_AUTH_TOKEN` (`aa-cis/dev/redis-auth`, write-only, never

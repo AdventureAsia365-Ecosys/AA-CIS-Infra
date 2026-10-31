@@ -207,6 +207,10 @@ module "ecs" {
   # AA-645: S1 writer v2 on the worker, on since S248 (set by hand until S250, now carried here so a template
   # revision keeps it). Rollback to writer v1: false, apply, then CIS deploy-dev.
   s1_writer_v2_enabled = true
+  # AA-1018: the daily LLM connection probe (gateway design decision 2, S261: under 1 USD a month). Catalog estimate
+  # with every enabled text deployment answering: about 0.0063 USD a day (acc3 9 models 0.0049, acc2 5 candidates
+  # 0.00095, openai-direct 2 models 0.0004), about 0.20 USD a month; a refused call costs 0. Rollback: false.
+  llm_daily_probe = true
   # AA-835 (S6 review): the supply_media_purge job invalidates withdrawn Booking photo copies on the photos CDN.
   photos_cdn_distribution_arn = local.photos_cdn_on == 1 ? aws_cloudfront_distribution.photos_cdn[0].arn : ""
   # AA-839: data_erasure apply switch + tenant retention window, driven by local.erasure_drill above.

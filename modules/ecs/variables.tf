@@ -261,6 +261,13 @@ variable "place_pipeline_auto" {
   default     = false
 }
 
+variable "llm_daily_probe" {
+  description = "AA-1018: env LLM_DAILY_PROBE (on/off) on api and worker, the daily LLM connection probe switch (AA-CIS-App services/jobs/llm_probe_job.py; one tiny paid call per enabled text deployment a day). Default off."
+  type        = bool
+  default     = false
+  nullable    = false
+}
+
 variable "segment_gc_mode" {
   description = "AA-988: env SEGMENT_GC_MODE on api and worker for the recompute job's segment_gc stage: report (default), apply or off."
   type        = string
