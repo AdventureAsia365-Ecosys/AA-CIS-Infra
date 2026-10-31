@@ -8,8 +8,9 @@
 #
 #   Resources:
 #     - ECR repo aa-crm-dev-web (IMMUTABLE, one tag per git SHA, scan on push, keep last 10)
-#     - secret shell crm/dev/web (JSON {cognito_client_secret, session_secret}; NO secret_version: the value is set
-#       out of band by tools/identity/crm_dev_identity.py web-secret, so Terraform and the plan role never read it)
+#     - secret shell crm/dev/web (JSON {cognito_client_secret, session_secret, staff_cognito_client_secret,
+#       staff_session_secret}; NO secret_version: the value is set out of band by tools/identity/crm_dev_identity.py
+#       web-secret / staff-web-secret, so Terraform and the plan role never read it)
 #     - execution role aa-crm-dev-web-ecs-execution-role: pull this repo, write the CRM log group, read crm/dev/web only
 #       (never the DSN: the web has no database access)
 #     - task role aa-crm-dev-web-ecs-task-role: ECS Exec channel + exec session logs only (no AWS API the app calls)
@@ -25,6 +26,12 @@
 # public partner host (CRM_API_ORIGIN, egress via the NAT instance): it never holds the CloudFront origin secret.
 # Sign-in: the EXTERNAL `cis-portal` client until AA-939 (design v3 Fix C10); its callback / sign-out URLs on the
 # partner host are in identity_variables.tf. AA-939 points COGNITO_* at the partner pool's web client.
+# AA-1019: the AA staff console (/staff on the agency host) signs in with the WORKFORCE crm-staff client (root ADR 0006b
+# decision 6): STAFF_COGNITO_DOMAIN / STAFF_COGNITO_CLIENT_ID here, STAFF_COGNITO_CLIENT_SECRET / STAFF_SESSION_SECRET
+# from two more keys of crm/dev/web. ORDER: write those keys (crm_dev_identity.py staff-web-secret --apply) BEFORE the
+# AA-1019 Terraform apply (tools/identity/README.md runbook); a task whose secret lacks a mapped key fails to start.
+# (The service ignores task_definition changes, so the apply alone never restarts the running task: writing the keys
+# after the apply and before the next web deploy would also work, but the runbook uses one order.)
 #
 # Order of applies: after AA-933 (crm_app.tf, crm_edge.tf). The secret value must exist before the first task starts
 # (a task whose secret has no value fails to start): apply -> `crm_dev_identity.py web-secret --apply` -> deploy the
@@ -69,6 +76,9 @@ locals {
   crm_web_external_domain = local.id_custom_domains ? "https://${var.identity_external_custom_domain}" : "https://${aws_cognito_user_pool_domain.external_prefix.domain}.auth.${var.aws_region}.amazoncognito.com"
   crm_web_cognito_domain  = var.crm_partner_signin_enabled ? local.idpartner_login_base : local.crm_web_external_domain
   crm_web_client_id       = var.crm_partner_signin_enabled ? aws_cognito_user_pool_client.partner["partner-web"].id : aws_cognito_user_pool_client.external["cis-portal"].id
+  # AA-1019: the WORKFORCE managed login (staff-auth. custom domain when on, else the prefix domain; same expression as
+  # identity.tf output identity_managed_login_base_urls.workforce).
+  crm_web_staff_domain = local.id_custom_domains ? "https://${var.identity_workforce_custom_domain}" : "https://${aws_cognito_user_pool_domain.workforce_prefix.domain}.auth.${var.aws_region}.amazoncognito.com"
 
   # Env names read by the web (AA-Partner web/lib/config.ts). Public values only; the two secrets come from
   # crm/dev/web.
@@ -92,6 +102,9 @@ locals {
     # AA-979 P2b runbook 4.3: the client-host trip page /trip/<id> (AA-Partner web/lib/tripPage.ts) reads the public
     # CIS GET /v1/trip/{id} from here; the same CIS API origin the CRM API pulls the membership feed from (crm_app.tf).
     { name = "CIS_API_URL", value = var.crm_cis_api_url },
+    # AA-1019: the AA staff console's WORKFORCE client (its secret and cookie key come from crm/dev/web).
+    { name = "STAFF_COGNITO_DOMAIN", value = local.crm_web_staff_domain },
+    { name = "STAFF_COGNITO_CLIENT_ID", value = aws_cognito_user_pool_client.workforce["crm-staff"].id },
   ]
 }
 
@@ -134,7 +147,7 @@ resource "aws_ecr_lifecycle_policy" "crm_web" {
 # -----------------------------------------------------------------------------
 resource "aws_secretsmanager_secret" "crm_web" {
   name                    = "crm/${var.environment}/web"
-  description             = "AA-Partner CRM web (AA-935): JSON {cognito_client_secret, session_secret}. Set by AA-CIS-Infra tools/identity/crm_dev_identity.py web-secret, never by Terraform."
+  description             = "AA-Partner CRM web (AA-935, AA-1019): JSON {cognito_client_secret, session_secret, staff_cognito_client_secret, staff_session_secret}. Set by AA-CIS-Infra tools/identity/crm_dev_identity.py web-secret and staff-web-secret, never by Terraform."
   recovery_window_in_days = var.environment == "dev" ? 0 : 30
   tags                    = local.crm_web_tags
 }
@@ -259,6 +272,9 @@ resource "aws_ecs_task_definition" "crm_web" {
     secrets = [
       { name = "COGNITO_CLIENT_SECRET", valueFrom = "${aws_secretsmanager_secret.crm_web.arn}:cognito_client_secret::" },
       { name = "WEB_SESSION_SECRET", valueFrom = "${aws_secretsmanager_secret.crm_web.arn}:session_secret::" },
+      # AA-1019: the staff console's client secret and its own cookie key (never the agency key above).
+      { name = "STAFF_COGNITO_CLIENT_SECRET", valueFrom = "${aws_secretsmanager_secret.crm_web.arn}:staff_cognito_client_secret::" },
+      { name = "STAFF_SESSION_SECRET", valueFrom = "${aws_secretsmanager_secret.crm_web.arn}:staff_session_secret::" },
     ]
     logConfiguration = {
       logDriver = "awslogs"

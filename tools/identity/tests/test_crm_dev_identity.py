@@ -340,3 +340,102 @@ def test_invitee_reset_refuses_an_unknown_target(capsys):
     with pytest.raises(SystemExit):
         run(["--pool", "partner", "invitee-reset", "--invitee", "studio-owner"], FakePartnerIdp())
     capsys.readouterr()
+
+
+# ── AA-1019: the staff console's secret keys and the Dev-only staff E2E user (root ADR 0006a A10c) ──────────────────
+STAFF_SECRET = "STAFF-CLIENT-SECRET-do-not-print"
+
+
+class FakeWorkforceIdp(FakeIdp):
+    """The WORKFORCE pool ("w") with its crm-staff client and group calls."""
+
+    def __init__(self, existing: dict[str, str] | None = None, groups: set[str] | None = None) -> None:
+        super().__init__(existing)
+        self.groups = set(groups or ())
+        self.added: list[str] = []
+
+    def list_user_pool_clients(self, **kw):
+        if kw["UserPoolId"] == "w":
+            return {"UserPoolClients": [{"ClientName": "aa-workforce-dev-crm-staff", "ClientId": "scid"}]}
+        return super().list_user_pool_clients(**kw)
+
+    def describe_user_pool_client(self, **kw):
+        if kw == {"UserPoolId": "w", "ClientId": "scid"}:
+            return {"UserPoolClient": {"ClientSecret": STAFF_SECRET}}
+        return super().describe_user_pool_client(**kw)
+
+    def admin_list_groups_for_user(self, UserPoolId, Username):  # noqa: N803
+        assert UserPoolId == "w"
+        return {"Groups": [{"GroupName": g} for g in sorted(self.groups)]}
+
+    def admin_add_user_to_group(self, UserPoolId, Username, GroupName):  # noqa: N803
+        assert UserPoolId == "w"
+        self.groups.add(GroupName)
+        self.added.append(GroupName)
+
+
+def test_staff_web_secret_adds_two_keys_and_keeps_the_agency_ones(capsys):
+    agency = {"cognito_client_secret": "agency-cs", "session_secret": "a" * 40}
+    sm = FakeSm({"crm/dev/web": json.dumps(agency)})
+    idp = FakeWorkforceIdp()
+    assert run(["staff-web-secret"], idp, sm) == 0
+    dry = lines(capsys)[0]
+    assert dry["action"] == "would_write" and set(dry["changed"]) == {"staff_session_secret", "staff_cognito_client_secret"}
+    assert dry["client"] == "aa-workforce-dev-crm-staff" and sm.writes == []
+    assert run(["staff-web-secret", "--apply"], idp, sm) == 0
+    out = capsys.readouterr().out
+    value = json.loads(sm.values["crm/dev/web"])
+    assert {k: value[k] for k in agency} == agency
+    assert value["staff_cognito_client_secret"] == STAFF_SECRET and len(value["staff_session_secret"]) >= 32
+    assert value["staff_session_secret"] != value["session_secret"]
+    assert STAFF_SECRET not in out and value["staff_session_secret"] not in out
+    assert run(["staff-web-secret", "--apply"], idp, sm) == 0
+    assert lines(capsys)[0]["action"] == "unchanged"
+    kept = value["staff_session_secret"]
+    assert run(["staff-web-secret", "--apply", "--rotate-staff-session"], idp, sm) == 0
+    capsys.readouterr()
+    assert json.loads(sm.values["crm/dev/web"])["staff_session_secret"] != kept
+
+
+def test_the_agency_web_secret_keeps_the_staff_keys(capsys):
+    staff = {"staff_cognito_client_secret": "s-cs", "staff_session_secret": "t" * 40}
+    sm = FakeSm({"crm/dev/web": json.dumps({"cognito_client_secret": "old", "session_secret": "a" * 40, **staff})})
+    assert run(["web-secret", "--apply"], sm=sm) == 0
+    capsys.readouterr()
+    value = json.loads(sm.values["crm/dev/web"])
+    assert {k: value[k] for k in staff} == staff and value["cognito_client_secret"] == CLIENT_SECRET
+
+
+def test_e2e_staff_creates_with_suppress_and_exactly_ops_and_support(capsys):
+    idp = FakeWorkforceIdp()
+    assert run(["e2e-staff"], idp) == 0
+    dry = lines(capsys)[0]
+    assert dry == {"email": "e2e-crm-staff@e2e-mail.lumiguides.it.com", "action": "would_create",
+                   "groups": ["crm-ops", "crm-support"], "sub": None}
+    assert idp.created == [] and idp.added == []
+    assert run(["e2e-staff", "--apply"], idp) == 0
+    row = lines(capsys)[0]
+    [created] = idp.created
+    assert created["UserPoolId"] == "w" and created["MessageAction"] == "SUPPRESS" and "TemporaryPassword" not in created
+    assert {a["Name"]: a["Value"] for a in created["UserAttributes"]}["email_verified"] == "true"
+    assert row["action"] == "created" and row["groups_added"] == ["crm-ops", "crm-support"] and row["sub"]
+    assert run(["e2e-staff", "--apply"], idp) == 0
+    again = lines(capsys)[0]
+    assert again["action"] == "exists" and again["groups_added"] == [] and len(idp.created) == 1
+
+
+def test_e2e_staff_matches_the_trigger_and_the_mailbox_rule():
+    workforce = (REPO / "accounts" / "aa365" / "lambda_src" / "identity_triggers" / "workforce.py").read_text()
+    assert f'E2E_CRM_STAFF_TEST_STAFF_EMAIL = "{tool.E2E_STAFF_LOCAL}@e2e-mail.lumiguides.it.com"' in workforce
+    groups = ", ".join(f'"{g}"' for g in tool.E2E_STAFF_GROUPS)
+    assert f"E2E_CRM_STAFF_TEST_STAFF_GROUPS = ({groups})" in workforce
+    mailbox = (REPO / "accounts" / "aa365" / "e2e_mailbox.tf").read_text()
+    assert f'e2e_mail_crm_staff_recipient = "{tool.E2E_STAFF_LOCAL}@${{local.e2e_mail_domain}}"' in mailbox
+
+
+def test_e2e_staff_refuses_other_groups_and_other_environments(capsys):
+    idp = FakeWorkforceIdp({"e2e-crm-staff@e2e-mail.lumiguides.it.com": "sub-9"}, groups={"crm-ops", "cis-admin"})
+    assert run(["e2e-staff", "--apply"], idp) == 1
+    assert "cis-admin" in capsys.readouterr().err and idp.added == []
+    assert run(["--env", "stg", "e2e-staff", "--apply"], FakeWorkforceIdp()) == 1
+    assert "Dev only" in capsys.readouterr().err

@@ -357,6 +357,8 @@ def test_booking_e2e_address_is_a_mailbox_recipient():
 CIS_ADMIN_E2E = "e2e-cis-admin@e2e-mail.lumiguides.it.com"
 CIS_ADMIN_E2E_ATTRS = {"email": CIS_ADMIN_E2E, "email_verified": "true"}
 FLAG = "E2E_DEV_ONLY_STAFF_ENABLED"
+CRM_STAFF_E2E = "e2e-crm-staff@e2e-mail.lumiguides.it.com"
+CRM_STAFF_E2E_ATTRS = {"email": CRM_STAFF_E2E, "email_verified": "true"}
 
 
 @pytest.fixture
@@ -372,7 +374,7 @@ def test_cis_admin_e2e_constants_and_dev_only_map():
     assert workforce.E2E_CIS_ADMIN_TEST_STAFF_EMAIL == CIS_ADMIN_E2E
     assert workforce.E2E_CIS_ADMIN_TEST_STAFF_GROUPS == ("cis-admin",)
     # Guard: the dev-only map is exactly the one address, and the always-on map did not gain it.
-    assert dict(workforce.E2E_DEV_ONLY_TEST_STAFF) == {CIS_ADMIN_E2E: ("cis-admin",)}
+    assert dict(workforce.E2E_DEV_ONLY_TEST_STAFF) == {CIS_ADMIN_E2E: ("cis-admin",), CRM_STAFF_E2E: ("crm-ops", "crm-support")}
     assert CIS_ADMIN_E2E not in workforce.E2E_TEST_STAFF
     assert set(workforce.E2E_TEST_STAFF) == {E2E, BOOKING_E2E}
     assert workforce.DEV_ONLY_E2E_FLAG == FLAG and workforce.DEV_ONLY_E2E_ON == "true"
@@ -550,7 +552,9 @@ def test_cis_admin_e2e_address_has_its_own_rule_and_prefix():
 
     admin = _resource_block(tf, "aws_ses_receipt_rule", "e2e_cognito_admin")
     assert "count         = local.e2e_admin_enabled ? 1 : 0" in admin
-    assert re.search(r"recipients\s*=\s*\[local\.e2e_mail_admin_recipient\]", admin)
+    assert re.search(r"recipients\s*=\s*\[local\.e2e_mail_admin_recipient, local\.e2e_mail_crm_staff_recipient\]", admin)
+    assert locals_["e2e_mail_crm_staff_recipient"] == "e2e-crm-staff@${local.e2e_mail_domain}"
+    assert "crm_staff_recipient" not in recipients
     assert "object_key_prefix = local.e2e_mail_admin_prefix" in admin
     assert 'tls_policy    = "Require"' in admin and "scan_enabled  = true" in admin
     assert "after         = aws_ses_receipt_rule.crm_ingest.name" in admin
@@ -605,3 +609,57 @@ def test_identity_tf_switches_the_flag_on_dev_only():
     # The flag reaches the WORKFORCE triggers only.
     ext = re.search(r"id_external_env = \{(.*?)\n  \}", tf, re.S).group(1)
     assert "E2E_DEV_ONLY_STAFF_ENABLED" not in ext
+
+
+# ------------------------------------------------------------------ A10c: Dev-only CRM staff E2E address (AA-1019, S262)
+def test_crm_staff_e2e_constants():
+    assert workforce.E2E_CRM_STAFF_TEST_STAFF_EMAIL == CRM_STAFF_E2E
+    assert workforce.E2E_CRM_STAFF_TEST_STAFF_GROUPS == ("crm-ops", "crm-support")
+    assert CRM_STAFF_E2E not in workforce.E2E_TEST_STAFF
+
+
+@pytest.mark.parametrize("source", ["TokenGeneration_HostedAuth", "TokenGeneration_RefreshTokens"])
+def test_crm_staff_e2e_gets_exactly_ops_and_support_with_the_flag(source, dev_flag_on, capsys):
+    assert workforce.pre_sign_up(admin_create(CRM_STAFF_E2E))["response"]["autoConfirmUser"] is False
+    out = workforce.pre_token_generation(
+        token_event(CRM_STAFF_E2E_ATTRS, ["crm-support", "crm-ops", "rogue"], source=source, client_id="crm"))
+    details = out["response"]["claimsAndScopeOverrideDetails"]
+    assert details["groupOverrideDetails"]["groupsToOverride"] == ["crm-ops", "crm-support"]
+    assert details["accessTokenGeneration"]["claimsToAddOrOverride"] == {"email": CRM_STAFF_E2E}
+    assert {"event": "workforce_e2e_test_token_issued", "trigger": source, "client_id": "crm",
+            "email": CRM_STAFF_E2E} in _events(capsys)
+
+
+@pytest.mark.parametrize("groups", [
+    ["crm-ops"],
+    ["crm-support"],
+    ["crm-ops", "crm-support", "crm-platform-admin"],
+    ["crm-ops", "crm-support", "cis-admin"],
+    ["crm-ops", "crm-support", "booking-admin"],
+    ["cis-admin"],
+    [],
+])
+def test_crm_staff_e2e_with_any_other_group_set_is_denied(groups, dev_flag_on):
+    denied(workforce.pre_token_generation, token_event(CRM_STAFF_E2E_ATTRS, groups))
+
+
+def test_crm_staff_e2e_is_denied_without_the_flag(monkeypatch):
+    monkeypatch.setenv(FLAG, "false")
+    denied(workforce.pre_sign_up, admin_create(CRM_STAFF_E2E))
+    denied(workforce.pre_token_generation, token_event(CRM_STAFF_E2E_ATTRS, ["crm-ops", "crm-support"]))
+
+
+@pytest.mark.parametrize("email", [
+    "e2e-crm-staff2@e2e-mail.lumiguides.it.com",
+    "e2e-crm-staff@e2e-mail.lumiguides.it.com.evil.com",
+    "e2e-crm-staff@lumiguides.it.com",
+    "e2e-crm-staff@e2e-mail.lumiguides.it.com\u200b",
+])
+def test_look_alikes_of_the_crm_staff_address_are_denied(email, dev_flag_on):
+    denied(workforce.pre_sign_up, admin_create(email))
+    denied(workforce.pre_token_generation, token_event({"email": email, "email_verified": "true"}, ["crm-ops", "crm-support"]))
+
+
+@pytest.mark.parametrize("attrs", [E2E_ATTRS, BOOKING_E2E_ATTRS, CIS_ADMIN_E2E_ATTRS])
+def test_the_other_e2e_accounts_cannot_borrow_the_crm_staff_groups(attrs, dev_flag_on):
+    denied(workforce.pre_token_generation, token_event(attrs, ["crm-ops", "crm-support"]))

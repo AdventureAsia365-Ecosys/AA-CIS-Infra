@@ -36,6 +36,13 @@ E2E_DEV_ONLY_TEST_STAFF:
     exactly "dev", and caps its session at reads plus the content-quality sentence-apply routes
     (api/middleware/staff_bearer.py). Its sign-in codes land in their own mailbox prefix (e2e_mailbox.tf rule
     e2e-cognito-admin, prefix inbound-admin/), readable only by the MFA admin role.
+A10c (AA-1019, S262, root ADR 0006a A10c): a fourth address in the same Dev-only map:
+  - E2E_CRM_STAFF_TEST_STAFF_EMAIL (AA-Partner staff console S-02 / S-04 screenshots and live checks by the orchestrating
+    agent), exactly crm-ops + crm-support, no CIS / Booking / crm-platform-admin group. AA-Partner refuses its token
+    outside dev / test / local and lets it reach synthetic agencies only (api/app/auth/e2e_staff.py). Not in the CIS
+    directory: created by an admin with AdminCreateUser + SUPPRESS (tools/identity/crm_dev_identity.py e2e-staff), like
+    A10a. Its codes land in the A10b mailbox prefix inbound-admin/ (rule e2e-cognito-admin), readable by the MFA admin
+    role only.
 The map is consulted only while the Lambda env E2E_DEV_ONLY_STAFF_ENABLED is exactly the string "true" (read per call,
 no strip / lower; missing or anything else = off, fail closed). identity.tf sets it to "true" only when
 var.environment == "dev" and a precondition refuses "true" anywhere else. The flag can only switch ON an entry whose
@@ -76,8 +83,12 @@ E2E_TEST_STAFF = MappingProxyType({
 # A10b (AA-816, S252): Dev-only CIS admin E2E address. Consulted only when _dev_only_e2e_enabled() (module docstring).
 E2E_CIS_ADMIN_TEST_STAFF_EMAIL = "e2e-cis-admin@e2e-mail.lumiguides.it.com"
 E2E_CIS_ADMIN_TEST_STAFF_GROUPS = ("cis-admin",)
+# A10c (AA-1019, S262): Dev-only AA-Partner staff E2E address; must equal AA-Partner e2e_staff.E2E_CRM_STAFF_EMAIL.
+E2E_CRM_STAFF_TEST_STAFF_EMAIL = "e2e-crm-staff@e2e-mail.lumiguides.it.com"
+E2E_CRM_STAFF_TEST_STAFF_GROUPS = ("crm-ops", "crm-support")
 E2E_DEV_ONLY_TEST_STAFF = MappingProxyType({
     E2E_CIS_ADMIN_TEST_STAFF_EMAIL: E2E_CIS_ADMIN_TEST_STAFF_GROUPS,
+    E2E_CRM_STAFF_TEST_STAFF_EMAIL: E2E_CRM_STAFF_TEST_STAFF_GROUPS,
 })
 # The Lambda env switch for E2E_DEV_ONLY_TEST_STAFF and the one value that turns it on (compared exactly).
 DEV_ONLY_E2E_FLAG = "E2E_DEV_ONLY_STAFF_ENABLED"

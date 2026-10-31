@@ -103,9 +103,12 @@ locals {
   # and prefix (never added to e2e-cognito's recipients), readable only by the MFA admin role.
   e2e_admin_enabled        = var.environment == "dev"
   e2e_mail_admin_recipient = "e2e-cis-admin@${local.e2e_mail_domain}"
-  e2e_mail_admin_prefix    = "inbound-admin/"
-  e2e_mail_admin_rule      = "e2e-cognito-admin"
-  e2e_mail_admin_rule_arn  = "arn:aws:ses:${var.aws_region}:${var.account_id}:receipt-rule-set/${local.e2e_mail_rule_set}:receipt-rule/${local.e2e_mail_admin_rule}"
+  # A10c (AA-1019, S262): the Dev-only AA-Partner staff E2E user (crm-ops + crm-support); must equal workforce.py
+  # E2E_CRM_STAFF_TEST_STAFF_EMAIL. Same rule and prefix as A10b (MFA admin reads only), never on e2e-cognito.
+  e2e_mail_crm_staff_recipient = "e2e-crm-staff@${local.e2e_mail_domain}"
+  e2e_mail_admin_prefix        = "inbound-admin/"
+  e2e_mail_admin_rule          = "e2e-cognito-admin"
+  e2e_mail_admin_rule_arn      = "arn:aws:ses:${var.aws_region}:${var.account_id}:receipt-rule-set/${local.e2e_mail_rule_set}:receipt-rule/${local.e2e_mail_admin_rule}"
 }
 
 # ── 1. DNS: MX for the sub-domain ────────────────────────────────────────────
@@ -335,7 +338,7 @@ resource "aws_ses_receipt_rule" "e2e_cognito_admin" {
   name          = local.e2e_mail_admin_rule
   rule_set_name = aws_ses_receipt_rule_set.e2e.rule_set_name
   after         = aws_ses_receipt_rule.crm_ingest.name
-  recipients    = [local.e2e_mail_admin_recipient]
+  recipients    = [local.e2e_mail_admin_recipient, local.e2e_mail_crm_staff_recipient]
   enabled       = true
   scan_enabled  = true
   tls_policy    = "Require"
