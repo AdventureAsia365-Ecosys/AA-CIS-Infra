@@ -231,12 +231,53 @@ class RunTaskExpandTests(unittest.TestCase):
         self.assertIn("lock-risk check ok (1 existing table(s)", log)
 
     def test_unknown_row_count_is_lock_risk(self):
-        """Review S255: reltuples -1 (never analyzed, not empty) must not read as a small table."""
+        """Review S255: reltuples -1 (never analyzed, not empty) must not read as a small table. S261: the runner
+        ANALYZEs it first; a count still unknown afterwards stays lock risk and nothing of the file runs."""
         conn = FakeConn()
         conn.reltuples = {"booking.trip": -1}
         code, conn, log = self.run_task(EXPAND_OK, conn=conn)
         self.assertEqual((code, conn.executed), (15, []), log)
+        self.assertEqual(len(conn.analyzed), 1, log)
         self.assertIn("booking.trip: row count unknown", log)
+
+    def test_never_analyzed_small_table_is_analyzed_then_passes(self):
+        """S261 (crm-028 refused on crm.invoice, never analyzed): ANALYZE as the file's owner role, then read again."""
+        conn = FakeConn()
+        conn.reltuples = {"booking.trip": -1}
+        conn.after_analyze = {"booking.trip": 42}
+        code, conn, log = self.run_task(EXPAND_OK, conn=conn)
+        self.assertEqual(code, 0, log)
+        self.assertEqual(conn.analyzed, ['ANALYZE "booking"."trip"'], log)   # login owns the schema: no SET ROLE
+        self.assertIn("booking.trip was never analyzed", log)
+        self.assertIn("lock-risk check ok", log)
+
+    def test_never_analyzed_large_table_stays_lock_risk(self):
+        conn = FakeConn()
+        conn.reltuples = {"booking.trip": -1}
+        conn.after_analyze = {"booking.trip": 250_000}
+        code, conn, log = self.run_task(EXPAND_OK, conn=conn)
+        self.assertEqual((code, conn.executed), (15, []), log)
+        self.assertIn("booking.trip: ~250000 rows", log)
+
+    def test_analyze_failure_keeps_lock_risk(self):
+        conn = FakeConn()
+        conn.reltuples = {"booking.trip": -1}
+        conn.analyze_fails = RuntimeError("permission denied")
+        code, conn, log = self.run_task(EXPAND_OK, conn=conn)
+        self.assertEqual((code, conn.executed), (15, []), log)
+        self.assertIn("ANALYZE booking.trip failed (RuntimeError)", log)
+        self.assertIn("booking.trip: row count unknown", log)
+
+    def test_analyze_unknown_switches_to_the_owner_role(self):
+        conn = FakeConn()
+        conn.reltuples, conn.after_analyze = {"crm.invoice": -1}, {"crm.invoice": 7}
+        rows = asyncio.run(rm.analyze_unknown(conn, "crm.invoice", "crm_owner", log=lambda m: None))
+        self.assertEqual((rows, conn.analyzed), (7, ['SET ROLE "crm_owner"; ANALYZE "crm"."invoice"; RESET ROLE']))
+
+    def test_analyze_unknown_refuses_odd_names(self):
+        conn = FakeConn()
+        rows = asyncio.run(rm.analyze_unknown(conn, 'booking.trip"; DROP TABLE x; --', "booking_owner", log=lambda m: None))
+        self.assertEqual((rows, getattr(conn, "analyzed", [])), (-1, []))
 
     def test_if_not_exists_of_an_existing_relation_is_lock_risk(self):
         """Review S255: CREATE TABLE IF NOT EXISTS of an existing table makes the lint treat it as new."""

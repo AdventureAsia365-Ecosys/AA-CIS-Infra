@@ -307,6 +307,12 @@ class FakeConn:
         return self.applied
 
     async def execute(self, sql):
+        if "ANALYZE " in sql:                       # S261: analyze_unknown; after_analyze = reltuples it then reads
+            self.analyzed = getattr(self, "analyzed", []) + [sql]
+            if getattr(self, "analyze_fails", None):
+                raise self.analyze_fails
+            self.reltuples = {**getattr(self, "reltuples", {}), **getattr(self, "after_analyze", {})}
+            return
         if self.fail:
             raise self.fail
         self.executed.append(sql)
