@@ -385,6 +385,8 @@ resource "aws_lambda_function" "tripplanner_browse" {
       # AA-902: account IDs left the public TripPlanner repo; browse embeds through the same satellite
       # (acc3 only, AA-998).
       BEDROCK_ACCT_PRIMARY = local.bedrock_acct_primary
+      # AA-1015: the customer-facing daily AI spend cap, set explicitly (was the app's implicit 5.0 default).
+      TP_DAILY_SPEND_CAP_USD = var.tripplanner_daily_spend_cap_usd
     }
   }
 
@@ -430,6 +432,8 @@ resource "aws_lambda_function" "tripplanner_assembly" {
       BEDROCK_EXTERNAL_ID_PRIMARY = "aa296-satellite-bedrock-acc3"
       # No ADVISOR_NOTIFY_EMAIL: the advisor e-mail is sent by AA-Booking (bk_notify_email, AA-811 S238).
       REQUIRE_REGISTRATION_BEFORE_HANDOFF = "true"
+      # AA-1015: the customer-facing daily AI spend cap, set explicitly (same value on browse).
+      TP_DAILY_SPEND_CAP_USD = var.tripplanner_daily_spend_cap_usd
       # AA-878: no TRIPPLANNER_API_KEY here (read by name from Secrets Manager, see browse) and no
       # MAPBOX_GEOCODING_TOKEN_ARN (no reader since AA-712 slice 6a).
     }
