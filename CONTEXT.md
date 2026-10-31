@@ -368,8 +368,11 @@ accounts/
                                    target-group / CPU alarms; security group sg-crm-api in app_security_groups.tf,
                                    job backlog alarms AA/Jobs/Crm in observability_ecosys.tf)
     crm_web.tf                    (AA-935 CRM-07, AA-Partner CRM web runtime: ECR aa-crm-<env>-web (IMMUTABLE), secret
-                                   shell crm/<env>/web {cognito_client_secret, session_secret} written by
-                                   tools/identity/crm_dev_identity.py web-secret (never by Terraform), own execution role
+                                   shell crm/<env>/web {cognito_client_secret, session_secret, + AA-1019
+                                   staff_cognito_client_secret, staff_session_secret} written by
+                                   tools/identity/crm_dev_identity.py web-secret / staff-web-secret (never by
+                                   Terraform; AA-1019: the staff console's STAFF_* env = the WORKFORCE crm-staff client,
+                                   callback /staff/auth/callback on portal.), own execution role
                                    (web repo, CRM log group stream prefix web, that secret only; never the DSN) and task
                                    role (ECS Exec only), task definition Fargate ARM64 port 3000 (env: public origin,
                                    partner/client hosts (WEB_PUBLIC_ORIGIN = the agency host portal. since the AA-979

@@ -70,6 +70,8 @@ pool, MFA required).
 | `$PY tools/identity/crm_dev_identity.py --pool partner invitee-reset [--apply]` | AA-939: deletes the partner-pool account of the `"invitee": true` address so the one-off timed E2E "invite -> active < 5 min" (AA-Partner `e2e/tests/invite.spec.ts`) starts from no account. |
 | `$PY tools/identity/crm_dev_identity.py --pool partner invitee-reset --invitee studio-viewer [--apply]` (or `studio-editor`) | AA-979: deletes the partner-pool account of one Content studio invitee (`e2e-test-studio-<role>@e2e-mail.lumiguides.it.com`, `studio_invitees` in `crm_e2e_users.json`, a recipient of the e2e mailbox rule) before the phase 2 re-enrolment E2E invites it again (staff invitation from the Dev-only E2E CIS admin, synthetic tenants only, root ADR 0006a A10b-1). One role per run, so the other role's account and saved credentials stay. Without `--invitee` the CRM invitee is reset, as before. |
 | `$PY tools/identity/crm_dev_identity.py web-secret [--apply] [--rotate-session]` | Writes `crm/dev/web` (the `crm_web.tf` secret shell) = `{cognito_client_secret, session_secret}`: the client secret read from the `cis-portal` client (or, with `--pool partner`, the `partner-web` client: run it right after `crm_partner_signin_enabled = true` is applied, then deploy the web), the session secret random and kept on re-runs unless `--rotate-session` (signs every CRM web user out). Run it before the first web task starts. |
+| `$PY tools/identity/crm_dev_identity.py staff-web-secret [--apply] [--rotate-staff-session]` | AA-1019: adds the AA staff console's two keys to `crm/dev/web`: `staff_cognito_client_secret` (read from the WORKFORCE client `aa-workforce-dev-crm-staff`) and `staff_session_secret` (random, kept on re-runs unless `--rotate-staff-session`, never equal to the agency `session_secret`). The agency keys stay as they are (and `web-secret` now keeps the staff keys). Run it BEFORE the AA-1019 Terraform apply (the `aa-workforce-dev-crm-staff` client already exists; the apply only changes its URLs). Either order works, because the running service ignores task definition changes, but the runbook below uses this one: the task maps both keys and does not start without them. |
+| `$PY tools/identity/crm_dev_identity.py e2e-staff [--apply]` | AA-1019 (root ADR 0006a A10c), Dev only: the AA-Partner staff E2E user `e2e-crm-staff@e2e-mail.lumiguides.it.com` in the WORKFORCE pool, groups exactly `crm-ops` + `crm-support`: AdminCreateUser with `MessageAction=SUPPRESS` and `email_verified=true`, no password, then AdminAddUserToGroup for the missing groups; refuses a user that holds any other group. Needs the AA-1019 trigger (Dev flag on) applied first, or the pre sign-up trigger refuses the address. Sign-in is the e-mail code: it lands in the e2e mailbox prefix `inbound-admin/` (rule `e2e-cognito-admin`), which only the MFA admin role reads. The CRM API lets this identity reach synthetic agencies only. |
 
 ### Runbook: an invitee lost the one-time password (AA-939)
 
@@ -86,3 +88,24 @@ allow-list), so AA support does, after the agency owner confirms the address:
 3. Delete it (one partner-pool "admin bypass" alert mail is expected):
    `aws cognito-idp admin-delete-user --user-pool-id <partner-pool-id> --username <address> --profile aa365-admin --region us-west-1`
 4. The owner invites the address again; the new claim creates a fresh account and shows a new one-time password.
+
+### Runbook: the Dev E2E staff user (AA-1019, root ADR 0006a A10c)
+
+Run by the orchestrator with the MFA admin role, in this order, after the AA-1019 Infra PR is merged:
+
+1. `$PY tools/identity/crm_dev_identity.py staff-web-secret` (dry run: `would_write`, both keys), then `--apply`.
+2. Terraform Apply (publishes the WORKFORCE triggers with the A10c entry, the crm-staff callback on `portal.`, the web
+   task definition with the `STAFF_*` values and the mailbox recipient).
+3. `$PY tools/identity/crm_dev_identity.py e2e-staff` (dry run), then `e2e-staff --apply`; note the printed `sub`.
+4. Deploy the CRM web (AA-Partner Deploy Web Dev); `/healthz` must answer `staff_auth_configured: true`.
+5. Sign in at `https://portal.lumiguides.it.com/staff`: enter the address, then read the newest object under
+   `inbound-admin/` of the e2e mailbox bucket with the MFA admin role for the code
+   (`aws s3 ls s3://<e2e-mail-bucket>/inbound-admin/ --profile aa365-admin --region us-west-1`, then `aws s3 cp` that
+   object to a local scratch file and read the 6-digit code; delete the local copy afterwards).
+
+Expected alerts: none from creating the user (SUPPRESS, no password). Every token issue logs
+`workforce_e2e_test_token_issued` with the address. The CIS staff reconcile may list the user as not in the CIS directory
+(the Booking E2E user of A10a is the same case).
+
+Removal (with A10 / A10a / A10b): `aws cognito-idp admin-delete-user` of the address, drop the trigger entry, the mailbox
+recipient, the AA-Partner `E2E_CRM_STAFF_EMAIL` rule and the `e2e-staff` command; Terraform Apply.
