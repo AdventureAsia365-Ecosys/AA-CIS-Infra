@@ -47,7 +47,7 @@ import asyncio
 import re
 from decimal import Decimal
 
-MODE = "dry_run"
+MODE = "apply"
 
 SCRIPT_NAME = "aa1002_dev_anthropic_road"
 ACTOR = f"script:{SCRIPT_NAME}"
