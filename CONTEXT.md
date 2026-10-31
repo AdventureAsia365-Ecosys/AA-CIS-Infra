@@ -43,7 +43,23 @@ Secrets, Lambda plumbing, OIDC deploy roles, cross-account Bedrock trust — is 
 | acc2 (aa365) | 005097885195 | **Main dev stack** (VPC/RDS/ECS/ALB/API GW/…) + CI/CD OIDC | `accounts/aa365/` |
 | acc3 | 786888028788 | `AA3-Bedrock-Invoker`, the **only** LLM satellite | `accounts/acc3-bedrock/` |
 
-Bedrock routing across the ecosystem is **acc3 only** (acc2 native models stay on acc2). AA-998
+**Target account model (root ADR 0018, accepted 31/10/2026, S262).** The ecosystem moves into an AA-owned AWS
+organization with two account-level environments; nothing below is applied yet except the management root's code:
+
+| Target name | Today | Holds | Terraform root |
+|---|---|---|---|
+| `aa-management` | New, created 30/10/2026 (AA-1004); ID in the root onboarding account map only | Organization, Identity Center, budgets, anomaly monitors, organization trail; **no workload** | `accounts/management/` |
+| `aa-nonprod` | acc2 | Dev, and staging on demand | `accounts/aa365/` (rename optional) |
+| `aa-prod` | Does not exist | Prod, in us-west-1 (ADR 0018 decision 7) | `accounts/prod/` at go-live (replaces the `accounts/aa365-prod/` of ADR 0012 decision 5) |
+| `aa-ai` | acc3 | Main Bedrock chat account, one invoker role per environment | `accounts/acc3-bedrock/` |
+
+One root and one state bucket per account, nothing crossing accounts on the state path, `allowed_account_ids` from a
+variable in every provider block (ADR 0018 decision 5; data standards C7.2c v1.9). No new account ID goes into this
+repo (public): roots take them as variables or secrets, like `MGMT_ACCOUNT_ID`.
+
+Bedrock chat routing is on **acc3** (acc2 native models, such as Cohere embeddings, stay on acc2). Root ADR 0009
+decision 14 (accepted 31/10/2026) lets acc2 also serve chat models for eval, judge and validate stages once a model
+passes the qualification ladder; no acc2 chat route exists yet. AA-998
 (S255) retired acc1 and accepted the loss of the cross-account LLM fallback: an acc3 failure moves to
 the next model on the same account, or the job retries. The cross-account assume-role wiring that
 lets the main stack (acc2) and TripPlanner reach Bedrock in acc3 lives in
