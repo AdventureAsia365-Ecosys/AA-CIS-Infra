@@ -419,7 +419,7 @@ resource "aws_ecs_task_definition" "crm_api" {
       { name = "DB_SSL", value = "require" },
       { name = "WORKER_ENABLED", value = "true" },
       { name = "JOB_RETENTION_DRY_RUN", value = "true" },
-      { name = "LIFECYCLE_DRY_RUN", value = "true" },
+      { name = "LIFECYCLE_DRY_RUN", value = "false" }, # S261 AA-967 erasure drill only; set back to "true" right after
       { name = "RATE_LIMIT_PUBLIC_PER_MINUTE", value = "60" },
       { name = "RATE_LIMIT_XFF_HOPS", value = "2" },
       { name = "KEY_PROVIDER", value = "kms" },
