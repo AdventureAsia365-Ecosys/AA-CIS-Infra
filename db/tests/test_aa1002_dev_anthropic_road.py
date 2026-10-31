@@ -243,15 +243,30 @@ class DryRunTest(unittest.TestCase):
 
     def test_widens_admin_and_tenant_stages_with_an_api_road(self):
         widened = {ln.split("stage=")[1].split()[0] for ln in lines(self.text, "widen")}
-        self.assertEqual(widened, {"w1_writer", "w2_writer_new", "t3_tenant_writer", "t11_tenant_shadow"})
+        self.assertEqual(widened, {"w2_writer_new", "t3_tenant_writer"})
         groups = {ln.split("stage=")[1].split()[0]: ln.split("group=")[1].split()[0]
                   for ln in lines(self.text, "widen")}
         self.assertEqual(groups["t3_tenant_writer"], "tenant")
-        self.assertEqual(groups["t11_tenant_shadow"], "tenant")
-        self.assertEqual(groups["w1_writer"], "admin")
+        self.assertEqual(groups["w2_writer_new"], "admin")
 
-    def test_names_other_vendor_deployments_the_widening_allows(self):
-        w1 = next(ln for ln in lines(self.text, "widen") if "stage=w1_writer " in ln)
+    def test_shadow_only_stage_is_not_widened(self):
+        # S261 review: a shadow alone must not turn A/B shadow calls into paid API calls.
+        self.assertFalse(any("stage=t11_tenant_shadow" in ln for ln in lines(self.text, "widen")))
+
+    def test_holds_a_stage_that_would_reach_a_live_vendor_api(self):
+        # S261 review: w1_writer also falls back to a GPT model on openai-direct, which is enabled; widening it would
+        # send paid traffic outside AWS before the Anthropic key exists, so the script holds it for the tech lead.
+        self.assertFalse(any("stage=w1_writer " in ln for ln in lines(self.text, "widen")))
+        held = [ln for ln in lines(self.text, "held") if "stage=w1_writer " in ln]
+        self.assertEqual(len(held), 1)
+        self.assertIn("live=oai-gamma-direct@openai-direct", held[0])
+
+    def test_widens_with_other_vendor_connection_switched_off(self):
+        world = dev_world()
+        world["connections"][1]["enabled"] = False
+        code, text = run(FakeConn(world), "dry_run")
+        self.assertEqual(code, 0, text)
+        w1 = next(ln for ln in lines(text, "widen") if "stage=w1_writer " in ln)
         self.assertIn("also_vendor=oai-gamma-direct@openai-direct", w1)
 
     def test_inserts_the_missing_api_deployment_behind_acc3(self):
@@ -288,9 +303,9 @@ class ApplyTest(unittest.TestCase):
         code, text = run(conn, "apply")
         self.assertEqual(code, 0, text)
         db = conn.db
-        for key in ("w1_writer", "w2_writer_new", "t3_tenant_writer", "t11_tenant_shadow"):
+        for key in ("w2_writer_new", "t3_tenant_writer"):
             self.assertEqual(scopes_of(db, key), BOTH, key)
-        for key in ("x1_legacy_only", "x2_switched_off", "tp_planner", "e1_embed"):
+        for key in ("w1_writer", "t11_tenant_shadow", "x1_legacy_only", "x2_switched_off", "tp_planner", "e1_embed"):
             self.assertEqual(scopes_of(db, key), AWS, key)
         self.assertEqual(scopes_of(db, "j1_judge"), BOTH)
         c = anthropic_conn(db)

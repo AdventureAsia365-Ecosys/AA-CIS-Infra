@@ -10,7 +10,7 @@ Tech lead decision (S261): build the road now, add the key later. Script `db/scr
 - **A run-script, not a CIS migration.** The change is Dev data (a stage policy for synthetic data, C7.1a), not
   something every environment should replay; a migration would also open tenant stages in CI and in a future prod.
   The CIS migration path stays for the prod decision (blueprint section 4).
-- **The stage list is derived, not written down.** A stage is opened when its route (primary, fallbacks, shadow)
+- **The stage list is derived, not written down.** A stage is opened when its route (primary and fallbacks; the shadow is left out, S261 review)
   names an Anthropic catalog model the gateway can send to `anthropic-direct`: vendor `anthropic`, not a legacy key,
   `api_style` converse / anthropic_messages (`vendor_route._CALLABLE["anthropic"]`), catalog row enabled, an enabled
   `anthropic-direct` deployment (or one the script adds). The two code facts (legacy keys, api styles) are constants
@@ -61,3 +61,12 @@ Tech lead decision (S261): build the road now, add the key later. Script `db/scr
 - Local PG test: `initdb` + `pg_ctl -o "-p 55492 -k '' -c listen_addresses=127.0.0.1"`, then
   `AA1002_TEST_PG_DSN="postgresql://postgres@127.0.0.1:55492/postgres?sslmode=disable"` (3 passed). Unit: 23 passed,
   mutation-checked (opening `tp_*` stages, dropping the legacy-key rule both fail).
+
+## Review follow-up (orchestrator, S261)
+
+- The shadow model no longer counts: widening a stage for its shadow alone would make its A/B shadow calls paid
+  API calls while its primary route still has no road.
+- A stage whose widening would also reach a vendor_direct deployment on an **enabled** connection (today
+  `openai-direct`, which has a key) is **held** (`SCRIPT held`, not widened): that is paid traffic outside AWS before
+  the Anthropic key exists. The tech lead decides those stages; the post-apply guard skips held stages.
+- Tests: 25 (two new: shadow-only stage, held stage; one: widening when the other vendor connection is off).

@@ -9,7 +9,7 @@ writer would reach the API. Tech lead decision (S261): "build the road now, add 
 data only (data standards C7.1a), so tenant T-stages are opened too; they are printed in their own group.
 
 What it does, in one transaction as `cis_owner` (owner of the four tables; the master is a member, roles/002):
-  (b) for every Anthropic catalog model a CIS stage route names (primary, fallbacks, shadow) that has a Claude API
+  (b) for every Anthropic catalog model a CIS stage route names (primary, fallbacks; never the shadow) that has a Claude API
       id but no `anthropic-direct` deployment: inserts one exactly as migration 306 does (wire id = acc3 profile
       without region prefix / version suffix, priority 100 behind acc3, enabled, origin 'seed'). Reports every
       Anthropic model in a route that still has no usable API deployment (legacy keys `haiku` / `sonnet`, which the
@@ -17,7 +17,9 @@ What it does, in one transaction as `cis_owner` (owner of the four tables; the m
   (a) sets `allowed_scopes = {aws_only, vendor_direct}` on every CIS stage whose route then reaches an Anthropic
       model through `anthropic-direct` (derived from the live routes, deployments and catalog; no stage list in this
       file). TripPlanner stages (`tp_*`, its own client reads neither scopes nor deployments until slice S8) are
-      reported, never changed. Also names any OTHER vendor_direct deployment the widening allows on that stage.
+      reported, never changed. Also names any OTHER vendor_direct deployment the widening allows on that stage; a stage
+      that would reach one on an ENABLED connection (e.g. openai-direct) is held, not widened (`SCRIPT held`): that
+      would be paid traffic outside AWS before the Anthropic key exists, so the tech lead decides it.
   (c) the S10 budget is MONTHLY per connection (`monthly_budget_usd`; there is no daily per-connection budget, and no
       LLM path enforces `shared.spend_budget` 'anthropic' daily caps): when it is NULL (unlimited) it is set to
       MONTHLY_BUDGET_USD (5 USD/day x 30). A non-NULL value (an admin's) is kept; 0 is reported (0 = no spend at all).
@@ -164,7 +166,9 @@ def dev_problems(state: dict) -> list[str]:
 
 
 def route_keys(stage: dict) -> list[str]:
-    keys = [stage["model_id"], *(stage["fallback_model_ids"] or []), stage["shadow_model_id"]]
+    """Primary + fallbacks only. The shadow model is left out (review S261): widening a stage for its shadow alone would
+    make its A/B shadow calls paid API calls while the primary route still has no road."""
+    keys = [stage["model_id"], *(stage["fallback_model_ids"] or [])]
     seen: list[str] = []
     for k in keys:
         if k and k not in seen:
@@ -231,7 +235,7 @@ def plan(state: dict) -> dict:
         group = stage_group(s["stage"])
         has_vendor = scopes is not None and VENDOR_DIRECT in scopes
         widen = bool(api_keys) and group != "tripplanner" and not has_vendor
-        also = []
+        also, live_other = [], []
         if api_keys and group != "tripplanner":
             for k in keys:
                 for d in state["deployments"]:
@@ -239,9 +243,15 @@ def plan(state: dict) -> dict:
                     if (d["model_key"] == k and d["connection_key"] != CONNECTION and c is not None
                             and c["data_scope"] == VENDOR_DIRECT and d["enabled"]):
                         also.append(f"{k}@{d['connection_key']}")
+                        if c["enabled"]:
+                            live_other.append(f"{k}@{d['connection_key']}")
+        # Hold (review S261): widening would let the stage call another vendor API that is already switched on (e.g.
+        # openai-direct), i.e. paid traffic outside AWS before the Anthropic key exists. The tech lead decides those.
+        held = widen and bool(live_other)
+        widen = widen and not held
         stages.append({"stage": s["stage"], "role": s["role"], "active": s["is_active"], "group": group,
                        "scopes": scopes, "route": keys, "api_keys": api_keys, "gap_keys": gap_keys,
-                       "widen": widen, "also_opens": also})
+                       "widen": widen, "held": held, "held_by": live_other, "also_opens": also})
     conn = state["connections"].get(CONNECTION) or {}
     budget = conn.get("monthly_budget_usd")
     return {"inserts": inserts, "gaps": gaps, "stages": stages, "set_budget": budget is None,
@@ -278,6 +288,9 @@ def report(state: dict, p: dict, title: str) -> None:
             out("stage", group=group, stage=s["stage"], role=s["role"], active=s["active"],
                 scopes=_csv(s["scopes"] or ["NULL"]), api=_csv(s["api_keys"]), no_api=_csv(s["gap_keys"]),
                 also_vendor=_csv(s["also_opens"]))
+            if s["held"]:
+                out("held", stage=s["stage"], why="widening would also reach a live vendor API",
+                    live=_csv(s["held_by"]))
     for k, why in sorted(p["gaps"].items()):
         out("gap", model=k, why=why)
 
@@ -330,7 +343,8 @@ def _guards(before: dict, after: dict, p_after: dict) -> list[str]:
     if pending(p_after):
         errors.append(f"{pending(p_after)} change(s) still pending after the writes")
     for s in p_after["stages"]:
-        if s["api_keys"] and s["group"] != "tripplanner" and VENDOR_DIRECT not in (s["scopes"] or []):
+        if (s["api_keys"] and s["group"] != "tripplanner" and not s["held"]
+                and VENDOR_DIRECT not in (s["scopes"] or [])):
             errors.append(f"stage {s['stage']} has an API road but no vendor_direct scope")
     return errors
 
@@ -353,6 +367,7 @@ async def run(conn, mode: str) -> int:
         p = plan(state)
         enabled = state["connections"][CONNECTION]["enabled"]
         out("plan", inserts=len(p["inserts"]), widen=sum(1 for s in p["stages"] if s["widen"]),
+            held=sum(1 for s in p["stages"] if s["held"]),
             set_budget=p["set_budget"], gaps=len(p["gaps"]), connection_enabled=enabled)
         if enabled:
             out("note", why="anthropic-direct is already enabled: widened stages use the API within 5 minutes")
