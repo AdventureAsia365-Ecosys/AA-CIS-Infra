@@ -22,7 +22,7 @@ Prints ids, codes and counts only (no agency names). Local test: `python3 aa961_
 
 import asyncio
 
-MODE = "flag"
+MODE = "clear"
 
 SCRIPT_NAME = "aa961_incident_seed"
 STAFF_SQL = (
