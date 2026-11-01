@@ -78,6 +78,12 @@ STOP_NOTES = {
                           "it carries `-- migrate: destructive`, so migration-apply never applies it: DRY RUN counts "
                           "to the tech lead, then DB Migrate `check` and `apply` with `migration={path}` (the "
                           "workflow takes the RDS snapshot first; MIG-12)."),
+    rm.STOP_DELETE: ("manual DB Migrate apply needed (DELETE)",
+                     "it is a contract file with a DELETE statement but no `-- migrate: destructive` header, so "
+                     "migration-apply never applies it (rows removed with no snapshot and no DRY RUN; MIG-12). If it "
+                     "removes real data, add the header in the owner repo with a new number (DRY RUN counts to the "
+                     "tech lead, the workflow takes the RDS snapshot); if it only clears rows nobody needs, run DB "
+                     "Migrate `check` then `apply` with `migration={path}`."),
     rm.STOP_OUT_OF_ORDER: ("manual DB Migrate apply needed",
                            "its number is below the owner's highest registered key (out of order), so migration-apply "
                            "never applies it. Run DB Migrate `check` then `apply` with `migration={path}`."),

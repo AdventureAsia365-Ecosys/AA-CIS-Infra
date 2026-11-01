@@ -33,6 +33,14 @@ def destructive(number, owner="booking"):
     return tx("DROP TABLE booking.aa1032_old;", version=key, header="-- migrate: destructive\n")
 
 
+def deleting(number, owner="booking", cte=False):
+    """A header-less contract file that removes rows: lint only warns (no destructive header)."""
+    key = f"{rm.AUTO_KEY_PREFIX[owner]}{number:03d}"
+    body = ("WITH gone AS (DELETE FROM booking.aa1032_note WHERE id < 10 RETURNING id) SELECT count(*) FROM gone;"
+            if cte else "DELETE FROM booking.aa1032_note WHERE id < 10;")
+    return tx(body, version=key, header="")
+
+
 def bundle(files, contract_mode=True, environment="dev", **override):
     data = {"kind": rm.BUNDLE_KIND, "format": 1, "contract": contract_mode, "environment": environment,
             "files": [{"path": f["path"], "sql": f["sql"], "verdict": f.get("verdict", "ok"),
@@ -67,6 +75,27 @@ class ContractPlanTest(unittest.TestCase):
                              [("stop", "booking/290_d.sql", rm.STOP_DESTRUCTIVE)])
         self.assertIn(rm.STOP_DESTRUCTIVE, rm.STOP_KINDS)
         self.assertIn(rm.STOP_DESTRUCTIVE, ap.STOP_NOTES)
+
+    def test_contract_file_with_a_header_less_delete_always_stops(self):
+        reg = registered("booking", 289)
+        for cte in (False, True):
+            sql = deleting(290, cte=cte)
+            errs, warns = rm.lint(sql, rm.parse_directives(sql), "booking/290_x.sql")
+            self.assertEqual(errs, [])                                         # only a lint warning ...
+            self.assertTrue(any("DELETE" in w for w in warns))
+            files = [entry("booking/290_x.sql", sql), entry("booking/291_e.sql", expand(291))]
+            plan = rm.plan_pending(files, reg, contract=True)["booking"]["steps"]
+            self.assertEqual([(s.action, s.path, s.kind) for s in plan],
+                             [("stop", "booking/290_x.sql", rm.STOP_DELETE)])  # ... but never auto-applied
+            self.assertIn("DELETE but no `-- migrate: destructive` header", plan[0].reason)
+            self.assertEqual(steps(files, reg, contract_mode=False),           # contract mode off: the old stop
+                             [("stop", "booking/290_x.sql", rm.STOP_CONTRACT)])
+        self.assertIn(rm.STOP_DELETE, rm.STOP_KINDS)
+        self.assertIn(rm.STOP_DELETE, ap.STOP_NOTES)
+        with_header = tx("DELETE FROM booking.aa1032_note WHERE id < 10;", version="bk-290",
+                         header="-- migrate: destructive\n")
+        self.assertEqual(steps([entry("booking/290_x.sql", with_header)], reg),
+                         [("stop", "booking/290_x.sql", rm.STOP_DESTRUCTIVE)])
 
     def test_contract_file_needs_the_runner_verdict_and_a_clean_lint(self):
         reg = registered("booking", 289)
@@ -163,6 +192,13 @@ class ContractTaskTest(unittest.TestCase):
         self.assertEqual((code, self.used), (0, []))
         row = self.rows()[0]
         self.assertEqual((row["status"], row["kind"]), ("manual", rm.STOP_DESTRUCTIVE))
+
+    def test_header_less_delete_file_is_never_run(self):
+        files = [entry("booking/290_x.sql", deleting(290)), entry("booking/291_e.sql", expand(291))]
+        code = self.run_pending(bundle(files), registered("booking", 289))
+        self.assertEqual((code, self.used), (0, []))
+        self.assertEqual([(r["file"], r["status"], r["kind"]) for r in self.rows()],
+                         [("booking/290_x.sql", "manual", rm.STOP_DELETE)])   # 291 waits behind it
 
     def test_a_failed_contract_file_stops_its_owner(self):
         broken = FakeConn(fail=PgError("23514", "check constraint is violated by some row"))
@@ -272,6 +308,17 @@ class ContractRunnerSideTest(unittest.TestCase):
         self.assertIn("never applies it", note["body"])
         self.assertTrue(note["on_main"])
 
+    def test_plan_header_less_delete_stays_manual_in_contract_mode(self):
+        self.put("290_x.sql", deleting(290))
+        out, _ = self.run_plan(registered("booking", 289), {"files": [self.replay("booking/290_x.sql")]},
+                               ["--environment", "dev", "--contract"])
+        self.assertEqual((out["apply"], out["manual"]), ("false", "delete:booking/290_x.sql"))
+        self.assertEqual(ap.parse_manual("delete:booking/290_x.sql"), [(rm.STOP_DELETE, "booking/290_x.sql")])
+        note = ap.note(rm.STOP_DELETE, "booking/290_x.sql", "1")
+        self.assertIn("never applies it", note["body"])
+        self.assertIn("`migration=booking/290_x.sql`", note["body"])
+        self.assertTrue(note["on_main"])
+
     def test_report_shows_the_class_of_each_applied_file(self):
         result = {"bundle": "abc", "exit": 0, "contract": True, "owners": {"booking": {"head_before": "bk-289",
                   "files": [{"file": "booking/290_c.sql", "status": "applied", "class": "contract"},
@@ -333,6 +380,14 @@ class LatestCheckRunTest(unittest.TestCase):
         self.assertEqual(copies[0]["class"], "contract")
         self.assertIn("applies it after this merge once every job table is idle", copies[0]["body"])
         self.assertNotIn("manual DB Migrate apply needed", copies[0]["body"])
+
+    def test_contract_copy_pr_with_a_delete_says_it_stays_manual(self):
+        self.r.copy("033_a.sql")
+        self.r.main("035_x.sql", deleting(35))
+        copy = self.r.plan()["copies"][1]
+        self.assertEqual((copy["file"], copy["class"]), ("035_x.sql", "contract"))
+        self.assertIn("manual DB Migrate apply needed", copy["body"])
+        self.assertNotIn("once every job table is idle", copy["body"])
 
 
 WF = ROOT / ".github" / "workflows"

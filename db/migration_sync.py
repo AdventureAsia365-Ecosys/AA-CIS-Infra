@@ -145,6 +145,10 @@ def plan(repo_root: Path, sources: dict, registered: set | None) -> dict:
                             "probe). It stays manual (DB Migrate) only while `DB_AUTO_APPLY_CONTRACT` is `false`.",
                 "destructive": "Destructive file: **manual DB Migrate apply needed** (RDS snapshot, DRY RUN, MIG-12).",
             }[cls]
+            if cls == "contract" and rm.deletes_rows(raw.decode("utf-8", "replace")):
+                note = ("Contract file with a `DELETE` but no `-- migrate: destructive` header: **manual DB Migrate "
+                        "apply needed** (`migration-apply` never applies it, root ADR 0017a). If it removes real "
+                        "data, add the header with a new number in the owner repo (RDS snapshot, DRY RUN, MIG-12).")
             if out_of_order:
                 basis = (f"the highest registered {owner} key on Dev" if top_reg is not None
                          else f"the highest {owner} copy here (no DB Schema Dump artifact)")

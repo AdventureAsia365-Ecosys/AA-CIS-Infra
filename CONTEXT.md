@@ -833,7 +833,8 @@ makes CI Terraform Plan fail with 403.
   `aa-cis-infra-db-auto-apply`) re-checks bytes, re-classifies, and applies pending expand files in strict number
   order per owner (`MIGRATION_MODE=apply-pending`, apply lock held) and, on Dev, contract files too, each after the
   all-job-tables-idle wait (AA-1032, root ADR 0017a; kill switch `DB_AUTO_APPLY_CONTRACT=false`; prod keeps the
-  manual contract apply); it stops at the first destructive / out-of-order / refused file,
+  manual contract apply); it stops at the first destructive / out-of-order / refused file (or contract file with a
+  `DELETE` but no destructive header),
   then runs the Isolation Probe as a blocking job and dispatches the dump. Off (list only) unless the repo variable
   `DB_AUTO_APPLY` is `true` and the repo is public with the ruleset on `main` (root ADR 0017 d8). Details:
   `db/README.md` "Copy sync and expand auto-apply".

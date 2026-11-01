@@ -2756,8 +2756,10 @@ async def apply_file(env, sql: str, file: str, version: str, mode: str, connect,
 # apply_file exactly like a DB Migrate apply of a contract file: the all-job-tables-idle wait (IDLE_WAITS x
 # IDLE_WAIT_S, no override ever), the default lock_timeout / statement_timeout, the role switch and the ownership
 # post-check. Busy job tables or an open wave = exit 7 = deferred (the hourly run retries). A destructive file is
-# always a stop (STOP_DESTRUCTIVE: RDS snapshot and DRY RUN by a person). Any other bundle environment asking for
-# contract files is refused (exit 10): prod keeps the manual contract apply.
+# always a stop (STOP_DESTRUCTIVE: RDS snapshot and DRY RUN by a person), and so is a contract file with a DELETE
+# statement but no destructive header (STOP_DELETE: lint only warns, and nobody reads a warning on an automatic
+# run). Any other bundle environment asking for contract files is refused (exit 10): prod keeps the manual
+# contract apply.
 # One `MIGRATE auto: …` line per decision and a final `MIGRATE auto-result {json}` line that the workflow summarises.
 AUTO_OWNERS = ("cis", "booking", "tripplanner", "crm")            # never roles/ (master files stay manual)
 # replay_migrations.KEY_PREFIX / check_migration_copies.OWNERS (db/tests/test_aa993_apply_pending.py keeps them equal).
@@ -2784,8 +2786,10 @@ STOP_REFUSED_CLASSIFY = "refused-classify"  # runner: expand_check --classify on
 STOP_NO_EVIDENCE = "no-evidence"        # runner: no classify result for the file
 STOP_REFUSED = "refused"                # runner: any other verdict (or none)
 STOP_DESTRUCTIVE = "destructive"        # `-- migrate: destructive`: never auto-applied (snapshot, DRY RUN, MIG-12)
+STOP_DELETE = "delete"                  # contract mode: a header-less DELETE (lint warning) is never
+                                        # auto-applied either: add `-- migrate: destructive` or apply by hand
 STOP_KINDS = (STOP_OUT_OF_ORDER, STOP_NOT_COPIED, STOP_DUPLICATE, STOP_GAP, STOP_CONTRACT, STOP_LINT,
-              STOP_REFUSED_BYTES, STOP_REFUSED_CLASSIFY, STOP_NO_EVIDENCE, STOP_REFUSED, STOP_DESTRUCTIVE)
+              STOP_REFUSED_BYTES, STOP_REFUSED_CLASSIFY, STOP_NO_EVIDENCE, STOP_REFUSED, STOP_DESTRUCTIVE, STOP_DELETE)
 # AA-1032 (root ADR 0017a): the environments where apply-pending may apply contract files (bundle "contract": true).
 # Mirrored by db/owners.yaml contract_auto_apply_environments (db/tests/test_owners_registry.py keeps them equal).
 CONTRACT_AUTO_ENVIRONMENTS = ("dev",)
@@ -2803,6 +2807,11 @@ class AutoStep:
     cls: str = ""                       # apply only: expand | contract (AA-1032, contract only in contract mode)
 
 
+def deletes_rows(sql: str) -> bool:
+    """True when a statement of the file is a DELETE (plain or in a CTE): the lint warning, as a yes/no."""
+    return any(DELETE_RE.search(st.code) for st in split_statements(sql))
+
+
 def auto_version(owner: str, number: int) -> str:
     return f"{AUTO_KEY_PREFIX[owner]}{number:03d}"
 
@@ -2816,7 +2825,8 @@ def plan_pending(files: list, registered, contract: bool = False) -> dict:
     each one is copied, the next number (head + 1, then + 1 per step: never past a gap, critic 2), expand (header,
     lint), verdict ok and not below the owner's highest registered key; the first that is not ends the owner's steps
     with `stop`. contract (AA-1032, Dev only): a file without the expand header that passes the same checks is an
-    `apply` step too (cls "contract"); a destructive file is always a stop."""
+    `apply` step too (cls "contract"); a destructive file is always a stop, and so is a contract file with a DELETE
+    statement (lint only warns about it; nobody reads a warning on an automatic run, so it waits for a person)."""
     registered = set(registered)
     out = {}
     for owner in AUTO_OWNERS:
@@ -2858,7 +2868,7 @@ def plan_pending(files: list, registered, contract: bool = False) -> dict:
                           f"gap is applied (the owner's next file must be its head + 1)")
             else:
                 d = parse_directives(f["sql"])
-                errs = lint(f["sql"], d, f["path"])[0]
+                errs, warns = lint(f["sql"], d, f["path"])
                 if d.destructive:
                     kind = STOP_DESTRUCTIVE
                     reason = ("destructive (`-- migrate: destructive`): RDS snapshot and DRY RUN, manual DB Migrate "
@@ -2870,6 +2880,11 @@ def plan_pending(files: list, registered, contract: bool = False) -> dict:
                     kind = STOP_LINT
                     reason = (f"{'expand header' if d.expand else 'contract file'} but {len(errs)} lint error(s): "
                               f"{errs[0]}")
+                elif not d.expand and deletes_rows(f["sql"]):
+                    kind = STOP_DELETE
+                    reason = (f"contract file with a DELETE but no `-- migrate: destructive` header "
+                              f"({next((w for w in warns if 'DELETE' in w), 'DELETE')}): never auto-applied; add the "
+                              f"header (RDS snapshot, DRY RUN) or apply it by hand with DB Migrate")
                 elif f.get("verdict") != "ok":
                     vk = f.get("verdict_kind")
                     kind = vk if vk in VERDICT_KINDS and vk != "ok" else STOP_REFUSED

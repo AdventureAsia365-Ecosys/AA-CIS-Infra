@@ -171,7 +171,7 @@ jobs:
             echo "- contract files: **manual** (repo variable DB_AUTO_APPLY_CONTRACT=false)" >> "$GITHUB_STEP_SUMMARY"
           elif [ "$TARGET_ENV" = "dev" ]; then
             echo "contract=true" >> "$GITHUB_OUTPUT"
-            echo "- contract files: **auto** on $TARGET_ENV, each when every job table is idle and no rerun wave is open; destructive files stay manual" >> "$GITHUB_STEP_SUMMARY"
+            echo "- contract files: **auto** on $TARGET_ENV, each when every job table is idle and no rerun wave is open; destructive files and contract files with a DELETE stay manual" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "contract=false" >> "$GITHUB_OUTPUT"
             echo "- contract files: **manual** ($TARGET_ENV is not a contract auto-apply environment)" >> "$GITHUB_STEP_SUMMARY"

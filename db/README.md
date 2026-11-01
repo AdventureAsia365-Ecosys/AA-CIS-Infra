@@ -235,7 +235,7 @@ on Dev, the pending **contract** files (AA-1032, root ADR 0017a, "contract mode"
    `dev-db-auto` itself), after a file was applied or when the result is unknown.
 4. `dump`: DB Schema Dump with `after_apply=true` (same condition).
 5. `summary`: every owner's stop is on the run's manual list as `kind:owner/file` (`run_migration.STOP_KINDS`:
-   contract, destructive, out-of-order, lint, refused-bytes, refused-classify, no-evidence, refused, not-copied, gap,
+   contract, destructive, delete, out-of-order, lint, refused-bytes, refused-classify, no-evidence, refused, not-copied, gap,
    duplicate)
    and gets one note per kind on its copy PR (the MERGED PR that added the file, found from the commit that added it;
    the open copy PR for a file not copied yet) saying what a person does (`db/apply_pending.py STOP_NOTES`). A
@@ -246,7 +246,8 @@ on Dev, the pending **contract** files (AA-1032, root ADR 0017a, "contract mode"
 unset = on). `apply_pending.py plan --environment dev --contract` writes `"contract": true, "environment": "dev"` into
 the bundle; the task (`read_bundle_contract`) refuses (exit 10) a contract bundle for any other environment, so prod
 keeps the manual contract apply. Destructive files (`-- migrate: destructive`) are always a stop (`destructive`):
-DRY RUN to the tech lead, then DB Migrate (snapshot). With the kill switch `false`, contract files are listed and
+DRY RUN to the tech lead, then DB Migrate (snapshot). A contract file with a `DELETE` statement but no destructive
+header (lint only warns) is a stop too (`delete`): add the header with a new number, or apply it by hand. With the kill switch `false`, contract files are listed and
 noted on their copy PR as before (manual DB Migrate `check` + `apply`).
 
 **Switch:** the repo variable `DB_AUTO_APPLY`. Anything but `true` (unset by default), a private repo, or a `main`

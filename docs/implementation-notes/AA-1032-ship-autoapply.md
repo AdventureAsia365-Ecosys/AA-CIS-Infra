@@ -28,6 +28,13 @@ Lane `ship-autoapply`, S263. Root half: root repo branch `docs/aa-1032-contract-
   it were expand, with the 30 s timeout).
 - **Destructive is its own stop kind** (`destructive`) in both modes, with its own copy-PR note (DRY RUN, snapshot).
   Before, a destructive file stopped as `contract`.
+- **A header-less DELETE is its own stop kind** (`delete`, review fix pass). Lint only WARNS about a `DELETE` without
+  `-- migrate: destructive` (MIG-12), and nobody reads a warning on an automatic run, so in contract mode a contract
+  file with a `DELETE` statement (plain or in a CTE; `run_migration.deletes_rows`) is a stop with its own copy-PR
+  note, and its copy PR body says "manual DB Migrate apply needed" instead of "Dev applies it". Scoped to the
+  `DELETE` statement, not "any warning": `DELETE` is the only warning lint emits today; a future advisory warning
+  should not silently turn into a stop. Expand files are unchanged (the expand lint already refuses writes to
+  existing tables).
 - **Migration Sync fix (the "auto-merge contract copy PRs" part).** The merge pass already merged every class; it
   refused copy PRs whose head commit carried a cancelled duplicate `gitleaks` run next to a green one (two PR events),
   which is why #578, #583, #589 and others were merged by hand. `merge_check` now judges the latest run per (name,
@@ -36,7 +43,7 @@ Lane `ship-autoapply`, S263. Root half: root repo branch `docs/aa-1032-contract-
 
 ## Changed
 
-- `db/run_migration.py`: `STOP_DESTRUCTIVE`, `CONTRACT_AUTO_ENVIRONMENTS`, `AutoStep.cls`, `plan_pending(...,
+- `db/run_migration.py`: `STOP_DESTRUCTIVE`, `STOP_DELETE`, `deletes_rows`, `CONTRACT_AUTO_ENVIRONMENTS`, `AutoStep.cls`, `plan_pending(...,
   contract=False)`, `read_bundle_contract`, contract mode in `run_apply_pending` (log line, result `contract`, row
   `class`, deferral reason).
 - `db/apply_pending.py`: `--environment`, `--contract`, `contract_mode`, `contract_evidence`, contract verdicts,
@@ -45,7 +52,7 @@ Lane `ship-autoapply`, S263. Root half: root repo branch `docs/aa-1032-contract-
 - `.github/workflows/migration-apply.yml`: header, `TARGET_ENV`, `DB_AUTO_APPLY_CONTRACT`, gate output `contract`,
   `--environment` / `--contract` on both plan steps, summary line. `.github/workflows/migration-sync.yml`: header.
 - `db/owners.yaml`: `contract_auto_apply_environments: [dev]`.
-- Tests: `db/tests/test_aa1032_contract_auto_apply.py` (24), `test_owners_registry.py` (mirror),
+- Tests: `db/tests/test_aa1032_contract_auto_apply.py` (28, incl. the `delete` stop in plan, task, runner and copy PR body), `test_owners_registry.py` (mirror),
   `test_aa993_migration_sync.py` (contract body wording).
 - Docs: `db/README.md`, `CONTEXT.md`.
 
