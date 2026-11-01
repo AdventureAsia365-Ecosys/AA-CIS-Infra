@@ -392,6 +392,10 @@ resource "aws_iam_role_policy" "crm_ecs_task" {
 # AUDIT_BUCKET_COMPLIANCE / AUDIT_BUCKET_GOVERNANCE / AUDIT_RETENTION_DRY_RUN (AA-940): the two audit tiers and the
 # retention dry run; LIFECYCLE_DRY_RUN (AA-942): every hard delete of agency data (daily crm_lifecycle run, erasure,
 # offboarding erase) only counts while "true"; turning it off is an ops decision (DM-7.2), like JOB_RETENTION_DRY_RUN.
+# PARTNER_ACCOUNT_CLEANUP_DRY_RUN (S263, AA-939 follow-up; root ADR 0006b amendment A1): the daily crm_partner_accounts
+# clean-up and the one a test agency's delete queues delete never-signed-in partner-pool accounts nobody needs
+# (identity_partner.tf AdminDeleteUser) only while "false"; the app's default is "true" (counts only). "false" on Dev
+# is the tech lead's S263 decision ("clean up the e-mail accounts too"); it reaches the task on the next deploy.
 # AA-978 (CRM-P1 membership feed): CIS_API_URL (var.crm_cis_api_url) and the secret M2M_CLIENT = the whole JSON of
 # aa-crm/<env>/m2m-booking-client {client_id, client_secret, token_url, scopes} (identity_m2m.tf). The worker's
 # crm_membership_pull asks for scope cis.tenant/read with it; while either is empty the job logs not_configured. The
@@ -435,6 +439,7 @@ resource "aws_ecs_task_definition" "crm_api" {
       { name = "WORKER_ENABLED", value = "true" },
       { name = "JOB_RETENTION_DRY_RUN", value = "true" },
       { name = "LIFECYCLE_DRY_RUN", value = "true" },
+      { name = "PARTNER_ACCOUNT_CLEANUP_DRY_RUN", value = "false" },
       { name = "RATE_LIMIT_PUBLIC_PER_MINUTE", value = "60" },
       { name = "RATE_LIMIT_XFF_HOPS", value = "2" },
       { name = "KEY_PROVIDER", value = "kms" },
