@@ -1,4 +1,3 @@
--- migrate: contract
 -- Migration crm-036: AA-958 CRM-28 Module 9 WhatsApp + SMS (design v3 M9, §5.4, WF-11; data-privacy-integrations
 -- §2.8 group G and §6.4; BYO errata S247 §1 / §2: the agency's own Twilio only, AA holds no vendor account) — the
 -- agency's text-message connection with its per-agency webhook id, the WhatsApp templates it got approved in its own
