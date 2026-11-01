@@ -1,10 +1,14 @@
 # accounts/management: the management account root (AA-1004)
 
-> [!WARNING]
-> UNTESTED - prepared for a brand-new management account; nothing here has been planned or applied. Do not follow
-> a step without checking it, and read every plan for destroys.
+> [!NOTE]
+> Applied (S259) and checked live on 2026-11-01 (read only, profile `aa-mgmt`): the organization with all features,
+> OUs `NonProd` / `Prod` / `Suspended`, the three `aa-scp-*` SCPs attached to each OU (the root keeps only
+> `FullAWSAccess`), the organization trail `aa-org-trail`, the budgets, Identity Center with the groups `aa-admins` /
+> `aa-developers` / `aa-billing` and the four permission sets. No member account has joined yet (§6 is still ahead),
+> so `member_accounts` and the `App`-tag monitors stay empty. The steps below are the record of the bootstrap and the
+> procedure for what is left; read every plan for destroys.
 
-Terraform root for the management account of the lean AWS model (root ADR 0018, Proposed; S258 blueprint
+Terraform root for the management account of the lean AWS model (root ADR 0018, Accepted 2026-10-31; S258 blueprint
 `docs/audits/2026-10-29-S258-aws-org-blueprint/` §0 in the root repo). It holds governance only. No workload ever
 runs in the management account, because SCPs do not apply there.
 
