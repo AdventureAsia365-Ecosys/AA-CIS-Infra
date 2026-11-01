@@ -1,4 +1,7 @@
 name: DB Migrate (shared RDS)
+# AA-1032: the run title names what the run does, so the root tool tools/github/ship_copy_apply.py (and dbmig.sh)
+# follows the run it dispatched instead of "the latest run" (S263 bug). Keep the format in sync with run_title there.
+run-name: DB Migrate ${{ inputs.mode }} ${{ inputs.migration }}${{ inputs.role }}${{ inputs.script }}
 # Applies ONE reviewed migration from db/migrations/<owner>/ to the shared acc2 RDS.
 # RDS is VPC-private, so the SQL runs in a one-off ECS Fargate task of the migrator task definition
 # (X1 S12, accounts/aa365/db_migrator.tf: family aa-cis-dev-db-migrate, container migrate, own roles,
