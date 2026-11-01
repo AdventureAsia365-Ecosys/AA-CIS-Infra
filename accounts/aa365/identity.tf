@@ -993,8 +993,8 @@ resource "aws_cognito_managed_login_branding" "external" {
 # the web ACL never sees; checked 24/10/2026 on auth.lumiguides.it.com), 1-2 sign-ins per run, one run at
 # a time per concurrency group, each job on its own runner address. That is under 10 % of either limit,
 # so there is no CI allow-list: GitHub-hosted runners have no fixed addresses to list, and a shared-secret
-# bypass header would be one more secret that skips the abuse limits. If a limit ever bites, the alarm
-# identity_waf_blocked below mails the alert topic and the fix is one tfvars line
+# bypass header would be one more secret that skips the abuse limits. If a limit ever bites (CI sign-ins refused;
+# the blocked requests are in the WAF metrics and log, no alarm since S263), the fix is one tfvars line
 # (identity_waf_signup_rate_limit / identity_waf_global_rate_limit).
 # =============================================================================
 resource "aws_wafv2_web_acl" "identity" {
@@ -1297,26 +1297,6 @@ resource "aws_wafv2_web_acl_association" "identity" {
   web_acl_arn  = aws_wafv2_web_acl.identity[0].arn
 }
 
-# AA-908: any block by either rate rule (all three pools share the ACL) mails the alert topic, so a
-# throttled CI sign-in or a real attack is seen at once. Raise the limit in tfvars if it is legitimate.
-resource "aws_cloudwatch_metric_alarm" "identity_waf_blocked" {
-  count               = var.identity_waf_enabled ? 1 : 0
-  alarm_name          = "${local.id_prefix}-waf-blocked"
-  alarm_description   = "The Cognito web ACL ${local.id_prefix}-pools blocked requests (per-IP rate rules: sign-up/sign-in/code abuse, or a legitimate burst such as CI sign-ins). AA-908.${local.runbook_suffix.cognito_login}"
-  namespace           = "AWS/WAFV2"
-  metric_name         = "BlockedRequests"
-  dimensions          = { WebACL = aws_wafv2_web_acl.identity[0].name, Region = var.aws_region, Rule = "ALL" }
-  statistic           = "Sum"
-  period              = 300
-  evaluation_periods  = 1
-  threshold           = 1
-  comparison_operator = "GreaterThanOrEqualToThreshold"
-  treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
-  tags                = local.id_tags
-}
-
 # =============================================================================
 # Break-glass secret container (ADR 0006 decision 11). No value in Terraform: Nghiep stores the
 # password + TOTP seed after the one-off bootstrap script creates the (disabled) user.
@@ -1329,11 +1309,14 @@ resource "aws_secretsmanager_secret" "identity_breakglass" {
 }
 
 # =============================================================================
-# Alarms (ADR 0006 decisions 5 and 11). A denial is raised as an exception, so Lambda `Errors`
-# also counts refusals: the Errors alarm uses a burst threshold, while unexpected exceptions are
-# caught exactly by the `*_error` log metric.
-# Notifications: alarm_actions AND ok_actions (S241 D-20 "e-mail on OK too"), like every alarm on
-# the topic since AA-872.
+# Alarms (ADR 0006 decisions 5 and 11). A denial is raised as an exception, so Lambda `Errors` also counts refusals:
+# the Errors alarm uses a burst threshold. S263 alert diet (AA-1025, root docs/audits/2026-11-01-S263-alerting-cost/
+# diet.md): Errors per trigger, the unexpected-error log metric and the break-glass token stay. Throttles and p99
+# duration were removed (a throttled or timed-out trigger fails the sign-in, which is an Errors datapoint), and so was
+# the WAF blocked-requests alarm (blocked requests stay in the WAF log). The Errors alarm has a burst threshold
+# (refusals count too), which a low-traffic Dev never reaches when a broken release refuses every sign-in: the
+# unexpected-error alarm (threshold 1) is that signal. Its metric has no default_value, so the custom metric is billed
+# only in hours with an error. Event alarms: e-mail on ALARM only.
 # =============================================================================
 resource "aws_cloudwatch_log_metric_filter" "identity_trigger_unexpected" {
   for_each       = local.id_triggers
@@ -1342,11 +1325,10 @@ resource "aws_cloudwatch_log_metric_filter" "identity_trigger_unexpected" {
   pattern        = "{ $.event = \"*_error\" }"
 
   metric_transformation {
-    name          = "TriggerUnexpectedError"
-    namespace     = "AA/Identity"
-    value         = "1"
-    default_value = "0"
-    unit          = "Count"
+    name      = "TriggerUnexpectedError"
+    namespace = "AA/Identity"
+    value     = "1"
+    unit      = "Count"
   }
 }
 
@@ -1362,7 +1344,6 @@ resource "aws_cloudwatch_metric_alarm" "identity_trigger_unexpected" {
   comparison_operator = "GreaterThanOrEqualToThreshold"
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
   tags                = local.id_tags
 }
 
@@ -1380,43 +1361,6 @@ resource "aws_cloudwatch_metric_alarm" "identity_trigger_errors" {
   comparison_operator = "GreaterThanOrEqualToThreshold"
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
-  tags                = local.id_tags
-}
-
-resource "aws_cloudwatch_metric_alarm" "identity_trigger_throttles" {
-  for_each            = local.id_triggers
-  alarm_name          = "${local.id_prefix}-${each.key}-throttles"
-  alarm_description   = "${each.key} is throttled: sign-ins are refused. AA-703.${local.runbook_suffix.cognito_login}"
-  namespace           = "AWS/Lambda"
-  metric_name         = "Throttles"
-  dimensions          = { FunctionName = aws_lambda_function.identity_trigger[each.key].function_name }
-  statistic           = "Sum"
-  period              = 300
-  evaluation_periods  = 1
-  threshold           = 1
-  comparison_operator = "GreaterThanOrEqualToThreshold"
-  treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
-  tags                = local.id_tags
-}
-
-resource "aws_cloudwatch_metric_alarm" "identity_trigger_duration" {
-  for_each            = local.id_triggers
-  alarm_name          = "${local.id_prefix}-${each.key}-duration-p99"
-  alarm_description   = "${each.key} p99 duration above 3 s (Cognito kills triggers at 5 s). AA-703.${local.runbook_suffix.cognito_login}"
-  namespace           = "AWS/Lambda"
-  metric_name         = "Duration"
-  dimensions          = { FunctionName = aws_lambda_function.identity_trigger[each.key].function_name }
-  extended_statistic  = "p99"
-  period              = 300
-  evaluation_periods  = 1
-  threshold           = 3000
-  comparison_operator = "GreaterThanThreshold"
-  treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
   tags                = local.id_tags
 }
 
@@ -1426,11 +1370,10 @@ resource "aws_cloudwatch_log_metric_filter" "identity_breakglass" {
   pattern        = "{ $.event = \"breakglass_token_issued\" }"
 
   metric_transformation {
-    name          = "BreakglassTokenIssued"
-    namespace     = "AA/Identity"
-    value         = "1"
-    default_value = "0"
-    unit          = "Count"
+    name      = "BreakglassTokenIssued"
+    namespace = "AA/Identity"
+    value     = "1"
+    unit      = "Count"
   }
 }
 
@@ -1446,7 +1389,6 @@ resource "aws_cloudwatch_metric_alarm" "identity_breakglass" {
   comparison_operator = "GreaterThanOrEqualToThreshold"
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
   tags                = local.id_tags
 }
 

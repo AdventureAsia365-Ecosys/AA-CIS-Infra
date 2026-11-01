@@ -42,6 +42,15 @@ data "aws_iam_policy_document" "cis_alert_recipients" {
     }
   }
 
+  # S263 alert diet (AA-1025): the CIS in-app checks (shared/ops_checks.py: job queue, per-role connections, XID age,
+  # lost cost-log writes, tenant-pool fail-closed states) e-mail through this topic, the one the CloudWatch alarms they
+  # replace used. Publish only, to this topic only.
+  statement {
+    sid       = "AlertsTopicPublishOpsChecks"
+    effect    = "Allow"
+    actions   = ["sns:Publish"]
+    resources = [aws_sns_topic.alerts.arn]
+  }
   statement {
     sid       = "AlertsTopicListSubscriptions"
     effect    = "Allow"

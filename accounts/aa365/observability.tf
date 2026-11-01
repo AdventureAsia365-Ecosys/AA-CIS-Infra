@@ -7,8 +7,8 @@
 # account 1 (867490540162, decommissioned). That resource is gone with the
 # account — this is a fresh build on account 2, not an import/fix.
 #
-# NOTIFICATIONS: ALARM and OK (S241 D-20, AA-872, reversing AA-751's alarm-only rule). Every alarm
-# on the topic has alarm_actions and ok_actions, so the recovery is e-mailed too (observability_ecosys.tf header).
+# NOTIFICATIONS: state alarms e-mail on ALARM and OK, event alarms on ALARM only (S263 alert diet, AA-1025;
+# observability_ecosys.tf header).
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -70,8 +70,8 @@ resource "aws_sns_topic_subscription" "alerts_email" {
   endpoint  = var.alert_email
 }
 
-# Proposed addition (per S102 task) — RDS CPU sustained high. Kept in this PR
-# but flagged for Nghiep to confirm/drop; not part of the original AA-61 scope.
+# RDS CPU sustained high (S102). One of the three RDS alarms the S263 alert diet keeps (CPU, free storage,
+# connections; AA-1025): the apps cannot see the instance CPU.
 resource "aws_cloudwatch_metric_alarm" "rds_cpu_high" {
   alarm_name          = "${local.name_prefix}-rds-cpu-high"
   comparison_operator = "GreaterThanThreshold"
@@ -93,148 +93,17 @@ resource "aws_cloudwatch_metric_alarm" "rds_cpu_high" {
   tags = merge(local.shared_tags, { Issue = "AA-284" })
 }
 
-# Proposed addition (per S102 task) — ECS running task count below desired.
-# CAVEAT: ECS/ContainerInsights RunningTaskCount is only emitted when
-# Container Insights is enabled on the cluster. Enabling Container Insights is
-# NOT part of this PR (would touch modules/ecs, out of the stated scope) — if
-# it isn't already enabled, this alarm will sit in INSUFFICIENT_DATA and never
-# fire. Flagged for Nghiep to confirm/drop or follow up separately.
-resource "aws_cloudwatch_metric_alarm" "ecs_task_count_low" {
-  alarm_name          = "${local.name_prefix}-ecs-running-tasks-low"
-  comparison_operator = "LessThanThreshold"
-  evaluation_periods  = 2
-  metric_name         = "RunningTaskCount"
-  namespace           = "ECS/ContainerInsights"
-  period              = 300
-  statistic           = "Average"
-  threshold           = var.service_desired_count
-  alarm_description   = "ECS ${local.name_prefix}-api running task count below desired (requires Container Insights).${local.runbook_suffix.api_5xx}"
-  treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
-
-  dimensions = {
-    ClusterName = "${local.name_prefix}-cluster"
-    ServiceName = "${local.name_prefix}-api"
-  }
-
-  tags = merge(local.common_tags, { Issue = "AA-284" })
-}
-
 # -----------------------------------------------------------------------------
-# AA-362 [N8-2] — N7 Produce piece alarms (held_rate, grounding_score floor,
-# repair_count). STEP 0 (05/08/2026) confirmed 5/6 alarms the issue wants were
-# missing; this covers 3 of the 5 gap. Metrics emitted by
-# AA-CIS-App:services/acp_produce/metrics.py::emit_piece_metrics() —
-# namespace "acp" (the one real custom-metric convention already in the repo,
-# api/routers/acp_health.py/AA-141 — no "ACP/Pipeline"/"ACP/Produce"
-# namespace exists anywhere, confirmed by grep before choosing this).
+# S263 (AA-1025): the AA-362 N7 piece alarms (held rate, grounding floor, repair count, namespace "acp") are removed:
+# their only emitter (AA-CIS-App services/acp_produce/metrics.py) had no caller, so they could never fire. Held pieces
+# are reviewed in /admin/atom-curation.
 #
-# NOT included here — Bedrock daily cost alarm. Decision (AA-828, S238): no
-# CloudWatch alarm and no Cost Explorer rollup Lambda will be built for it.
-#   - Per-app and per-stage LLM spend is guarded in the application ledger:
-#     AA-CIS-App shared/cost_guard.py + table shared.spend_budget, alerting to
-#     shared.notifications, edited in the admin Cost Operations page.
-#   - That ledger is reconciled against Cost Explorer under AA-804.
-#   - Most Bedrock spend runs in the acc3 satellite account
-#     (shared/llm_client/bedrock_satellite.py), which the acc2 `App` cost
-#     allocation tags and the per-app budgets below do not cover.
-# (Background, verified for AA-362: AWS/Billing CloudWatch metrics are not
-# enabled on this account, and Cost Explorer splits Bedrock across several
-# SERVICE line items, so a correct alarm would need its own rollup code.)
+# No Bedrock daily cost alarm either. Decision (AA-828, S238): no CloudWatch alarm and no Cost Explorer rollup Lambda.
+#   - Per-app and per-stage LLM spend is guarded in the application ledger (AA-CIS-App shared/cost_guard.py, table
+#     shared.spend_budget, alerting to shared.notifications, edited on the admin AI providers page), reconciled
+#     against Cost Explorer under AA-804.
+#   - Most Bedrock spend runs in the acc3 satellite account, which the acc2 budgets below do not cover.
 # -----------------------------------------------------------------------------
-
-# held_rate — computed via CloudWatch metric math (ratio), not in Python:
-# emit_piece_metrics() only emits raw per-piece counts (piece_held/
-# piece_passed); this alarm sums each over a 1h window and divides.
-# Threshold (20%) is an UNVERIFIED PLACEHOLDER — no real N7 traffic exists yet
-# to tune against (same acknowledged gap as AA-298's SWEEPER_SLA_HOURS
-# placeholder). Tune once real held/passed volume exists.
-resource "aws_cloudwatch_metric_alarm" "acp_piece_held_rate_high" {
-  alarm_name          = "${local.name_prefix}-acp-piece-held-rate-high"
-  comparison_operator = "GreaterThanThreshold"
-  evaluation_periods  = 1
-  threshold           = 20
-  alarm_description   = "N7 piece held-rate above 20% over 1h (UNVERIFIED placeholder threshold) — possible prompt/gate drift or brief quality regression.${local.runbook_suffix.incident}"
-  treat_missing_data  = "notBreaching"
-
-  metric_query {
-    id          = "held_rate"
-    expression  = "(held_sum / (held_sum + passed_sum)) * 100"
-    label       = "N7 piece held rate (%)"
-    return_data = true
-  }
-
-  metric_query {
-    id = "held_sum"
-    metric {
-      metric_name = "piece_held"
-      namespace   = "acp"
-      period      = 3600
-      stat        = "Sum"
-    }
-  }
-
-  metric_query {
-    id = "passed_sum"
-    metric {
-      metric_name = "piece_passed"
-      namespace   = "acp"
-      period      = 3600
-      stat        = "Sum"
-    }
-  }
-
-  alarm_actions = [aws_sns_topic.alerts.arn]
-  ok_actions    = [aws_sns_topic.alerts.arn]
-
-  tags = merge(local.common_tags, { Issue = "AA-362" })
-}
-
-# grounding_score HARD FLOOR = 1.0 — not a soft/tunable threshold per issue
-# spec. gate_grounding() (F1) is binary pass/fail in the real code (no
-# numeric score exists — see AA-362 implementation notes), mapped by
-# emit_piece_metrics() to 1.0 (passed) / 0.0 (failed). Minimum statistic over
-# a 5-minute period + 1 evaluation period means ANY single F1 failure drags
-# the period's Minimum to 0.0 and fires within one period — "floor" is
-# enforced as "alarm the instant it happens," not averaged/smoothed away.
-resource "aws_cloudwatch_metric_alarm" "acp_grounding_score_floor" {
-  alarm_name          = "${local.name_prefix}-acp-grounding-score-floor"
-  comparison_operator = "LessThanThreshold"
-  evaluation_periods  = 1
-  metric_name         = "grounding_score"
-  namespace           = "acp"
-  period              = 300
-  statistic           = "Minimum"
-  threshold           = 1.0
-  alarm_description   = "N7 F1 grounding gate failed on at least 1 piece (HARD FLOOR = 1.0) — fabrication risk, investigate immediately.${local.runbook_suffix.incident}"
-  treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
-
-  tags = merge(local.common_tags, { Issue = "AA-362" })
-}
-
-# repair_count — average per piece rising is the prompt/gate-drift signal the
-# issue names. Threshold (1.0) and evaluation window (3x 1h) are UNVERIFIED
-# PLACEHOLDERS, same caveat as held_rate above — no real repair_count
-# distribution exists yet to set a real number against.
-resource "aws_cloudwatch_metric_alarm" "acp_repair_count_high" {
-  alarm_name          = "${local.name_prefix}-acp-repair-count-high"
-  comparison_operator = "GreaterThanThreshold"
-  evaluation_periods  = 3
-  metric_name         = "repair_count"
-  namespace           = "acp"
-  period              = 3600
-  statistic           = "Average"
-  threshold           = 1.0
-  alarm_description   = "N7 average repair_count per piece above 1.0 for 3 consecutive hours (UNVERIFIED placeholder threshold) — possible prompt/gate drift.${local.runbook_suffix.incident}"
-  treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
-
-  tags = merge(local.common_tags, { Issue = "AA-362" })
-}
 
 # -----------------------------------------------------------------------------
 # AA-287 — AWS Budgets
@@ -501,63 +370,7 @@ resource "aws_cloudtrail" "main" {
 }
 
 # -----------------------------------------------------------------------------
-# AA-756 — alarm when a cost/decision log row is lost for good.
-# S224 found 347k billed Jev calls (30/09–09/10) missing from llm_call_log /
-# decision_log: the write failed, the app only logged a warning, and nobody
-# noticed until the provider dashboard disagreed with CIS by ~$6. A lost
-# decision_log row also means a lost cache entry, so the next run pays Jev again.
-#
-# AA-CIS-App PR #632 retries a failed pool write once on a fresh connection.
-# These filters match only the FINAL failure events (after that retry):
-#   llm_call_log_write_failed[_sync]  (shared/llm_client/call_log.py)
-#   decision_log_write_failed         (shared/llm_client/decide.py)
-#   llm_shadow_log_write_failed       (shared/llm_client/shadow.py)
-#   dfs_call_log_write_failed[_sync]  (shared/dfs_client/call_log.py)
-# The retried *_pool_write_failed events are deliberately NOT matched (the
-# quoted phrases below are not substrings of them). api and worker both log to
-# /ecs/aa-cis-dev (modules/ecs). Renaming any of these events in the app
-# silently disables its alarm — keep the names in sync.
+# AA-756 -> S263 (AA-1025): a lost cost / decision log row (llm_call_log, decision_log, llm_shadow_log, dfs_call_log
+# *_write_failed events) is no longer a log metric filter + alarm here. The CIS processes catch those log events
+# themselves (AA-CIS-App shared/ops_checks.py) and raise the admin bell + one e-mail a day on the alerts topic.
 # -----------------------------------------------------------------------------
-
-locals {
-  log_write_failed_events = {
-    llm_call_log   = "llm_call_log_write_failed"
-    decision_log   = "decision_log_write_failed"
-    llm_shadow_log = "llm_shadow_log_write_failed"
-    dfs_call_log   = "dfs_call_log_write_failed"
-  }
-}
-
-resource "aws_cloudwatch_log_metric_filter" "log_write_failed" {
-  for_each = local.log_write_failed_events
-
-  name           = "${local.name_prefix}-${each.key}-write-failed"
-  log_group_name = "/ecs/${local.name_prefix}"
-  pattern        = "\"${each.value}\""
-
-  metric_transformation {
-    name      = "${each.key}_write_failed"
-    namespace = "aa-cis/ops"
-    value     = "1"
-    unit      = "Count"
-  }
-}
-
-resource "aws_cloudwatch_metric_alarm" "log_write_failed" {
-  for_each = local.log_write_failed_events
-
-  alarm_name          = "${local.name_prefix}-${each.key}-write-failed"
-  comparison_operator = "GreaterThanThreshold"
-  evaluation_periods  = 1
-  metric_name         = aws_cloudwatch_log_metric_filter.log_write_failed[each.key].metric_transformation[0].name
-  namespace           = "aa-cis/ops"
-  period              = 300
-  statistic           = "Sum"
-  threshold           = 0
-  alarm_description   = "${each.value} logged in /ecs/${local.name_prefix} — a billed call/decision was not recorded (cost under-reported; for decision_log the Jev cache entry is lost too). Check the ECS logs for the error.${local.runbook_suffix.llm_cost_spike}"
-  treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
-
-  tags = merge(local.common_tags, { Issue = "AA-756" })
-}

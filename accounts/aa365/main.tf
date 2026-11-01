@@ -266,14 +266,11 @@ module "ecs" {
 module "eventbridge" {
   source = "../../modules/eventbridge"
 
-  project          = var.project
-  environment      = var.environment
-  aws_region       = var.aws_region
-  account_id       = var.account_id
-  tags             = local.common_tags
-  alerts_topic_arn = aws_sns_topic.alerts.arn
-  # AA-893: runbook link in the DLQ alarm description (alarm_runbooks.tf).
-  alarm_runbook_url = local.runbook_url.queue_stuck
+  project     = var.project
+  environment = var.environment
+  aws_region  = var.aws_region
+  account_id  = var.account_id
+  tags        = local.common_tags
 
   # AA-402: same IAM propagation race as AA-287 — this module's event bus,
   # scheduler role, and schedule group needed aa-cis-dev-role's (retired, AA-806) newly-added
@@ -290,15 +287,8 @@ module "eventbridge" {
   permissions_boundary_arn = aws_iam_policy.workload_boundary.arn
 }
 
-module "monitoring" {
-  source = "../../modules/monitoring"
-
-  project     = var.project
-  environment = var.environment
-  aws_region  = var.aws_region
-  account_id  = var.account_id
-  tags        = local.common_tags
-}
+# S263 alert diet (AA-1025): module "monitoring" (the aa-cis-dev-pipeline CloudWatch dashboard, ~2.3 USD/month) is
+# removed; the admin overview shows the same ECS numbers.
 
 module "waf" {
   source = "../../modules/waf"
@@ -308,6 +298,10 @@ module "waf" {
   alb_arn        = module.alb.alb_arn
   rate_limit     = 1000
   vpc_allow_cidr = var.vpc_cidr
+
+  # S263 alert diet (AA-1025): Dev keeps the WAF log 30 days and only the requests a rule acted on.
+  log_retention_days = 30
+  log_only_acted_on  = true
 
   # AA-931: CloudFront VPC-origin requests carry the origin secret; rule CloudFrontOriginAllow lets them
   # past rate + geo (their source is a CloudFront edge address, not the viewer). null = no rule.

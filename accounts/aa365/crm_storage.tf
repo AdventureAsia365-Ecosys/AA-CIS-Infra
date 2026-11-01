@@ -478,21 +478,17 @@ output "crm_bucket_names" {
 # through S3 only and bound to the two audit buckets (the key policy's CrmRuntimeS3Objects allows the same for this
 # role; both must allow). A separate policy resource, so the AA-937 documents grant in crm_app.tf does not collide.
 #
-# Alarms (namespace AA/Jobs/Crm, published by the API's job metrics sampler every 5 minutes, no IAM change):
-#   audit-export-lag     AuditExportLagMinutes >= 180 (healthy is under ~75: the hour, the 15-minute lag, the hourly
-#                        schedule). Missing data = not breaching (worker off / scaled to 0; jobs-sampling-stopped
-#                        covers a dead sampler).
-#   audit-partitions     AuditPartitionMonthsAhead < 1: next month has no audit partition, so every request that
-#                        writes an audit event would fail from the 1st. The hourly export keeps three months ahead.
-#   audit-verify-lag     AuditVerifyLagHours >= 50 (healthy is under ~26: one daily verification). One agency whose
-#                        verification keeps failing stops partition drops for EVERY agency (a drop needs all of them
-#                        verified), and the job only logs audit_verify_failed, so this is the signal (review round).
-#                        Expected to fire for up to a day after the first deploy while the backlog is exported.
+# Checks (S263 alert diet, AA-1025: no longer CloudWatch alarms): the AA-Partner API's job sampler evaluates them from
+# crm.audit_export_agencies() / crm.audit_partition_bounds() every 5 minutes and mails the alerts topic itself
+# (api/app/observability/ops_alerts.py; thresholds unchanged):
+#   audit_export_lag     export 3 hours or more behind (healthy is under ~75 minutes).
+#   audit_partitions     next month has no audit partition, so every audit write would fail from the 1st.
+#   audit_verify_lag     an agency's export not verified for 50 hours or more (stops partition drops for everyone).
 #
 # Cost (us-west-1, est.): PUTs 24 x 2 per agency per day = ~1,440 per agency per month x $0.005 / 1,000 = ~$0.007 per
 # agency (3 synthetic agencies ~ $0.02); GETs of the daily verification about the same at $0.0004 / 1,000 ~ $0;
 # storage a few KB per object, ~$0 (S3 Standard $0.023/GB-month); KMS requests stay in the free tier (S3 Bucket Keys);
-# 3 alarms x $0.10 + 3 custom metrics x $0.30 = $1.20/month. Total ~ $1.25/month on Dev (100 agencies at prod:
+# no alarm and no custom metric since S263 (was $1.20/month). Total ~ $0.05/month on Dev (100 agencies at prod:
 # ~$0.75 of PUTs more).
 # =============================================================================
 resource "aws_iam_role_policy" "crm_ecs_task_audit_export" {
@@ -529,55 +525,4 @@ resource "aws_iam_role_policy" "crm_ecs_task_audit_export" {
       },
     ]
   })
-}
-
-resource "aws_cloudwatch_metric_alarm" "crm_audit_export_lag" {
-  alarm_name          = "${local.crm_name_prefix}-audit-export-lag"
-  alarm_description   = "AA-Partner: the hourly agency audit export is 3 hours or more behind (AA/Jobs/Crm AuditExportLagMinutes, design v3 §4.9). Check the crm_audit_export job rows (failed_count, error class) and the audit_export_failed log lines in /ecs/${local.crm_name_prefix}; a partition cannot be dropped while an agency is behind.${local.runbook_suffix.incident}"
-  namespace           = "AA/Jobs/Crm"
-  metric_name         = "AuditExportLagMinutes"
-  statistic           = "Maximum"
-  period              = 300
-  evaluation_periods  = 2
-  comparison_operator = "GreaterThanOrEqualToThreshold"
-  threshold           = 180
-  treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
-
-  tags = merge(local.crm_tags, { Issue = "AA-940" })
-}
-
-resource "aws_cloudwatch_metric_alarm" "crm_audit_partitions" {
-  alarm_name          = "${local.crm_name_prefix}-audit-partitions"
-  alarm_description   = "AA-Partner: next month has no crm.audit_event partition (AA/Jobs/Crm AuditPartitionMonthsAhead < 1). From the 1st every audit write, and so the request that writes it, fails. Run SELECT crm.audit_ensure_partitions() as crm_app (ECS exec) or let the hourly crm_audit_export job run, then check the job rows.${local.runbook_suffix.incident}"
-  namespace           = "AA/Jobs/Crm"
-  metric_name         = "AuditPartitionMonthsAhead"
-  statistic           = "Minimum"
-  period              = 300
-  evaluation_periods  = 1
-  comparison_operator = "LessThanThreshold"
-  threshold           = 1
-  treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
-
-  tags = merge(local.crm_tags, { Issue = "AA-940" })
-}
-
-resource "aws_cloudwatch_metric_alarm" "crm_audit_verify_lag" {
-  alarm_name          = "${local.crm_name_prefix}-audit-verify-lag"
-  alarm_description   = "AA-Partner: an agency's exported audit has not been verified for 50 hours or more (AA/Jobs/Crm AuditVerifyLagHours). While any agency is behind, no expired audit partition can be dropped for any agency. Read the crm_audit_retention job rows (problem_count) and the audit_verify_failed log lines (codes) in /ecs/${local.crm_name_prefix}, then run python -m app.audit_export.verify --tenant <id> in the API container.${local.runbook_suffix.incident}"
-  namespace           = "AA/Jobs/Crm"
-  metric_name         = "AuditVerifyLagHours"
-  statistic           = "Maximum"
-  period              = 300
-  evaluation_periods  = 2
-  comparison_operator = "GreaterThanOrEqualToThreshold"
-  threshold           = 50
-  treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
-
-  tags = merge(local.crm_tags, { Issue = "AA-940" })
 }

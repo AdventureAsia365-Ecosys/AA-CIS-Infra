@@ -234,9 +234,9 @@ resource "aws_iam_role_policy" "booking_ecs_execution" {
 # Task role (the app process). DATABASE_URL is injected by the execution role. Grants: the SSM channel
 # for ECS Exec (debugging, same access path as CIS, SSM only) and the exec session log writes below, and SES send as
 # var.ses_from_address through the transactional configuration set (ses.tf
-# aws_iam_role_policy.booking_ecs_task_ses_send, AA-811), and cloudwatch:PutMetricData into namespace
-# AA/Jobs/Booking only (observability_ecosys.tf aws_iam_role_policy.booking_ecs_task_put_metric_jobs,
-# the job backlog sampler, AA-751), and s3:PutObject / s3:GetObject on supply-media/* of the Booking supply-media
+# aws_iam_role_policy.booking_ecs_task_ses_send, AA-811), and sns:Publish on the alerts topic only
+# (observability_ecosys.tf aws_iam_role_policy.booking_ecs_task_publish_alerts: the in-app job checks, S263 / AA-1025;
+# the AA-751 PutMetricData grant is gone), and s3:PutObject / s3:GetObject on supply-media/* of the Booking supply-media
 # bucket (booking_media.tf aws_iam_role_policy.booking_ecs_task_supply_media, supplier photos, AA-835), and
 # s3:PutObject / s3:GetObject on ops-docs/* of the Booking ops-docs bucket (booking_ops_docs.tf
 # aws_iam_role_policy.booking_ecs_task_ops_docs, vouchers / evidence / bills, AA-682; the bucket policy denies every
@@ -374,6 +374,8 @@ resource "aws_ecs_task_definition" "booking" {
       # exempt, never deploy-blocking), registered only when JOB_TEST_KINDS is truthy. Same rule as the CIS api/worker
       # (modules/ecs local.job_test_kinds_env): kept on dev after the proof. Any other environment gets "0".
       { name = "JOB_TEST_KINDS", value = var.environment == "dev" ? "1" : "0" },
+      # S263 (AA-1025): the in-app job checks (app/jobs/ops_checks.py) publish their alerts to this topic.
+      { name = "ALERTS_TOPIC_ARN", value = aws_sns_topic.alerts.arn },
       ], var.booking_sentry_enabled ? [
       { name = "SENTRY_REQUIRED", value = "true" },
     ] : [])

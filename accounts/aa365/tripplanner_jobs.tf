@@ -192,7 +192,7 @@ resource "aws_lambda_function_event_invoke_config" "tripplanner_jobs" {
 
 # ── Alarms ───────────────────────────────────────────────────────────────────
 # A tick raises (invocation error) when a job failed or a retention run was HELD (more than 2x the last live run):
-# both need a person. One error is enough for a daily function.
+# both need a person. One error is enough for a daily function. Event alarm: ALARM e-mail only (S263, AA-1025).
 resource "aws_cloudwatch_metric_alarm" "tripplanner_jobs_errors" {
   alarm_name          = "${local.tp_jobs_fn_name}-errors"
   alarm_description   = "AA-861: the TripPlanner jobs Lambda failed or reported a job that needs attention (failed job, or tp_retention_outbox_redact HELD over 2x the last live run). Read its log group (job_finished / jobs_run lines) and the job: aws lambda invoke --function-name ${local.tp_jobs_fn_name} with {\"op\":\"status\"}.${local.runbook_suffix.queue_stuck}"
@@ -206,7 +206,6 @@ resource "aws_cloudwatch_metric_alarm" "tripplanner_jobs_errors" {
   comparison_operator = "GreaterThanOrEqualToThreshold"
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
   tags                = local.tp_jobs_tags
 }
 

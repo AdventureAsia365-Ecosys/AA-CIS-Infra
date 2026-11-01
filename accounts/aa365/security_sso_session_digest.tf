@@ -220,6 +220,7 @@ resource "aws_lambda_function_event_invoke_config" "sec_admin_session_digest" {
   maximum_event_age_in_seconds = 3600
 }
 
+# Event alarm: ALARM e-mail only (S263 alert diet, AA-1025: Lambda errors stay in CloudWatch, without the OK mail).
 resource "aws_cloudwatch_metric_alarm" "sec_admin_session_digest_errors" {
   alarm_name          = "${local.sec_digest_fn_name}-errors"
   alarm_description   = "AA-873: the Identity Center admin session digest Lambda failed, so an administrator session may have no activity e-mail yet. Check its log group; the next hourly run retries.${local.runbook_suffix.incident}"
@@ -233,7 +234,6 @@ resource "aws_cloudwatch_metric_alarm" "sec_admin_session_digest_errors" {
   comparison_operator = "GreaterThanOrEqualToThreshold"
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
   tags                = local.sec_digest_tags
 }
 

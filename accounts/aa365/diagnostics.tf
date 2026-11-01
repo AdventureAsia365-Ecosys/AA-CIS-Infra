@@ -9,12 +9,13 @@
 
 # ---------------------------------------------------------------------------
 # 1. VPC Flow Logs — NLB subnets + ALB subnets (4 total), CloudWatch Logs,
-#    365-day retention (security log class, AA-872 / S241 D-09).
+#    365-day retention (security log class, AA-872 / S241 D-09) until S263; the alert diet (AA-1025) keeps 30 days
+#    and records REJECT traffic only (the security signal; ACCEPT flows were ~95 % of the 2.7 GB/month ingest).
 # ---------------------------------------------------------------------------
 
 resource "aws_cloudwatch_log_group" "diag_flow_logs" {
   name              = "/aa-cis-dev/diagnostic/vpc-flow-logs"
-  retention_in_days = 365 # AA-872 (S241 D-09): security/audit logs 365 days
+  retention_in_days = 30 # S263 (AA-1025): Dev diagnostic log, 30 days (was 365, AA-872)
 
   tags = merge(local.shared_tags, {
     Purpose = "AA-272-diagnostic-only"
@@ -64,7 +65,7 @@ resource "aws_flow_log" "diag_nlb" {
   for_each = toset(module.vpc.private_subnet_ids)
 
   subnet_id            = each.value
-  traffic_type         = "ALL"
+  traffic_type         = "REJECT" # S263 (AA-1025): was ALL
   log_destination_type = "cloud-watch-logs"
   log_destination      = aws_cloudwatch_log_group.diag_flow_logs.arn
   iam_role_arn         = aws_iam_role.diag_flow_logs.arn
@@ -80,7 +81,7 @@ resource "aws_flow_log" "diag_alb" {
   for_each = toset(module.alb.alb_subnet_ids)
 
   subnet_id            = each.value
-  traffic_type         = "ALL"
+  traffic_type         = "REJECT" # S263 (AA-1025): was ALL
   log_destination_type = "cloud-watch-logs"
   log_destination      = aws_cloudwatch_log_group.diag_flow_logs.arn
   iam_role_arn         = aws_iam_role.diag_flow_logs.arn

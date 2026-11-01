@@ -137,37 +137,6 @@ resource "aws_sqs_queue_policy" "acp_events_dlq" {
   policy    = data.aws_iam_policy_document.acp_dlq_policy.json
 }
 
-# ── CloudWatch Alarm: DLQ Depth ───────────────────────────────
-# Alerts route to var.alerts_topic_arn (the existing AA-284 alerts topic,
-# accounts/aa365/observability.tf) — this module does not create its own SNS
-# topic. It originally did, but that duplicated AA-284's aa-cis-dev-acp-alerts
-# topic (identical computed name, same account/region) and collided at apply
-# time; reusing the existing topic avoids the duplicate and keeps the one
-# already-confirmed email subscription as the single source of alerting.
-# ALARM and OK notifications (AA-872, S241 D-20), like every alarm on the topic.
-
-resource "aws_cloudwatch_metric_alarm" "acp_dlq_depth" {
-  alarm_name          = "${local.name_prefix}-acp-dlq-depth"
-  comparison_operator = "GreaterThanThreshold"
-  evaluation_periods  = 1
-  metric_name         = "ApproximateNumberOfMessagesVisible"
-  namespace           = "AWS/SQS"
-  period              = 300
-  statistic           = "Sum"
-  threshold           = 0
-  alarm_description   = "ACP Events DLQ has messages — investigate failed EventBridge deliveries.${var.alarm_runbook_url == "" ? "" : " Runbook: ${var.alarm_runbook_url}"}"
-  treat_missing_data  = "notBreaching"
-
-  dimensions = {
-    QueueName = aws_sqs_queue.acp_events_dlq.name
-  }
-
-  alarm_actions = [var.alerts_topic_arn]
-  ok_actions    = [var.alerts_topic_arn]
-
-  tags = merge(var.tags, {
-    Name    = "${local.name_prefix}-acp-dlq-depth"
-    Module  = "eventbridge"
-    Feature = "acp-pipeline-monitoring"
-  })
-}
+# ── No DLQ-depth alarm (S263 alert diet, AA-1025) ──────────────
+# The aa-cis-dev-acp-events bus has no rule left, so nothing can deliver to (or fail into) this DLQ; its alarm was
+# removed with the alert diet. The queue stays (empty, ~0 USD). Add an alarm back with the first rule on the bus.

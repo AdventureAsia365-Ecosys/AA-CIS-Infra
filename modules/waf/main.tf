@@ -260,7 +260,7 @@ resource "aws_wafv2_web_acl_association" "rest_api_stage" {
 # CloudWatch Log Group for WAF
 resource "aws_cloudwatch_log_group" "waf" {
   name              = "aws-waf-logs-${local.name_prefix}"
-  retention_in_days = 365 # AA-872 (S241 D-09): security/audit logs 365 days
+  retention_in_days = var.log_retention_days # AA-872 (S241 D-09): 365 by default; Dev 30 since S263 (AA-1025)
   tags              = var.tags
 }
 
@@ -271,6 +271,31 @@ resource "aws_cloudwatch_log_group" "waf" {
 resource "aws_wafv2_web_acl_logging_configuration" "main" {
   log_destination_configs = [aws_cloudwatch_log_group.waf.arn]
   resource_arn            = aws_wafv2_web_acl.main.arn
+
+  # S263 (AA-1025): with log_only_acted_on, keep the records whose action is BLOCK / COUNT (a COUNT-mode rule matched,
+  # e.g. the observe-mode managed rules) / CAPTCHA / CHALLENGE / EXCLUDED_AS_COUNT and drop plain allowed traffic.
+  dynamic "logging_filter" {
+    for_each = var.log_only_acted_on ? [1] : []
+
+    content {
+      default_behavior = "DROP"
+
+      filter {
+        behavior    = "KEEP"
+        requirement = "MEETS_ANY"
+
+        dynamic "condition" {
+          for_each = ["BLOCK", "COUNT", "CAPTCHA", "CHALLENGE", "EXCLUDED_AS_COUNT"]
+
+          content {
+            action_condition {
+              action = condition.value
+            }
+          }
+        }
+      }
+    }
+  }
 
   dynamic "redacted_fields" {
     for_each = var.log_redacted_headers
