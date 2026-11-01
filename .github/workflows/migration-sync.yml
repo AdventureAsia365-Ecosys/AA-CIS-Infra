@@ -17,11 +17,13 @@ name: Migration Sync (owner copies)
 #   4. merge pass, per owner in ascending number order (branch names sort that way): every open bot/migration-copy/*
 #      PR that db/migration_sync.py merge-check passes (author exactly aa-ecosys-ci-bot[bot], one new file of that
 #      owner and number, byte-identical to the owner's main, no lower-numbered owner-main file still missing from
-#      main, every required check of the ruleset green) is squash-merged by ci-bot, pinned to the head commit it
-#      checked. So a copy never reaches main before a lower one of its owner (critic 2): 291 waits while 290 is
+#      main, every required check of the ruleset green, judged on the LATEST run of each check: a cancelled duplicate
+#      run superseded by a green one no longer refuses the PR, AA-1032) is squash-merged by ci-bot, pinned to the head
+#      commit it checked. So a copy never reaches main before a lower one of its owner (critic 2): 291 waits while 290 is
 #      unmerged, still running its checks, or refused. A ci-bot PR whose file reached main some other way is closed;
-#      a PR by anyone else (another bot or a person) is never closed or merged here. Every class is merged: copy is
-#      not apply (migration-apply.yml decides what runs).
+#      a PR by anyone else (another bot or a person) is never closed or merged here. Every class is merged (expand, contract,
+#      destructive): copy is not apply (migration-apply.yml decides what runs: expand files, and on Dev contract files
+#      when every job table is idle, root ADR 0017a; destructive files stay manual).
 #      The merge pass runs only while the repo is public and main carries the ruleset (pull request + required
 #      checks): on a private repo the ruleset is not enforced on GitHub Free, so a person merges the copy PRs
 #      (ADR 0011a decision 6).
