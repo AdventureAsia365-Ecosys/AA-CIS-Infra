@@ -13,7 +13,7 @@
 #     - execution role aa-crm-dev-ecs-execution-role: pull this repo, write this log group, read the two secrets
 #       and (AA-978) the CRM's M2M client credentials aa-crm/dev/m2m-booking-client (identity_m2m.tf)
 #     - task role aa-crm-dev-ecs-task-role (the name the AA-932 KMS key policies already trust): ECS Exec channel,
-#       exec session logs, PutMetricData into AA/Jobs/Crm, and (AA-934, CRM-06 KeyProvider) GenerateDataKey /
+#       exec session logs, sns:Publish on the alerts topic (S263, was PutMetricData into AA/Jobs/Crm), and (AA-934, CRM-06 KeyProvider) GenerateDataKey /
 #       Decrypt / Encrypt on the CRM data key with exactly the context {tenant_id, purpose} the key policy allows.
 #       No S3 or SES grant yet: the cards that use them add them (CRM-12 audit, CRM-17 mail).
 #     - task definition aa-crm-dev-api (Fargate ARM64, 0.25 vCPU / 0.5 GB, placeholder tag `bootstrap`)
@@ -295,12 +295,13 @@ resource "aws_iam_role_policy" "crm_ecs_task" {
         Resource = "${module.ecs.exec_session_log_group_arn}:*"
       },
       {
-        # crm.job backlog sampler (AA-Partner api/app/jobs/metrics.py): its own namespace only (AA-751 model).
-        Sid       = "PutMetricDataCrmJobs"
-        Effect    = "Allow"
-        Action    = "cloudwatch:PutMetricData"
-        Resource  = "*"
-        Condition = { StringEquals = { "cloudwatch:namespace" = "AA/Jobs/Crm" } }
+        # S263 alert diet (AA-1025): the in-app checks of the job sampler (AA-Partner api/app/observability/
+        # ops_alerts.py: job queue, audit export, break-glass, membership feed, ops release, bulk reveal) publish to
+        # the alerts topic, the one the removed CloudWatch alarms used. Replaces the AA-751 PutMetricData grant.
+        Sid      = "PublishOpsAlerts"
+        Effect   = "Allow"
+        Action   = "sns:Publish"
+        Resource = aws_sns_topic.alerts.arn
       },
       {
         # AA-934 (CRM-06, design v3 §4.1): the KeyProvider's envelope keys. One DEK per agency per purpose, generated
@@ -459,6 +460,8 @@ resource "aws_ecs_task_definition" "crm_api" {
       { name = "BOOKING_ADMIN_URL", value = var.crm_booking_admin_url },
       # AA-946: the portal code echo, Dev only (synthetic agencies, no mailbox); the API refuses it elsewhere.
       { name = "PORTAL_OTP_DEV_ECHO", value = var.environment == "dev" ? "true" : "false" },
+      # S263 (AA-1025): the in-app ops checks publish their alerts here (task role PublishOpsAlerts).
+      { name = "ALERTS_TOPIC_ARN", value = aws_sns_topic.alerts.arn },
       ], local.crm_identity_env, local.crm_scrub_env, local.crm_mail_env, var.crm_sentry_enabled ? [
       { name = "SENTRY_REQUIRED", value = "true" },
     ] : [])
@@ -780,8 +783,9 @@ resource "aws_iam_role_policy" "crm_app_deploy" {
 }
 
 # -----------------------------------------------------------------------------
-# Service health alarms (Booking pattern, observability_ecosys.tf). Container Insights is off on the cluster, so the
-# target group metrics are the signal. Missing data does not alarm: desired 0 (the normal Dev state) stays quiet.
+# Service health alarm (Booking pattern, observability_ecosys.tf). Container Insights is off on the cluster, so the
+# target group metric is the signal. Missing data does not alarm: desired 0 (the normal Dev state) stays quiet.
+# S263 alert diet (AA-1025): only no-healthy-task stays; unhealthy-hosts (the same event with one task) and CPU went.
 # -----------------------------------------------------------------------------
 resource "aws_cloudwatch_metric_alarm" "crm_no_healthy_task" {
   count = local.crm_edge_on
@@ -796,44 +800,6 @@ resource "aws_cloudwatch_metric_alarm" "crm_no_healthy_task" {
   evaluation_periods  = 5
   comparison_operator = "LessThanThreshold"
   threshold           = 1
-  treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
-
-  tags = merge(local.ecosys_tags, { App = "crm" })
-}
-
-resource "aws_cloudwatch_metric_alarm" "crm_unhealthy_hosts" {
-  count = local.crm_edge_on
-
-  alarm_name          = "${local.crm_name_prefix}-unhealthy-hosts"
-  alarm_description   = "AA-Partner target group ${aws_lb_target_group.crm_api.name} has an unhealthy target for 5 minutes in a row.${local.runbook_suffix.api_5xx}"
-  namespace           = "AWS/ApplicationELB"
-  metric_name         = "UnHealthyHostCount"
-  dimensions          = { TargetGroup = aws_lb_target_group.crm_api.arn_suffix, LoadBalancer = module.alb.alb_arn_suffix }
-  statistic           = "Maximum"
-  period              = 60
-  evaluation_periods  = 5
-  comparison_operator = "GreaterThanThreshold"
-  threshold           = 0
-  treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
-
-  tags = merge(local.ecosys_tags, { App = "crm" })
-}
-
-resource "aws_cloudwatch_metric_alarm" "crm_cpu_high" {
-  alarm_name          = "${local.crm_name_prefix}-cpu-high"
-  alarm_description   = "AA-Partner ECS service ${local.crm_service} CPU above 85% for 15 minutes.${local.runbook_suffix.api_5xx}"
-  namespace           = "AWS/ECS"
-  metric_name         = "CPUUtilization"
-  dimensions          = { ClusterName = module.ecs.cluster_name, ServiceName = aws_ecs_service.crm_api.name }
-  statistic           = "Average"
-  period              = 300
-  evaluation_periods  = 3
-  comparison_operator = "GreaterThanThreshold"
-  threshold           = 85
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
   ok_actions          = [aws_sns_topic.alerts.arn]

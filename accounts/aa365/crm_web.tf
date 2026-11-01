@@ -378,7 +378,8 @@ resource "aws_ecs_service" "crm_web" {
 }
 
 # -----------------------------------------------------------------------------
-# Alarms (crm_app.tf pattern; missing data does not alarm, so desired 0 stays quiet).
+# Alarm (crm_app.tf pattern; missing data does not alarm, so desired 0 stays quiet). S263 (AA-1025): only
+# no-healthy-task stays.
 # -----------------------------------------------------------------------------
 resource "aws_cloudwatch_metric_alarm" "crm_web_no_healthy_task" {
   count = local.crm_edge_on
@@ -393,26 +394,6 @@ resource "aws_cloudwatch_metric_alarm" "crm_web_no_healthy_task" {
   evaluation_periods  = 5
   comparison_operator = "LessThanThreshold"
   threshold           = 1
-  treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
-
-  tags = merge(local.ecosys_tags, { App = "crm" })
-}
-
-resource "aws_cloudwatch_metric_alarm" "crm_web_unhealthy_hosts" {
-  count = local.crm_edge_on
-
-  alarm_name          = "${local.crm_web_service}-unhealthy-hosts"
-  alarm_description   = "AA-Partner web target group ${aws_lb_target_group.crm_web.name} has an unhealthy target for 5 minutes in a row.${local.runbook_suffix.api_5xx}"
-  namespace           = "AWS/ApplicationELB"
-  metric_name         = "UnHealthyHostCount"
-  dimensions          = { TargetGroup = aws_lb_target_group.crm_web.arn_suffix, LoadBalancer = module.alb.alb_arn_suffix }
-  statistic           = "Maximum"
-  period              = 60
-  evaluation_periods  = 5
-  comparison_operator = "GreaterThanThreshold"
-  threshold           = 0
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
   ok_actions          = [aws_sns_topic.alerts.arn]

@@ -64,3 +64,16 @@ variable "origin_verify_header" {
   default   = null
   sensitive = true
 }
+
+# S263 alert diet (AA-1025): Dev keeps the WAF log 30 days and only the requests a rule acted on.
+variable "log_retention_days" {
+  description = "Retention of the aws-waf-logs-<prefix> log group (365 = the AA-872 security class; Dev passes 30 since S263)"
+  type        = number
+  default     = 365
+}
+
+variable "log_only_acted_on" {
+  description = "Log only the requests a rule blocked, challenged or counted (logging filter, default DROP); allowed requests with no rule match are not logged. Cuts the vended-log ingest on Dev (S263)."
+  type        = bool
+  default     = false
+}

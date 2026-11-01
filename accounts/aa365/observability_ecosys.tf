@@ -11,14 +11,16 @@
 #   2. Alarms -> the existing SNS topic aws_sns_topic.alerts (aa-cis-dev-acp-alerts), e-mailed to the topic's
 #      recipients (bootstrap + CIS admin page, AA-913).
 #      AA-832 completes the RDS rows of data standard C4.1 (latency, disk queue, XID wraparound,
-#      per-role connections) and grants the CIS task role PutMetricData on namespace AA/RDS.
-#      AA-751 adds the job backlog alarms per owner (AA/Jobs/CIS, AA/Jobs/Booking, end of file).
+#      per-role connections); AA-751 added the job backlog alarms per owner. S263 (AA-1025) moved the
+#      custom-metric ones into the apps (in-app checks, end of file) and removed the rest of the noise.
 #
-# NOTIFICATIONS: ALARM and OK (S241 D-20, AA-872; AA-751 had made them alarm-only). Every alarm in
-# this file, observability.tf, ses.tf, identity.tf and modules/eventbridge has alarm_actions AND
-# ok_actions on the shared topic: Nghiệp wants the recovery e-mail too. A flapping alarm therefore
-# costs two e-mails per flip (the AA-833 lesson) — fix the threshold/evaluation, not the actions.
-# A new alarm without ok_actions is a review finding.
+# NOTIFICATIONS (S263 alert diet, AA-1025, reversing S241 D-20 for event alarms): STATE alarms (a service has no
+# healthy target, RDS health, NAT recover, SES rates, backup copy age, TripPlanner jobs not run) e-mail on ALARM and
+# on OK; EVENT alarms (Lambda errors / throttles, the break-glass token, the KMS decrypt anomaly) e-mail on ALARM only,
+# one e-mail per incident. A new alarm states which kind it is; the list of what stays in CloudWatch and why is root
+# docs/audits/2026-11-01-S263-alerting-cost/diet.md. A flapping alarm: fix the threshold/evaluation (AA-833).
+# The per-role connection limits that used to be listed here are read live by the CIS check (pg_roles); the
+# limits themselves live in the AA-CIS-Infra roles/ files and data standard C2.2.
 #
 # TAGS: every resource here carries the blueprint tag set (Project = AA-Ecosys, App, Environment,
 # ManagedBy = terraform). These resource-level tags override the provider default_tags keys of the
@@ -51,32 +53,6 @@ locals {
   # Data standard C4.1b: an instance resize MUST update this value in the same PR; the
   # rds-connections-high threshold below is derived from it.
   rds_max_connections = 181
-
-  # AA-832: LOGIN roles with a CONNECTION LIMIT (`ALTER ROLE ... CONNECTION LIMIT n` in the app
-  # migrations, measured from pg_roles 16/10/2026). One RoleConnectionLimitPct alarm per key; the
-  # CIS api sampler (api/core/ops_metrics_sampler.py, AA-751) discovers the roles itself, so a new
-  # limited role only needs a row here to get an alarm. aa_cis_admin has no limit (-1) and
-  # publishes nothing.
-  rds_role_connection_limits = {
-    tripplanner = 30
-    booking     = 15
-    aa_app_user = 15
-    # X1 S11 (AA-852): cis_app (rl-001, no LOGIN use until S18). 90 = the XD6 floor; S15 measures the
-    # real peak and the limit (max(90, 2 x peak + one deploy set)) is restated here in the same PR.
-    # No sessions until S18, so the alarm stays OK (treat_missing_data = notBreaching).
-    cis_app = 90
-    # X1 S20 (AA-860): db_migrator (rl-002), the DB Migrate / Schema Dump / probe login from S22. 5 = the
-    # rl-002 limit (three workflows with separate concurrency groups can overlap). Before S22 only the
-    # set-password test login uses it, so the alarm stays OK (notBreaching). At 5 the alarm fires only at
-    # 5/5 sessions (> 80 %), i.e. when the next workflow task would be refused.
-    db_migrator = 5
-    # AA-838 (S255, first C8 capacity review): crm_app (rl-003, AA-932), the AA-Partner API + in-process crm.job
-    # worker. C4.1 wants one alarm per limited role and it had none, although it reached 5/6 (83 %) on 24/10/2026.
-    # The sampler already publishes RoleConnectionLimitPct{Role=crm_app}; only the alarm was missing. Its pool is
-    # 3 x 2 tasks = 6 = the limit (db/connection_budget.json), so a CRM rolling deploy can alarm (> 4 sessions):
-    # that is the signal to size the pool, not to raise the threshold.
-    crm_app = 6
-  }
 }
 
 # -----------------------------------------------------------------------------
@@ -100,36 +76,31 @@ resource "aws_cloudwatch_log_group" "cis_apigw_execution" {
   tags = merge(local.ecosys_tags, { App = "cis" })
 }
 
-# -----------------------------------------------------------------------------
-# 2. Alarms
-# -----------------------------------------------------------------------------
+# S263 (AA-1025): /aws/apigateway/welcome is created by API Gateway itself (account-level setup event, 0 bytes on
+# 01/11/2026) and was the one log group in the account with no retention. Adopted with an import block (like the S235
+# groups above); delete the import block once the apply has run (it is then a no-op).
+import {
+  to = aws_cloudwatch_log_group.apigw_welcome
+  id = "/aws/apigateway/welcome"
+}
 
-# Shared NAT instance (t4g.nano, modules/vpc) — single egress path for every private-subnet
-# workload (CIS api/worker, Booking, TripPlanner Lambdas in the VPC, LLM calls). Status checks are
-# published every minute. Missing data (instance stopped on purpose) does not alarm.
-resource "aws_cloudwatch_metric_alarm" "nat_status_check_failed" {
-  alarm_name          = "aa-ecosys-${var.environment}-nat-status-check-failed"
-  alarm_description   = "NAT instance ${module.vpc.nat_instance_id} failed an EC2 status check for 3 minutes. All private-subnet egress (CIS, Booking, TripPlanner, LLM calls) goes through it.${local.runbook_suffix.incident}"
-  namespace           = "AWS/EC2"
-  metric_name         = "StatusCheckFailed"
-  dimensions          = { InstanceId = module.vpc.nat_instance_id }
-  statistic           = "Maximum"
-  period              = 60
-  evaluation_periods  = 3
-  comparison_operator = "GreaterThanOrEqualToThreshold"
-  threshold           = 1
-  treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
+resource "aws_cloudwatch_log_group" "apigw_welcome" {
+  name              = "/aws/apigateway/welcome"
+  retention_in_days = 30
 
   tags = merge(local.ecosys_tags, { App = "shared" })
 }
+
+# -----------------------------------------------------------------------------
+# 2. Alarms
+# -----------------------------------------------------------------------------
 
 # AA-1022 (S261 architecture review item d): EC2 recover action on the NAT instance. A failed SYSTEM status check
 # means the host hardware or AWS network under the instance failed; "recover" moves the instance to healthy hardware
 # and keeps its instance id, private IP, Elastic IP and network interface, so the private route table (default route
 # to that interface) works again without any Terraform change. An INSTANCE status check failure (the guest OS) is
-# not something recover fixes: the alarm above still e-mails for it.
+# not something recover fixes: nat_instance_check_failed below e-mails for it (S263, AA-1025: that alarm reads
+# StatusCheckFailed_Instance instead of the combined StatusCheckFailed, so a system failure mails once, here).
 # AWS's recommended shape for recover alarms: Minimum over 60 s (a whole minute failed), 2 periods. t4g instances
 # also get AWS "simplified automatic recovery" by default; this alarm makes the action explicit and e-mails when it
 # fires. Recover needs the service-linked role AWSServiceRoleForCloudWatchEvents, which PutMetricAlarm creates on
@@ -148,6 +119,30 @@ resource "aws_cloudwatch_metric_alarm" "nat_system_check_recover" {
   threshold           = 1
   treat_missing_data  = "notBreaching"
   alarm_actions       = ["arn:aws:automate:${var.aws_region}:ec2:recover", aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
+
+  tags = merge(local.ecosys_tags, { App = "shared" })
+}
+
+# NAT guest OS failure (hung kernel, broken iptables / forwarding): recover does not fix it and nothing else sees it.
+# The ALB health checks stay inside the VPC, so no-healthy-task never fires; the VPC has only the S3 gateway endpoint,
+# so the apps' in-app checks (sns:Publish), Sentry and every LLM call need this NAT and go silent with it. This alarm
+# is evaluated and delivered by CloudWatch/SNS outside the VPC. StatusCheckFailed_Instance only (S263 review, AA-1025;
+# the pre-S263 alarm read the combined StatusCheckFailed and doubled the recover alarm's e-mails on a system failure).
+# A state alarm: e-mails on ALARM and OK. Missing data (instance stopped on purpose) does not alarm. 0.10 USD/month.
+resource "aws_cloudwatch_metric_alarm" "nat_instance_check_failed" {
+  alarm_name          = "aa-ecosys-${var.environment}-nat-instance-check-failed"
+  alarm_description   = "NAT instance ${module.vpc.nat_instance_id} failed the EC2 INSTANCE status check (guest OS) for 3 minutes. All private-subnet egress (LLM calls, SNS from the in-app checks, Sentry, vendor APIs) goes through it; recover does not fix this: reboot the instance.${local.runbook_suffix.incident}"
+  namespace           = "AWS/EC2"
+  metric_name         = "StatusCheckFailed_Instance"
+  dimensions          = { InstanceId = module.vpc.nat_instance_id }
+  statistic           = "Maximum"
+  period              = 60
+  evaluation_periods  = 3
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  threshold           = 1
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
   ok_actions          = [aws_sns_topic.alerts.arn]
 
   tags = merge(local.ecosys_tags, { App = "shared" })
@@ -175,78 +170,21 @@ resource "aws_cloudwatch_metric_alarm" "booking_no_healthy_task" {
   tags = merge(local.ecosys_tags, { App = "booking" })
 }
 
-resource "aws_cloudwatch_metric_alarm" "booking_unhealthy_hosts" {
-  alarm_name          = "${local.bk_name_prefix}-unhealthy-hosts"
-  alarm_description   = "AA-Booking target group ${aws_lb_target_group.booking.name} has an unhealthy target for 5 minutes in a row.${local.runbook_suffix.api_5xx}"
+# S263 (AA-1025): the CIS api had no service-down alarm. aa-cis-dev-ecs-running-tasks-low read
+# ECS/ContainerInsights RunningTaskCount, which does not exist while Container Insights is off (it stayed OK for 112
+# days with or without tasks). Same shape as Booking's: no healthy target behind the ALB for 5 minutes. Missing data
+# does not alarm (desired 0 on purpose stays quiet once the target group stops publishing).
+resource "aws_cloudwatch_metric_alarm" "cis_api_no_healthy_task" {
+  alarm_name          = "${local.name_prefix}-api-no-healthy-task"
+  alarm_description   = "AA-CIS api target group has no healthy target for 5 minutes (service down or failing its health check). The CIS in-app checks (job queue, connections) run in this process, so they are silent too.${local.runbook_suffix.api_5xx}"
   namespace           = "AWS/ApplicationELB"
-  metric_name         = "UnHealthyHostCount"
-  dimensions          = { TargetGroup = aws_lb_target_group.booking.arn_suffix, LoadBalancer = module.alb.alb_arn_suffix }
-  statistic           = "Maximum"
+  metric_name         = "HealthyHostCount"
+  dimensions          = { TargetGroup = module.alb.target_group_arn_suffix, LoadBalancer = module.alb.alb_arn_suffix }
+  statistic           = "Minimum"
   period              = 60
   evaluation_periods  = 5
-  comparison_operator = "GreaterThanThreshold"
-  threshold           = 0
-  treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
-
-  tags = merge(local.ecosys_tags, { App = "booking" })
-}
-
-resource "aws_cloudwatch_metric_alarm" "booking_cpu_high" {
-  alarm_name          = "${local.bk_name_prefix}-cpu-high"
-  alarm_description   = "AA-Booking ECS service ${local.bk_service} CPU above 85% for 15 minutes.${local.runbook_suffix.api_5xx}"
-  namespace           = "AWS/ECS"
-  metric_name         = "CPUUtilization"
-  dimensions          = { ClusterName = module.ecs.cluster_name, ServiceName = local.bk_service }
-  statistic           = "Average"
-  period              = 300
-  evaluation_periods  = 3
-  comparison_operator = "GreaterThanThreshold"
-  threshold           = 85
-  treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
-
-  tags = merge(local.ecosys_tags, { App = "booking" })
-}
-
-# Booking REST API (9z3xnalp59) 5XX — API-level metrics (ApiName + Stage) are published without
-# detailed metrics. 5 or more 5XX in 5 minutes on Dev traffic is a real failure, not noise.
-resource "aws_cloudwatch_metric_alarm" "booking_api_5xx" {
-  alarm_name          = "${local.bk_name_prefix}-api-5xx"
-  alarm_description   = "AA-Booking REST API ${aws_api_gateway_rest_api.booking.name} stage ${aws_api_gateway_stage.booking.stage_name}: 5 or more 5XX responses in 5 minutes.${local.runbook_suffix.api_5xx}"
-  namespace           = "AWS/ApiGateway"
-  metric_name         = "5XXError"
-  dimensions          = { ApiName = aws_api_gateway_rest_api.booking.name, Stage = aws_api_gateway_stage.booking.stage_name }
-  statistic           = "Sum"
-  period              = 300
-  evaluation_periods  = 1
-  comparison_operator = "GreaterThanOrEqualToThreshold"
-  threshold           = 5
-  treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
-
-  tags = merge(local.ecosys_tags, { App = "booking" })
-}
-
-# CIS REST API (4ylo382khg) — AA-870. 5XX by count, like Booking above: at Dev traffic (3,641 requests
-# and 3 5XX in the week to 17/10/2026) a rate alarm would fire on 1 error in 2 requests. Latency: the p95
-# of IntegrationLatency per 15-minute window had a median of 290 ms and a max of 6.9 s that week, so the
-# alarm wants p95 above 5 s for 3 consecutive 5-minute periods (sustained, not one slow pipeline call).
-# 2 standard alarms, about 0.20 USD/month (D-19).
-resource "aws_cloudwatch_metric_alarm" "cis_api_5xx" {
-  alarm_name          = "${local.name_prefix}-api-5xx"
-  alarm_description   = "AA-CIS REST API ${module.api_gateway.api_name} stage ${module.api_gateway.stage_name}: 5 or more 5XX responses in 5 minutes.${local.runbook_suffix.api_5xx}"
-  namespace           = "AWS/ApiGateway"
-  metric_name         = "5XXError"
-  dimensions          = { ApiName = module.api_gateway.api_name, Stage = module.api_gateway.stage_name }
-  statistic           = "Sum"
-  period              = 300
-  evaluation_periods  = 1
-  comparison_operator = "GreaterThanOrEqualToThreshold"
-  threshold           = 5
+  comparison_operator = "LessThanThreshold"
+  threshold           = 1
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
   ok_actions          = [aws_sns_topic.alerts.arn]
@@ -254,26 +192,8 @@ resource "aws_cloudwatch_metric_alarm" "cis_api_5xx" {
   tags = merge(local.ecosys_tags, { App = "cis" })
 }
 
-resource "aws_cloudwatch_metric_alarm" "cis_api_latency_p95" {
-  alarm_name          = "${local.name_prefix}-api-latency-p95"
-  alarm_description   = "AA-CIS REST API ${module.api_gateway.api_name}: IntegrationLatency p95 above 5 s for 15 minutes.${local.runbook_suffix.api_5xx}"
-  namespace           = "AWS/ApiGateway"
-  metric_name         = "IntegrationLatency"
-  dimensions          = { ApiName = module.api_gateway.api_name, Stage = module.api_gateway.stage_name }
-  extended_statistic  = "p95"
-  period              = 300
-  evaluation_periods  = 3
-  datapoints_to_alarm = 3
-  comparison_operator = "GreaterThanThreshold"
-  threshold           = 5000
-  treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
-
-  tags = merge(local.ecosys_tags, { App = "cis" })
-}
-
-# TripPlanner Lambdas — errors (3+ in 5 minutes) and sustained throttling (see below).
+# TripPlanner Lambdas — errors (3+ in 5 minutes) and sustained throttling on browse (see below). Event alarms: no OK
+# e-mail since S263 (AA-1025), one e-mail per incident.
 resource "aws_cloudwatch_metric_alarm" "tripplanner_lambda_errors" {
   for_each = local.tp_functions
 
@@ -289,25 +209,20 @@ resource "aws_cloudwatch_metric_alarm" "tripplanner_lambda_errors" {
   threshold           = 3
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
 
   tags = merge(local.ecosys_tags, { App = "tripplanner" })
 }
 
-# AA-833: was "Sum > 0 in one 5-minute period" with alarm + OK actions. A single burst (a page
-# prefetch fan-out after a deploy or ISR expiry) flipped browse OK -> ALARM -> OK 7 times in two
-# days, 14 emails on the topic that also carries the RDS, NAT and Booking alarms. It now pages only
-# on sustained throttling: more than 5 throttles in at least 2 of 3 consecutive 5-minute periods.
-# ok_actions since AA-872 (S241 D-20): a flip costs 2 e-mails, which is why the evaluation above is
-# strict (2 of 3 periods) rather than the actions being cut.
+# AA-833: was "Sum > 0 in one 5-minute period". A single burst (a page prefetch fan-out after a deploy or ISR expiry)
+# flipped browse OK -> ALARM -> OK 7 times in two days. It now pages only on sustained throttling: more than 5
+# throttles in at least 2 of 3 consecutive 5-minute periods. S263 (AA-1025): browse only (it fired 8 times in the 30
+# days before the diet, a real signal); assembly never fired and its errors alarm stays. No OK e-mail.
 resource "aws_cloudwatch_metric_alarm" "tripplanner_lambda_throttles" {
-  for_each = local.tp_functions
-
-  alarm_name          = "${each.value}-throttles"
-  alarm_description   = "TripPlanner Lambda ${each.value}: more than 5 throttles (account or reserved concurrency limit) in at least 2 of 3 consecutive 5-minute periods. No OK notification.${local.runbook_suffix.api_5xx}"
+  alarm_name          = "${local.tp_functions.browse}-throttles"
+  alarm_description   = "TripPlanner Lambda ${local.tp_functions.browse}: more than 5 throttles (account or reserved concurrency limit) in at least 2 of 3 consecutive 5-minute periods. No OK notification.${local.runbook_suffix.api_5xx}"
   namespace           = "AWS/Lambda"
   metric_name         = "Throttles"
-  dimensions          = { FunctionName = each.value }
+  dimensions          = { FunctionName = local.tp_functions.browse }
   statistic           = "Sum"
   period              = 300
   evaluation_periods  = 3
@@ -316,7 +231,6 @@ resource "aws_cloudwatch_metric_alarm" "tripplanner_lambda_throttles" {
   threshold           = 5
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
 
   tags = merge(local.ecosys_tags, { App = "tripplanner" })
 }
@@ -346,8 +260,8 @@ resource "aws_cloudwatch_metric_alarm" "rds_free_storage_low" {
 # max_connections = LEAST(DBInstanceClassMemory/9531392, 5000) = 181 on db.t4g.small (measured
 # 16/10/2026, local.rds_max_connections). 3-day peak on 14/10/2026 was 25. AA-824 set > 60 for 5
 # minutes, the data standard's t3.micro value (C4.1); AA-832 moves it to the post-resize rule,
-# 60 % of max_connections for 5 minutes = floor(0.6 * 181) = 108. The per-role alarms below catch
-# a single app exhausting its own CONNECTION LIMIT long before the instance total gets here.
+# 60 % of max_connections for 5 minutes = floor(0.6 * 181) = 108. The CIS in-app check rds_role_connections
+# (S263) catches a single app exhausting its own CONNECTION LIMIT long before the instance total gets here.
 resource "aws_cloudwatch_metric_alarm" "rds_connections_high" {
   alarm_name          = "${local.name_prefix}-rds-connections-high"
   alarm_description   = "RDS ${module.rds.db_identifier} peak connections above ${floor(local.rds_max_connections * 0.6)} (60% of max_connections ${local.rds_max_connections}) within a 5-minute period (shared by CIS, TripPlanner, Booking).${local.runbook_suffix.database}"
@@ -366,424 +280,91 @@ resource "aws_cloudwatch_metric_alarm" "rds_connections_high" {
   tags = merge(local.ecosys_tags, { App = "shared" })
 }
 
-# AA-824: db.t4g.small has 2 GB. AA-832 aligns the threshold with data standard C4.1 (< 100 MB was
-# the t3.micro row; t4g.small is < 200 MB), so the alarm fires before the instance starts swapping.
-resource "aws_cloudwatch_metric_alarm" "rds_freeable_memory_low" {
-  alarm_name          = "${local.name_prefix}-rds-freeable-memory-low"
-  alarm_description   = "RDS ${module.rds.db_identifier} freeable memory below 200 MB for 10 minutes (too many connections or work_mem pressure).${local.runbook_suffix.database}"
-  namespace           = "AWS/RDS"
-  metric_name         = "FreeableMemory"
-  dimensions          = { DBInstanceIdentifier = module.rds.db_identifier }
-  statistic           = "Minimum"
-  period              = 300
-  evaluation_periods  = 2
-  comparison_operator = "LessThanThreshold"
-  threshold           = 209715200 # 200 MiB in bytes
-  treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
-
-  tags = merge(local.ecosys_tags, { App = "shared" })
-}
-
-# AA-824: RDS T-class instances run in Unlimited mode, so CPU credit exhaustion shows up as cost
-# (surplus credits charged), not as throttling. Any charged credit means the instance is too small
-# for its sustained load.
-resource "aws_cloudwatch_metric_alarm" "rds_cpu_surplus_credits_charged" {
-  alarm_name          = "${local.name_prefix}-rds-cpu-surplus-credits-charged"
-  alarm_description   = "RDS ${module.rds.db_identifier} is being charged for CPU surplus credits (T-class Unlimited mode: sustained CPU above baseline).${local.runbook_suffix.database}"
-  namespace           = "AWS/RDS"
-  metric_name         = "CPUSurplusCreditsCharged"
-  dimensions          = { DBInstanceIdentifier = module.rds.db_identifier }
-  statistic           = "Maximum"
-  period              = 300
-  evaluation_periods  = 1
-  comparison_operator = "GreaterThanThreshold"
-  threshold           = 0
-  treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
-
-  tags = merge(local.ecosys_tags, { App = "shared" })
-}
-
-# -----------------------------------------------------------------------------
-# AA-832 — the remaining RDS rows of data standard C4.1 (03-scaling.md), and per-role connections.
-#
-# Cost (us-west-1 list prices; re-counted in S240 for AA-751, which replaced the sampling chain):
-#   Custom metrics: the first 10 per account are free. acc2 publishes AA/RDS 6 (RoleConnections +
-#   RoleConnectionLimitPct x 3 roles) + AA-751's 4 (AA/Jobs/CIS + AA/Jobs/Booking, 2 metrics each, no
-#   dimensions) = 10. The old console-made log metric filter ACP/Pipeline T3FallbackUsedCount (AA-296,
-#   never fired, alarm with no actions) was deleted on 16/10/2026, so those 10 were free: $0. A metric is
-#   billed only while it receives data; the aa-cis/ops log-write-failure filters have no default value,
-#   so they cost nothing until a write actually fails.
-#   X1 rl-001 (AA-852) created cis_app LOGIN CONNECTION LIMIT 90; the sampler discovers it by itself
-#   (rolcanlogin AND rolconnlimit > 0), so AA/RDS grows to 8 (4 roles x 2) and acc2 to 12 metrics:
-#   2 above the free tier at ~$0.30 each = ~$0.60/month (caused by rl-001, counted here since S11).
-#   Alarms: acc2 already has more than the 10 free (42 on 16/10/2026), so every one is $0.10:
-#   AA-832 9 (4 below + 4 per-role + "sampling stopped")         9 x $0.10 = $0.90
-#   AA-751 6 (3 job backlog alarms x 2 owners, end of file)      6 x $0.10 = $0.60
-#   PutMetricData: CIS 2 calls per 5 min (AA/RDS + AA/Jobs/CIS) + Booking 1 = ~25,900/month,
-#   inside the 1M free API requests: $0.
-#   Sampling runs in process (CIS api ops_metrics_sampler, Booking JobMetricsSampler), so there is
-#   no Scheduler -> Lambda -> API Gateway / WAF / Secrets Manager traffic for it any more (the
-#   AA-832 every-5-minutes schedule is gone from dfs_balance.tf).
-#   Total about $1.50/month for the AA-832 + AA-751 alarms, plus ~$0.60/month for the 2 metrics
-#   over the free tier since cis_app (rl-001) = about $2.10/month.
-# -----------------------------------------------------------------------------
-
-# ReadLatency / WriteLatency are published in SECONDS: 0.020 = 20 ms, averaged over 15 minutes.
-resource "aws_cloudwatch_metric_alarm" "rds_read_latency_high" {
-  alarm_name          = "${local.name_prefix}-rds-read-latency-high"
-  alarm_description   = "RDS ${module.rds.db_identifier} average read latency above 20 ms for 15 minutes (storage I/O saturated; shared by CIS, TripPlanner, Booking).${local.runbook_suffix.database}"
-  namespace           = "AWS/RDS"
-  metric_name         = "ReadLatency"
-  dimensions          = { DBInstanceIdentifier = module.rds.db_identifier }
-  statistic           = "Average"
-  period              = 300
-  evaluation_periods  = 3
-  comparison_operator = "GreaterThanThreshold"
-  threshold           = 0.020 # seconds
-  treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
-
-  tags = merge(local.ecosys_tags, { App = "shared" })
-}
-
-resource "aws_cloudwatch_metric_alarm" "rds_write_latency_high" {
-  alarm_name          = "${local.name_prefix}-rds-write-latency-high"
-  alarm_description   = "RDS ${module.rds.db_identifier} average write latency above 20 ms for 15 minutes (storage I/O saturated; shared by CIS, TripPlanner, Booking).${local.runbook_suffix.database}"
-  namespace           = "AWS/RDS"
-  metric_name         = "WriteLatency"
-  dimensions          = { DBInstanceIdentifier = module.rds.db_identifier }
-  statistic           = "Average"
-  period              = 300
-  evaluation_periods  = 3
-  comparison_operator = "GreaterThanThreshold"
-  threshold           = 0.020 # seconds
-  treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
-
-  tags = merge(local.ecosys_tags, { App = "shared" })
-}
-
-resource "aws_cloudwatch_metric_alarm" "rds_disk_queue_depth_high" {
-  alarm_name          = "${local.name_prefix}-rds-disk-queue-depth-high"
-  alarm_description   = "RDS ${module.rds.db_identifier} average disk queue depth above 10 for 15 minutes (I/O requests waiting on gp storage).${local.runbook_suffix.database}"
-  namespace           = "AWS/RDS"
-  metric_name         = "DiskQueueDepth"
-  dimensions          = { DBInstanceIdentifier = module.rds.db_identifier }
-  statistic           = "Average"
-  period              = 300
-  evaluation_periods  = 3
-  comparison_operator = "GreaterThanThreshold"
-  threshold           = 10
-  treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
-
-  tags = merge(local.ecosys_tags, { App = "shared" })
-}
-
-# Transaction ID wraparound guard. PostgreSQL forces a shutdown near 2^31 (~2.1 billion) used XIDs;
-# 1 billion means autovacuum is not freezing some table and leaves weeks of headroom to find it.
-resource "aws_cloudwatch_metric_alarm" "rds_max_used_xid_high" {
-  alarm_name          = "${local.name_prefix}-rds-max-used-xid-high"
-  alarm_description   = "RDS ${module.rds.db_identifier} MaximumUsedTransactionIDs above 1,000,000,000 (wraparound guard: check autovacuum / age(datfrozenxid)).${local.runbook_suffix.database}"
-  namespace           = "AWS/RDS"
-  metric_name         = "MaximumUsedTransactionIDs"
-  dimensions          = { DBInstanceIdentifier = module.rds.db_identifier }
-  statistic           = "Maximum"
-  period              = 300
-  evaluation_periods  = 1
-  comparison_operator = "GreaterThanThreshold"
-  threshold           = 1000000000
-  treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
-
-  tags = merge(local.ecosys_tags, { App = "shared" })
-}
-
-# Per-role connections against each role's CONNECTION LIMIT. Custom metric AA/RDS
-# RoleConnectionLimitPct{Role}, published by the CIS api process every 5 minutes (AA-751:
-# api/core/ops_metrics_sampler.py, an asyncio loop started in the api lifespan; it replaced the
-# AA-832 chain Scheduler -> ops-probe Lambda -> admin POST -> shared.job -> worker). One sample per
-# period, so one datapoint above 80 % alarms (1 of 2 periods); the 2-period window means one late
-# or missing sample does not flip an ALARM back to OK. Missing data does not alarm: if the sampler
-# stops (api down, IAM, CloudWatch errors), these stay OK and the "sampling stopped" alarm below
-# fires. The sampler does not depend on the worker or on shared.job, so a wave that fills every
-# worker slot no longer delays a sample.
-resource "aws_cloudwatch_metric_alarm" "rds_role_connections_high" {
-  for_each = local.rds_role_connection_limits
-
-  alarm_name          = "${local.name_prefix}-rds-role-connections-${each.key}"
-  alarm_description   = "RDS ${module.rds.db_identifier} role ${each.key} above 80% of its CONNECTION LIMIT ${each.value} (more than ${floor(each.value * 0.8)} sessions) in a 5-minute sample. New connections for this role fail at ${each.value}.${local.runbook_suffix.database}"
-  namespace           = "AA/RDS"
-  metric_name         = "RoleConnectionLimitPct"
-  dimensions          = { Role = each.key }
-  statistic           = "Maximum"
-  period              = 300
-  evaluation_periods  = 2
-  datapoints_to_alarm = 1
-  comparison_operator = "GreaterThanThreshold"
-  threshold           = 80
-  treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
-
-  tags = merge(local.ecosys_tags, { App = "shared" })
-}
-
-# X1 S18 (AA-860, plan XD6): a connection refused for the CIS runtime role. cis_app has CONNECTION LIMIT 90
-# (rl-001); the master it replaces had none, so SQLSTATE 53300 "too many connections for role "cis_app""
-# is a new failure mode. The 5-minute RoleConnectionLimitPct sample above can miss a burst between two
-# samples; the api and worker log every refused connect (asyncpg TooManyConnectionsError) to the one ECS log
-# group (/ecs/aa-cis-dev, streams api/ and worker/), so a log metric filter counts them. No default value:
-# the metric only exists while it matches (≈ $0 custom-metric cost when quiet), and missing data is OK.
-resource "aws_cloudwatch_log_metric_filter" "cis_app_too_many_connections" {
-  name           = "${local.name_prefix}-cis-app-too-many-connections"
-  log_group_name = module.ecs.log_group_name
-  pattern        = "\"too many connections for role\" \"cis_app\""
-
-  metric_transformation {
-    name      = "CisAppTooManyConnections"
-    namespace = "AA/RDS"
-    value     = "1"
-    unit      = "Count"
-  }
-}
-
-resource "aws_cloudwatch_metric_alarm" "cis_app_too_many_connections" {
-  alarm_name          = "${local.name_prefix}-rds-cis-app-too-many-connections"
-  alarm_description   = "CIS api/worker logged 'too many connections for role \"cis_app\"' (SQLSTATE 53300, CONNECTION LIMIT ${local.rds_role_connection_limits["cis_app"]}) in the last 5 minutes: requests or jobs failed to get a DB connection. Check pool sizes (AA-CIS-App docs/implementation-notes/AA-860-S15.md) before raising the limit (Infra roles/ file).${local.runbook_suffix.database}"
-  namespace           = "AA/RDS"
-  metric_name         = "CisAppTooManyConnections"
-  statistic           = "Sum"
-  period              = 300
-  evaluation_periods  = 1
-  comparison_operator = "GreaterThanOrEqualToThreshold"
-  threshold           = 1
-  treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
-
-  tags = merge(local.ecosys_tags, { App = "cis" })
-}
-
-# The sampler above runs in the CIS api. The api and worker task definitions share one task role
-# (modules/ecs aws_iam_role.ecs_task, aa-cis-dev-ecs-task-role), so the grant goes on that role.
-# PutMetricData has no resource ARN; the namespace condition limits it to AA/RDS and AA/Jobs/CIS
-# (AA-751; the module's own statement covers the older "acp" namespace). The resource and policy
-# names keep their AA-832 "aa-rds" form so the change is an in-place update, not a replace.
-resource "aws_iam_role_policy" "cis_ecs_task_put_metric_aa_rds" {
-  name = "aa-cis-${var.environment}-ecs-put-metric-aa-rds"
-  role = module.ecs.task_role_name
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Sid       = "PutMetricDataAaRdsAndCisJobs"
-      Effect    = "Allow"
-      Action    = "cloudwatch:PutMetricData"
-      Resource  = "*"
-      Condition = { StringEquals = { "cloudwatch:namespace" = ["AA/RDS", "AA/Jobs/CIS"] } }
-    }]
+# RDS down, stopped, failed or out of storage (S263 alert diet review, AA-1025). The removed "sampling stopped"
+# heartbeats treated missing data as breaching, so a database the samplers could not read used to e-mail. Nothing
+# kept does: the RDS alarms above treat missing data as not breaching (and connections fall to 0), the ALB health
+# checks (/health, /booking/health) do not touch the database, and every in-app check needs the database before it
+# publishes. RDS sends its instance events to the default EventBridge bus for free (no event subscription needed):
+#   availability  shutdown / restart (RDS-EVENT-0004, 0006, 0022)     failure  the instance failed (0031, 0034, ...)
+#   low storage   storage full or nearly (0007, 0089, 0221, 0222)     recovery recovery started / finished
+#   RDS-EVENT-0087 / 0088 / 0154  stopped / started / started again after 7 days stopped (category notification,
+#                                 the rest of which is maintenance noise, so only these three ids)
+# Prefix aa-sec-<env>-: the topic policy statement AllowSecurityEventBridgeRules (identity_alerts.tf) and the apply
+# role's SecEventRuleManage (cicd_sec.tf) already cover rule/aa-sec-*, so CI applies it with no new grant and no MFA
+# bootstrap. An event rule mails once per event (no OK mail). Not covered: a database AWS reports healthy that the
+# apps cannot log in to (password or role change); their requests fail, which reaches Sentry. Cost: $0/month.
+resource "aws_cloudwatch_event_rule" "rds_instance_event" {
+  name        = "${local.sec_prefix}-rds-instance-event"
+  description = "RDS ${module.rds.db_identifier} shut down, restarted, stopped, failed, recovering or low on storage (RDS event). S263 alert diet, AA-1025.${local.runbook_suffix.database}"
+  event_pattern = jsonencode({
+    source        = ["aws.rds"]
+    "detail-type" = ["RDS DB Instance Event"]
+    detail = {
+      SourceIdentifier = [module.rds.db_identifier]
+      "$or" = [
+        { EventCategories = ["availability", "failure", "low storage", "recovery"] },
+        { EventID = ["RDS-EVENT-0087", "RDS-EVENT-0088", "RDS-EVENT-0154"] },
+      ]
+    }
   })
+  tags = merge(local.ecosys_tags, { App = "shared", Issue = "AA-1025" })
 }
 
-# The per-role alarms treat missing data as OK, so a stopped sampler (api down or crash-looping,
-# IAM, CloudWatch errors) would leave them silently green. This alarm makes that gap visible: no
-# RoleConnections sample for the always-present aa_app_user role in 3 x 15 minutes = ALARM (missing
-# data = breaching). The sampler publishes every limited role in one call, so one role stands for
-# all of them. It also fires while the CIS api is scaled to 0 on purpose. +$0.10/month (see the
-# cost block above).
-resource "aws_cloudwatch_metric_alarm" "rds_role_connections_sampling_stopped" {
-  alarm_name          = "${local.name_prefix}-rds-role-connections-sampling-stopped"
-  alarm_description   = "No AA/RDS RoleConnections sample for 45 minutes: the CIS api sampler (api/core/ops_metrics_sampler.py) is not publishing, so the per-role connection alarms are blind. Check the api is running and its ops_metrics_sampled log lines (and sampler errors) in /ecs/${local.name_prefix}.${local.runbook_suffix.database}"
-  namespace           = "AA/RDS"
-  metric_name         = "RoleConnections"
-  dimensions          = { Role = "aa_app_user" }
-  statistic           = "SampleCount"
-  period              = 900
-  evaluation_periods  = 3
-  comparison_operator = "LessThanThreshold"
-  threshold           = 1
-  treat_missing_data  = "breaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
+resource "aws_cloudwatch_event_target" "rds_instance_event" {
+  rule      = aws_cloudwatch_event_rule.rds_instance_event.name
+  target_id = "alerts-sns"
+  arn       = aws_sns_topic.alerts.arn
 
-  tags = merge(local.ecosys_tags, { App = "shared" })
-}
-
-# -----------------------------------------------------------------------------
-# AA-751 (S240) — job backlog per owner (data standard C4.1, plan aa751_plan.md §5).
-#
-# Each owner publishes two metrics, no dimensions, every 5 minutes, from a loop that does NOT run
-# through the queue it measures:
-#   CIS      AA/Jobs/CIS      api process, api/core/ops_metrics_sampler.py (not the worker)
-#   Booking  AA/Jobs/Booking  backend/app/jobs/metrics.py JobMetricsSampler, started next to the
-#                             worker when the worker is enabled and the DB is configured
-#
-#   OldestQueuedAgeSeconds  age in seconds of the oldest due queued row that is STARVED, else 0.
-#                           Capacity-aware (plan F13), so a normal wave or a long serial job does
-#                           not page: CIS counts a row only when no live worker exists, its kind is
-#                           unregistered, or a live worker could claim it right now (same claim-caps
-#                           rule as the worker) and the kind is below its concurrency; Booking (a
-#                           serial worker) reports 0 while a non-overdue job is running.
-#   OverdueRunningJobs      running rows older than 2 x the kind's expected seconds, timed from
-#                           progress.attempt_started_at (written at each claim, plan F18) or
-#                           started_at (CIS registry expected_seconds, default 600; Booking
-#                           app/jobs/kinds.py EXPECTED_SECONDS, default 300).
-#
-# Alarms per owner (SNS on ALARM and OK, see the header):
-#   <prefix>-jobs-queue-age          Maximum > 900 s in 1 of 2 5-minute periods, missing = OK.
-#   <prefix>-jobs-overdue-running    Maximum > 0 in 1 of 2 5-minute periods, missing = OK.
-#   <prefix>-jobs-sampling-stopped   SampleCount of OldestQueuedAgeSeconds < 1 for 3 x 15 minutes,
-#                                    missing = BREACHING (the documented exception, like AA-832's):
-#                                    without it a dead sampler would leave the two alarms above
-#                                    silently green.
-# The Booking sampling-stopped alarm ALSO fires whenever Booking is scaled to 0 (its normal Dev
-# state, booking.tf desired_count 0) or its worker is off (WORKER_ENABLED false): that is expected,
-# not an incident. The CIS one fires while the CIS api is scaled to 0.
-# Cost: in the AA-832 cost block above (6 alarms x $0.10; the 4 metrics are inside the free 10).
-# IAM: CIS via cis_ecs_task_put_metric_aa_rds above (namespace AA/Jobs/CIS); Booking via
-# booking_ecs_task_put_metric_jobs below (namespace AA/Jobs/Booking only).
-# Rollout (split apply, docs/implementation-notes/AA-751.md): IAM first, then the CIS and Booking
-# deploys, then the rest, and the two jobs_sampling_stopped alarms last, once samples exist.
-# -----------------------------------------------------------------------------
-
-locals {
-  job_backlog_owners = {
-    cis = {
-      namespace = "AA/Jobs/CIS"
-      prefix    = local.name_prefix
-      app       = "cis"
-      sampler   = "the CIS api sampler (api/core/ops_metrics_sampler.py)"
-      log_group = "/ecs/${local.name_prefix}"
-      queue     = "shared.job"
+  input_transformer {
+    input_paths = {
+      id    = "$.detail.SourceIdentifier"
+      event = "$.detail.EventID"
+      msg   = "$.detail.Message"
+      time  = "$.time"
     }
-    booking = {
-      namespace = "AA/Jobs/Booking"
-      prefix    = local.bk_name_prefix
-      app       = "booking"
-      sampler   = "the Booking JobMetricsSampler (backend/app/jobs/metrics.py)"
-      log_group = "/ecs/${local.bk_name_prefix}"
-      queue     = "booking.job"
-    }
-    crm = {
-      namespace = "AA/Jobs/Crm"
-      prefix    = local.crm_name_prefix
-      app       = "crm"
-      sampler   = "the AA-Partner JobMetricsSampler (api/app/jobs/metrics.py)"
-      log_group = "/ecs/${local.crm_name_prefix}"
-      queue     = "crm.job"
-    }
+    input_template = "\"[aa-rds] <id>: <event> at <time>: <msg>. The database is shared by CIS, TripPlanner, Booking and AA-Partner; while it is down every in-app check is silent too. A stop on Dev is either by hand or AWS restarting it after 7 days stopped.${local.runbook_suffix.database}\""
   }
 }
 
-resource "aws_cloudwatch_metric_alarm" "jobs_queue_age" {
-  for_each = local.job_backlog_owners
-
-  alarm_name          = "${each.value.prefix}-jobs-queue-age"
-  alarm_description   = "${each.value.queue}: a due queued job has been starved for more than 15 minutes (${each.value.namespace} OldestQueuedAgeSeconds, capacity-aware: no live worker, an unregistered kind, or a free slot that is not claiming it). Check the queue and the worker logs in ${each.value.log_group}.${local.runbook_suffix.queue_stuck}"
-  namespace           = each.value.namespace
-  metric_name         = "OldestQueuedAgeSeconds"
-  statistic           = "Maximum"
-  period              = 300
-  evaluation_periods  = 2
-  datapoints_to_alarm = 1
-  comparison_operator = "GreaterThanThreshold"
-  threshold           = 900 # seconds
-  treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
-
-  tags = merge(local.ecosys_tags, { App = each.value.app })
-}
-
-resource "aws_cloudwatch_metric_alarm" "jobs_overdue_running" {
-  for_each = local.job_backlog_owners
-
-  alarm_name          = "${each.value.prefix}-jobs-overdue-running"
-  alarm_description   = "${each.value.queue}: at least one running job has run longer than 2 x its kind's expected seconds in the current attempt (${each.value.namespace} OverdueRunningJobs). It may be stuck holding a worker slot. Check the running rows and ${each.value.log_group}.${local.runbook_suffix.queue_stuck}"
-  namespace           = each.value.namespace
-  metric_name         = "OverdueRunningJobs"
-  statistic           = "Maximum"
-  period              = 300
-  evaluation_periods  = 2
-  datapoints_to_alarm = 1
-  comparison_operator = "GreaterThanThreshold"
-  threshold           = 0
-  treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
-
-  tags = merge(local.ecosys_tags, { App = each.value.app })
-}
-
-resource "aws_cloudwatch_metric_alarm" "jobs_sampling_stopped" {
-  for_each = local.job_backlog_owners
-
-  alarm_name          = "${each.value.prefix}-jobs-sampling-stopped"
-  alarm_description   = "No ${each.value.namespace} OldestQueuedAgeSeconds sample for 45 minutes: ${each.value.sampler} is not publishing, so the queue-age and overdue-running alarms are blind. Expected while the service is scaled to 0${each.value.app != "cis" ? " or the worker is off (WORKER_ENABLED false)" : ""}. Check ${each.value.log_group}.${local.runbook_suffix.queue_stuck}"
-  namespace           = each.value.namespace
-  metric_name         = "OldestQueuedAgeSeconds"
-  statistic           = "SampleCount"
-  period              = 900
-  evaluation_periods  = 3
-  comparison_operator = "LessThanThreshold"
-  threshold           = 1
-  treat_missing_data  = "breaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
-
-  tags = merge(local.ecosys_tags, { App = each.value.app })
-}
-
 # -----------------------------------------------------------------------------
-# AA-937 (CRM-09, design v3 §4.4): bulk reveal. Field decryption in AA-Partner is local AES under a cached DEK, so a
-# member opening many records never shows in the KMS Decrypt rate. The API counts what it released instead
-# (api/app/observability/reveal_meter.py: committed field reveals and document downloads per agency and member over a
-# sliding hour) and its JobMetricsSampler publishes the busiest member's count as AA/Jobs/Crm
-# RevealsPerMemberPeakHour every 5 minutes (same PutMetricData call and namespace as the backlog metrics: no IAM
-# change). The app also logs crm_bulk_reveal (agency id, member id, count) at the same threshold: the log says who.
-# Missing data = OK (scaled to 0, worker off, or before the AA-Partner deploy that publishes it).
-# Cost: 1 alarm x $0.10/month + 1 custom metric (~$0.30/month beyond the free 10).
+# S263 alert diet (AA-1025, root docs/audits/2026-11-01-S263-alerting-cost/diet.md): what left CloudWatch.
+#
+# Removed here: RDS FreeableMemory, CPUSurplusCreditsCharged, Read/WriteLatency, DiskQueueDepth (never fired; C4.3
+# weekly review), the NAT combined StatusCheckFailed alarm (now Instance-only, above), the Booking unhealthy-hosts / CPU / API 5XX and
+# the CIS API 5XX / latency alarms (an outage is the no-healthy-task alarm of each service, an app error is a Sentry
+# event), the assembly throttles alarm, and the AA-832 / AA-751 custom-metric alarms below, which became IN-APP checks
+# that read the same database state and mail the same alerts topic (sns:Publish, granted below and in
+# alert_recipients.tf):
+#   per-role CONNECTION LIMIT > 80 %, XID age > 1e9, cis_app "too many connections"   CIS api ops sampler
+#   job queue starved > 15 min / running past 2 x expected                            CIS, Booking, AA-Partner samplers
+#   CRM audit export lag / partitions / verify lag, bulk reveal                       AA-Partner sampler
+# The "sampling stopped" heartbeats are gone with them: each check runs in its app's API process, and the API being
+# down is that service's no-healthy-task alarm. No custom metric is published for any of them any more (the
+# PutMetricData grants for AA/RDS, AA/Jobs/CIS, AA/Jobs/Booking, AA/Jobs/Crm and acp are removed).
+# local.rds_max_connections stays: rds-connections-high above is derived from it (C4.1b).
 # -----------------------------------------------------------------------------
-resource "aws_cloudwatch_metric_alarm" "crm_bulk_reveal" {
-  alarm_name          = "${local.crm_name_prefix}-bulk-reveal"
-  alarm_description   = "AA-Partner: one agency member revealed 60 or more traveller fields or documents within an hour (AA/Jobs/Crm RevealsPerMemberPeakHour, design v3 §4.4 bulk reveal). Find the member in /ecs/${local.crm_name_prefix} (crm_bulk_reveal) and the reveal events in crm.audit_event; confirm with the agency that it was expected.${local.runbook_suffix.incident}"
-  namespace           = "AA/Jobs/Crm"
-  metric_name         = "RevealsPerMemberPeakHour"
-  statistic           = "Maximum"
-  period              = 300
-  evaluation_periods  = 1
-  comparison_operator = "GreaterThanOrEqualToThreshold"
-  threshold           = 60 # = BULK_REVEAL_THRESHOLD in reveal_meter.py
-  treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
 
-  tags = merge(local.ecosys_tags, { App = "crm" })
-}
-
-# Booking publishes only into its own namespace (one namespace per owner, so IAM keeps each app to
-# its own metrics). PutMetricData has no resource ARN. Pattern of ses.tf booking_ecs_task_ses_send.
-resource "aws_iam_role_policy" "booking_ecs_task_put_metric_jobs" {
-  name = "${local.bk_name_prefix}-ecs-put-metric-jobs"
+# Booking task role: publish the in-app check alerts (AA-Booking app/jobs/ops_checks.py) to the alerts topic, the
+# topic the removed job alarms used, so the recipients are the same (bootstrap + Platform > Alert recipients). The
+# topic's default statement admits this account's principals; this grant is the IAM side. ALERTS_TOPIC_ARN reaches
+# the task through booking.tf.
+resource "aws_iam_role_policy" "booking_ecs_task_publish_alerts" {
+  name = "${local.bk_name_prefix}-ecs-publish-alerts"
   role = aws_iam_role.booking_ecs_task.id
 
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Sid       = "PutMetricDataBookingJobs"
-      Effect    = "Allow"
-      Action    = "cloudwatch:PutMetricData"
-      Resource  = "*"
-      Condition = { StringEquals = { "cloudwatch:namespace" = "AA/Jobs/Booking" } }
+      Sid      = "PublishOpsCheckAlerts"
+      Effect   = "Allow"
+      Action   = "sns:Publish"
+      Resource = aws_sns_topic.alerts.arn
     }]
   })
+}
+
+# S263: the throttles alarm kept only its browse instance; keep that alarm (no destroy / create).
+moved {
+  from = aws_cloudwatch_metric_alarm.tripplanner_lambda_throttles["browse"]
+  to   = aws_cloudwatch_metric_alarm.tripplanner_lambda_throttles
 }

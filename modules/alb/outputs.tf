@@ -48,3 +48,8 @@ output "nlb_arn" {
   description = "ARN of the internal VPC-link NLB; the CloudFront VPC origin targets it (AA-931)"
   value       = aws_lb.vpc_link_nlb.arn
 }
+
+output "target_group_arn_suffix" {
+  description = "CIS api target group ARN suffix (targetgroup/<name>/<id>) for the AWS/ApplicationELB HealthyHostCount alarm (S263, AA-1025)"
+  value       = aws_lb_target_group.api.arn_suffix
+}

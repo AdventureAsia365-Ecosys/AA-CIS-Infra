@@ -270,8 +270,8 @@ resource "aws_lambda_function_event_invoke_config" "rds_snapshot_expiry" {
   maximum_event_age_in_seconds = 3600
 }
 
-# Any failed run (delete error, bad config, SNS publish failure). ALARM + OK like every alarm on
-# the topic (AA-872); for a daily job the OK mail only means "no new error in the last 5 minutes".
+# Any failed run (delete error, bad config, SNS publish failure). Event alarm: ALARM e-mail only since the S263 alert
+# diet (AA-1025); for a daily job the OK mail only meant "no new error in the last 5 minutes".
 resource "aws_cloudwatch_metric_alarm" "rds_snapshot_expiry_errors" {
   alarm_name          = "${local.rds_snapshot_expiry_fn_name}-errors"
   alarm_description   = "AA-869: the RDS manual-snapshot expiry Lambda failed. Check its log group (one JSON line per snapshot).${local.runbook_suffix.database}"
@@ -285,7 +285,6 @@ resource "aws_cloudwatch_metric_alarm" "rds_snapshot_expiry_errors" {
   comparison_operator = "GreaterThanOrEqualToThreshold"
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
   tags                = local.rds_snapshot_expiry_tags
 }
 
