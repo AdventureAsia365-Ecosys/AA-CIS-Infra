@@ -63,7 +63,7 @@ jobs:
     outputs:
       relevant: ${{ steps.scope.outputs.relevant }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           sparse-checkout: db/migration_guard_scope.py
           sparse-checkout-cone-mode: false
@@ -97,13 +97,13 @@ jobs:
     if: ${{ !cancelled() && needs.scope.outputs.relevant != 'false' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
       # PyYAML only for the registry test (db/tests/test_owners_registry.py reads db/owners.yaml and
       # the workflow); the guards and the runner stay standard-library only.
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
 
@@ -151,7 +151,7 @@ jobs:
     if: ${{ !cancelled() && needs.scope.outputs.relevant != 'false' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Lint every copy, check numbers are unique per owner
         run: |
@@ -190,7 +190,7 @@ jobs:
       REGISTRY_PATH: docs/architecture/data-standards/02-data-management.md
       HAS_CI_BOT_APP: ${{ vars.AA_CI_BOT_APP_ID != '' && secrets.AA_CI_BOT_PRIVATE_KEY != '' }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Is any new-app dir in scope?
         id: scope
@@ -200,7 +200,7 @@ jobs:
       - name: Mint the aa-ecosys-ci-bot token (root repo, contents read)
         id: app-token
         if: steps.scope.outputs.scoped == 'yes' && env.HAS_CI_BOT_APP == 'true'
-        uses: actions/create-github-app-token@v3
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           app-id: ${{ vars.AA_CI_BOT_APP_ID }}
           private-key: ${{ secrets.AA_CI_BOT_PRIVATE_KEY }}
@@ -259,11 +259,11 @@ jobs:
       REPLAY_IMAGE: pgvector/pgvector@sha256:94aee7e88f98125114657cab98e28c5dfa8dd517a6bf83fd98b503439f1e3de6
       OWNER_REPOS: AA-CIS-App AA-Booking AA-TripPlanner-Web AA-Partner
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
 
@@ -347,7 +347,7 @@ jobs:
 
       - name: Keep the classify result as an artifact
         if: always() && steps.files.outputs.mode != 'none'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: expand-classify-${{ github.run_id }}
           path: |

@@ -146,8 +146,13 @@ resource "aws_iam_role" "crm_scrub_corpus" {
       Principal = { Federated = aws_iam_openid_connect_provider.github_actions.arn }
       Action    = "sts:AssumeRoleWithWebIdentity"
       Condition = {
-        StringEquals = { "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com" }
-        StringLike   = { "token.actions.githubusercontent.com:sub" = local.crm_scrub_oidc_subjects }
+        # AA-1022: scrub-corpus.yml runs only on main (schedule, push to main, dispatch with a main-only job `if`), so
+        # the `ref` claim is pinned too, independently of the scrub-corpus environment's branch policy.
+        StringEquals = {
+          "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
+          "token.actions.githubusercontent.com:ref" = "refs/heads/main"
+        }
+        StringLike = { "token.actions.githubusercontent.com:sub" = local.crm_scrub_oidc_subjects }
       }
     }]
   })

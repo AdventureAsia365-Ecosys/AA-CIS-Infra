@@ -14,6 +14,7 @@ on:
       - "modules/alb/**"
       - "modules/ecs/**"
       - "modules/elasticache/**"
+      - "modules/vpc/**"
       - "tools/terraform/**"
       - ".github/workflows/alb-rule-order.yml"
   push:
@@ -23,6 +24,7 @@ on:
       - "modules/alb/**"
       - "modules/ecs/**"
       - "modules/elasticache/**"
+      - "modules/vpc/**"
       - "tools/terraform/**"
       - ".github/workflows/alb-rule-order.yml"
 
@@ -36,10 +38,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
 
@@ -51,8 +53,10 @@ jobs:
       # the iam-change alert covers every IAM write verb of tools/terraform/sec_alert_check.py.
       # AA-873 (S261): who may read secret values (CIS task role Deny, apply boundary Deny, ops key resource policies);
       # it reads modules/ecs and modules/elasticache too, hence those paths above.
-      - name: Unit tests (rule-order checker + CRM edge live check + CRM KMS alarm patterns + security alerts + secret read guards)
-        run: python -B -m pytest -p no:cacheprovider -q tools/terraform/tests/test_alb_rule_order.py tools/terraform/tests/test_crm_edge_live_check.py tools/terraform/tests/test_crm_kms_alarm_check.py tools/terraform/tests/test_sec_access_analyzer.py tools/terraform/tests/test_secret_read_guards.py
+      # AA-1022: S3 gateway endpoint (modules/vpc, hence that path), NAT recover alarm, OIDC ref pins, Identity Center
+      # administrator session alert.
+      - name: Unit tests (rule-order checker + CRM edge live check + CRM KMS alarm patterns + security alerts + secret read guards + AA-1022 hardening)
+        run: python -B -m pytest -p no:cacheprovider -q tools/terraform/tests/test_alb_rule_order.py tools/terraform/tests/test_crm_edge_live_check.py tools/terraform/tests/test_crm_kms_alarm_check.py tools/terraform/tests/test_sec_access_analyzer.py tools/terraform/tests/test_secret_read_guards.py tools/terraform/tests/test_aa1022_hardening.py
 
       - name: Check accounts/aa365 listener rules
         run: python3 -B tools/terraform/alb_rule_order.py --source accounts/aa365

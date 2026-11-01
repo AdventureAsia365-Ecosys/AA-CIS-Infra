@@ -121,7 +121,7 @@ jobs:
       ENVIRONMENT: ${{ inputs.environment }}
       OVERRIDE_BUSY_JOBS: ${{ inputs.override_busy_jobs }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # X1 S12: each mode takes only its own input (MIGRATION above carries it to the steps below).
       - name: Unused inputs
@@ -214,7 +214,7 @@ jobs:
           jq -r '"- transaction: \(if .no_transaction then "no (statement by statement)" else "yes" end), destructive: \(.destructive), expand: \(.expand), lock_timeout \(.settings.lock_timeout), statement_timeout \(.settings.statement_timeout)"' <<<"$INSPECT" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: us-west-1

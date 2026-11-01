@@ -10,7 +10,8 @@ Run (MFA profile, single-line AWS CLI underneath):
   python3 tools/terraform/sec_alert_check.py --skip-after-s256     # before the S256 iam_change widening is applied
 
 Rules checked (aa-sec-<env>-*): security-group-change, iam-change, root-activity, cloudtrail-tamper,
-access-analyzer-finding (all in --region) and global-forward (us-east-1). Exit 1 if any check is wrong.
+access-analyzer-finding, AA-1022 sso-admin-signin-* (security_sso_signin.tf) (all in --region) and global-forward
+(us-east-1). Exit 1 if any check is wrong. --skip-sso skips the AA-1022 checks (before that change is applied).
 """
 from __future__ import annotations
 
@@ -50,6 +51,22 @@ def trail_event(account: str, region: str, source: str, name: str, identity: dic
                    "readOnly": read_only, "awsRegion": region, "sourceIPAddress": "203.0.113.10",
                    "eventTime": "2026-10-28T00:00:00Z", "eventType": "AwsApiCall"},
     }
+
+
+def saml_event(account: str, region: str, role_name: str, regional_path: bool = False) -> dict:
+    """AssumeRoleWithSAML as Identity Center records it in a member account (AA-1022): a read-only STS call by a
+    SAMLUser, the permission-set role in requestParameters.roleArn (path with the instance region when it is not
+    us-east-1)."""
+    path = f"aws-reserved/sso.amazonaws.com/{region + '/' if regional_path else ''}"
+    ev = trail_event(account, region, "sts", "AssumeRoleWithSAML",
+                     {"type": "SAMLUser", "userName": "aa-live-check", "principalId": "EXAMPLE:aa-live-check"},
+                     read_only=True)
+    ev["detail"]["requestParameters"] = {
+        "roleArn": f"arn:aws:iam::{account}:role/{path}{role_name}",
+        "principalArn": f"arn:aws:iam::{account}:saml-provider/AWSSSO_0000000000000000_DO_NOT_DELETE",
+        "roleSessionName": "aa-live-check",
+    }
+    return ev
 
 
 def finding_event(account: str, region: str, status: str) -> dict:
@@ -113,6 +130,21 @@ def cases(account: str, region: str, env: str) -> list:
                                                              detail_type="AWS Console Sign In via CloudTrail"), True))
     out.append(("forward.admin-sts", fwd, EAST, trail_event(account, EAST, "sts", "GetCallerIdentity", admin,
                                                             read_only=True), False))
+    # AA-1022: Identity Center administrator sessions, one rule per permission set, plus the us-east-1 forward.
+    sso_admin, sso_aa = f"{p}-sso-admin-signin-administratoraccess", f"{p}-sso-admin-signin-aa-admin"
+    # One role name per line (gitleaks generic rule: a keyword such as "Access" followed by a separator and a value).
+    admin_role = "AWSReservedSSO_AdministratorAccess_example"
+    aa_role = "AWSReservedSSO_AA-Admin_example"
+    dev_role = "AWSReservedSSO_AA-Developer_example"
+    out.append(("sso.AdministratorAccess", sso_admin, region, saml_event(account, EAST, admin_role), True))
+    out.append(("sso.AdministratorAccess-regional", sso_admin, region,
+                saml_event(account, region, admin_role, regional_path=True), True))
+    out.append(("sso.AdministratorAccess-not-AA-Admin", sso_admin, region, saml_event(account, EAST, aa_role), False))
+    out.append(("sso.AA-Admin", sso_aa, region, saml_event(account, region, aa_role, regional_path=True), True))
+    out.append(("sso.AA-Developer", sso_aa, region, saml_event(account, region, dev_role, regional_path=True), False))
+    out.append(("forward.sso-admin", fwd, EAST, saml_event(account, EAST, admin_role), True))
+    out.append(("forward.sso-aa-admin", fwd, EAST, saml_event(account, EAST, aa_role), True))
+    out.append(("forward.sso-developer", fwd, EAST, saml_event(account, EAST, dev_role), False))
     return out
 
 
@@ -131,11 +163,16 @@ def main(argv=None) -> int:
     ap.add_argument("--env", default="dev")
     ap.add_argument("--skip-after-s256", action="store_true",
                     help="skip the IAM verbs added by the S256 widening (live rule not applied yet)")
+    ap.add_argument("--skip-sso", action="store_true",
+                    help="skip the AA-1022 Identity Center checks (security_sso_signin.tf not applied yet)")
     a = ap.parse_args(argv)
     account = aws(["sts", "get-caller-identity"], a.profile, a.region)["Account"]
     patterns, failed, skipped = {}, 0, 0
     for cid, rule, region, event, expected in cases(account, a.region, a.env):
         if a.skip_after_s256 and cid.startswith("iam.admin.") and cid.split(".")[-1] in AFTER_S256:
+            skipped += 1
+            continue
+        if a.skip_sso and cid.startswith(("sso.", "forward.sso")):
             skipped += 1
             continue
         if (rule, region) not in patterns:
