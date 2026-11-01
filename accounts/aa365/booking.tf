@@ -71,11 +71,13 @@ locals {
   # name, pinned org id) and the plain form are accepted. Once the id is set, only the immutable
   # form with that exact id is trusted (fail closed).
   #
-  # Contexts: ONLY `environment:dev` (deploy job with `environment: dev`) and
-  # `ref:refs/heads/main` (a job without an environment, on main). No pull_request, no other
-  # branch, no other environment. Give the AA-Booking `dev` environment a deployment-branch
-  # policy of `main` only, otherwise any writer can use `environment: dev` from a branch.
-  bk_oidc_contexts = ["environment:dev", "ref:refs/heads/main"]
+  # Context: ONLY `environment:dev`. AA-1022 (S263): every job that assumes this role runs with
+  # `environment: dev` (deploy-dev.yml preflight + deploy, post-deploy-verify.yml verify, called by
+  # deploy-dev.yml or dispatched); the role ARN is an environment variable of `dev` only, so no job
+  # without that environment uses it. The former `ref:refs/heads/main` context (a job without an
+  # environment) had no user and is dropped. "main only" is held twice, as for aa-cis-dev-app-deploy:
+  # the `dev` environment's deployment-branch policy (main) and the `ref` claim in the trust below.
+  bk_oidc_contexts = ["environment:dev"]
   bk_oidc_repo_id  = var.booking_github_repo_id != "" ? var.booking_github_repo_id : "*"
   bk_oidc_subjects = concat(
     [for c in local.bk_oidc_contexts : "repo:AdventureAsia365-Ecosys@276539096/AA-Booking@${local.bk_oidc_repo_id}:${c}"],
@@ -660,8 +662,11 @@ resource "aws_iam_role" "booking_app_deploy" {
       Principal = { Federated = aws_iam_openid_connect_provider.github_actions.arn }
       Action    = "sts:AssumeRoleWithWebIdentity"
       Condition = {
+        # AA-1022: `ref` pins main independently of the GitHub environment settings (AWS evaluates the key for
+        # GitHub tokens, see cicd_split.tf aa-cis-dev-app-deploy). A reusable workflow carries its caller's ref.
         StringEquals = {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
+          "token.actions.githubusercontent.com:ref" = "refs/heads/main"
         }
         StringLike = {
           "token.actions.githubusercontent.com:sub" = local.bk_oidc_subjects

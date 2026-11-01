@@ -121,6 +121,8 @@ class IamChangeRuleTest(unittest.TestCase):
     def test_live_check_rule_names_exist(self):
         for rule in {c[1] for c in chk.cases("000000000000", "us-west-1", "dev")}:
             suffix = rule.split("aa-sec-dev-", 1)[1]
+            if suffix.startswith("sso-admin-signin-"):
+                continue  # AA-1022 for_each rules of security_sso_signin.tf: test_aa1022_hardening.py
             with self.subTest(rule=rule):
                 self.assertIn(f'name        = "${{local.sec_prefix}}-{suffix}"', BASELINE)
 

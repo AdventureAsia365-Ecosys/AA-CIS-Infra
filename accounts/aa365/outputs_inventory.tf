@@ -41,8 +41,16 @@ output "network_security_group_ids" {
 }
 
 output "network_nat_instance_id" {
-  description = "NAT instance carrying all private-subnet egress."
+  description = "NAT instance carrying all private-subnet egress except same-region S3 (AA-1022 gateway endpoint)."
   value       = module.vpc.nat_instance_id
+}
+
+output "network_s3_gateway_endpoint" {
+  description = "AA-1022: S3 gateway endpoint and the route table it adds its prefix-list route to (private tier only)."
+  value = {
+    endpoint_id    = module.vpc.s3_gateway_endpoint_id
+    route_table_id = module.vpc.private_route_table_id
+  }
 }
 
 output "rds_instance" {

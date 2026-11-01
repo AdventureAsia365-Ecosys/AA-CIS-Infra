@@ -232,6 +232,33 @@ resource "aws_route_table_association" "private" {
   route_table_id = aws_route_table.private.id
 }
 
+# AA-1022 (S261 architecture review N10): S3 gateway endpoint. Without it, every S3 call from the private subnets
+# (bronze bucket reads/writes, ECR image layers, which ECR serves from S3, Lambda code and photo uploads) leaves
+# through the t4g.nano NAT instance: NAT bandwidth and one more thing that stops when the NAT host is unhealthy.
+# A gateway endpoint is free (no hourly or per-GB charge) and adds a route to the regional S3 prefix list on the
+# route tables listed below; S3 in other regions still goes through the NAT instance.
+#
+# Route tables: the private one only (every subnet with a workload: ECS services, VPC Lambdas, ElastiCache). The db
+# table is deliberately left out: it has no route out of the VPC, RDS never sends S3 traffic through the VPC, and an
+# S3 route there would be the first way out of the data tier. The public table reaches S3 through the internet gateway.
+#
+# Policy: none set = the AWS default (full access through the endpoint). Bucket policies decide access exactly as
+# before: no bucket policy in this repo keys on aws:SourceIp or aws:SourceVpce (read 01/11/2026), so a request that
+# now arrives from a private address instead of the NAT Elastic IP is judged the same way. Adding the route resets TCP connections to S3
+# that were open through the NAT at that moment; the SDKs retry.
+data "aws_region" "current" {}
+
+resource "aws_vpc_endpoint" "s3" {
+  vpc_id            = aws_vpc.main.id
+  service_name      = "com.amazonaws.${data.aws_region.current.region}.s3"
+  vpc_endpoint_type = "Gateway"
+  route_table_ids   = [aws_route_table.private.id]
+
+  tags = merge(var.tags, {
+    Name = "${local.name_prefix}-vpce-s3"
+  })
+}
+
 # DB (no internet access)
 resource "aws_route_table" "db" {
   vpc_id = aws_vpc.main.id

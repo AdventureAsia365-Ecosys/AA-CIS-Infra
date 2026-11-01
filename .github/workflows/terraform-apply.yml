@@ -63,7 +63,7 @@ jobs:
       ALLOW_REASON: ${{ inputs.allow_reason }}
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # AA-846: fail fast, before any AWS step, when allow_guarded comes without a reason.
       - name: Check guard inputs
@@ -82,7 +82,7 @@ jobs:
 
       - name: Configure AWS credentials (OIDC)
         if: env.GUARD_SELFTEST != 'true'
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ secrets.AWS_REGION }}
@@ -93,7 +93,7 @@ jobs:
 
       - name: Setup Terraform
         if: env.GUARD_SELFTEST != 'true'
-        uses: hashicorp/setup-terraform@v4
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
           terraform_version: "1.15.5"
 
@@ -219,7 +219,7 @@ jobs:
       TF_IN_AUTOMATION: "1"
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -245,7 +245,7 @@ jobs:
           echo "TF_CLI_ARGS_plan=-var-file=$F" >> "$GITHUB_ENV"
 
       - name: Configure AWS credentials (OIDC, management plan role)
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: arn:aws:iam::${{ secrets.MGMT_ACCOUNT_ID }}:role/aa-terraform-plan
           aws-region: us-west-1
@@ -260,7 +260,7 @@ jobs:
           esac
 
       - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v4
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
           terraform_version: "1.15.5"
           terraform_wrapper: false
@@ -342,7 +342,7 @@ jobs:
           fi
           echo "org environment: required reviewer and branch policy present"
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -380,7 +380,7 @@ jobs:
           echo "TF_CLI_ARGS_plan=-var-file=$F" >> "$GITHUB_ENV"
 
       - name: Configure AWS credentials (OIDC, management apply role)
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: arn:aws:iam::${{ secrets.MGMT_ACCOUNT_ID }}:role/aa-terraform-apply
           aws-region: us-west-1
@@ -395,7 +395,7 @@ jobs:
           esac
 
       - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v4
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
           terraform_version: "1.15.5"
           terraform_wrapper: false   # real exit codes, clean JSON on stdout

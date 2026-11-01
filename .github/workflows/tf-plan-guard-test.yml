@@ -10,6 +10,9 @@ name: Terraform Plan Guard Tests
 # terraform-plan.yml (same roots), and the report masks through tools/docs/aws_mask.py, so those paths trigger it too.
 # AA-1004: plus the management account CI wiring (test_management_ci.py reads accounts/management/cicd.tf and the
 # three Terraform workflows; the plan guard's destroy-guarded types are checked against that root's resource types).
+# AA-1022: plus the action pin guard (test_workflow_action_pins.py: every `uses:` of .github/workflows on a full commit
+# SHA with the tag in a comment), so any workflow change triggers this workflow (the named workflow paths below stay
+# listed: other tests here check that the files they read are named).
 # The guarded fixture must exit non-zero, the clean and no-op fixtures must exit 0, and the guard
 # must stay wired in front of the apply step in terraform-apply.yml. Offline, no AWS access.
 
@@ -18,6 +21,7 @@ on:
     branches: [main]
     paths:
       - "tools/terraform/**"
+      - ".github/workflows/**"
       - ".github/workflows/terraform-apply.yml"
       - ".github/workflows/tf-plan-guard-test.yml"
       - "accounts/aa365/crm_storage.tf"
@@ -30,6 +34,7 @@ on:
     branches: [main]
     paths:
       - "tools/terraform/**"
+      - ".github/workflows/**"
       - ".github/workflows/terraform-apply.yml"
       - ".github/workflows/tf-plan-guard-test.yml"
       - "accounts/aa365/crm_storage.tf"
@@ -49,10 +54,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
 

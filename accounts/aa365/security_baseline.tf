@@ -237,15 +237,25 @@ resource "aws_iam_role_policy" "sec_forwarder" {
 
 # Write calls of IAM (readOnly = false keeps the thousands of daily Get/List reads of Terraform plan out of the
 # forward) and every root event. The state with all management events is needed for root read-only calls.
+# AA-1022 (S263): plus the Identity Center administrator sessions (AssumeRoleWithSAML on an alerted AWSReservedSSO_*
+# role, a read-only event recorded in us-east-1), matched in us-west-1 by security_sso_signin.tf.
 resource "aws_cloudwatch_event_rule" "sec_global_forward" {
   provider    = aws.us_east_1
   name        = "${local.sec_prefix}-global-forward"
-  description = "Forward IAM write calls and root activity (global services, us-east-1 only) to ${var.aws_region}. AA-873."
+  description = "Forward IAM write calls, root activity and Identity Center admin sessions (us-east-1) to ${var.aws_region}. AA-873, AA-1022."
   state       = "ENABLED_WITH_ALL_CLOUDTRAIL_MANAGEMENT_EVENTS"
   event_pattern = jsonencode({
     "$or" = [
       { source = ["aws.iam"], "detail-type" = ["AWS API Call via CloudTrail"], detail = { readOnly = [false] } },
       { "detail-type" = ["AWS API Call via CloudTrail", "AWS Console Sign In via CloudTrail"], detail = { userIdentity = { type = ["Root"] } } },
+      {
+        source        = ["aws.sts"]
+        "detail-type" = ["AWS API Call via CloudTrail"]
+        detail = {
+          eventName         = ["AssumeRoleWithSAML"]
+          requestParameters = { roleArn = [for p in values(local.sec_sso_admin_role_arn_patterns) : { wildcard = p }] }
+        }
+      },
     ]
   })
   tags = local.sec_tags

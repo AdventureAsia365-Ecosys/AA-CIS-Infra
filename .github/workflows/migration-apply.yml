@@ -85,9 +85,9 @@ jobs:
       DRY_RUN: ${{ inputs.dry_run == true }}
       DB_AUTO_APPLY: ${{ vars.DB_AUTO_APPLY }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
 
@@ -207,7 +207,7 @@ jobs:
 
       - name: Keep the plan, the bundle and the classify result
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           # No attempt in the name: "re-run failed jobs" re-runs only the apply job, which must find this bundle.
           name: migration-apply-${{ github.run_id }}
@@ -240,14 +240,14 @@ jobs:
       BUCKET: aa-cis-bronze-005097885195
       LOG_GROUP: /ecs/aa-cis-dev
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: migration-apply-${{ github.run_id }}
 
       - name: Configure AWS credentials (OIDC, environment dev-db-auto)
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: us-west-1
@@ -402,7 +402,7 @@ jobs:
     steps:
       # Full history: the note goes on the MERGED PR that added the file (the commit that added it on main), never on
       # the newest PR of the bot branch (a later reopened or closed one).
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 

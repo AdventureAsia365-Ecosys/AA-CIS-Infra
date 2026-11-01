@@ -39,3 +39,13 @@ output "nat_instance_eip" {
   value       = aws_eip.nat_instance.public_ip
   description = "NAT Instance public IP (EIP)"
 }
+
+output "s3_gateway_endpoint_id" {
+  value       = aws_vpc_endpoint.s3.id
+  description = "AA-1022: S3 gateway endpoint on the private route table"
+}
+
+output "private_route_table_id" {
+  value       = aws_route_table.private.id
+  description = "Route table of the private (workload) subnets: NAT default route + S3 gateway endpoint route"
+}

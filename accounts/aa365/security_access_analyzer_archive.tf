@@ -37,12 +37,12 @@ locals {
       aws_iam_role.tf_plan.arn,                # AA-CIS-Infra, pull_request or ref main (read only)
       aws_iam_role.tf_apply.arn,               # AA-CIS-Infra, environment prod, ref main
       aws_iam_role.docs_sync.arn,              # root repo, ref master
-      aws_iam_role.booking_app_deploy.arn,     # AA-Booking, environment dev or ref main
+      aws_iam_role.booking_app_deploy.arn,     # AA-Booking, environment dev, ref main (AA-1022)
       aws_iam_role.tripplanner_app_deploy.arn, # AA-TripPlanner-Web, ref main
-      aws_iam_role.crm_app_deploy.arn,         # AA-Partner, environment dev
+      aws_iam_role.crm_app_deploy.arn,         # AA-Partner, environment dev, ref main (AA-1022)
       aws_iam_role.db_auto_apply.arn,          # AA-CIS-Infra, environment dev-db-auto, ref main (AA-993 I1)
     ],
-    aws_iam_role.crm_scrub_corpus[*].arn, # AA-Partner, environment scrub-corpus (only when the guardrail is on)
+    aws_iam_role.crm_scrub_corpus[*].arn, # AA-Partner, environment scrub-corpus, ref main (only when the guardrail is on)
   )
 
   # The bucket-policy principal of modules/s3 (AllowBedrockBatch*Acc3).

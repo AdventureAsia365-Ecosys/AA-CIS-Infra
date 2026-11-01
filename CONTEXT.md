@@ -7,7 +7,7 @@ status: active
 owner: nghiep
 audience: [engineer, devops, agent]
 applies_to: [aa-cis-infra, ecosystem]
-last_reviewed: 2026-10-23
+last_reviewed: 2026-11-01
 review_every_days: 90
 related: [ARCH-01, ARCH-05, ARCH-08, docs/adr/README.md]
 ---
@@ -230,6 +230,13 @@ accounts/
                                    replacement: provider probe). observability.tf: aws_cloudtrail.main multi-region +
                                    kms_key_id; bucket lifecycle = noncurrent 400 d + multipart cleanup (the old Deep
                                    Archive rule never ran: files < 128 KB). ~1.25 USD/month)
+    security_sso_signin.tf        (AA-1022 / AA-873 N17, S263: rules aa-sec-<env>-sso-admin-signin-{administratoraccess,
+                                   aa-admin} on AssumeRoleWithSAML for the AWSReservedSSO_<set>_* roles of the two
+                                   administrator permission sets (state ENABLED_WITH_ALL_CLOUDTRAIL_MANAGEMENT_EVENTS:
+                                   the call is read-only), local or forwarded from us-east-1 by sec_global_forward
+                                   (Identity Center calls the global STS endpoint, so the event lands there) -> SNS
+                                   alerts; the mail carries session name, region, time, error code only (no ARN or
+                                   account id). Live pattern check: tools/terraform/sec_alert_check.py. 0 USD/month)
     security_guardduty.tf         (AA-873 PR 3, S255: GuardDuty detector behind var.guardduty_enabled (default false;
                                    ~15-20 USD/month when on): features RDS_LOGIN_EVENTS + S3_DATA_EVENTS on, EBS malware /
                                    EKS audit / Lambda network / Runtime Monitoring explicitly off; rule
@@ -457,7 +464,11 @@ ALB + API Gateway → S3 / Secrets / WAF**, plus **EventBridge** (`modules/event
 weekly export and Gate C veto window fired into a bus with no rule and were removed in AA-989), the ops-probe Lambda
 (`dfs_balance.tf`) and observability
 (`observability.tf`, `observability_ecosys.tf`, `diagnostics.tf`, langfuse/monitoring modules).
-`observability_ecosys.tf` (S235 Phase 0) covers what is not CIS: NAT status check, Booking target
+`modules/vpc` (AA-1022): besides the NAT default route, the private route table carries the route of the S3 gateway
+endpoint `aa-cis-<env>-vpce-s3` (free; same-region S3, ECR layers included, no longer goes through the NAT instance;
+default endpoint policy, bucket policies unchanged). The db route table stays without any route out of the VPC.
+`observability_ecosys.tf` (S235 Phase 0) covers what is not CIS: NAT status check (+ AA-1022 the
+`StatusCheckFailed_System` alarm with the EC2 recover action), Booking target
 health / CPU / REST 5XX, TripPlanner Lambda errors + sustained throttles (AA-833: > 5 in 2 of 3
 5-minute periods), shared RDS storage + connections, job backlog per owner (AA-751),
 and 30-day retention (application class, S241 D-09 / AA-872; it was 14 days before AA-872) on the TripPlanner
@@ -613,8 +624,8 @@ makes CI Terraform Plan fail with 403.
     `repo:AdventureAsia365-Ecosys@276539096/AA-TripPlanner-Web@1365222661:ref:refs/heads/main`
     (only `deploy-lambdas.yml` on main assumes it). Before S235 it used the name-wildcard form
     `repo:AdventureAsia365-Ecosys*/AA-TripPlanner-Web*:*`.
-  - `aa-booking-dev-app-deploy` trusts only AA-Booking, contexts `environment:dev` and
-    `ref:refs/heads/main`. Until `booking_github_repo_id` is set it accepts the immutable form with
+  - `aa-booking-dev-app-deploy` trusts only AA-Booking, context `environment:dev` plus the `ref` claim
+    `refs/heads/main` (AA-1022; the unused `ref:refs/heads/main` context was dropped). Until `booking_github_repo_id` is set it accepts the immutable form with
     any repo id plus the plain form, both pinned to the exact repo name; once set, only the
     immutable subject with that id (fail closed). Its policy is scoped to the Booking ECR repo,
     task family `aa-booking-dev-api` and service `aa-booking-dev-api` (it cannot register a CIS
@@ -674,6 +685,16 @@ makes CI Terraform Plan fail with 403.
   protection, re-plans, fails on a digest mismatch). This
   root's plan/apply text never reaches the public logs (JSON + `drift_report.py --mode plan|apply` summaries). Inputs:
   repo secrets `MGMT_ACCOUNT_ID` and `MGMT_TFVARS`. One-time setup: `accounts/management/README.md` §11.
+- **`ref` pin on environment roles (AA-1022, S263):** every OIDC role whose subject names a GitHub environment
+  (`aa-cis-dev-app-deploy`, `aa-cis-infra-tf-apply`, `aa-cis-infra-db-auto-apply`, `aa-cis-dev-e2e-mail-reader`,
+  `aa-booking-dev-app-deploy`, `aa-crm-dev-app-deploy`, `aa-crm-dev-scrub-corpus`) also requires the `ref` claim
+  `refs/heads/main` (`StringEquals`), so "main only" does not rest on the environment's branch policy alone. Guard:
+  `tools/terraform/tests/test_aa1022_hardening.py`. Roles whose subject is already a ref (`ref:refs/heads/main`) or
+  `pull_request` (the read-only plan roles) are unchanged.
+- **Action pins (AA-1022):** every `uses:` in `.github/workflows` names a full commit SHA with the release tag in a
+  trailing comment (`@<sha> # v7.0.1`); Dependabot (github-actions ecosystem, weekly) proposes updates in the same
+  form. Guard: `tools/terraform/tests/test_workflow_action_pins.py` (run by Terraform Plan Guard Tests on any
+  workflow change).
 - This repo has **branch protection** (CI Terraform Plan among the required checks). Terraform
   Plan runs on PRs; PRs are merged after CI passes. There is no auto-merge on this repo.
 
