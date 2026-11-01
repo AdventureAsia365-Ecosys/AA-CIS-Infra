@@ -1,7 +1,7 @@
 """AA-1026 D5 (S263, tech lead T-15): the owner steps of a re-embed into another embedding space, run as `cis_owner`.
 
-AA-CIS-App migration 340 registers the space of every vector column (`shared.embedding_space`,
-`shared.embedding_column`); migration 341 adds the owner functions this script calls. The paid part (filling the
+AA-CIS-App migration 328 registers the space of every vector column (`shared.embedding_space`,
+`shared.embedding_column`); migration 329 adds the owner functions this script calls. The paid part (filling the
 shadow column) is the CIS job `embedding_reembed`, never this script. Root runbook:
 `docs/ops/runbooks/embedding-re-embed.md`.
 

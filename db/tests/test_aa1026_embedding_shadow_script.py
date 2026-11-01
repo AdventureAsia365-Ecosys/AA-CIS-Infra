@@ -1,5 +1,5 @@
 """AA-1026 D5: db/scripts/aa1026_embedding_shadow.py — the owner steps of a re-embed (prepare, drop shadow, swap,
-rollback, purge of blank cache rows, status) around the CIS migration 341 functions.
+rollback, purge of blank cache rows, status) around the CIS migration 329 functions.
 
 Shape (the runner's own checks), merged defaults (DRY RUN, status) and every action against a fake connection that
 records SQL: a write action runs as cis_owner inside a transaction that a dry run rolls back.
