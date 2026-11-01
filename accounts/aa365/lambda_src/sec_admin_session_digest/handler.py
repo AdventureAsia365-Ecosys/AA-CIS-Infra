@@ -12,10 +12,17 @@ Sessions
   start + 12 h, the longest Identity Center session).
 
 Activity of a session
-  LookupEvents by Username = the role session name in ACTIVITY_REGIONS (us-east-1 holds the global services: IAM,
-  STS, Organizations, CloudFront, Route 53), from the session start (or the end of the previous digest) to now. When
-  that finds none of the session's CLI calls, a second lookup by AccessKeyId (the key AssumeRoleWithSAML returned)
-  covers them. An event belongs to the session when its identity is the same permission-set role (or the same access
+  LookupEvents by Username = the role session name in ACTIVITY_REGIONS (default: the organization's allowed regions
+  us-east-1, us-west-1, us-west-2; us-east-1 also holds the global services: IAM, STS, Organizations, CloudFront,
+  Route 53), from the session start (or the end of the previous digest) to now. When that finds none of the session's
+  CLI calls, a second lookup by AccessKeyId (the key AssumeRoleWithSAML returned) covers them. Calls in other regions
+  (the region SCP allows them only for the services it exempts) are not read; the mail says so.
+  The window is read in 1 h slices, OLDEST first (LookupEvents pages newest first, so a page cap on one long lookup
+  would drop a session's first calls). A slice over the page cap (MAX_PAGES x 50 rows) is halved and read again, down
+  to 1 min; only a 1-min slice still over the cap is kept cut and flagged (counts are then a lower bound). The run
+  time left is checked before every page: when it runs short, the digest covers the slices read completely
+  ("partial", reported_through = end of the last complete slice), the session stays open, and the next hourly run
+  carries on from there with a "continued" digest. An event belongs to the session when its identity is the same permission-set role (or the same access
   key). Two sessions of the same user on the same role overlap rarely (console + CLI); an event then goes to the
   session with its access key, else to the session whose start is its credential creationDate, else to the latest
   session started before it.
@@ -59,6 +66,10 @@ STATE_VERSION = 1
 SUBJECT_MAX = 100  # SNS e-mail subject limit
 WRITE_LINES_MAX = 300  # write/delete lines listed per digest; the rest is counted
 READ_LINES_MAX = 60  # read-only (service, eventName) rows listed per digest
+SLICE = timedelta(hours=1)  # a session's calls are read one slice at a time, oldest first
+MIN_SLICE = timedelta(minutes=1)  # a slice over the page cap is halved down to this
+GROUP_RESERVE_MS = 90_000  # do not start a (user, role) group with less run time left
+PAGE_RESERVE_MS = 30_000  # stop reading CloudTrail with less run time left (digest, publish, state write)
 
 # Verbs whose action removes or disables something; listed before the other writes.
 _DELETE_VERBS = ("Delete", "Remove", "Terminate", "Detach", "Disable", "Revoke", "Deregister", "Purge", "Destroy",
@@ -366,7 +377,7 @@ def _write_line(a: Activity) -> str:
 
 def build_digest(s: Session, acts: list[Activity], *, end: datetime, reason: str, env_name: str, regions,
                  truncated: bool = False, continued_from: datetime | None = None, runbook_url: str = "",
-                 preview: bool = False) -> tuple[str, str]:
+                 preview: bool = False, partial_until: datetime | None = None) -> tuple[str, str]:
     """(subject, message). Every line passes through mask_text()."""
     who = mask_session_name(s.session_name)
     ps = mask_text(s.permission_set)
@@ -375,7 +386,8 @@ def build_digest(s: Session, acts: list[Activity], *, end: datetime, reason: str
     reads = [a for a in acts if a.read_only]
     errors = sum(1 for a in acts if a.error_code)
 
-    tag = "admin session digest" + (" (continued)" if continued_from else "") + (" [preview]" if preview else "")
+    tag = ("admin session digest" + (" (continued)" if continued_from else "") + (" (partial)" if partial_until else "")
+           + (" [preview]" if preview else ""))
     subject = f"[aa-sec] {tag}: {who} ({ps}) {s.start.astimezone(timezone.utc):%Y-%m-%d %H:%MZ}"
     subject = mask_text(subject).encode("ascii", "replace").decode("ascii")[:SUBJECT_MAX]
 
@@ -388,13 +400,17 @@ def build_digest(s: Session, acts: list[Activity], *, end: datetime, reason: str
     ]
     if continued_from:
         lines.append(f"Continued: events after the previous digest ({_fmt_both(continued_from)}) only.")
+    if partial_until:
+        lines.append(f"Partial: calls up to {_fmt_both(partial_until)} only; the run ran out of time reading "
+                     "CloudTrail. A continued digest lists the later calls.")
     ips = Counter(mask_ip(a.source_ip) for a in acts if a.source_ip)
     if ips:
         lines.append("Source IPs: " + ", ".join(f"{ip} ({n})" for ip, n in ips.most_common(8)))
     console = sum(1 for a in acts if a.console)
     lines.append(f"Calls: {len(acts)} ({len(deletes)} delete, {len(writes)} other write, {len(reads)} read-only, "
                  f"{errors} with an error code; console {console}, API {len(acts) - console}). "
-                 f"Regions looked up: {', '.join(regions)}.")
+                 f"Regions looked up: {', '.join(regions)}; calls made in any other region (the organization region "
+                 f"policy allows them only for the services it exempts) are not listed.")
     if truncated:
         lines.append("WARNING: the lookup hit its page cap; the counts below are a lower bound. "
                      "Read the rest in CloudTrail Event history.")
@@ -442,20 +458,24 @@ def build_digest(s: Session, acts: list[Activity], *, end: datetime, reason: str
 
 # ── AWS calls ───────────────────────────────────────────────────────────────────────────────────────────────────────
 
-def lookup(client, attribute_key: str, value: str, start: datetime, end: datetime, max_pages: int):
-    """(rows, truncated). LookupEvents is paged 50 rows at a time, at most 2 calls/s per region (retries in the
-    client config)."""
+def lookup(client, attribute_key: str, value: str, start: datetime, end: datetime, max_pages: int,
+           time_ok=lambda: True) -> tuple[list[dict], str]:
+    """(rows, status). LookupEvents is paged 50 rows at a time, newest first, at most 2 calls/s per region (retries in
+    the client config). status: "done" (the whole window read), "cap" (max_pages read and more left: the rows are the
+    NEWEST of the window, its oldest are missing) or "time" (time_ok() was false before a page)."""
     rows: list[dict] = []
     kwargs = {"LookupAttributes": [{"AttributeKey": attribute_key, "AttributeValue": value}],
               "StartTime": start, "EndTime": end, "MaxResults": 50}
     for _ in range(max_pages):
+        if not time_ok():
+            return rows, "time"
         resp = client.lookup_events(**kwargs)
         rows.extend(resp.get("Events") or [])
         token = resp.get("NextToken")
         if not token:
-            return rows, False
+            return rows, "done"
         kwargs["NextToken"] = token
-    return rows, True
+    return rows, "cap"
 
 
 def find_sessions(clients: dict, regions, admin_sets, start: datetime, end: datetime, max_pages: int) -> list[Session]:
@@ -470,30 +490,62 @@ def find_sessions(clients: dict, regions, admin_sets, start: datetime, end: date
 
 
 def group_activity(clients: dict, regions, sessions: list[Session], start: datetime, end: datetime,
-                   max_pages: int) -> tuple[list[Activity], bool]:
-    """Every call of one (user, role) group in [start, end], across the activity regions, deduplicated."""
+                   max_pages: int, time_ok=lambda: True) -> tuple[list[Activity], datetime, bool]:
+    """Every call of one (user, role) group in [start, read_through], across the activity regions, deduplicated.
+
+    Returns (acts, read_through, truncated). The window is read in slices of SLICE, OLDEST slice first, so a long
+    session is never cut at its start. A slice whose lookup hits the page cap is halved and read again (LookupEvents
+    pages newest first, so a cut slice would lose its oldest calls); a MIN_SLICE slice still over the cap is kept as
+    read and flagged `truncated` (the counts are then a lower bound). When time_ok() turns false the reading stops:
+    read_through is the end of the last slice read completely (== end when everything was read), and the acts hold
+    only those slices, so the caller can report up to read_through and carry on from there in the next run.
+    """
     name, role = sessions[0].group
     keys = {s.access_key for s in sessions if s.access_key}
     acts: dict[str, Activity] = {}
     truncated = False
 
-    def add(rows):
+    def belonging(rows) -> list[Activity]:
+        out = []
         for raw in rows:
             a = activity_from_lookup(raw)
-            if a and a.event_id not in acts and belongs_to_group(a, role, keys):
-                acts[a.event_id] = a
+            if a and belongs_to_group(a, role, keys):
+                out.append(a)
+        return out
 
-    for region in regions:
-        rows, cut = lookup(clients[region], "Username", name, start, end, max_pages)
-        truncated |= cut
-        add(rows)
-    seen_keys = {a.access_key for a in acts.values()}
-    for key in sorted(keys - seen_keys):
+    def read_slice(a: datetime, b: datetime, keep_cut: bool) -> tuple[list[Activity], str]:
+        got: list[Activity] = []
+        status = "done"
         for region in regions:
-            rows, cut = lookup(clients[region], "AccessKeyId", key, start, end, max_pages)
-            truncated |= cut
-            add(rows)
-    return sorted(acts.values(), key=lambda a: (a.time, a.event_id)), truncated
+            rows, st = lookup(clients[region], "Username", name, a, b, max_pages, time_ok)
+            if st == "time" or (st == "cap" and not keep_cut):
+                return [], st
+            status = "cap" if st == "cap" else status
+            got += belonging(rows)
+        seen_keys = {x.access_key for x in got} | {x.access_key for x in acts.values()}
+        for key in sorted(keys - seen_keys):
+            for region in regions:
+                rows, st = lookup(clients[region], "AccessKeyId", key, a, b, max_pages, time_ok)
+                if st == "time" or (st == "cap" and not keep_cut):
+                    return [], st
+                status = "cap" if st == "cap" else status
+                got += belonging(rows)
+        return got, status
+
+    t, step = start, SLICE
+    while t < end:
+        b = min(t + step, end)
+        got, status = read_slice(t, b, keep_cut=step <= MIN_SLICE)
+        if status == "time":
+            break
+        if status == "cap" and step > MIN_SLICE:
+            step = max(step / 2, MIN_SLICE)
+            continue
+        truncated |= status == "cap"
+        for a in got:
+            acts.setdefault(a.event_id, a)
+        t, step = b, min(step * 2, SLICE)
+    return sorted(acts.values(), key=lambda a: (a.time, a.event_id)), min(t, end), truncated
 
 
 class StateStore:
@@ -597,14 +649,26 @@ def run(clients: dict, sns, s3, *, env: dict, now: datetime, event: dict | None 
         todo = [s for s in members if not (seen.get(s.event_id) or {}).get("closed")]
         if not todo:
             continue
-        if time_left() < 90_000:  # leave the rest for the next hourly run (state not written for them)
+        if time_left() < GROUP_RESERVE_MS:  # leave the rest for the next hourly run (state not written for them)
             summary["deferred"] += len(todo)
             continue
         fetch_from = min(parse_time((seen.get(s.event_id) or {}).get("reported_through")) or s.start for s in todo)
         fetch_from -= timedelta(minutes=1)
         fetch_to = min(now, max(s.expires for s in todo) + lag)
-        acts, truncated = ([], False) if fetch_from >= fetch_to else group_activity(
-            clients, act_regions, members, fetch_from, fetch_to, max_pages)
+        if fetch_from >= fetch_to:
+            acts, read_through, truncated = [], fetch_to, False
+        else:
+            acts, read_through, truncated = group_activity(clients, act_regions, members, fetch_from, fetch_to,
+                                                           max_pages, time_ok=lambda: time_left() >= PAGE_RESERVE_MS)
+        # Time ran out before the window was read: report only up to the last complete slice (never past the
+        # CloudTrail delivery lag), keep the session open, and let the next run carry on from there.
+        partial = read_through < fetch_to
+        if partial:
+            read_through = min(read_through, now - lag)
+            acts = [a for a in acts if a.time <= read_through]
+            if read_through <= fetch_from:
+                summary["deferred"] += len(todo)
+                continue
         per = attribute(acts, members)
         for s in todo:
             prev = seen.get(s.event_id)
@@ -615,17 +679,30 @@ def run(clients: dict, sns, s3, *, env: dict, now: datetime, event: dict | None 
             if not over and not preview:
                 summary["waiting"] += 1
                 continue
+            if partial and not mine:
+                # Nothing of this session in the part read; remember how far it got (only for a session already
+                # in the state: the state holds reported sessions only).
+                if prev and not preview and (after is None or read_through > after):
+                    prev["reported_through"] = _fmt(read_through)
+                    store.save(state)
+                summary["deferred"] += 1
+                continue
             if prev and not mine:
                 if expired:
                     prev["closed"] = True
                     summary["closed_quietly"] += 1
                     store.save(state)
                 continue
+            if partial:
+                end, reason = (s.expires, "credentials expired") if expired else (read_through, "not known yet")
+            elif not over:
+                reason = "still open at preview time"
             subject, message = build_digest(
-                s, mine, end=end, reason=reason if over else "still open at preview time", env_name=env_name,
-                regions=act_regions, truncated=truncated, continued_from=after, runbook_url=runbook, preview=preview)
+                s, mine, end=end, reason=reason, env_name=env_name, regions=act_regions, truncated=truncated,
+                continued_from=after, runbook_url=runbook, preview=preview,
+                partial_until=read_through if partial else None)
             _log({"event": "digest", "session": s.event_id, "subject": subject, "message": message,
-                  "calls": len(mine), "truncated": truncated, "preview": preview})
+                  "calls": len(mine), "truncated": truncated, "partial": partial, "preview": preview})
             summary["digests"] += 1
             if preview:
                 summary["messages"].append({"subject": subject, "message": message})
@@ -633,8 +710,9 @@ def run(clients: dict, sns, s3, *, env: dict, now: datetime, event: dict | None 
             sns.publish(TopicArn=topic, Subject=subject, Message=message)
             seen[s.event_id] = {
                 "start": _fmt(s.start), "expires": _fmt(s.expires),
-                "reported_through": _fmt(max([a.time for a in mine] + [after or s.start, end])),
-                "closed": expired, "digests": int((prev or {}).get("digests", 0)) + 1,
+                "reported_through": _fmt(read_through if partial
+                                         else max([a.time for a in mine] + [after or s.start, end])),
+                "closed": expired and not partial, "digests": int((prev or {}).get("digests", 0)) + 1,
             }
             store.save(state)  # after each mail, so a later failure never re-sends this one
 

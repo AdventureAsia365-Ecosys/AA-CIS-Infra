@@ -11,9 +11,15 @@ Refs AA-873. Source: tech lead ask in S263, follow-up to the AA-1022 / AA-873 N1
   the two mails always cover the same permission sets. Failed calls are skipped (no credentials were issued; the
   sign-in alert already mails the error code).
 - **Where the events are**: sessions are looked up in us-east-1 (global STS, where all 10 sessions of the last 90
-  days landed) and this region; a session's calls in `var.sec_admin_digest_activity_regions` (default us-east-1 +
-  us-west-1, as asked). us-east-1 is mandatory (validation) because the global services record there. Other regions
-  can be added by variable (one more LookupEvents loop per region, free).
+  days landed), this region and the activity regions; a session's calls in `var.sec_admin_digest_activity_regions`.
+  Review fix: the default is the organization region SCP allow-list (`accounts/management` `var.allowed_regions`:
+  us-east-1, us-west-1, us-west-2), not only us-east-1 + us-west-1: an admin session can act in us-west-2, and a
+  security digest that skips an allowed region reads as complete when it is not. The two roots cannot share one
+  variable (separate Terraform roots, no remote state between them), so an offline test
+  (`test_activity_regions_cover_the_scp_allow_list`) fails when the SCP list gains a region the digest does not read;
+  the ALB Rule Order workflow now also runs on `accounts/management/variables.tf`. us-east-1 is mandatory
+  (validation). Calls the SCP exempts from the region rule (global services, Bedrock, KMS, ACM...) made in any other
+  region are not read: the mail and the incident-response page say so.
 - **Which calls belong to the session**: lookup by `Username` = role session name (console and CLI), then, only when
   that finds none of the session's own access-key calls, by `AccessKeyId` (the key in the `AssumeRoleWithSAML`
   response). A call counts when its identity is the same permission-set role or uses the session's key. Two overlapping
@@ -35,6 +41,15 @@ Refs AA-873. Source: tech lead ask in S263, follow-up to the AA-1022 / AA-873 N1
   would need a bootstrap step with the MFA profile). The object holds CloudTrail eventIDs and times only (no user name,
   IP or key), is written only after a mail (a few times a month) and pruned after lookback + 1 day. The bucket is
   versioned; at this write rate the noncurrent copies are negligible, so no lifecycle rule was added.
+- **Long sessions, oldest calls first** (review fix): LookupEvents pages newest first, so one capped lookup over the
+  whole window dropped the session's FIRST calls, and the run still marked the session reported through its end.
+  The window is now read in 1 h slices, oldest first. A slice over the page cap (MAX_PAGES x 50 rows) is halved and
+  read again (down to 1 min); only a 1-min slice still over the cap is kept cut and flagged with the page-cap
+  WARNING. The run time is checked before every page (stop under 30 s left; no new group under 90 s). When time runs
+  short, the digest covers the slices read completely (subject "(partial)", a "Partial: calls up to ..." line),
+  `reported_through` is the end of the last complete slice (never later than now - delivery lag), the session stays
+  open, and the next run sends the rest as a "(continued)" digest. If not even one slice was read, nothing is sent
+  and no state is written (counted as deferred).
 - **Failure handling**: no Lambda async retries; state is saved after each published mail, so a crash never re-sends a
   mail already sent and the next hourly run picks up the rest. Under 90 s of run time left, remaining sessions are
   deferred to the next run. Errors alarm on the alerts topic (runbook: incident response).
@@ -56,7 +71,11 @@ Refs AA-873. Source: tech lead ask in S263, follow-up to the AA-1022 / AA-873 N1
   Shorter idle would split one working session into several mails.
 - LookupEvents (free, 90 days, 2 calls/s per region) instead of reading the trail's S3 objects or a CloudWatch Logs
   query: no extra cost and no parsing of gzip files; the price is speed on very large sessions (handled by the 600 s
-  timeout, the page cap and deferral).
+  timeout, slices, per-page time checks and partial/continued digests).
+- Slicing costs more LookupEvents calls (a 12 h session: at least 12 slices x 3 regions = 36 calls, ~18 s) and a slice
+  over the cap re-reads after halving (at most one cap's worth of pages wasted per halving, ~50 s). Free; accepted for
+  never losing a session's first calls. A partial digest for a session that is still active is possible (the idle rule
+  is judged on the part read); it is labelled and followed by a continued digest.
 - Read-only calls are summarised by count, not listed: a local `terraform plan` session makes thousands of them.
 
 ## Should know
@@ -66,3 +85,5 @@ Refs AA-873. Source: tech lead ask in S263, follow-up to the AA-1022 / AA-873 N1
 - The live check is the preview invoke over a past real admin session window, read in the function's log group
   (`/aws/lambda/aa-sec-dev-admin-session-digest`, one JSON line per digest with the masked text).
 - Further hardening of who may write the state object: see Linear AA-873.
+- The third activity region (us-west-2) adds one session lookup and one activity lookup per slice to each run; still
+  free.

@@ -3,7 +3,8 @@
 1. Least privilege: the Lambda role holds exactly LookupEvents, Publish on the alerts topic, Get/Put on the one state
    object (plus ListBucket on that key only) and its own log stream; both roles carry the workload boundary.
 2. The function reads the alerted permission sets from security_sso_signin.tf (one list, no copy), and its activity
-   regions include us-east-1 (global services).
+   regions include us-east-1 (global services) and every region the organization region SCP allows
+   (accounts/management var.allowed_regions), so no allowed region goes unread.
 3. Hourly schedule in the module.eventbridge group (the only group the CI apply role may write), no Lambda retries,
    365-day log group (security log class), an Errors alarm with a runbook link.
 4. The live check tool's digest helpers (sec_alert_check.py): config problems and preview leak detection.
@@ -22,6 +23,13 @@ sys.path.insert(0, str(ROOT / "tools" / "terraform"))
 import sec_alert_check as chk  # noqa: E402
 
 TF = (AA365 / "security_sso_session_digest.tf").read_text(encoding="utf-8")
+MGMT_VARS = (ROOT / "accounts" / "management" / "variables.tf").read_text(encoding="utf-8")
+
+
+def _list_default(text: str, var: str) -> list:
+    m = re.search(rf'^variable "{var}" \{{.*?^\s*default\s*=\s*\[([^\]]*)\]', text, re.M | re.S)
+    assert m, f"default of var.{var} not found"
+    return re.findall(r'"([^"]+)"', m.group(1))
 
 
 def _resource(kind: str, name: str) -> str:
@@ -64,7 +72,15 @@ class DigestTerraformTest(unittest.TestCase):
         self.assertIn('source_dir  = "${path.module}/lambda_src/sec_admin_session_digest"', TF)
         self.assertIn('excludes         = ["__pycache__", "__pycache__/**", "**/*.pyc"]', TF)
         self.assertIn('contains(var.sec_admin_digest_activity_regions, "us-east-1")', TF)
-        self.assertIn('sec_digest_saml_regions = distinct(["us-east-1", var.aws_region])', TF)
+        self.assertIn('sec_digest_saml_regions = distinct(concat(["us-east-1", var.aws_region], '
+                      'var.sec_admin_digest_activity_regions))', TF)
+
+    def test_activity_regions_cover_the_scp_allow_list(self):
+        digest = _list_default(TF, "sec_admin_digest_activity_regions")
+        allowed = _list_default(MGMT_VARS, "allowed_regions")
+        self.assertIn("us-west-2", allowed)  # the parse found the real list
+        self.assertEqual(sorted(set(allowed) - set(digest)), [], "an SCP-allowed region is never read by the digest")
+        self.assertIn("us-east-1", digest)
 
     def test_schedule_retries_logs_and_alarm(self):
         sch = _resource("aws_scheduler_schedule", "sec_admin_session_digest")

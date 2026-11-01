@@ -9,12 +9,16 @@
 #
 # How the function finds a session and its calls (read-only, CloudTrail Event history, 90 days, free):
 #   - AssumeRoleWithSAML on an AWSReservedSSO_<set>_* role, <set> an alerted permission set, looked up in us-east-1
-#     (Identity Center calls the global STS endpoint; all 10 sessions of the last 90 days landed there) and in this
-#     region (regional STS endpoint), over the last var.sec_admin_digest_lookback_hours.
+#     (Identity Center calls the global STS endpoint; all 10 sessions of the last 90 days landed there), in this
+#     region and in the activity regions (regional STS endpoints), over the last var.sec_admin_digest_lookback_hours.
 #   - The calls of that session: LookupEvents by user name (the role session name) in var.sec_admin_digest_activity_regions
-#     (us-east-1 also holds the global services: IAM, STS, Organizations, CloudFront, Route 53), plus by the session's
-#     access key when the user-name lookup finds none of its CLI calls. A call counts when its identity is the same
-#     permission-set role.
+#     (default: the organization region SCP allow-list, accounts/management var.allowed_regions; us-east-1 also holds
+#     the global services: IAM, STS, Organizations, CloudFront, Route 53), plus by the session's access key when the
+#     user-name lookup finds none of its CLI calls. A call counts when its identity is the same permission-set role.
+#     Calls in any other region (the SCP allows them only for the services it exempts) are not read; the mail says so.
+#   - The window is read in 1 h slices, oldest first, with the run time checked before every page: a long session is
+#     never cut at its start (LookupEvents pages newest first); when time runs short the mail covers the slices read
+#     and the next hourly run sends the rest as a continued digest.
 #
 # The e-mail: session name masked to the user's local part, permission set, start / end, source IPs (last octet
 # masked), counts per service, every DELETE then every other WRITE call (time, service:eventName, resource NAME,
@@ -46,9 +50,10 @@ variable "sec_admin_digest_schedule_expression" {
 }
 
 variable "sec_admin_digest_activity_regions" {
-  description = "AA-873 — regions whose CloudTrail Event history the digest reads for a session's calls (us-east-1 holds the global services)"
+  description = "AA-873 — regions whose CloudTrail Event history the digest reads for a session's calls: the organization region SCP allow-list (accounts/management var.allowed_regions; us-east-1 holds the global services)"
   type        = list(string)
-  default     = ["us-east-1", "us-west-1"]
+  # Keep equal to accounts/management var.allowed_regions (tools/terraform/tests/test_sec_admin_digest.py checks it).
+  default = ["us-east-1", "us-west-1", "us-west-2"]
 
   validation {
     condition     = contains(var.sec_admin_digest_activity_regions, "us-east-1")
@@ -82,8 +87,8 @@ locals {
   sec_digest_fn_name   = "${local.sec_prefix}-admin-session-digest"
   sec_digest_state_key = "sec-digest/admin-sessions.json"
   sec_digest_tags      = merge(local.sec_tags, { Issue = "AA-873" })
-  # AssumeRoleWithSAML lands in us-east-1 (global STS) or in this region (regional STS endpoint).
-  sec_digest_saml_regions = distinct(["us-east-1", var.aws_region])
+  # AssumeRoleWithSAML lands in us-east-1 (global STS) or in a regional STS endpoint (this region, an activity region).
+  sec_digest_saml_regions = distinct(concat(["us-east-1", var.aws_region], var.sec_admin_digest_activity_regions))
 }
 
 # ── Package the zero-dependency handler ──────────────────────────────────────
@@ -174,7 +179,8 @@ resource "aws_lambda_function" "sec_admin_session_digest" {
   runtime       = "python3.12"
   architectures = ["arm64"]
   # LookupEvents allows 2 calls/s per region and 50 rows per call: a session of a local terraform plan (a few thousand
-  # read calls) takes about a minute per region. The handler leaves sessions for the next run under 90 s left.
+  # read calls) takes about a minute per region. The handler starts no session group under 90 s left and stops
+  # reading under 30 s left (checked before every page); the next hourly run carries on from the last complete slice.
   timeout     = 600
   memory_size = 256
 

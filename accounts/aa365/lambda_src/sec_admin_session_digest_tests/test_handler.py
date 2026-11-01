@@ -481,6 +481,81 @@ class RunTest(unittest.TestCase):
         summary, _ = self.run_at(T0 + timedelta(hours=2), env={"MAX_PAGES": "1"})
         self.assertIn("WARNING: the lookup hit its page cap", self.sns.published[0]["Message"])
 
+    def test_long_session_keeps_its_oldest_calls_over_the_page_cap(self):
+        # 900 reads in three hours, 100 rows per lookup: newest-first paging over the whole window would drop the
+        # session's first calls (the delete). Slices read oldest first and halved under the cap keep every call.
+        self.east = [saml("s1", T0, hours=8)]
+        self.west = [call("d0", T0 + timedelta(minutes=1), "DeleteBucket", params={"bucketName": "invented-old"})]
+        self.west += [call(f"r{i}", T0 + timedelta(minutes=10, seconds=12 * i), "HeadObject", read_only=True)
+                      for i in range(900)]
+        summary, _ = self.run_at(T0 + timedelta(hours=9), env={"MAX_PAGES": "2"})
+        self.assertEqual(summary["digests"], 1)
+        msg = self.sns.published[0]["Message"]
+        self.assertIn("Calls: 901 (1 delete, 0 other write, 900 read-only", msg)
+        self.assertIn("s3:DeleteBucket  invented-old", msg)
+        self.assertNotIn("WARNING", msg)
+        self.assertTrue(json.loads(self.s3.body)["sessions"]["s1"]["closed"])
+
+    def test_page_cap_on_one_lookup_is_what_older_code_cut(self):
+        # The same rows through one lookup over the whole window: the cap returns the newest rows only.
+        rows = [call("d0", T0 + timedelta(minutes=1), "DeleteBucket")]
+        rows += [call(f"r{i}", T0 + timedelta(minutes=10, seconds=12 * i), "HeadObject", read_only=True)
+                 for i in range(900)]
+        got, status = h.lookup(FakeCloudTrail(rows), "Username", USER, T0, T0 + timedelta(hours=8), 2)
+        self.assertEqual((len(got), status), (100, "cap"))
+        self.assertNotIn("d0", [r["EventId"] for r in got])
+
+    def test_time_running_out_sends_a_partial_digest_then_a_continued_one(self):
+        self.east = [saml("s1", T0, hours=8),
+                     call("u1", T0 + timedelta(hours=5), "CreateUser", source="iam", region="us-east-1",
+                          params={"userName": "invented-user"})]
+        self.west = [call("d0", T0 + timedelta(minutes=5), "DeleteBucket", params={"bucketName": "invented-old"}),
+                     call("p1", T0 + timedelta(hours=7), "PutObject", params={"bucketName": "invented-new"})]
+        cl = clients(self.east, self.west)
+
+        def short(limit):
+            return lambda: 100_000 if sum(len(c.calls) for c in cl.values()) < limit else 10_000
+
+        # 2 session lookups, then 2 per slice: three 1 h slices are read before time runs short.
+        summary, _ = self.run_at(T0 + timedelta(hours=9), clients=cl, time_left=short(8))
+        self.assertEqual(summary["digests"], 1)
+        first = self.sns.published[0]
+        self.assertIn("(partial)", first["Subject"])
+        self.assertIn("Partial: calls up to 2026-10-30 04:59Z", first["Message"])
+        self.assertIn("Calls: 1 (1 delete", first["Message"])
+        self.assertIn("s3:DeleteBucket  invented-old", first["Message"])
+        assert_clean(self, first["Message"] + first["Subject"])
+        state = json.loads(self.s3.body)["sessions"]["s1"]
+        self.assertEqual((state["reported_through"], state["closed"]), ("2026-10-30 04:59:00Z", False))
+
+        # The next run, with time enough, carries on from there.
+        summary, _ = self.run_at(T0 + timedelta(hours=10))
+        self.assertEqual(summary["digests"], 1)
+        follow = self.sns.published[1]
+        self.assertIn("(continued)", follow["Subject"])
+        self.assertNotIn("(partial)", follow["Subject"])
+        self.assertIn("Calls: 2 (0 delete, 2 other write", follow["Message"])
+        self.assertIn("iam:CreateUser  invented-user", follow["Message"])
+        self.assertIn("s3:PutObject  invented-new", follow["Message"])
+        self.assertNotIn("DeleteBucket", follow["Message"])
+        self.assertTrue(json.loads(self.s3.body)["sessions"]["s1"]["closed"])
+        summary, _ = self.run_at(T0 + timedelta(hours=11))
+        self.assertEqual((summary["digests"], len(self.sns.published)), (0, 2))
+
+    def test_no_complete_slice_defers_without_state(self):
+        cl = clients(self.east, self.west)
+        summary, _ = self.run_at(T0 + timedelta(hours=2), clients=cl,
+                                 time_left=lambda: 100_000 if sum(len(c.calls) for c in cl.values()) < 3 else 10_000)
+        self.assertEqual((summary["digests"], summary["deferred"]), (0, 1))
+        self.assertEqual(self.sns.published, [])
+        self.assertIsNone(self.s3.body)
+
+    def test_mail_names_the_regions_and_what_is_not_covered(self):
+        self.run_at(T0 + timedelta(hours=2))
+        msg = self.sns.published[0]["Message"]
+        self.assertIn("Regions looked up: us-east-1, us-west-1; calls made in any other region", msg)
+        self.assertIn("are not listed", msg)
+
     def test_low_time_defers_without_state(self):
         summary, _ = self.run_at(T0 + timedelta(hours=2), time_left=lambda: 30_000)
         self.assertEqual((summary["digests"], summary["deferred"]), (0, 1))
