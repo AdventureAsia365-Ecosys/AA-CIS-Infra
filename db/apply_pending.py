@@ -71,9 +71,9 @@ MANUAL_MARK = "aa993-manual-apply"
 STOP_NOTES = {
     rm.STOP_CONTRACT: ("manual DB Migrate apply needed",
                        "it is a contract file (no `-- migrate: expand` header) and contract auto-apply is off for this "
-                       "run (Dev only, root ADR 0017a; the repo variable DB_AUTO_APPLY_CONTRACT is 'false'), so "
-                       "migration-apply does not apply it. Run DB Migrate `check` then `apply` with "
-                       "`migration={path}`."),
+                       "run (a list-only run, an environment other than Dev, or the repo variable "
+                       "DB_AUTO_APPLY_CONTRACT is 'false'; root ADR 0017a), so migration-apply does not apply it. Run "
+                       "DB Migrate `check` then `apply` with `migration={path}`."),
     rm.STOP_DESTRUCTIVE: ("manual DB Migrate apply needed (destructive)",
                           "it carries `-- migrate: destructive`, so migration-apply never applies it: DRY RUN counts "
                           "to the tech lead, then DB Migrate `check` and `apply` with `migration={path}` (the "

@@ -163,7 +163,10 @@ jobs:
           fi
           # AA-1032 (root ADR 0017a): contract files too, on Dev only, unless the kill switch says 'false'. The
           # runner (apply_pending.contract_mode) and the task (read_bundle_contract) check the environment again.
-          if [ "$DB_AUTO_APPLY_CONTRACT" = "false" ]; then
+          # A list-only run keeps contract files on the manual list (and their copy PR note), as before.
+          if [ -n "$why" ]; then
+            echo "contract=false" >> "$GITHUB_OUTPUT"
+          elif [ "$DB_AUTO_APPLY_CONTRACT" = "false" ]; then
             echo "contract=false" >> "$GITHUB_OUTPUT"
             echo "- contract files: **manual** (repo variable DB_AUTO_APPLY_CONTRACT=false)" >> "$GITHUB_STEP_SUMMARY"
           elif [ "$TARGET_ENV" = "dev" ]; then

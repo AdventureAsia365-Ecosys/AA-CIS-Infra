@@ -349,7 +349,11 @@ class ContractWorkflowShapeTest(unittest.TestCase):
         env = self.wf["jobs"]["plan"]["env"]
         self.assertEqual(env["TARGET_ENV"], "dev")
         self.assertEqual(env["DB_AUTO_APPLY_CONTRACT"], "${{ vars.DB_AUTO_APPLY_CONTRACT }}")
-        self.assertIn('if [ "$DB_AUTO_APPLY_CONTRACT" = "false" ]; then', self.text)
+        self.assertIn('elif [ "$DB_AUTO_APPLY_CONTRACT" = "false" ]; then', self.text)
+        # A list-only run (auto-apply not allowed) keeps contract files manual and noted.
+        gate = next(st["run"] for st in self.wf["jobs"]["plan"]["steps"] if st.get("id") == "gate")
+        self.assertLess(gate.index('if [ -n "$why" ]; then\n  echo "contract=false"'),
+                        gate.index('elif [ "$TARGET_ENV" = "dev" ]; then'))
         self.assertIn('elif [ "$TARGET_ENV" = "dev" ]; then', self.text)
         self.assertEqual(self.text.count('[ "$CONTRACT" = "true" ] && ARGS+=(--contract)'), 2)
         self.assertEqual(self.text.count('--environment "$TARGET_ENV"'), 2)
