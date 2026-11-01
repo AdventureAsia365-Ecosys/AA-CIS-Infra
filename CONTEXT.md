@@ -209,8 +209,10 @@ accounts/
                                    supports the factor configuration), client partner-web + managed login style,
                                    prefix domain + custom domain partner-auth. on its own us-east-1 cert; the CRM
                                    task role's pool allow-list (AdminCreateUser, ListUsers, AdminDisableUser,
-                                   AdminUserGlobalSignOut) + ses_send; alerts: pool config change outside
-                                   Terraform, admin calls outside the invitation model. crm_web.tf
+                                   AdminUserGlobalSignOut; S263 ADR 0006b A1: AdminDeleteUser for the clean-up of
+                                   never-signed-in accounts) + ses_send; alerts: pool config change outside
+                                   Terraform, admin calls outside the invitation model (AdminCreateUser /
+                                   AdminDeleteUser only from the CRM task role). crm_web.tf
                                    crm_partner_signin_enabled switches the CRM web from cis-portal to partner-web
                                    (keep it true: since AA-979 P2b the CRM API no longer gets the EXTERNAL issuer /
                                    cis-portal client id, so /crm/v1 refuses cis-portal tokens).
