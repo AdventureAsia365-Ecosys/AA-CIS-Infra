@@ -28,8 +28,8 @@ Secrets, Lambda plumbing, OIDC deploy roles, cross-account Bedrock trust — is 
 
 - **The single source of truth for AWS resources.** No application repo provisions its own
   infrastructure; they consume roles/endpoints/resources defined here.
-- **Multi-account.** It manages three AWS accounts, each with its own root config and (where it
-  has state) its own state file, so a change in one account cannot corrupt another.
+- **Multi-account.** It manages three AWS accounts (acc2, acc3 and the management account; acc1 left the ecosystem),
+  each with its own root config and its own state file, so a change in one account cannot corrupt another.
 - **Boundary with the app repos**: this repo does NOT contain application logic, does NOT run the
   content pipeline, and does NOT own application DB schemas (`acp_*`, `tripplanner.*`, `booking.*`, `crm.*`,
   `*_aa_internal`) — those live in the app repos' migrations. It owns the RDS instance the
@@ -37,14 +37,20 @@ Secrets, Lambda plumbing, OIDC deploy roles, cross-account Bedrock trust — is 
 
 ## Account model
 
-| Account | ID | Role in ecosystem | Managed here |
-|---------|----|-------------------|--------------|
-| acc1 | 867490540162 | **Retired (AA-998)**: former Bedrock fallback; no grant from acc2, root destroyed and removed 28/10/2026 | (root removed) |
-| acc2 (aa365) | 005097885195 | **Main dev stack** (VPC/RDS/ECS/ALB/API GW/…) + CI/CD OIDC | `accounts/aa365/` |
-| acc3 | 786888028788 | `AA3-Bedrock-Invoker`, the **only** LLM satellite | `accounts/acc3-bedrock/` |
+Account IDs: the account map in the root repo's onboarding page; never in this public repo.
+
+| Account | Role in ecosystem | Managed here |
+|---------|-------------------|--------------|
+| acc1 | **Retired (AA-998)**: former Bedrock fallback; no grant from acc2, root destroyed and removed 28/10/2026 | (root removed) |
+| acc2 (aa365) | **Main dev stack** (VPC/RDS/ECS/ALB/API GW/…) + CI/CD OIDC; Bedrock embeddings, the CRM guardrail and the acc2 candidate chat models (no route) | `accounts/aa365/` |
+| acc3 | `AA3-Bedrock-Invoker`: the **main** Bedrock chat account (root ADR 0009 decision 14: acc2 may also serve eval, judge and validate stages after the qualification ladder) | `accounts/acc3-bedrock/` |
+| management (`aa-management`) | The AA organization: OUs, SCPs, organization trail, budgets, anomaly monitors, IAM Identity Center; **no workload** | `accounts/management/` |
 
 **Target account model (root ADR 0018, accepted 31/10/2026, S262).** The ecosystem moves into an AA-owned AWS
-organization with two account-level environments; nothing below is applied yet except the management root's code:
+organization with two account-level environments. The management root is applied (checked live 2026-11-01: the
+organization with all features, OUs `NonProd` / `Prod` / `Suspended` with the three `aa-scp-*` SCPs on each, trail
+`aa-org-trail`, budgets, Identity Center with 3 groups and 4 permission sets); no other account has joined yet, so
+the rows below other than `aa-management` are targets:
 
 | Target name | Today | Holds | Terraform root |
 |---|---|---|---|
@@ -59,7 +65,16 @@ repo (public): roots take them as variables or secrets, like `MGMT_ACCOUNT_ID`.
 
 Bedrock chat routing is on **acc3** (acc2 native models, such as Cohere embeddings, stay on acc2). Root ADR 0009
 decision 14 (accepted 31/10/2026) lets acc2 also serve chat models for eval, judge and validate stages once a model
-passes the qualification ladder; no acc2 chat route exists yet. AA-998
+passes the qualification ladder: CIS migration 324 catalogues five acc2 candidate models (Amazon Nova, Meta Llama 4,
+Moonshot Kimi K3) with an acc2 deployment each, and no route names them. acc3 refuses every Bedrock model since
+2026-10-29 (Error 002); the case and its evidence are in the root repo (postmortem
+`docs/ops/postmortems/2026-10-29-acc3-bedrock-access-refusal.md`). The gateway as a whole: root
+`docs/architecture/ai-gateway.md`.
+
+Warm-path secrets of the AI gateway: LLM API keys live under `aa-llm/<env>/<name>` (the gateway's per-kind secret
+guard, CIS migration 322); none exists today, so the Anthropic API path has no key. The OpenAI key is the older
+`aa-cis/<env>/openai-key`, and Jev, DataForSEO and Geoapify keep `aa-cis/<env>/<kind>`. The secrets are created by
+hand outside Terraform (value never in state); the CIS task role reads them by name. AA-998
 (S255) retired acc1 and accepted the loss of the cross-account LLM fallback: an acc3 failure moves to
 the next model on the same account, or the job retries. The cross-account assume-role wiring that
 lets the main stack (acc2) and TripPlanner reach Bedrock in acc3 lives in
@@ -71,7 +86,7 @@ admin session — Claude cannot be called from a local shell.
 Cross-account pieces added 15-25/09/2026 (same assume-role pattern as the Bedrock satellite):
 
 - **Cost Explorer read (AA-623)**: acc2 is a **member account**, not the AWS Organizations payer
-  (payer `033086823579` is unrelated to acc2/acc3), so there is no consolidated CE call. Each
+  (the payer is the reseller's management account, unrelated to acc2/acc3), so there is no consolidated CE call. Each
   account exposes its own read role, assumed by the acc2 ECS task role (the acc1
   `AA-CostExplorer-Reader` grant was removed by AA-998):
   - acc3 `AA3-CostExplorer-Reader` (ExternalId `aa623-satellite-cost-explorer-acc3`),
@@ -100,7 +115,7 @@ Cross-account pieces added 15-25/09/2026 (same assume-role pattern as the Bedroc
 
 ```
 accounts/
-  aa365/          ← main stack root (acc2 005097885195, us-west-1) — the big one
+  aa365/          ← main stack root (acc2, us-west-1) — the big one
     main.tf                       (wires all modules for the dev stack)
     versions.tf                   (providers + S3 state backend)
     cicd.tf                       (GitHub Actions OIDC provider + the apply role's grant lists;
@@ -367,7 +382,9 @@ accounts/
                                    PutMetricData AA/Jobs/Crm only), task definition Fargate ARM64 with the route-class
                                    identity env and, AA-978, CIS_API_URL (var.crm_cis_api_url) + secret M2M_CLIENT
                                    for the CIS membership feed (crm_membership_pull), AA-947, BOOKING_API_URL
-                                   (var.crm_booking_api_url) for booking.b2b.v1 (crm_booking_sync, same M2M_CLIENT),
+                                   (var.crm_booking_api_url) for booking.b2b.v1 (crm_booking_sync, same M2M_CLIENT), AA-956
+                                   BOOKING_ADMIN_URL (the Booking staff admin origin for the S-02 incident link),
+                                   AA-955 KMS_SEAL_KEY_ID + kms:Sign / GetPublicKey on the seal key (e-sign seal),
                                    target group aa-crm-<env>-api-tg (/crm/health), ALB rule crm_api
                                    (partner host + X-AA-Origin + /crm, /crm/*; above crm_partner_default), service
                                    aa-crm-<env>-api (desired 0, ignore_changes count + task definition), GitHub OIDC
@@ -403,11 +420,29 @@ accounts/
                                    AA-Partner's "Scrub corpus" workflow; task env SCRUB_GUARDRAIL_ID / _VERSION / _REGION
                                    via local.crm_scrub_env in crm_app.tf. Needs the MFA bootstrap apply of cicd_crm.tf
                                    CrmBedrockGuardrail* first. ~ $0.75/month)
-    variables.tf / tripplanner_variables.tf / booking_variables.tf
-  acc3-bedrock/   ← acc3 Bedrock invoker role (the only satellite) + Bedrock Batch (batch.tf)
+    crm_mail.tf                   (AA-945: the CRM forward-in mailbox, SES receiving only, -> S3 under the ingest key)
+    crm_membership_alarms.tf      (AA-978: log alarms on the CRM's CIS membership feed)
+    crm_support_alarms.tf         (AA-971: alarms on AA break-glass access to an agency, every opening)
+    crm_ops_release_alarms.tf     (AA-956: ops release incomplete at T-21 and withdrawn, for AA ground operations)
+    tenant_pool_alarms.tf         (AA-874: CIS tenant-pool (RLS) flag alarms on the api logs)
+    alert_recipients.tf           (AA-913: the CIS admin manages the e-mail subscriptions of the alerts topic)
+    alarm_runbooks.tf             (AA-893: a runbook link at the end of every alarm description)
+    agent_session.tf              (AA-730: the narrow role agent shells assume, profile aa365-agent)
+    security_access_analyzer_archive.tf (AA-873: archive rules for the triaged Access Analyzer findings)
+    variables.tf / tripplanner_variables.tf / booking_variables.tf / custom_domains_variables.tf / ses_variables.tf
+                                  (tripplanner_variables.tf: tripplanner_daily_spend_cap_usd -> TP_DAILY_SPEND_CAP_USD
+                                   on the browse and assembly Lambdas, 5 USD on Dev; modules/ecs llm_daily_probe ->
+                                   LLM_DAILY_PROBE on the CIS api and worker, on on Dev since #574)
+  acc3-bedrock/   ← acc3 Bedrock invoker role (the main chat account) + Bedrock Batch (batch.tf)
                     + Cost Explorer reader + spend guards (cost_guard.tf: monthly budget,
                     daily anomaly e-mail; cost_anomaly_immediate.tf: SNS topic aa3-cost-alerts +
                     IMMEDIATE anomaly subscription >= 15 USD; AA-896)
+  management/     ← the management account root (AA-1004, root ADR 0018; applied, README there): organization.tf
+                    (organization, OUs, member accounts), scp.tf + policies/ (3 SCPs on the OUs), identity_center.tf,
+                    budgets.tf, cost_anomaly_app_tag.tf (off until a member joins), cloudtrail.tf (org trail, KMS,
+                    Object Lock bucket), cicd.tf (its own OIDC provider, aa-terraform-plan / aa-terraform-apply,
+                    bootstrap). State in the management account's own bucket; apply only through the GitHub
+                    environment org with the tech lead as reviewer
 modules/          ← reusable building blocks, consumed by the account roots
   vpc, rds, ecs, alb, api_gateway, s3, secrets, waf, dynamodb,
   elasticache, eventbridge, langfuse, monitoring
@@ -583,10 +618,10 @@ makes CI Terraform Plan fail with 403.
 
 ## State backend
 
-- **S3 backend** for the main stack: bucket `aa-cis-tfstate-005097885195`, key
+- **S3 backend** for the main stack: bucket `aa-cis-tfstate-<acct>`, key
   `dev/terraform.tfstate`, region `us-west-1`, locked with the S3 native lockfile
   (`use_lockfile = true`, object `<key>.tflock`). The DynamoDB lock table
-  `aa-cis-tfstate-lock-005097885195` is no longer used (AA-846, S245); its IAM grants and the
+  `aa-cis-tfstate-lock-<acct>` is no longer used (AA-846, S245); its IAM grants and the
   table itself are removed in separate steps.
 - No `profile` is hardcoded in the aa365 backend: CI (GitHub Actions OIDC) uses ambient env-var
   credentials; locally you `export AWS_PROFILE=aa365-admin` before running Terraform.
