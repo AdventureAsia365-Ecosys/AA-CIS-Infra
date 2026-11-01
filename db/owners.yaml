@@ -4,7 +4,8 @@
 # X1 plan S1 (AA-Ecosys docs/audits/2026-10-17-S241-x1/x1-plan.md). One entry per migration dir of
 # db/migrations/. Change it in the same PR as the code that mirrors it:
 #   * db/run_migration.py      MASTER_ROLE, OWNER_DIRS (anchor schema, schemas, set_local_roles,
-#                              role_lint_from, view_owner_roles), IDLE_EXEMPT_KINDS
+#                              role_lint_from, view_owner_roles), IDLE_EXEMPT_KINDS,
+#                              CONTRACT_AUTO_ENVIRONMENTS (AA-1032)
 #   * db/check_migration_copies.py  OWNERS (repo, path, key prefix, native), PATH_RE
 #   * db/run_migration.py      PASSWORD_ROLES (password_roles, X1 S12)
 #   * .github/workflows/db-migrate.yml  input regex, key prefix case, environment choices, set-password role regex
