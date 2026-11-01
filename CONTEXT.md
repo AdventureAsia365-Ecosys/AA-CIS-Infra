@@ -161,8 +161,8 @@ accounts/
                                    21:00 UTC schedule POSTs /admin/photos/sync/schedule (one photo_sync
                                    job per country per UTC day), AA-844;
                                    AA-871: every-5-min booking_uptime schedule, event {"health":"booking"}
-                                   = GET var.booking_health_url (no secret), raises when unhealthy ->
-                                   alarm aa-booking-dev-uptime on the function's Errors;
+                                   = GET var.booking_health_url (no secret); off since S263 (AA-1025: URL
+                                   default "", its alarm duplicated aa-booking-dev-no-healthy-task);
                                    the AA-832 every-5-min schedule was removed in AA-751. AA-878: the
                                    admin secret is read only by ARN at run time (event secret_id), no
                                    env copy, no Terraform data source; no secret_id or a failed read =
@@ -272,11 +272,13 @@ accounts/
                                    for keys tagged App=shared (no PutKeyPolicy / deletion / crypto), aliases
                                    alias/aa-cis-<env>-*; plus sqs:* moved unchanged from AmazonSQSFullAccess, whose
                                    managed slot it takes (the role stays at 10). Applied locally with MFA)
-    observability.tf, observability_ecosys.tf (S235 alarms + log retention; RDS alarms per data standard
-                                   C4.1 + per-role AA/RDS RoleConnectionLimitPct alarms, AA-832; job
-                                   backlog alarms per owner AA/Jobs/CIS + AA/Jobs/Booking and the
-                                   task-role PutMetricData grants, AA-751; every alarm e-mails on
-                                   ALARM only, no ok_actions), diagnostics.tf
+    observability.tf, observability_ecosys.tf (alerts topic, budgets, CloudTrail, log retention and the
+                                   S263 essential alarm set (AA-1025, root docs/audits/2026-11-01-S263-
+                                   alerting-cost/diet.md): no-healthy-task per service incl. CIS api,
+                                   RDS CPU / free storage / connections, NAT recover, Lambda errors,
+                                   TripPlanner browse throttles; state alarms mail ALARM + OK, event
+                                   alarms ALARM only; sns:Publish grants for the in-app checks),
+                                   diagnostics.tf (Dev flow logs: REJECT only, 30 days)
     dns.tf                        (Route 53 public zone lumiguides.it.com + records copied from Namecheap, AA-811)
     db_dns.tf                     (AA-829: private zone <env>.internal on the VPC, CNAME db.<env>.internal -> RDS,
                                    TTL 60; every DSN secret names it; var.db_dns_target_override repoints it)
@@ -389,7 +391,8 @@ accounts/
                                    role (this repo, this log group, the two crm/ secrets and, AA-978, the
                                    M2M client secret aa-crm/<env>/m2m-booking-client), task role
                                    aa-crm-<env>-ecs-task-role (the name the crm_data.tf key policies trust; ECS Exec +
-                                   PutMetricData AA/Jobs/Crm only), task definition Fargate ARM64 with the route-class
+                                   sns:Publish on the alerts topic for the in-app checks, S263), task definition
+                                   with ALERTS_TOPIC_ARN, and Fargate ARM64 with the route-class
                                    identity env and, AA-978, CIS_API_URL (var.crm_cis_api_url) + secret M2M_CLIENT
                                    for the CIS membership feed (crm_membership_pull), AA-947, BOOKING_API_URL
                                    (var.crm_booking_api_url) for booking.b2b.v1 (crm_booking_sync, same M2M_CLIENT), AA-956
@@ -399,8 +402,7 @@ accounts/
                                    (partner host + X-AA-Origin + /crm, /crm/*; above crm_partner_default), service
                                    aa-crm-<env>-api (desired 0, ignore_changes count + task definition), GitHub OIDC
                                    deploy role aa-crm-<env>-app-deploy (immutable subject, var.crm_github_repo_id),
-                                   target-group / CPU alarms; security group sg-crm-api in app_security_groups.tf,
-                                   job backlog alarms AA/Jobs/Crm in observability_ecosys.tf)
+                                   the no-healthy-task alarm; security group sg-crm-api in app_security_groups.tf)
     crm_web.tf                    (AA-935 CRM-07, AA-Partner CRM web runtime: ECR aa-crm-<env>-web (IMMUTABLE), secret
                                    shell crm/<env>/web {cognito_client_secret, session_secret, + AA-1019
                                    staff_cognito_client_secret, staff_session_secret} written by
@@ -431,10 +433,8 @@ accounts/
                                    via local.crm_scrub_env in crm_app.tf. Needs the MFA bootstrap apply of cicd_crm.tf
                                    CrmBedrockGuardrail* first. ~ $0.75/month)
     crm_mail.tf                   (AA-945: the CRM forward-in mailbox, SES receiving only, -> S3 under the ingest key)
-    crm_membership_alarms.tf      (AA-978: log alarms on the CRM's CIS membership feed)
-    crm_support_alarms.tf         (AA-971: alarms on AA break-glass access to an agency, every opening)
-    crm_ops_release_alarms.tf     (AA-956: ops release incomplete at T-21 and withdrawn, for AA ground operations)
-    tenant_pool_alarms.tf         (AA-874: CIS tenant-pool (RLS) flag alarms on the api logs)
+    (crm_membership_alarms.tf, crm_support_alarms.tf, crm_ops_release_alarms.tf, tenant_pool_alarms.tf: deleted by the
+     S263 alert diet, AA-1025; those log events are in-app checks of AA-Partner and AA-CIS-App now)
     alert_recipients.tf           (AA-913: the CIS admin manages the e-mail subscriptions of the alerts topic)
     alarm_runbooks.tf             (AA-893: a runbook link at the end of every alarm description)
     agent_session.tf              (AA-730: the narrow role agent shells assume, profile aa365-agent)
@@ -455,7 +455,7 @@ accounts/
                     environment org with the tech lead as reviewer
 modules/          ← reusable building blocks, consumed by the account roots
   vpc, rds, ecs, alb, api_gateway, s3, secrets, waf, dynamodb,
-  elasticache, eventbridge, langfuse, monitoring
+  elasticache, eventbridge, langfuse (monitoring: removed S263, AA-1025)
   (modules/efs removed in S257: aa-cis-dev-efs was mounted by no task definition, AA-697 drift finding)
 tools/
   github/         ← db_auto_apply_gate.sh + infra-main-ruleset.json (AA-993 I1): environment dev-db-auto (main only),
@@ -508,7 +508,7 @@ ALB + API Gateway → S3 / Secrets / WAF**, plus **EventBridge** (`modules/event
 `aa-cis-dev-acp` schedule group that holds the `accounts/aa365` schedules; the three ACPv2 schedules daily ingest,
 weekly export and Gate C veto window fired into a bus with no rule and were removed in AA-989), the ops-probe Lambda
 (`dfs_balance.tf`) and observability
-(`observability.tf`, `observability_ecosys.tf`, `diagnostics.tf`, langfuse/monitoring modules).
+(`observability.tf`, `observability_ecosys.tf`, `diagnostics.tf`, langfuse module).
 `modules/vpc` (AA-1022): besides the NAT default route, the private route table carries the route of the S3 gateway
 endpoint `aa-cis-<env>-vpce-s3` (free; same-region S3, ECR layers included, no longer goes through the NAT instance;
 default endpoint policy, bucket policies unchanged). The db route table stays without any route out of the VPC.
@@ -600,22 +600,18 @@ Terraform). It resolves only inside the VPC. Clients connect with sslmode/ssl `r
 hostname check); a client on `verify-full` must keep the RDS endpoint name. `set-password` still requires the
 role secret and the master secret to name the same host, so the secrets move together.
 
-**RDS + job metrics (AA-832, AA-751):** the CIS api process publishes AA/RDS per-role connection
-counts and AA/Jobs/CIS backlog metrics every 5 minutes from an in-process sampler
-(`api/core/ops_metrics_sampler.py` in AA-CIS-App; api only, not the worker). The shared CIS task role
-`aa-cis-dev-ecs-task-role` (api and worker use the same role) may `cloudwatch:PutMetricData` only
-into those two namespaces (`observability_ecosys.tf` `cis_ecs_task_put_metric_aa_rds`, condition
-`cloudwatch:namespace`). AA-Booking publishes AA/Jobs/Booking from `JobMetricsSampler`
-(`backend/app/jobs/metrics.py`, runs only while its worker is enabled); its task role may write
-only that namespace (`booking_ecs_task_put_metric_jobs`). Each owner has three alarms:
-`<prefix>-jobs-queue-age` (starved due job > 15 min, capacity-aware), `-jobs-overdue-running`
-(a running attempt > 2 x the kind's expected seconds) and `-jobs-sampling-stopped` (no sample for
-45 min, missing = breaching; the Booking one also fires while Booking is scaled to 0 or its worker
-is off). The AA-832 chain (Scheduler every 5 min → ops-probe Lambda → admin POST → `shared.job` →
-worker) is gone. **Alarm notifications:** every alarm on `aws_sns_topic.alerts` has
-`alarm_actions` only (no `ok_actions`, AA-751): e-mail on a transition into ALARM, recovery in the
-console / alarm history. Exception: the 14 `aa-identity-dev-*` alarms (identity.tf, AA-854) already
-have `ok_actions` per S241 D-20 (e-mail on OK too), which the other alarms adopt in the D-20 lane. **Alerts topic policy:** `aws_sns_topic.alerts` has exactly one
+**In-app checks instead of custom metrics (S263 alert diet, AA-1025):** the per-role connection limits, XID age, job
+queues (CIS `shared.job`, Booking `booking.job`, CRM `crm.job`), CRM audit export, break-glass, membership feed,
+ops release and bulk reveal, and the CIS log events (lost cost-log writes, tenant-pool fail-closed states, `cis_app`
+refused connections) are evaluated by each app's own 5-minute loop (CIS `api/core/ops_metrics_sampler.py`, Booking
+and AA-Partner `JobMetricsSampler`) from its database state and published to `aws_sns_topic.alerts` (`sns:Publish`,
+CIS in `alert_recipients.tf`, Booking in `observability_ecosys.tf`, CRM in `crm_app.tf`; env `ALERTS_TOPIC_ARN`). No
+app publishes a CloudWatch custom metric any more (the AA/RDS, AA/Jobs/*, acp PutMetricData grants are gone); the
+metric filters left are the break-glass token (identity.tf, no default value) and the CRM KMS decrypt log.
+**Alarm notifications:** state alarms (no healthy task, RDS, NAT recover, SES rates, backup copy age, TripPlanner
+jobs not run) e-mail on ALARM and OK; event alarms (Lambda errors / throttles, break-glass token, KMS decrypt
+anomaly) on ALARM only. The keep / remove / move table is root `docs/audits/2026-11-01-S263-alerting-cost/diet.md`.
+**Alerts topic policy:** `aws_sns_topic.alerts` has exactly one
 `aws_sns_topic_policy` — `aws_sns_topic_policy.alerts` in `identity_alerts.tf` (AWS default statement
 for same-account publishers + EventBridge from `rule/aa-identity-dev-*`, which sends the break-glass
 secret access alerts and the A8 AdminCreateUser alert). A new service publisher adds a statement there; never add a second

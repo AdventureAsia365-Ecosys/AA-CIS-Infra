@@ -270,21 +270,8 @@ resource "aws_iam_role_policy" "ecs_task_policy" {
         ]
         Resource = "*"
       },
-      # AA-380 — cloudwatch:PutMetricData has no ARN-scoped Resource (always "*"
-      # per AWS IAM); the cloudwatch:namespace condition key is the only way to
-      # restrict which namespace this role can write to. Scoped to "acp" — the
-      # sole custom-metric namespace in use (AA-141 api/routers/acp_health.py,
-      # AA-362 services/acp_produce/metrics.py) — not a wildcard grant.
-      {
-        Effect   = "Allow"
-        Action   = ["cloudwatch:PutMetricData"]
-        Resource = "*"
-        Condition = {
-          StringEquals = {
-            "cloudwatch:namespace" = "acp"
-          }
-        }
-      },
+      # S263 (AA-1025): the AA-380 PutMetricData grant on namespace "acp" is gone; its only emitter
+      # (AA-CIS-App services/acp_produce/metrics.py) had no caller and was deleted.
       # AA-459 — the first runtime-WRITE Secrets Manager use in this codebase (every prior
       # use, incl. the GetSecretValue statement above, is read-only against secrets an
       # admin/Terraform already pre-created). AA-CIS-App's api/routers/v1_integrations.py
@@ -726,6 +713,8 @@ resource "aws_ecs_service" "api" {
 }
 
 # ── Auto Scaling ──────────────────────────────────────────────
+# S263 alert diet (AA-1025): the scalable targets stay (bounds for a manual scale), the CPU / memory target-tracking
+# policies of the api and the worker are removed (8 TargetTracking-* alarms). Dev runs 1 api + 1 worker task.
 # AA-859 (S240, sizing option A): max 10 -> 7 api tasks. The tenant pool goes from 1 to 2 connections per
 # task (AA-CIS-App api/core/aa544_tenant_pool.py TENANT_POOL_MAX_SIZE), and 2 x 7 = 14 stays under the
 # aa_app_user CONNECTION LIMIT 15 (CIS migration 234). Data standard C2.2/C2.3c: change this value only
@@ -744,38 +733,6 @@ resource "aws_appautoscaling_target" "api" {
   resource_id        = "service/${aws_ecs_cluster.main.name}/${aws_ecs_service.api.name}"
   scalable_dimension = "ecs:service:DesiredCount"
   service_namespace  = "ecs"
-}
-
-resource "aws_appautoscaling_policy" "cpu_scale_out" {
-  name               = "${local.name_prefix}-cpu-scale-out"
-  policy_type        = "TargetTrackingScaling"
-  resource_id        = aws_appautoscaling_target.api.resource_id
-  scalable_dimension = aws_appautoscaling_target.api.scalable_dimension
-  service_namespace  = aws_appautoscaling_target.api.service_namespace
-  target_tracking_scaling_policy_configuration {
-    predefined_metric_specification {
-      predefined_metric_type = "ECSServiceAverageCPUUtilization"
-    }
-    target_value       = 70.0
-    scale_in_cooldown  = 300
-    scale_out_cooldown = 60
-  }
-}
-
-resource "aws_appautoscaling_policy" "memory_scale_out" {
-  name               = "${local.name_prefix}-memory-scale-out"
-  policy_type        = "TargetTrackingScaling"
-  resource_id        = aws_appautoscaling_target.api.resource_id
-  scalable_dimension = aws_appautoscaling_target.api.scalable_dimension
-  service_namespace  = aws_appautoscaling_target.api.service_namespace
-  target_tracking_scaling_policy_configuration {
-    predefined_metric_specification {
-      predefined_metric_type = "ECSServiceAverageMemoryUtilization"
-    }
-    target_value       = 80.0
-    scale_in_cooldown  = 300
-    scale_out_cooldown = 60
-  }
 }
 
 # ============================================================
@@ -915,45 +872,15 @@ resource "aws_ecs_service" "worker" {
   tags = merge(var.tags, { Name = "${local.name_prefix}-worker-service" })
 }
 
-# Autoscale the worker on CPU/memory, same shape as the api. min = desired, max = worker_max_count
-# (default 3). Jobs piling up push CPU over target → ECS adds a worker task (each one its own 4
-# slots); the per-kind DB-wide caps still bound real concurrency (a3_atomize stays 1).
+# Worker scalable target: min = desired, max = worker_max_count (default 3). S263 alert diet (AA-1025): no
+# target-tracking policy any more (each policy kept two CloudWatch alarms, 8 for api + worker, 0.80 USD/month, with
+# the AlarmLow ones in ALARM all day). Dev runs one worker; a heavy wave raises the desired count by hand
+# (root docs/ops/job-kinds.md). The target stays so those documented commands keep working and the per-kind DB-wide
+# caps still bound real concurrency (a3_atomize stays 1).
 resource "aws_appautoscaling_target" "worker" {
   max_capacity       = var.worker_max_count
   min_capacity       = var.worker_desired_count
   resource_id        = "service/${aws_ecs_cluster.main.name}/${aws_ecs_service.worker.name}"
   scalable_dimension = "ecs:service:DesiredCount"
   service_namespace  = "ecs"
-}
-
-resource "aws_appautoscaling_policy" "worker_cpu_scale_out" {
-  name               = "${local.name_prefix}-worker-cpu-scale-out"
-  policy_type        = "TargetTrackingScaling"
-  resource_id        = aws_appautoscaling_target.worker.resource_id
-  scalable_dimension = aws_appautoscaling_target.worker.scalable_dimension
-  service_namespace  = aws_appautoscaling_target.worker.service_namespace
-  target_tracking_scaling_policy_configuration {
-    predefined_metric_specification {
-      predefined_metric_type = "ECSServiceAverageCPUUtilization"
-    }
-    target_value       = 70.0
-    scale_in_cooldown  = 300
-    scale_out_cooldown = 60
-  }
-}
-
-resource "aws_appautoscaling_policy" "worker_memory_scale_out" {
-  name               = "${local.name_prefix}-worker-memory-scale-out"
-  policy_type        = "TargetTrackingScaling"
-  resource_id        = aws_appautoscaling_target.worker.resource_id
-  scalable_dimension = aws_appautoscaling_target.worker.scalable_dimension
-  service_namespace  = aws_appautoscaling_target.worker.service_namespace
-  target_tracking_scaling_policy_configuration {
-    predefined_metric_specification {
-      predefined_metric_type = "ECSServiceAverageMemoryUtilization"
-    }
-    target_value       = 80.0
-    scale_in_cooldown  = 300
-    scale_out_cooldown = 60
-  }
 }
