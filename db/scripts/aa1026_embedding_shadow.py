@@ -11,7 +11,14 @@ ACTION (one per dispatch; edit the constants in a one-line PR):
   "prepare"      shared.embedding_prepare_shadow(COLUMN, SPACE): ADD COLUMN <column>__shadow vector(<dimension>);
   "drop_shadow"  shared.embedding_drop_shadow(COLUMN): drop an unswapped shadow (e.g. after the T-15 test);
   "swap"         shared.embedding_swap(group of COLUMN, ALLOW_MISSING): the whole swap group, dependent views rebuilt;
-  "rollback"     shared.embedding_rollback(group of COLUMN, ALLOW_MISSING).
+  "rollback"     shared.embedding_rollback(group of COLUMN, ALLOW_MISSING);
+  "purge_blank"  before a swap, only for the two embedding CACHES (acp_contract.atom_embedding: atoms gone or with no
+                 place; acp_contract.question_embedding: blank question text): delete the rows that have a vector, no
+                 shadow vector and no text to re-embed (the fill reports them as blank_rows / blank_keys and the swap
+                 refuses them). The writers re-embed a cache row on demand when its atom or question is used again.
+                 EXPECT_BLANK = the fill's remaining_blank_rows: any other count is refused and rolled back. Data
+                 deletion: dry run first (count printed, rolled back), apply on a tech lead yes. Other columns have no
+                 purge: fix their text and re-run the fill, or swap with ALLOW_MISSING (runbook).
 A swap whose dependent views belong to catalog_owner (the tour_place group: catalog.v_component_embedding,
 v_tour_component) needs a session that may SET ROLE catalog_owner, which the master login may not: run that swap as a
 one-line cis/ migration applied by DB Migrate (db_migrator), see the runbook. `embedding_drop_previous` is destructive
@@ -30,10 +37,24 @@ ACTION = "status"
 COLUMN = "acp_contract.question_embedding.embedding"
 SPACE = "titan-embed-text-v2/1024/v1"
 ALLOW_MISSING = False
+EXPECT_BLANK = None
 
 SCRIPT_NAME = "aa1026_embedding_shadow"
 WRITE_ROLE = "cis_owner"
-ACTIONS = ("status", "prepare", "drop_shadow", "swap", "rollback")
+ACTIONS = ("status", "prepare", "drop_shadow", "swap", "rollback", "purge_blank")
+# The blank-text rule of the CIS fill (AA-CIS-App services/embeddings/sources.py, sources atom_view and question_text:
+# the text the writer embedded, empty after strip). Keep the two in step. Only rows still without a shadow vector.
+_BLANK = "coalesce({text}, '') !~ '[^[:space:]]'"
+PURGE_BLANK = {
+    "acp_contract.atom_embedding.embedding": (
+        "DELETE FROM acp_contract.atom_embedding t WHERE t.embedding IS NOT NULL AND t.embedding__shadow IS NULL "
+        "AND NOT EXISTS (SELECT 1 FROM acp_contract.tour_atoms a WHERE a.atom_id = t.atom_id AND NOT "
+        + _BLANK.format(text="CASE t.view WHEN 'place' THEN a.place ELSE coalesce(a.place, '') || ' ' "
+                             "|| coalesce(a.action, '') END") + ")"),
+    "acp_contract.question_embedding.embedding": (
+        "DELETE FROM acp_contract.question_embedding t WHERE t.embedding IS NOT NULL "
+        "AND t.embedding__shadow IS NULL AND " + _BLANK.format(text="t.question_text")),
+}
 
 
 def out(event: str, **kw) -> None:
@@ -99,6 +120,23 @@ async def run(conn, mode: str, action: str) -> int:
                                          schema, table, column, SPACE)
         elif action == "drop_shadow":
             result = await conn.fetchval("SELECT shared.embedding_drop_shadow($1, $2, $3)", schema, table, column)
+        elif action == "purge_blank":
+            if COLUMN not in PURGE_BLANK:
+                out("refuse", why=f"{COLUMN} is not an embedding cache: fix its text and re-run the fill, or swap "
+                                  "with ALLOW_MISSING (runbook)")
+                return 1
+            if not isinstance(EXPECT_BLANK, int) or isinstance(EXPECT_BLANK, bool) or EXPECT_BLANK < 0:
+                out("refuse", why="set EXPECT_BLANK to the fill's remaining_blank_rows")
+                return 1
+            if not await conn.fetchval("SELECT shadow_column FROM shared.embedding_column WHERE table_schema = $1 "
+                                       "AND table_name = $2 AND column_name = $3", schema, table, column):
+                out("refuse", why=f"{COLUMN} has no shadow column (prepare and fill first)")
+                return 1
+            result = await conn.fetchval(f"WITH d AS ({PURGE_BLANK[COLUMN]} RETURNING 1) SELECT count(*) FROM d")
+            if result != EXPECT_BLANK:
+                out("refuse", why=f"{result} blank row(s) found, EXPECT_BLANK is {EXPECT_BLANK}: nothing deleted "
+                                  "(re-run the fill and read its remaining_blank_rows)")
+                return 1
         elif action == "swap":
             result = await conn.fetchval("SELECT shared.embedding_swap($1, $2)", group, ALLOW_MISSING)
         else:

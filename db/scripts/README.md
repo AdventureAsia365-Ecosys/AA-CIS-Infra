@@ -329,7 +329,9 @@ connection), `db/tests/test_aa1002_dev_anthropic_road_pg.py` (real PostgreSQL, l
 
 `aa1026_embedding_shadow.py` (AA-1026 D5, S263): the owner steps of a re-embed into another embedding space around
 the CIS migration 341 functions, as `cis_owner`: `status` (read-only: the swap group's registry rows and counts),
-`prepare` (shadow column), `drop_shadow`, `swap`, `rollback`; DRY RUN (rolled back) by default, `MODE = "apply"` in a
+`prepare` (shadow column), `drop_shadow`, `swap`, `rollback`, `purge_blank` (before a swap: deletes the embedding
+cache rows whose atom or question has no text left, only when their count equals `EXPECT_BLANK`, the fill's
+`remaining_blank_rows`); DRY RUN (rolled back) by default, `MODE = "apply"` in a
 one-line PR. A swap whose dependent views are `catalog_owner`'s (the `tour_place` group) cannot run from the master
 login (it may not SET ROLE catalog_owner): that swap is a one-line cis/ migration. `embedding_drop_previous` is not
 offered (destructive). Runbook: AA-Ecosys `docs/ops/runbooks/embedding-re-embed.md`.

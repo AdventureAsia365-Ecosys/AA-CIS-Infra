@@ -1,5 +1,5 @@
 """AA-1026 D5: db/scripts/aa1026_embedding_shadow.py — the owner steps of a re-embed (prepare, drop shadow, swap,
-rollback, status) around the CIS migration 341 functions.
+rollback, purge of blank cache rows, status) around the CIS migration 341 functions.
 
 Shape (the runner's own checks), merged defaults (DRY RUN, status) and every action against a fake connection that
 records SQL: a write action runs as cis_owner inside a transaction that a dry run rolls back.
@@ -127,6 +127,40 @@ class ActionTest(unittest.TestCase):
             self.assertEqual(code, 0, action)
             self.assertIn((sql, args), conn.log, action)
             self.assertEqual(conn.log[-1], "COMMIT", action)
+
+    def test_purge_blank_deletes_only_the_expected_cache_rows(self):
+        mod = _load()
+        mod.EXPECT_BLANK = 7                                   # the fake DELETE ... count(*) answers 7
+        conn = FakeConn()
+        code, out = _run(mod.run(conn, "apply", "purge_blank"))
+        self.assertEqual(code, 0)
+        delete = [c for c in conn.log if isinstance(c, str) and c.startswith("WITH d AS (DELETE")]
+        self.assertEqual(len(delete), 1)
+        self.assertIn("FROM acp_contract.question_embedding t", delete[0])
+        self.assertIn("t.embedding__shadow IS NULL", delete[0])
+        self.assertIn("SCRIPT done action=purge_blank result=7", out)
+        self.assertEqual(conn.log[-1], "COMMIT")
+
+        mod.COLUMN = "acp_contract.atom_embedding.embedding"
+        conn = FakeConn()
+        code, _ = _run(mod.run(conn, "dry_run", "purge_blank"))
+        self.assertEqual(code, 0)
+        delete = [c for c in conn.log if isinstance(c, str) and c.startswith("WITH d AS (DELETE")][0]
+        self.assertIn("NOT EXISTS (SELECT 1 FROM acp_contract.tour_atoms a", delete)
+        self.assertEqual(conn.log[-1], "ROLLBACK")
+
+    def test_purge_blank_refusals_roll_back(self):
+        for column, expect, why in (("acp_contract.question_embedding.embedding", 3, "nothing deleted"),
+                                    ("acp_contract.question_embedding.embedding", None, "set EXPECT_BLANK"),
+                                    ("acp_shared.content_piece.content_embedding", 7, "not an embedding cache")):
+            mod = _load()
+            mod.COLUMN, mod.EXPECT_BLANK = column, expect
+            conn = FakeConn()
+            code, out = _run(mod.run(conn, "apply", "purge_blank"))
+            self.assertEqual(code, 1, why)
+            self.assertIn(why, out)
+            self.assertNotIn("COMMIT", conn.log)
+            self.assertEqual(conn.log[-1], "ROLLBACK")
 
     def test_refusals(self):
         code, out = _run(_load().run(FakeConn(), "apply", "drop_previous"))
