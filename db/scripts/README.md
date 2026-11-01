@@ -327,11 +327,18 @@ brings an Anthropic Converse model to a stage. Tests: `db/tests/test_aa1002_dev_
 connection), `db/tests/test_aa1002_dev_anthropic_road_pg.py` (real PostgreSQL, local only). Runbook: root
 `docs/ops/runbooks/llm-anthropic-api-key.md`.
 
-`aa1026_embedding_shadow.py` (AA-1026 D5, S263): the owner steps of a re-embed into another embedding space around
-the CIS migration 329 functions, as `cis_owner`: `status` (read-only: the swap group's registry rows and counts),
-`prepare` (shadow column), `drop_shadow`, `swap`, `rollback`, `purge_blank` (before a swap: deletes the embedding
-cache rows whose atom or question has no text left, only when their count equals `EXPECT_BLANK`, the fill's
-`remaining_blank_rows`); DRY RUN (rolled back) by default, `MODE = "apply"` in a
-one-line PR. A swap whose dependent views are `catalog_owner`'s (the `tour_place` group) cannot run from the master
-login (it may not SET ROLE catalog_owner): that swap is a one-line cis/ migration. `embedding_drop_previous` is not
-offered (destructive). Runbook: AA-Ecosys `docs/ops/runbooks/embedding-re-embed.md`.
+`aa1026_embedding_shadow.py` (AA-1026 D5, S263): the owner steps of a re-embed into another embedding space, as
+`cis_owner`. CIS migration 329 only adds the trigger function `shared._embedding_shadow_reset()`; the steps themselves
+are here (a migration may not switch roles in dynamic SQL, which the view rebuild of a swap needed): `status`
+(read-only: the swap group's registry rows and counts), `prepare` (shadow column, its reset trigger, registry),
+`drop_shadow`, `swap` / `rollback` (the whole swap group in one transaction: refuses while a row lacks a shadow vector
+unless `ALLOW_MISSING`, drops and recreates the dependent views with their options, grants and comments, renames the
+columns and single-column indexes, registry in the same transaction), `purge_blank` (before a swap: deletes the
+embedding cache rows whose atom or question has no text left, only when their count equals `EXPECT_BLANK`, the fill's
+`remaining_blank_rows`). DRY RUN (every DDL statement printed, rolled back) by default, `MODE = "apply"` in a one-line
+PR. A swap refuses before any change when a view reading the group belongs to another role: the `tour_place` group's
+catalog views are `catalog_owner`'s, which the master login may not act as, so that group swaps with a contract cis/
+migration under the catalog recipe. Dropping the kept old vectors (`<column>__prev`) is a destructive cis/ migration,
+not this script. Tests: `db/tests/test_aa1026_embedding_shadow_script.py` (fake connection),
+`db/tests/test_aa1026_embedding_shadow_script_pg.py` (real PostgreSQL, local only). Runbook: AA-Ecosys
+`docs/ops/runbooks/embedding-re-embed.md`.
