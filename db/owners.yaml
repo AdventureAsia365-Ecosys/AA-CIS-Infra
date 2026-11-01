@@ -4,7 +4,8 @@
 # X1 plan S1 (AA-Ecosys docs/audits/2026-10-17-S241-x1/x1-plan.md). One entry per migration dir of
 # db/migrations/. Change it in the same PR as the code that mirrors it:
 #   * db/run_migration.py      MASTER_ROLE, OWNER_DIRS (anchor schema, schemas, set_local_roles,
-#                              role_lint_from, view_owner_roles), IDLE_EXEMPT_KINDS
+#                              role_lint_from, view_owner_roles), IDLE_EXEMPT_KINDS,
+#                              CONTRACT_AUTO_ENVIRONMENTS (AA-1032)
 #   * db/check_migration_copies.py  OWNERS (repo, path, key prefix, native), PATH_RE
 #   * db/run_migration.py      PASSWORD_ROLES (password_roles, X1 S12)
 #   * .github/workflows/db-migrate.yml  input regex, key prefix case, environment choices, set-password role regex
@@ -69,6 +70,10 @@ expand_hot_schemas: [catalog]
 # security (crm: every tenant table is FORCE RLS). A new table with a tenant_id column needs both in any schema.
 # Mirrored by db/run_migration.py EXPAND_RLS_SCHEMAS.
 expand_rls_schemas: [crm]
+# AA-1032 (root ADR 0017a): the environments where migration-apply also applies CONTRACT files (no expand header, not
+# destructive), each after the all-job-tables-idle wait of DB Migrate apply. Dev only: a prod entry would need its own
+# ADR (prod keeps the manual contract apply). Mirrored by db/run_migration.py CONTRACT_AUTO_ENVIRONMENTS.
+contract_auto_apply_environments: [dev]
 
 owners:
   cis:

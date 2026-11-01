@@ -32,7 +32,9 @@ same value, so no new environment variable reaches the task:
   apply-pending         AA-993 M3 (migration-apply.yml, root ADR 0017 d5): MIGRATION_URL is a JSON bundle of
                         owner-dir copies with the runner's verdicts (db/apply_pending.py); per owner, in number
                         order, every unregistered expand file is applied (apply lock held for the whole run)
-                        until the first file a person must apply. See run_apply_pending below.
+                        until the first file a person must apply. On Dev (bundle `contract`, root ADR 0017a,
+                        AA-1032) contract files are applied too, after the same all-job-tables-idle wait as
+                        DB Migrate apply. See run_apply_pending below.
 
 Every migration self-registers in shared.schema_versions (repo convention), so:
   check — print whether the version is applied, change nothing
@@ -2748,6 +2750,16 @@ async def apply_file(env, sql: str, file: str, version: str, mode: str, connect,
 #   * a failed file stops its owner; the other owners still run; the exit code is the first failure's (0 when every
 #     owner either applied everything or stopped at a file that needs a person). Exit 7 (a hot-table file during an
 #     open rerun wave) is a deferral, not a failure: the owner stops, the next run retries.
+# AA-1032 (root ADR 0017a): when the bundle says `"contract": true` and its `environment` is one of
+# CONTRACT_AUTO_ENVIRONMENTS (Dev only), a CONTRACT file (no expand header, not destructive, clean lint, the runner's
+# verdict ok: bytes = owner main AND applied cleanly on the replay) is applied in its turn as well. It goes through
+# apply_file exactly like a DB Migrate apply of a contract file: the all-job-tables-idle wait (IDLE_WAITS x
+# IDLE_WAIT_S, no override ever), the default lock_timeout / statement_timeout, the role switch and the ownership
+# post-check. Busy job tables or an open wave = exit 7 = deferred (the hourly run retries). A destructive file is
+# always a stop (STOP_DESTRUCTIVE: RDS snapshot and DRY RUN by a person), and so is a contract file with a DELETE
+# statement but no destructive header (STOP_DELETE: lint only warns, and nobody reads a warning on an automatic
+# run). Any other bundle environment asking for contract files is refused (exit 10): prod keeps the manual
+# contract apply.
 # One `MIGRATE auto: …` line per decision and a final `MIGRATE auto-result {json}` line that the workflow summarises.
 AUTO_OWNERS = ("cis", "booking", "tripplanner", "crm")            # never roles/ (master files stay manual)
 # replay_migrations.KEY_PREFIX / check_migration_copies.OWNERS (db/tests/test_aa993_apply_pending.py keeps them equal).
@@ -2773,8 +2785,14 @@ STOP_REFUSED_BYTES = "refused-bytes"    # runner: the copy is not byte-identical
 STOP_REFUSED_CLASSIFY = "refused-classify"  # runner: expand_check --classify on the replay said contract
 STOP_NO_EVIDENCE = "no-evidence"        # runner: no classify result for the file
 STOP_REFUSED = "refused"                # runner: any other verdict (or none)
+STOP_DESTRUCTIVE = "destructive"        # `-- migrate: destructive`: never auto-applied (snapshot, DRY RUN, MIG-12)
+STOP_DELETE = "delete"                  # contract mode: a header-less DELETE (lint warning) is never
+                                        # auto-applied either: add `-- migrate: destructive` or apply by hand
 STOP_KINDS = (STOP_OUT_OF_ORDER, STOP_NOT_COPIED, STOP_DUPLICATE, STOP_GAP, STOP_CONTRACT, STOP_LINT,
-              STOP_REFUSED_BYTES, STOP_REFUSED_CLASSIFY, STOP_NO_EVIDENCE, STOP_REFUSED)
+              STOP_REFUSED_BYTES, STOP_REFUSED_CLASSIFY, STOP_NO_EVIDENCE, STOP_REFUSED, STOP_DESTRUCTIVE, STOP_DELETE)
+# AA-1032 (root ADR 0017a): the environments where apply-pending may apply contract files (bundle "contract": true).
+# Mirrored by db/owners.yaml contract_auto_apply_environments (db/tests/test_owners_registry.py keeps them equal).
+CONTRACT_AUTO_ENVIRONMENTS = ("dev",)
 # The bundle's per-file `verdict_kind` (db/apply_pending.py build): "ok" or one of the runner refusal kinds.
 VERDICT_KINDS = ("ok", STOP_REFUSED_BYTES, STOP_REFUSED_CLASSIFY, STOP_NO_EVIDENCE, STOP_REFUSED)
 
@@ -2786,13 +2804,19 @@ class AutoStep:
     action: str                         # apply | stop
     reason: str = ""
     kind: str = ""                      # stop only: one of STOP_KINDS
+    cls: str = ""                       # apply only: expand | contract (AA-1032, contract only in contract mode)
+
+
+def deletes_rows(sql: str) -> bool:
+    """True when a statement of the file is a DELETE (plain or in a CTE): the lint warning, as a yes/no."""
+    return any(DELETE_RE.search(st.code) for st in split_statements(sql))
 
 
 def auto_version(owner: str, number: int) -> str:
     return f"{AUTO_KEY_PREFIX[owner]}{number:03d}"
 
 
-def plan_pending(files: list, registered) -> dict:
+def plan_pending(files: list, registered, contract: bool = False) -> dict:
     """Pure (also the runner-side dry run): {owner: {"head": key or None, "steps": [AutoStep], "legacy": n}}.
 
     files: [{"path", "sql", "verdict"}] (verdict "ok", or why the runner refuses the file), plus the runner's
@@ -2800,7 +2824,9 @@ def plan_pending(files: list, registered) -> dict:
     shared.schema_versions. Per owner, the unregistered files above AUTO_APPLY_FLOOR in number order: `apply` while
     each one is copied, the next number (head + 1, then + 1 per step: never past a gap, critic 2), expand (header,
     lint), verdict ok and not below the owner's highest registered key; the first that is not ends the owner's steps
-    with `stop`."""
+    with `stop`. contract (AA-1032, Dev only): a file without the expand header that passes the same checks is an
+    `apply` step too (cls "contract"); a destructive file is always a stop, and so is a contract file with a DELETE
+    statement (lint only warns about it; nobody reads a warning on an automatic run, so it waits for a person)."""
     registered = set(registered)
     out = {}
     for owner in AUTO_OWNERS:
@@ -2842,13 +2868,23 @@ def plan_pending(files: list, registered) -> dict:
                           f"gap is applied (the owner's next file must be its head + 1)")
             else:
                 d = parse_directives(f["sql"])
-                errs = lint(f["sql"], d, f["path"])[0]
-                if not d.expand:
+                errs, warns = lint(f["sql"], d, f["path"])
+                if d.destructive:
+                    kind = STOP_DESTRUCTIVE
+                    reason = ("destructive (`-- migrate: destructive`): RDS snapshot and DRY RUN, manual DB Migrate "
+                              "apply")
+                elif not d.expand and not contract:
                     kind = STOP_CONTRACT
                     reason = "contract (no `-- migrate: expand` header): manual DB Migrate apply"
                 elif errs:
                     kind = STOP_LINT
-                    reason = f"expand header but {len(errs)} lint error(s): {errs[0]}"
+                    reason = (f"{'expand header' if d.expand else 'contract file'} but {len(errs)} lint error(s): "
+                              f"{errs[0]}")
+                elif not d.expand and deletes_rows(f["sql"]):
+                    kind = STOP_DELETE
+                    reason = (f"contract file with a DELETE but no `-- migrate: destructive` header "
+                              f"({next((w for w in warns if 'DELETE' in w), 'DELETE')}): never auto-applied; add the "
+                              f"header (RDS snapshot, DRY RUN) or apply it by hand with DB Migrate")
                 elif f.get("verdict") != "ok":
                     vk = f.get("verdict_kind")
                     kind = vk if vk in VERDICT_KINDS and vk != "ok" else STOP_REFUSED
@@ -2856,7 +2892,7 @@ def plan_pending(files: list, registered) -> dict:
             if reason:
                 steps.append(AutoStep(f["path"], version, "stop", reason, kind))
                 break
-            steps.append(AutoStep(f["path"], version, "apply"))
+            steps.append(AutoStep(f["path"], version, "apply", cls="expand" if d.expand else "contract"))
             expected = number + 1
         out[owner] = {"head": auto_version(owner, head) if mine else None, "steps": steps, "legacy": legacy}
     return out
@@ -2899,6 +2935,19 @@ def read_bundle(raw: bytes) -> list:
     return files
 
 
+def read_bundle_contract(raw: bytes) -> tuple:
+    """(contract, environment) of a bundle that read_bundle accepted. AA-1032: `contract` must be a boolean when
+    present; true only with an `environment` in CONTRACT_AUTO_ENVIRONMENTS (Dev), else ValueError (exit 10)."""
+    data = json.loads(raw.decode("utf-8"))
+    contract, env = data.get("contract", False), data.get("environment", "")
+    if not isinstance(contract, bool) or not isinstance(env, str):
+        raise ValueError("bundle contract must be a boolean and environment a string")
+    if contract and env not in CONTRACT_AUTO_ENVIRONMENTS:
+        raise ValueError(f"bundle asks for contract files in environment {env or '(none)'!r}: contract auto-apply "
+                         f"exists only in {', '.join(CONTRACT_AUTO_ENVIRONMENTS)} (root ADR 0017a)")
+    return contract, env
+
+
 async def run_apply_pending(env, fetch, connect, sleep, get_secret=_get_secret) -> int:
     raw = fetch(env["MIGRATION_URL"])
     digest = hashlib.sha256(raw).hexdigest()
@@ -2907,21 +2956,28 @@ async def run_apply_pending(env, fetch, connect, sleep, get_secret=_get_secret) 
         return 2
     try:
         files = read_bundle(raw)
+        contract, environment = read_bundle_contract(raw)
     except (ValueError, UnicodeDecodeError) as e:
         log(f"ERROR: apply-pending: {e}")
         return 10
     log(f"apply-pending: bundle sha256={digest[:12]} files={len(files)}")
-    # Never an idle override or a snapshot here: expand files skip the job-table wait by rule, never destructive.
+    if contract:
+        log(f"apply-pending: contract files ON ({environment}, root ADR 0017a): each waits until every job table is "
+            f"idle and no rerun wave is open (no override); destructive files stay manual")
+    else:
+        log("apply-pending: contract files off (manual DB Migrate apply)")
+    # Never an idle override or a snapshot here: expand files skip the job-table wait by rule, contract files wait for
+    # idle job tables without any override, destructive files never run here.
     file_env = {k: v for k, v in env.items() if k not in ("MIGRATION_IDLE_OVERRIDE", "MIGRATION_SNAPSHOT")}
     lock_conn = await connect(env["DATABASE_URL"], dict(DEFAULT_SETTINGS))
-    result = {"bundle": digest[:12], "owners": {}, "exit": 0}
+    result = {"bundle": digest[:12], "contract": contract, "owners": {}, "exit": 0}
     try:
         if not await take_apply_lock(lock_conn, sleep, "apply-pending"):
             result["exit"] = 17
             log(f"auto-result {json.dumps(result, sort_keys=True)}")
             return 17
         registered = {r[0] for r in await lock_conn.fetch(REGISTERED_SQL)}
-        plan = plan_pending(files, registered)
+        plan = plan_pending(files, registered, contract=contract)
         code = 0
         for owner, p in plan.items():
             rows, failed = [], 0
@@ -2939,20 +2995,25 @@ async def run_apply_pending(env, fetch, connect, sleep, get_secret=_get_secret) 
                                  "reason": st.reason})
                     break
                 sql = next(f["sql"] for f in files if f["path"] == st.path)
-                log(f"auto: {owner}: apply {st.path} ({st.version})")
+                log(f"auto: {owner}: apply {st.path} ({st.version}, {st.cls})")
                 rc = await _apply_with_retry(file_env, sql, st, connect, sleep, get_secret)
                 if rc == 7:
-                    # Q5: it names a hot table and a rerun wave is open. Not a failure: the next run applies it.
-                    log(f"auto: {owner}: DEFERRED {st.path}: a rerun wave is open; the next run retries it")
-                    rows.append({"file": st.path, "version": st.version, "status": "deferred", "exit": rc})
+                    # Q5: an expand file naming a hot table met an open rerun wave; AA-1032: a contract file met a
+                    # busy job table or an open wave. Not a failure: the next run applies it.
+                    why = ("a job table is busy or a rerun wave is open" if st.cls == "contract"
+                           else "a rerun wave is open")
+                    log(f"auto: {owner}: DEFERRED {st.path}: {why}; the next run retries it")
+                    rows.append({"file": st.path, "version": st.version, "status": "deferred", "exit": rc,
+                                 "class": st.cls, "reason": why})
                     break
                 if rc:
                     failed = rc
                     code = code or rc
                     log(f"auto: {owner}: FAILED {st.path} exit {rc}; later {owner} files wait for the next run")
-                    rows.append({"file": st.path, "version": st.version, "status": "failed", "exit": rc})
+                    rows.append({"file": st.path, "version": st.version, "status": "failed", "exit": rc,
+                                 "class": st.cls})
                 else:
-                    rows.append({"file": st.path, "version": st.version, "status": "applied"})
+                    rows.append({"file": st.path, "version": st.version, "status": "applied", "class": st.cls})
             result["owners"][owner] = {"head_before": p["head"], "legacy": p["legacy"], "files": rows}
         result["exit"] = code
         log(f"auto-result {json.dumps(result, sort_keys=True)}")
