@@ -326,3 +326,10 @@ applied). `SCRIPT gap` lines name Anthropic models a route uses that cannot go t
 brings an Anthropic Converse model to a stage. Tests: `db/tests/test_aa1002_dev_anthropic_road.py` (fake
 connection), `db/tests/test_aa1002_dev_anthropic_road_pg.py` (real PostgreSQL, local only). Runbook: root
 `docs/ops/runbooks/llm-anthropic-api-key.md`.
+
+`aa1026_embedding_shadow.py` (AA-1026 D5, S263): the owner steps of a re-embed into another embedding space around
+the CIS migration 341 functions, as `cis_owner`: `status` (read-only: the swap group's registry rows and counts),
+`prepare` (shadow column), `drop_shadow`, `swap`, `rollback`; DRY RUN (rolled back) by default, `MODE = "apply"` in a
+one-line PR. A swap whose dependent views are `catalog_owner`'s (the `tour_place` group) cannot run from the master
+login (it may not SET ROLE catalog_owner): that swap is a one-line cis/ migration. `embedding_drop_previous` is not
+offered (destructive). Runbook: AA-Ecosys `docs/ops/runbooks/embedding-re-embed.md`.
