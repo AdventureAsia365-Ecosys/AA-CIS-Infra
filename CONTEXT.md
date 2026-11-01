@@ -278,7 +278,10 @@ accounts/
                                    RDS CPU / free storage / connections, NAT recover + NAT instance
                                    (guest OS) check, Lambda errors, identity trigger unexpected error,
                                    TripPlanner browse throttles; state alarms mail ALARM + OK, event
-                                   alarms ALARM only; sns:Publish grants for the in-app checks),
+                                   alarms ALARM only; EventBridge rule aa-sec-<env>-rds-instance-event: the
+                                   shared RDS down / stopped / failed / low storage -> SNS alerts (free; the
+                                   aa-sec- prefix reuses the existing topic policy and CI grants);
+                                   sns:Publish grants for the in-app checks),
                                    diagnostics.tf (Dev flow logs: REJECT only, 30 days)
     dns.tf                        (Route 53 public zone lumiguides.it.com + records copied from Namecheap, AA-811)
     db_dns.tf                     (AA-829: private zone <env>.internal on the VPC, CNAME db.<env>.internal -> RDS,
@@ -612,7 +615,9 @@ metric filters left are the identity trigger unexpected error and the break-glas
 value) and the CRM KMS decrypt log.
 **Alarm notifications:** state alarms (no healthy task, RDS, NAT recover and instance check, SES rates, backup copy age, TripPlanner
 jobs not run) e-mail on ALARM and OK; event alarms (Lambda errors / throttles, break-glass token, KMS decrypt
-anomaly, identity trigger unexpected error) on ALARM only. The keep / remove / move table is root `docs/audits/2026-11-01-S263-alerting-cost/diet.md`.
+anomaly, identity trigger unexpected error) on ALARM only. The RDS instance events rule (`aa-sec-<env>-rds-instance-event`)
+mails each event once: every in-app check needs the database, so it is what reports the database itself down. The keep
+/ remove / move table is root `docs/audits/2026-11-01-S263-alerting-cost/diet.md`.
 **Alerts topic policy:** `aws_sns_topic.alerts` has exactly one
 `aws_sns_topic_policy` — `aws_sns_topic_policy.alerts` in `identity_alerts.tf` (AWS default statement
 for same-account publishers + EventBridge from `rule/aa-identity-dev-*`, which sends the break-glass

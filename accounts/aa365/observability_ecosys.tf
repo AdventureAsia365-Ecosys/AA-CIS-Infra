@@ -280,6 +280,52 @@ resource "aws_cloudwatch_metric_alarm" "rds_connections_high" {
   tags = merge(local.ecosys_tags, { App = "shared" })
 }
 
+# RDS down, stopped, failed or out of storage (S263 alert diet review, AA-1025). The removed "sampling stopped"
+# heartbeats treated missing data as breaching, so a database the samplers could not read used to e-mail. Nothing
+# kept does: the RDS alarms above treat missing data as not breaching (and connections fall to 0), the ALB health
+# checks (/health, /booking/health) do not touch the database, and every in-app check needs the database before it
+# publishes. RDS sends its instance events to the default EventBridge bus for free (no event subscription needed):
+#   availability  shutdown / restart (RDS-EVENT-0004, 0006, 0022)     failure  the instance failed (0031, 0034, ...)
+#   low storage   storage full or nearly (0007, 0089, 0221, 0222)     recovery recovery started / finished
+#   RDS-EVENT-0087 / 0088 / 0154  stopped / started / started again after 7 days stopped (category notification,
+#                                 the rest of which is maintenance noise, so only these three ids)
+# Prefix aa-sec-<env>-: the topic policy statement AllowSecurityEventBridgeRules (identity_alerts.tf) and the apply
+# role's SecEventRuleManage (cicd_sec.tf) already cover rule/aa-sec-*, so CI applies it with no new grant and no MFA
+# bootstrap. An event rule mails once per event (no OK mail). Not covered: a database AWS reports healthy that the
+# apps cannot log in to (password or role change); their requests fail, which reaches Sentry. Cost: $0/month.
+resource "aws_cloudwatch_event_rule" "rds_instance_event" {
+  name        = "${local.sec_prefix}-rds-instance-event"
+  description = "RDS ${module.rds.db_identifier} shut down, restarted, stopped, failed, recovering or low on storage (RDS event). S263 alert diet, AA-1025.${local.runbook_suffix.database}"
+  event_pattern = jsonencode({
+    source        = ["aws.rds"]
+    "detail-type" = ["RDS DB Instance Event"]
+    detail = {
+      SourceIdentifier = [module.rds.db_identifier]
+      "$or" = [
+        { EventCategories = ["availability", "failure", "low storage", "recovery"] },
+        { EventID = ["RDS-EVENT-0087", "RDS-EVENT-0088", "RDS-EVENT-0154"] },
+      ]
+    }
+  })
+  tags = merge(local.ecosys_tags, { App = "shared", Issue = "AA-1025" })
+}
+
+resource "aws_cloudwatch_event_target" "rds_instance_event" {
+  rule      = aws_cloudwatch_event_rule.rds_instance_event.name
+  target_id = "alerts-sns"
+  arn       = aws_sns_topic.alerts.arn
+
+  input_transformer {
+    input_paths = {
+      id    = "$.detail.SourceIdentifier"
+      event = "$.detail.EventID"
+      msg   = "$.detail.Message"
+      time  = "$.time"
+    }
+    input_template = "\"[aa-rds] <id>: <event> at <time>: <msg>. The database is shared by CIS, TripPlanner, Booking and AA-Partner; while it is down every in-app check is silent too. A stop on Dev is either by hand or AWS restarting it after 7 days stopped.${local.runbook_suffix.database}\""
+  }
+}
+
 # -----------------------------------------------------------------------------
 # S263 alert diet (AA-1025, root docs/audits/2026-11-01-S263-alerting-cost/diet.md): what left CloudWatch.
 #

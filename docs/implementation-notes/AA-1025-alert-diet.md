@@ -43,11 +43,23 @@ Source of truth: root `docs/audits/2026-11-01-S263-alerting-cost/diet.md` (keep 
   without `default_value`): the Errors alarm's burst threshold of 20 per 5 minutes is never reached on Dev traffic
   when a broken release refuses every sign-in. Guard: `tools/terraform/tests/test_aa1025_alert_diet.py`.
 
+- Review pass 2 (S263): **RDS instance events rule** `aa-sec-dev-rds-instance-event` (EventBridge, free) to the alerts
+  topic: availability / failure / low storage / recovery categories plus RDS-EVENT-0087 / 0088 / 0154 (stopped,
+  started, auto-started after 7 days) of `aa-cis-dev-db`. The removed `*-sampling-stopped` alarms treated missing
+  data as breaching and so used to mail when the database was down; no kept alarm or in-app check does (RDS alarms
+  are `notBreaching`, the ALB health checks do not touch the database, every in-app check needs it). Named under
+  `aa-sec-<env>-` on purpose: the topic policy statement `AllowSecurityEventBridgeRules` and the apply role's
+  `SecEventRuleManage` already cover that prefix, so CI applies it (no new grant, no MFA bootstrap). Guard: the same
+  test file.
+
 ## Tradeoffs
 
 - No RDS memory / latency / disk-queue alarm on Dev; weekly C4.3 review instead.
 - API 5xx bursts while healthy: Sentry, not a CloudWatch e-mail.
 - No automatic scale-out of the CIS api / worker on Dev.
+- A database AWS reports healthy that the apps cannot log in to (password or role change) mails nothing: the apps'
+  failing requests reach Sentry. The RDS events rule covers down / stopped / failed / storage.
+- The RDS events rule shares the `aa-sec-` prefix with the security rules (a naming compromise for a CI-only apply).
 
 ## Should know
 
@@ -55,7 +67,8 @@ Source of truth: root `docs/audits/2026-11-01-S263-alerting-cost/diet.md` (keep 
   (`default_value` dropped, `ok_actions` dropped), not destroyed; `nat-status-check-failed` is destroyed and
   `nat-instance-check-failed` created. Otherwise ~78 alarm destroys + 8 target-tracking alarms (AWS deletes them with the 4 policies), 20 metric
   filter destroys, 1 dashboard destroy, 3 IAM policy destroys (PutMetricData) + 2 creates / 2 updates (sns:Publish),
-  1 alarm create (`aa-cis-dev-api-no-healthy-task`), 1 log group import, flow logs replaced (2 + 2), WAF logging
+  1 alarm create (`aa-cis-dev-api-no-healthy-task`), 1 EventBridge rule + 1 target create
+  (`aa-sec-dev-rds-instance-event`), 1 log group import, flow logs replaced (2 + 2), WAF logging
   config + 2 log groups updated in place, Booking and CRM task definitions: new revision (env), the ops-probe Lambda:
   env update, 1 schedule destroy. No `aws_db_instance`, secret, bucket, queue or log group destroyed.
 - Order: this apply first (IAM + env), then the CIS / Booking / AA-Partner deploys (a new task definition revision
