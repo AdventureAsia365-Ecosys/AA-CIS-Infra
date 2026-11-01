@@ -7,8 +7,9 @@ Source of truth: root `docs/audits/2026-11-01-S263-alerting-cost/diet.md` (keep 
 - **Keep in CloudWatch only what an app cannot see**: no-healthy-task per service (CIS api added; Booking, CRM api,
   portal, web), RDS CPU / free storage / connections, NAT recover, Lambda Errors (4 Cognito triggers, TripPlanner
   browse / assembly / jobs, snapshot expiry), TripPlanner browse throttles, TripPlanner jobs not-run, SES bounce +
-  complaint, RDS backup copy age (CRM-14), break-glass token, CRM KMS decrypt anomaly. 24 alarms, 27 billed
-  alarm-metric units (copy age has 2 metrics, the anomaly band 3).
+  complaint, RDS backup copy age (CRM-14), break-glass token, CRM KMS decrypt anomaly, and the admin session digest
+  Lambda errors (added upstream by #581 the same day, kept without its OK mail). 25 alarms, 28 billed alarm-metric
+  units (copy age has 2 metrics, the anomaly band 3).
 - **RDS "one alarm"**: kept as three separate alarms (CPU, free storage, connections). A metric-math alarm is billed
   per metric inside it, so one combined alarm costs the same 0.30 USD and its e-mail says less.
 - **In-app checks mail the alerts SNS topic** (`sns:Publish` on CIS, Booking, CRM task roles; env `ALERTS_TOPIC_ARN`
