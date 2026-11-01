@@ -1,0 +1,45 @@
+name: Admin Session Digest Tests
+
+# AA-873 (S263): the Identity Center admin session digest Lambda (security_sso_session_digest.tf) masks every line of
+# its e-mail and decides when a session is over and what to report once. Unit-tested on every PR and push that touches
+# it, before Terraform re-zips the handler. Stdlib unittest, recorded CloudTrail shapes with invented names, no AWS
+# access, no pip install.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "accounts/aa365/lambda_src/sec_admin_session_digest/**"
+      - "accounts/aa365/lambda_src/sec_admin_session_digest_tests/**"
+      - ".github/workflows/sec-admin-session-digest-test.yml"
+  push:
+    branches: [main]
+    paths:
+      - "accounts/aa365/lambda_src/sec_admin_session_digest/**"
+      - "accounts/aa365/lambda_src/sec_admin_session_digest_tests/**"
+      - ".github/workflows/sec-admin-session-digest-test.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  sec-admin-session-digest-tests:
+    name: Admin session digest tests (unittest)
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: accounts/aa365
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Python (Lambda runtime python3.12)
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      # -B + sys.dont_write_bytecode (test file) keep __pycache__ out of the archive_file source dir.
+      - name: Run digest tests
+        run: python -B -m unittest discover -s lambda_src/sec_admin_session_digest_tests -v
