@@ -1311,10 +1311,42 @@ resource "aws_secretsmanager_secret" "identity_breakglass" {
 # =============================================================================
 # Alarms (ADR 0006 decisions 5 and 11). A denial is raised as an exception, so Lambda `Errors` also counts refusals:
 # the Errors alarm uses a burst threshold. S263 alert diet (AA-1025, root docs/audits/2026-11-01-S263-alerting-cost/
-# diet.md): only Errors per trigger and the break-glass token stay. Throttles, p99 duration and the unexpected-error log
-# metric were removed (a throttled, timed-out or crashing trigger fails the sign-in, which is an Errors datapoint), and
-# so was the WAF blocked-requests alarm (blocked requests stay in the WAF log). Event alarms: e-mail on ALARM only.
+# diet.md): Errors per trigger, the unexpected-error log metric and the break-glass token stay. Throttles and p99
+# duration were removed (a throttled or timed-out trigger fails the sign-in, which is an Errors datapoint), and so was
+# the WAF blocked-requests alarm (blocked requests stay in the WAF log). The Errors alarm has a burst threshold
+# (refusals count too), which a low-traffic Dev never reaches when a broken release refuses every sign-in: the
+# unexpected-error alarm (threshold 1) is that signal. Its metric has no default_value, so the custom metric is billed
+# only in hours with an error. Event alarms: e-mail on ALARM only.
 # =============================================================================
+resource "aws_cloudwatch_log_metric_filter" "identity_trigger_unexpected" {
+  for_each       = local.id_triggers
+  name           = "${local.id_prefix}-${each.key}-unexpected"
+  log_group_name = aws_cloudwatch_log_group.identity_trigger[each.key].name
+  pattern        = "{ $.event = \"*_error\" }"
+
+  metric_transformation {
+    name      = "TriggerUnexpectedError"
+    namespace = "AA/Identity"
+    value     = "1"
+    unit      = "Count"
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "identity_trigger_unexpected" {
+  alarm_name          = "${local.id_prefix}-trigger-unexpected-error"
+  alarm_description   = "An identity trigger hit an unexpected exception (fail closed: sign-ins are being refused). AA-703.${local.runbook_suffix.cognito_login}"
+  namespace           = "AA/Identity"
+  metric_name         = "TriggerUnexpectedError"
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  tags                = local.id_tags
+}
+
 resource "aws_cloudwatch_metric_alarm" "identity_trigger_errors" {
   for_each            = local.id_triggers
   alarm_name          = "${local.id_prefix}-${each.key}-errors"

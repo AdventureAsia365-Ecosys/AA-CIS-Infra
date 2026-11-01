@@ -275,7 +275,8 @@ accounts/
     observability.tf, observability_ecosys.tf (alerts topic, budgets, CloudTrail, log retention and the
                                    S263 essential alarm set (AA-1025, root docs/audits/2026-11-01-S263-
                                    alerting-cost/diet.md): no-healthy-task per service incl. CIS api,
-                                   RDS CPU / free storage / connections, NAT recover, Lambda errors,
+                                   RDS CPU / free storage / connections, NAT recover + NAT instance
+                                   (guest OS) check, Lambda errors, identity trigger unexpected error,
                                    TripPlanner browse throttles; state alarms mail ALARM + OK, event
                                    alarms ALARM only; sns:Publish grants for the in-app checks),
                                    diagnostics.tf (Dev flow logs: REJECT only, 30 days)
@@ -607,10 +608,11 @@ refused connections) are evaluated by each app's own 5-minute loop (CIS `api/cor
 and AA-Partner `JobMetricsSampler`) from its database state and published to `aws_sns_topic.alerts` (`sns:Publish`,
 CIS in `alert_recipients.tf`, Booking in `observability_ecosys.tf`, CRM in `crm_app.tf`; env `ALERTS_TOPIC_ARN`). No
 app publishes a CloudWatch custom metric any more (the AA/RDS, AA/Jobs/*, acp PutMetricData grants are gone); the
-metric filters left are the break-glass token (identity.tf, no default value) and the CRM KMS decrypt log.
-**Alarm notifications:** state alarms (no healthy task, RDS, NAT recover, SES rates, backup copy age, TripPlanner
+metric filters left are the identity trigger unexpected error and the break-glass token (identity.tf, no default
+value) and the CRM KMS decrypt log.
+**Alarm notifications:** state alarms (no healthy task, RDS, NAT recover and instance check, SES rates, backup copy age, TripPlanner
 jobs not run) e-mail on ALARM and OK; event alarms (Lambda errors / throttles, break-glass token, KMS decrypt
-anomaly) on ALARM only. The keep / remove / move table is root `docs/audits/2026-11-01-S263-alerting-cost/diet.md`.
+anomaly, identity trigger unexpected error) on ALARM only. The keep / remove / move table is root `docs/audits/2026-11-01-S263-alerting-cost/diet.md`.
 **Alerts topic policy:** `aws_sns_topic.alerts` has exactly one
 `aws_sns_topic_policy` — `aws_sns_topic_policy.alerts` in `identity_alerts.tf` (AWS default statement
 for same-account publishers + EventBridge from `rule/aa-identity-dev-*`, which sends the break-glass

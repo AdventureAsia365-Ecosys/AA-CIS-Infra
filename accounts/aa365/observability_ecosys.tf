@@ -99,8 +99,8 @@ resource "aws_cloudwatch_log_group" "apigw_welcome" {
 # means the host hardware or AWS network under the instance failed; "recover" moves the instance to healthy hardware
 # and keeps its instance id, private IP, Elastic IP and network interface, so the private route table (default route
 # to that interface) works again without any Terraform change. An INSTANCE status check failure (the guest OS) is
-# not something recover fixes; S263 (AA-1025) removed the separate StatusCheckFailed alarm (it doubled this one's
-# e-mails): a dead NAT stops all egress, which the apps' own checks and no-healthy-task alarms show.
+# not something recover fixes: nat_instance_check_failed below e-mails for it (S263, AA-1025: that alarm reads
+# StatusCheckFailed_Instance instead of the combined StatusCheckFailed, so a system failure mails once, here).
 # AWS's recommended shape for recover alarms: Minimum over 60 s (a whole minute failed), 2 periods. t4g instances
 # also get AWS "simplified automatic recovery" by default; this alarm makes the action explicit and e-mails when it
 # fires. Recover needs the service-linked role AWSServiceRoleForCloudWatchEvents, which PutMetricAlarm creates on
@@ -119,6 +119,30 @@ resource "aws_cloudwatch_metric_alarm" "nat_system_check_recover" {
   threshold           = 1
   treat_missing_data  = "notBreaching"
   alarm_actions       = ["arn:aws:automate:${var.aws_region}:ec2:recover", aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
+
+  tags = merge(local.ecosys_tags, { App = "shared" })
+}
+
+# NAT guest OS failure (hung kernel, broken iptables / forwarding): recover does not fix it and nothing else sees it.
+# The ALB health checks stay inside the VPC, so no-healthy-task never fires; the VPC has only the S3 gateway endpoint,
+# so the apps' in-app checks (sns:Publish), Sentry and every LLM call need this NAT and go silent with it. This alarm
+# is evaluated and delivered by CloudWatch/SNS outside the VPC. StatusCheckFailed_Instance only (S263 review, AA-1025;
+# the pre-S263 alarm read the combined StatusCheckFailed and doubled the recover alarm's e-mails on a system failure).
+# A state alarm: e-mails on ALARM and OK. Missing data (instance stopped on purpose) does not alarm. 0.10 USD/month.
+resource "aws_cloudwatch_metric_alarm" "nat_instance_check_failed" {
+  alarm_name          = "aa-ecosys-${var.environment}-nat-instance-check-failed"
+  alarm_description   = "NAT instance ${module.vpc.nat_instance_id} failed the EC2 INSTANCE status check (guest OS) for 3 minutes. All private-subnet egress (LLM calls, SNS from the in-app checks, Sentry, vendor APIs) goes through it; recover does not fix this: reboot the instance.${local.runbook_suffix.incident}"
+  namespace           = "AWS/EC2"
+  metric_name         = "StatusCheckFailed_Instance"
+  dimensions          = { InstanceId = module.vpc.nat_instance_id }
+  statistic           = "Maximum"
+  period              = 60
+  evaluation_periods  = 3
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  threshold           = 1
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
   ok_actions          = [aws_sns_topic.alerts.arn]
 
   tags = merge(local.ecosys_tags, { App = "shared" })

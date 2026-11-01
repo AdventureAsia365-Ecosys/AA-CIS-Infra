@@ -8,8 +8,9 @@ Source of truth: root `docs/audits/2026-11-01-S263-alerting-cost/diet.md` (keep 
   portal, web), RDS CPU / free storage / connections, NAT recover, Lambda Errors (4 Cognito triggers, TripPlanner
   browse / assembly / jobs, snapshot expiry), TripPlanner browse throttles, TripPlanner jobs not-run, SES bounce +
   complaint, RDS backup copy age (CRM-14), break-glass token, CRM KMS decrypt anomaly, and the admin session digest
-  Lambda errors (added upstream by #581 the same day, kept without its OK mail). 25 alarms, 28 billed alarm-metric
-  units (copy age has 2 metrics, the anomaly band 3).
+  Lambda errors (added upstream by #581 the same day, kept without its OK mail). After the review pass also the NAT
+  instance (guest OS) status check and the identity trigger unexpected-error alarm: 27 alarms, 30 billed
+  alarm-metric units (copy age has 2 metrics, the anomaly band 3).
 - **RDS "one alarm"**: kept as three separate alarms (CPU, free storage, connections). A metric-math alarm is billed
   per metric inside it, so one combined alarm costs the same 0.30 USD and its e-mail says less.
 - **In-app checks mail the alerts SNS topic** (`sns:Publish` on CIS, Booking, CRM task roles; env `ALERTS_TOPIC_ARN`
@@ -35,6 +36,13 @@ Source of truth: root `docs/audits/2026-11-01-S263-alerting-cost/diet.md` (keep 
   CRM-14 backup promise).
 - The ACP DLQ alarm is removed but the queue stays (no data resource destroyed).
 
+- Review pass (S263): **NAT instance check kept** on `StatusCheckFailed_Instance` (state alarm, ALARM + OK). A guest
+  OS failure is not fixed by recover, and nothing else sees it: ALB health checks stay in the VPC, and the in-app checks
+  reach SNS through the NAT (the VPC has only the S3 gateway endpoint). The Instance metric does not double the recover
+  alarm's e-mail on a system failure. **Identity trigger unexpected-error alarm kept** (threshold 1, ALARM only, metric
+  without `default_value`): the Errors alarm's burst threshold of 20 per 5 minutes is never reached on Dev traffic
+  when a broken release refuses every sign-in. Guard: `tools/terraform/tests/test_aa1025_alert_diet.py`.
+
 ## Tradeoffs
 
 - No RDS memory / latency / disk-queue alarm on Dev; weekly C4.3 review instead.
@@ -43,7 +51,9 @@ Source of truth: root `docs/audits/2026-11-01-S263-alerting-cost/diet.md` (keep 
 
 ## Should know
 
-- Expected plan: ~78 alarm destroys + 8 target-tracking alarms (AWS deletes them with the 4 policies), 20 metric
+- Expected plan (after the review pass): the identity unexpected-error filters and alarm are updated in place
+  (`default_value` dropped, `ok_actions` dropped), not destroyed; `nat-status-check-failed` is destroyed and
+  `nat-instance-check-failed` created. Otherwise ~78 alarm destroys + 8 target-tracking alarms (AWS deletes them with the 4 policies), 20 metric
   filter destroys, 1 dashboard destroy, 3 IAM policy destroys (PutMetricData) + 2 creates / 2 updates (sns:Publish),
   1 alarm create (`aa-cis-dev-api-no-healthy-task`), 1 log group import, flow logs replaced (2 + 2), WAF logging
   config + 2 log groups updated in place, Booking and CRM task definitions: new revision (env), the ops-probe Lambda:
