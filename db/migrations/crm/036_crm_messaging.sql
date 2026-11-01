@@ -1,4 +1,4 @@
--- migrate: expand
+-- migrate: contract
 -- Migration crm-036: AA-958 CRM-28 Module 9 WhatsApp + SMS (design v3 M9, §5.4, WF-11; data-privacy-integrations
 -- §2.8 group G and §6.4; BYO errata S247 §1 / §2: the agency's own Twilio only, AA holds no vendor account) — the
 -- agency's text-message connection with its per-agency webhook id, the WhatsApp templates it got approved in its own
@@ -108,10 +108,12 @@ CREATE INDEX IF NOT EXISTS messaging_connection_credential_idx ON crm.messaging_
 
 ALTER TABLE crm.messaging_connection ENABLE ROW LEVEL SECURITY;
 ALTER TABLE crm.messaging_connection FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON crm.messaging_connection;
 CREATE POLICY tenant_isolation ON crm.messaging_connection
     TO crm_owner, crm_app, crm_ai_reader, crm_insights, crm_support_reader, crm_eraser
     USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
     WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
+DROP POLICY IF EXISTS messaging_connection_hook_lookup ON crm.messaging_connection;
 CREATE POLICY messaging_connection_hook_lookup ON crm.messaging_connection
     FOR SELECT TO crm_app
     USING (
@@ -120,6 +122,7 @@ CREATE POLICY messaging_connection_hook_lookup ON crm.messaging_connection
     );
 COMMENT ON POLICY messaging_connection_hook_lookup ON crm.messaging_connection IS 'AA-958 (crm-036): the one live connection whose hook id the public Twilio webhook route was called with, only while app.messaging_hook_id is set (app.tenancy.messaging_hook_tx). SELECT only; the ingest_address_lookup pattern (crm-015).';
 
+DROP TRIGGER IF EXISTS messaging_connection_set_updated_at ON crm.messaging_connection;
 CREATE TRIGGER messaging_connection_set_updated_at
     BEFORE UPDATE ON crm.messaging_connection
     FOR EACH ROW EXECUTE FUNCTION crm.set_updated_at();
@@ -172,11 +175,13 @@ CREATE INDEX IF NOT EXISTS channel_template_connection_idx ON crm.channel_templa
 
 ALTER TABLE crm.channel_template ENABLE ROW LEVEL SECURITY;
 ALTER TABLE crm.channel_template FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON crm.channel_template;
 CREATE POLICY tenant_isolation ON crm.channel_template
     TO crm_owner, crm_app, crm_ai_reader, crm_insights, crm_support_reader, crm_eraser
     USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
     WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
 
+DROP TRIGGER IF EXISTS channel_template_set_updated_at ON crm.channel_template;
 CREATE TRIGGER channel_template_set_updated_at
     BEFORE UPDATE ON crm.channel_template
     FOR EACH ROW EXECUTE FUNCTION crm.set_updated_at();
@@ -226,6 +231,7 @@ CREATE TABLE IF NOT EXISTS crm.message_delivery (
 
 ALTER TABLE crm.message_delivery ENABLE ROW LEVEL SECURITY;
 ALTER TABLE crm.message_delivery FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON crm.message_delivery;
 CREATE POLICY tenant_isolation ON crm.message_delivery
     TO crm_owner, crm_app, crm_ai_reader, crm_insights, crm_support_reader, crm_eraser
     USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
@@ -233,6 +239,7 @@ CREATE POLICY tenant_isolation ON crm.message_delivery
 -- A row leaves with its message only (the cascade).
 REVOKE DELETE ON crm.message_delivery FROM crm_app;
 
+DROP TRIGGER IF EXISTS message_delivery_set_updated_at ON crm.message_delivery;
 CREATE TRIGGER message_delivery_set_updated_at
     BEFORE UPDATE ON crm.message_delivery
     FOR EACH ROW EXECUTE FUNCTION crm.set_updated_at();
