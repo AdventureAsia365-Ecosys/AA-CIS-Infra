@@ -252,6 +252,15 @@ accounts/
                                    (Identity Center calls the global STS endpoint, so the event lands there) -> SNS
                                    alerts; the mail carries session name, region, time, error code only (no ARN or
                                    account id). Live pattern check: tools/terraform/sec_alert_check.py. 0 USD/month)
+    security_sso_session_digest.tf (AA-873, S263: the follow-up mail. Hourly EventBridge Scheduler -> Lambda
+                                   aa-sec-<env>-admin-session-digest (lambda_src/sec_admin_session_digest, unittest
+                                   workflow sec-admin-session-digest-test.yml): finds the administrator sessions of the
+                                   rule above in CloudTrail Event history (us-east-1 + this region), and once a session is
+                                   over (expired, or idle 60 min) mails what it did: counts per service, every delete /
+                                   write call (resource names only), reads by count; every line masked (no account id,
+                                   ARN, full e-mail). Dedupe state: one JSON object sec-digest/admin-sessions.json in the
+                                   bronze bucket. Preview mode (read-only, no mail): sec_alert_check.py --digest-preview.
+                                   Log group 365 d, Errors alarm. ~0.10 USD/month)
     security_guardduty.tf         (AA-873 PR 3, S255: GuardDuty detector behind var.guardduty_enabled (default false;
                                    ~15-20 USD/month when on): features RDS_LOGIN_EVENTS + S3_DATA_EVENTS on, EBS malware /
                                    EKS audit / Lambda network / Runtime Monitoring explicitly off; rule
