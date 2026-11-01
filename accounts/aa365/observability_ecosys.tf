@@ -125,6 +125,34 @@ resource "aws_cloudwatch_metric_alarm" "nat_status_check_failed" {
   tags = merge(local.ecosys_tags, { App = "shared" })
 }
 
+# AA-1022 (S261 architecture review item d): EC2 recover action on the NAT instance. A failed SYSTEM status check
+# means the host hardware or AWS network under the instance failed; "recover" moves the instance to healthy hardware
+# and keeps its instance id, private IP, Elastic IP and network interface, so the private route table (default route
+# to that interface) works again without any Terraform change. An INSTANCE status check failure (the guest OS) is
+# not something recover fixes: the alarm above still e-mails for it.
+# AWS's recommended shape for recover alarms: Minimum over 60 s (a whole minute failed), 2 periods. t4g instances
+# also get AWS "simplified automatic recovery" by default; this alarm makes the action explicit and e-mails when it
+# fires. Recover needs the service-linked role AWSServiceRoleForCloudWatchEvents, which PutMetricAlarm creates on
+# first use (iam:CreateServiceLinkedRole for that service is in CloudWatchFullAccess, cicd.tf).
+# Cost: one standard-resolution alarm, 0.10 USD/month (this account is past the 10-alarm CloudWatch free tier).
+resource "aws_cloudwatch_metric_alarm" "nat_system_check_recover" {
+  alarm_name          = "aa-ecosys-${var.environment}-nat-system-check-recover"
+  alarm_description   = "NAT instance ${module.vpc.nat_instance_id} failed the EC2 SYSTEM status check for 2 minutes: CloudWatch recovers it onto healthy hardware (same instance id, IPs and network interface). Check egress after the OK e-mail.${local.runbook_suffix.incident}"
+  namespace           = "AWS/EC2"
+  metric_name         = "StatusCheckFailed_System"
+  dimensions          = { InstanceId = module.vpc.nat_instance_id }
+  statistic           = "Minimum"
+  period              = 60
+  evaluation_periods  = 2
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  threshold           = 1
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = ["arn:aws:automate:${var.aws_region}:ec2:recover", aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
+
+  tags = merge(local.ecosys_tags, { App = "shared" })
+}
+
 # AA-Booking service health, through its ALB target group (Container Insights is disabled on the
 # cluster, so ECS/ContainerInsights RunningTaskCount does not exist). HealthyHostCount < 1 means
 # no task is serving. Missing data does not alarm, so a deliberate desired_count = 0 stays quiet

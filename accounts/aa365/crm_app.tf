@@ -109,6 +109,9 @@ locals {
   # but no environment assume this role past the environment's protection rules (AA-933 review round). The
   # AA-Partner `dev` environment must exist with a deployment-branch policy of main only BEFORE this role is applied:
   # otherwise a branch job naming `environment: dev` auto-creates an unprotected environment with this subject.
+  # AA-1022 (S263): the trust also checks the `ref` claim (main), so a branch job is refused even if the environment's
+  # branch policy changes. Jobs on this role today, all `environment: dev` on main: deploy-dev.yml, deploy-web-dev.yml,
+  # deploy-portal-dev.yml and post-deploy-verify.yml (called by them or dispatched).
   crm_oidc_contexts = ["environment:dev"]
   crm_oidc_repo_id  = var.crm_github_repo_id != "" ? var.crm_github_repo_id : "*"
   crm_oidc_subjects = concat(
@@ -632,6 +635,7 @@ resource "aws_iam_role" "crm_app_deploy" {
       Condition = {
         StringEquals = {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
+          "token.actions.githubusercontent.com:ref" = "refs/heads/main" # AA-1022 (see crm_oidc_contexts)
         }
         StringLike = {
           "token.actions.githubusercontent.com:sub" = local.crm_oidc_subjects

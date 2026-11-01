@@ -92,7 +92,7 @@ jobs:
       DRY_RUN: ${{ inputs.dry_run == true }}
       HAS_CI_BOT_APP: ${{ vars.AA_CI_BOT_APP_ID != '' && secrets.AA_CI_BOT_PRIVATE_KEY != '' }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # For people reading the run: which trigger started it (the run's event is in the Actions list too).
       - name: Trigger
@@ -195,7 +195,7 @@ jobs:
         if: >-
           env.DRY_RUN != 'true' && env.HAS_CI_BOT_APP == 'true' &&
           (steps.plan.outputs.copies != '0' || (steps.plan.outputs.open != '0' && steps.gate.outputs.merge == 'true'))
-        uses: actions/create-github-app-token@v3
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           app-id: ${{ vars.AA_CI_BOT_APP_ID }}
           private-key: ${{ secrets.AA_CI_BOT_PRIVATE_KEY }}
