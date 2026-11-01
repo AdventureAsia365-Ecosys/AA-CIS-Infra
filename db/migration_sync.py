@@ -27,7 +27,12 @@ running), 1 with the reason when it must not:
     file it merges in the pass). With the pass going per owner in ascending number order, a copy never reaches main
     before a lower one, so migration-apply never sees a later file first (it also stops at any gap on its own);
   * every required check of the ruleset on main (`--ruleset`) present on the head commit and successful (or skipped),
-    and no check run failed. The ruleset enforces the checks again at merge time.
+    and no check failed. Only the LATEST run of each check (name + app) counts, as on GitHub's own merge box: a run
+    superseded by a newer one on the same commit (a cancelled duplicate `gitleaks` from two PR events, a re-run) is
+    ignored (AA-1032; S258 #510 and S263 #589 were refused on a cancelled duplicate and merged by hand). The ruleset
+    enforces the checks again at merge time.
+Every class is merged the same way (expand, contract, destructive): copy is not apply. migration-apply decides what
+runs: expand files, and on Dev contract files when every job table is idle (root ADR 0017a); destructive stays manual.
 `bot-login` prints CI_BOT_LOGIN (the workflow's close path compares with it, one source).
 Standard library only.
 """
@@ -135,7 +140,9 @@ def plan(repo_root: Path, sources: dict, registered: set | None) -> dict:
             note = {
                 "expand": "Expand file: `migration-apply` applies it on Dev after this merge (strict number order, "
                           "post-check, isolation probe), when `DB_AUTO_APPLY` is on.",
-                "contract": "Contract file: **manual DB Migrate apply needed** after this merge (MIG-4).",
+                "contract": "Contract file: on Dev `migration-apply` applies it after this merge once every job "
+                            "table is idle and no rerun wave is open (root ADR 0017a; strict number order, isolation "
+                            "probe). It stays manual (DB Migrate) only while `DB_AUTO_APPLY_CONTRACT` is `false`.",
                 "destructive": "Destructive file: **manual DB Migrate apply needed** (RDS snapshot, DRY RUN, MIG-12).",
             }[cls]
             if out_of_order:
@@ -190,6 +197,19 @@ def is_ci_bot_pr(pr: dict) -> bool:
     return user.get("login") == CI_BOT_LOGIN and user.get("type") == "Bot"
 
 
+def latest_runs(checks: list) -> list:
+    """The latest check run per (name, app) on the head commit: GitHub keeps every run (a cancelled duplicate from a
+    second PR event, a re-run), and only the newest one decides, as on the merge box and in the ruleset. Newest =
+    the highest check run id (ids only grow); a run without an id ranks lowest."""
+    newest: dict = {}
+    for c in checks:
+        key = (c.get("name"), ((c.get("app") or {}).get("id")))
+        cur = newest.get(key)
+        if cur is None or (c.get("id") or 0) >= (cur.get("id") or 0):
+            newest[key] = c
+    return list(newest.values())
+
+
 def merge_check(pr: dict, files: list, checks: list, head_file: bytes | None, sources: dict,
                 required: list, repo_root: Path = REPO_ROOT) -> tuple:
     """(code, reason): 0 merge, 2 wait, 1 refuse (see the module docstring)."""
@@ -219,6 +239,7 @@ def merge_check(pr: dict, files: list, checks: list, head_file: bytes | None, so
         return 1, f"{fm.group(1)} is not on the {owner} owner repo's main"
     if head_file is None or head_file != upstream.read_bytes():
         return 1, f"{fm.group(1)} at the PR head is not byte-identical to the owner repo's main"
+    checks = latest_runs(checks)
     by_name: dict = {}
     for c in checks:
         by_name.setdefault(c.get("name"), []).append(c)

@@ -188,6 +188,12 @@ class MirrorsAgreeTest(unittest.TestCase):
         self.assertEqual(list(rm.EXPAND_RLS_SCHEMAS), REGISTRY["expand_rls_schemas"])
         self.assertEqual(set(rm.OWNER_SCHEMAS), {s for o in SCHEMA_OWNERS.values() for s in o["schemas"]})
 
+    def test_contract_auto_apply_environments_mirror_the_registry(self):
+        # AA-1032 (root ADR 0017a): Dev only, and only environments DB Migrate knows.
+        self.assertEqual(list(rm.CONTRACT_AUTO_ENVIRONMENTS), REGISTRY["contract_auto_apply_environments"])
+        self.assertEqual(REGISTRY["contract_auto_apply_environments"], ["dev"])
+        self.assertTrue(set(REGISTRY["contract_auto_apply_environments"]) <= set(REGISTRY["environments"]))
+
     def test_isolation_probe_constants(self):
         self.assertEqual(probe.MASTER_ROLE, REGISTRY["master_role"])
         self.assertEqual(set(probe.OWNERS), set(SCHEMA_OWNERS))

@@ -69,6 +69,10 @@ expand_hot_schemas: [catalog]
 # security (crm: every tenant table is FORCE RLS). A new table with a tenant_id column needs both in any schema.
 # Mirrored by db/run_migration.py EXPAND_RLS_SCHEMAS.
 expand_rls_schemas: [crm]
+# AA-1032 (root ADR 0017a): the environments where migration-apply also applies CONTRACT files (no expand header, not
+# destructive), each after the all-job-tables-idle wait of DB Migrate apply. Dev only: a prod entry would need its own
+# ADR (prod keeps the manual contract apply). Mirrored by db/run_migration.py CONTRACT_AUTO_ENVIRONMENTS.
+contract_auto_apply_environments: [dev]
 
 owners:
   cis:

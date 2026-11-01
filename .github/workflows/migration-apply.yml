@@ -1,10 +1,19 @@
 name: Migration Apply (expand auto-apply)
 # AA-993 Phase E slice M3 (root ADR 0017 decisions 5, 6, 8; design §2 M3; critic points 1, 2, 4, 11): applies the
 # pending EXPAND copies of db/migrations/<cis|booking|tripplanner|crm>/ to the Dev database before the apps deploy the
-# code that needs them. Contract, destructive and out-of-order files are never applied here. Every file that stops an
-# owner (contract, out-of-order, a runner refusal: bytes differ from the owner's main, classified contract, no classify
-# evidence, lint; a gap or a copy PR not merged yet) is listed in the summary and noted on its copy PR, with what a
-# person does (db/apply_pending.py STOP_NOTES). roles/ files are never touched.
+# code that needs them. AA-1032 (root ADR 0017a): on Dev it applies the pending CONTRACT copies too, each one only when
+# every job table (shared.job, booking.job, crm.job) is idle and no rerun wave is open: the same idle wait as DB Migrate
+# apply (DM-11.4), with no override. Destructive (`-- migrate: destructive`) and out-of-order files are never applied
+# here. Every file that stops an owner (destructive, out-of-order, a runner refusal: bytes differ from the owner's
+# main, classified contract, a contract file that did not apply on the replay, no classify evidence, lint; a gap or a
+# copy PR not merged yet; a contract file while contract mode is off) is listed in the summary and noted on its copy
+# PR, with what a person does (db/apply_pending.py STOP_NOTES). roles/ files are never touched.
+#
+# Contract mode (AA-1032): on when the run's TARGET_ENV is in db/owners.yaml contract_auto_apply_environments (dev; the
+# runner and the task check it again, and the task refuses a contract bundle for any other environment) and the repo
+# variable DB_AUTO_APPLY_CONTRACT is not 'false' (the kill switch: set it to 'false' and contract files go back to a
+# manual DB Migrate apply, noted on their copy PR). Prod: a future prod copy of this workflow sets TARGET_ENV prod, so
+# contract files stay manual there (ADR 0017a decision 3).
 #
 # Switch: the repo variable DB_AUTO_APPLY. Anything but 'true' (unset by default) = LIST ONLY: the plan job runs and
 # the summary shows what would be applied (a person applies it with DB Migrate). Auto-apply also needs AA-CIS-Infra
@@ -27,7 +36,10 @@ name: Migration Apply (expand auto-apply)
 #           unregistered expand file with verdict ok until the first file a person must apply (never past a gap).
 #           Each file goes through the DB Migrate apply path: role switch, lock risk (exit 15), runtime post-check
 #           (exit 14), CIC validity (exit 16), statement_timeout 30 s, no job-table idle wait (ADR 0017 d5), but a file
-#           naming a hot table waits for an open rerun wave (deferred to the next run). 55P03 is retried twice.
+#           naming a hot table waits for an open rerun wave (deferred to the next run). A contract file (contract mode)
+#           takes DB Migrate's contract path: the all-job-tables-idle wait (3 x 20 s; still busy = deferred to the next
+#           run, never an override), the default timeouts, role switch and ownership post-check. 55P03 is retried
+#           twice. Per owner in key order; the first failure stops that owner (never past a gap).
 #   probe   BLOCKING DB Isolation Probe (reusable db-isolation-probe.yml, same narrow role), after a file was applied
 #           or when the task's result line is missing (applied=unknown: the apply job is red, and the probe and the
 #           dump still run). Red here = the run is red, and the app schema-gate (M4b) requires this run to be green.
@@ -77,6 +89,7 @@ jobs:
       apply: ${{ steps.final.outputs.apply }}
       manual: ${{ steps.final.outputs.manual }}
       allowed: ${{ steps.gate.outputs.allowed }}
+      contract: ${{ steps.gate.outputs.contract }}
     env:
       # pgvector/pgvector:0.8.1-pg15 (PostgreSQL 15 + vector 0.8.1, as RDS), pinned to its image index digest (as the
       # Copy Guard's "Expand classify" and the DB Schema Dump replay).
@@ -84,6 +97,11 @@ jobs:
       EVENT: ${{ github.event_name }}
       DRY_RUN: ${{ inputs.dry_run == true }}
       DB_AUTO_APPLY: ${{ vars.DB_AUTO_APPLY }}
+      # AA-1032: the database this workflow targets (the apply job's cluster, service and bucket are the dev ones).
+      # Contract mode needs it in db/owners.yaml contract_auto_apply_environments; DB_AUTO_APPLY_CONTRACT='false'
+      # switches contract mode off.
+      TARGET_ENV: dev
+      DB_AUTO_APPLY_CONTRACT: ${{ vars.DB_AUTO_APPLY_CONTRACT }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -143,15 +161,30 @@ jobs:
             echo "auto-apply off: $why (list only)"
             echo "- **list only:** $why. Expand files below are applied by hand with DB Migrate (one click each)." >> "$GITHUB_STEP_SUMMARY"
           fi
+          # AA-1032 (root ADR 0017a): contract files too, on Dev only, unless the kill switch says 'false'. The
+          # runner (apply_pending.contract_mode) and the task (read_bundle_contract) check the environment again.
+          if [ "$DB_AUTO_APPLY_CONTRACT" = "false" ]; then
+            echo "contract=false" >> "$GITHUB_OUTPUT"
+            echo "- contract files: **manual** (repo variable DB_AUTO_APPLY_CONTRACT=false)" >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$TARGET_ENV" = "dev" ]; then
+            echo "contract=true" >> "$GITHUB_OUTPUT"
+            echo "- contract files: **auto** on $TARGET_ENV, each when every job table is idle and no rerun wave is open; destructive files stay manual" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "contract=false" >> "$GITHUB_OUTPUT"
+            echo "- contract files: **manual** ($TARGET_ENV is not a contract auto-apply environment)" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: First plan (bytes against the owner main; is a classify needed?)
         id: first
         env:
           LIVE: ${{ steps.live.outputs.path }}
+          CONTRACT: ${{ steps.gate.outputs.contract }}
         run: |
           ARGS=(--source cis=owners/AA-CIS-App/api/migrations --source booking=owners/AA-Booking/migrations
-                --source tripplanner=owners/AA-TripPlanner-Web/migrations --source crm=owners/AA-Partner/api/migrations)
+                --source tripplanner=owners/AA-TripPlanner-Web/migrations --source crm=owners/AA-Partner/api/migrations
+                --environment "$TARGET_ENV")
           [ -n "$LIVE" ] && ARGS+=(--live "$LIVE")
+          [ "$CONTRACT" = "true" ] && ARGS+=(--contract)
           python3 db/apply_pending.py plan "${ARGS[@]}" --github-output "$GITHUB_OUTPUT"
 
       - name: Classify the pending files (expand post-check on a replay of Dev)
@@ -195,10 +228,13 @@ jobs:
         env:
           LIVE: ${{ steps.live.outputs.path }}
           CLASSIFY_OUTCOME: ${{ steps.classify.outcome }}
+          CONTRACT: ${{ steps.gate.outputs.contract }}
         run: |
           ARGS=(--source cis=owners/AA-CIS-App/api/migrations --source booking=owners/AA-Booking/migrations
-                --source tripplanner=owners/AA-TripPlanner-Web/migrations --source crm=owners/AA-Partner/api/migrations)
+                --source tripplanner=owners/AA-TripPlanner-Web/migrations --source crm=owners/AA-Partner/api/migrations
+                --environment "$TARGET_ENV")
           [ -n "$LIVE" ] && ARGS+=(--live "$LIVE")
+          [ "$CONTRACT" = "true" ] && ARGS+=(--contract)
           [ -s classify.json ] && ARGS+=(--classify classify.json)
           # A classify skipped on purpose (scheduled list-only run) is not a stop a person must look at.
           [ "$CLASSIFY_OUTCOME" = "skipped" ] && ARGS+=(--classify-skipped)
@@ -416,6 +452,7 @@ jobs:
             echo "### Migration Apply"
             echo "- plan: ${{ needs.plan.result }}, apply: ${{ needs.apply.result }}, probe: ${{ needs.probe.result }}"
             echo "- auto-apply allowed: ${{ needs.plan.outputs.allowed }}"
+            echo "- contract files auto-applied (Dev, root ADR 0017a): ${{ needs.plan.outputs.contract }}"
           } >> "$GITHUB_STEP_SUMMARY"
           OWNER="${GITHUB_REPOSITORY%%/*}"
           python3 db/apply_pending.py notes --manual "$MANUAL" --run-id "${{ github.run_id }}" > notes.jsonl

@@ -6,6 +6,7 @@ needs no AWS and no database, so every mode runs locally:
 
   python3 db/apply_pending.py plan --source cis=owners/AA-CIS-App/api/migrations … [--live schema.json | --registered keys.txt]
       [--classify classify.json] [--bundle bundle.json] [--plan-out plan.json] [--summary FILE] [--github-output FILE]
+      [--environment dev --contract]
   python3 db/apply_pending.py report --log task.log [--summary FILE] [--github-output FILE]
   python3 db/apply_pending.py notes --manual "contract:cis/301_x.sql,…" --run-id N
   python3 db/apply_pending.py pick-pr --pulls pulls.json --path cis/301_x.sql (--merged | --open)
@@ -17,7 +18,13 @@ plan (also the dry run): for every copy in db/migrations/<cis|booking|tripplanne
     copy PR's label or its merge, ADR 0017 d5) — missing on main or different = refused;
   * the file is re-classified: `--classify` is the JSON of `db/expand_check.py --classify` run in this workflow on a
     replay of Dev; only class `expand` passes. Without it the verdict is "no classify evidence", which the task treats
-    as a stop, so nothing is applied on a header alone.
+    as a stop, so nothing is applied on a header alone. A file WITHOUT the expand header passes when the replay
+    applied it cleanly (role switch and ownership post-check included) and its lint is clean: that is the evidence a
+    contract file needs (AA-1032); it is applied only in contract mode, below.
+Contract mode (AA-1032, root ADR 0017a): `--contract` with `--environment` in run_migration.CONTRACT_AUTO_ENVIRONMENTS
+(Dev) writes `"contract": true` into the bundle, and the plan forecasts contract files as `apply` steps (the task waits
+for idle job tables before each). Any other environment ignores `--contract` with a warning: contract files stay
+manual (prod unchanged). Destructive files are always a stop.
 Plus the gap list (bundle field `not_copied`): every `NNN_name.sql` on an owner's main above the floor (and at or above
 the owner's lowest copy here, as migration_sync.plan) whose number has no copy here yet, i.e. its copy PR has not
 merged. plan_pending stops the owner at that number, so a later copy is never applied past it (critic 2); the task also
@@ -63,18 +70,25 @@ MANUAL_MARK = "aa993-manual-apply"
 # What a person does for each stop kind (run_migration.STOP_KINDS): the summary line and the copy PR comment.
 STOP_NOTES = {
     rm.STOP_CONTRACT: ("manual DB Migrate apply needed",
-                       "it is a contract file (no `-- migrate: expand` header), so migration-apply never applies it. "
-                       "Run DB Migrate `check` then `apply` with `migration={path}`."),
+                       "it is a contract file (no `-- migrate: expand` header) and contract auto-apply is off for this "
+                       "run (Dev only, root ADR 0017a; the repo variable DB_AUTO_APPLY_CONTRACT is 'false'), so "
+                       "migration-apply does not apply it. Run DB Migrate `check` then `apply` with "
+                       "`migration={path}`."),
+    rm.STOP_DESTRUCTIVE: ("manual DB Migrate apply needed (destructive)",
+                          "it carries `-- migrate: destructive`, so migration-apply never applies it: DRY RUN counts "
+                          "to the tech lead, then DB Migrate `check` and `apply` with `migration={path}` (the "
+                          "workflow takes the RDS snapshot first; MIG-12)."),
     rm.STOP_OUT_OF_ORDER: ("manual DB Migrate apply needed",
                            "its number is below the owner's highest registered key (out of order), so migration-apply "
                            "never applies it. Run DB Migrate `check` then `apply` with `migration={path}`."),
     rm.STOP_LINT: ("fix in the owner repo",
-                   "it has the expand header but fails the runner's lint. Fix the file in the owner repo (the sync "
-                   "updates the copy), or apply it by hand with DB Migrate as a contract file."),
+                   "it fails the runner's lint. Fix the file in the owner repo with a new number (a copied file is "
+                   "immutable), or apply it by hand with DB Migrate."),
     rm.STOP_REFUSED_CLASSIFY: ("manual DB Migrate apply needed",
-                               "expand_check --classify on a replay of Dev found that it changes an existing object, so "
-                               "it is treated as a contract file. Change it in the owner repo, or run DB Migrate "
-                               "`check` then `apply` with `migration={path}`."),
+                               "expand_check --classify on a replay of Dev refused it: an expand file that changes an "
+                               "existing object (treated as contract), or a contract file that did not apply cleanly "
+                               "on the replay (the run's classify step names the error). Change it in the owner repo, "
+                               "or run DB Migrate `check` then `apply` with `migration={path}`."),
     rm.STOP_REFUSED_BYTES: ("copy differs from the owner's main",
                             "the copy here is not byte-identical to the owner repo's main (or that main could not be "
                             "read). Fix the copy so it matches the owner's main; nothing of this owner is applied "
@@ -128,13 +142,31 @@ def registered_from_live(live: dict) -> set:
     return {m["version"] for m in live.get("migrations") or [] if m.get("version")}
 
 
+# expand_check classify_one `applied`: the replay ran the file for real ("ok"), or a CIC file ran with its post-check.
+REPLAY_APPLIED = ("ok", "here")
+
+
+def contract_evidence(e: dict) -> str:
+    """"ok" when a file WITHOUT the expand header applied cleanly on the replay with a clean lint (AA-1032: the
+    evidence a contract file needs before contract mode applies it), else why not."""
+    if e.get("lint_errors"):
+        return f"contract file with lint error(s) on the replay: {'; '.join(e['lint_errors'][:2])}"
+    if e.get("applied") not in REPLAY_APPLIED:
+        return f"contract file did not apply cleanly on the replay of Dev: {e.get('applied') or 'not applied'}"
+    return "ok"
+
+
 def classify_verdicts(classify: dict | None) -> dict:
-    """{"owner/file": (verdict_kind, verdict)} from expand_check --classify JSON: ("ok", "ok") for class expand,
-    else the refused-classify kind and why not."""
+    """{"owner/file": (verdict_kind, verdict)} from expand_check --classify JSON: ("ok", "ok") for class expand and
+    for a header-less file with contract evidence (contract_evidence; applied only in contract mode), else the
+    refused-classify kind and why not."""
     out = {}
     for e in (classify or {}).get("files") or []:
         if e.get("class") == "expand":
             out[e["file"]] = ("ok", "ok")
+        elif e.get("header") != "expand":
+            why = contract_evidence(e)
+            out[e["file"]] = ("ok", "ok") if why == "ok" else (rm.STOP_REFUSED_CLASSIFY, why[:400])
         else:
             why = (e.get("findings") or []) + (e.get("lint_errors") or [])
             detail = "; ".join(why[:2]) or e.get("error") or (
@@ -225,7 +257,7 @@ def plan_lines(plan: dict, title: str) -> list:
         if not p["steps"]:
             lines.append(f"| {owner} | {p['head'] or '-'} | nothing pending | | |")
         for s in p["steps"]:
-            note = s.reason.replace("|", "/")[:250]
+            note = (s.reason or (f"{s.cls} file" if s.cls else "")).replace("|", "/")[:250]
             lines.append(f"| {owner} | {p['head'] or '-'} | {s.action} | `{s.path}` | {note} |")
     return lines
 
@@ -290,6 +322,19 @@ def _write_outputs(path: str | None, values: dict) -> None:
                 fh.write(f"{k}={v}\n")
 
 
+def contract_mode(environment: str | None, requested: bool) -> bool:
+    """AA-1032: contract files are auto-applied only when asked (--contract) AND the environment is one of
+    run_migration.CONTRACT_AUTO_ENVIRONMENTS (Dev). Asked elsewhere: a warning, contract files stay manual."""
+    if not requested:
+        return False
+    if environment in rm.CONTRACT_AUTO_ENVIRONMENTS:
+        print(f"PLAN contract files: auto-apply on ({environment}, root ADR 0017a): each waits for idle job tables")
+        return True
+    print(f"::warning::--contract ignored: environment {environment or '(none)'!r} is not one of "
+          f"{', '.join(rm.CONTRACT_AUTO_ENVIRONMENTS)} (contract files stay manual there)")
+    return False
+
+
 def cmd_plan(args) -> int:
     root = Path(args.repo_root)
     sources = parse_sources(args.source)
@@ -302,13 +347,16 @@ def cmd_plan(args) -> int:
         registered, basis = registered_from_live(live), f"DB Schema Dump of {live.get('generated_at', '?')}"
     else:
         registered, basis = None, ""
+    contract = contract_mode(args.environment, args.contract)
     files = build(root, sources, classify)
     missing = not_copied(root, sources)
     for path in missing:
         print(f"PLAN gap: {path} is on the owner's main but has no copy here yet (its copy PR has not merged)")
     if args.bundle:
         Path(args.bundle).write_text(json.dumps({"kind": rm.BUNDLE_KIND, "format": 1, "files": files,
-                                                 "not_copied": missing}, sort_keys=True), encoding="utf-8")
+                                                 "not_copied": missing, "contract": contract,
+                                                 "environment": args.environment or ""}, sort_keys=True),
+                                     encoding="utf-8")
     if registered is None:
         print("PLAN no registered keys (no --live dump artifact, no --registered list): no forecast; the task decides "
               "from the database, and without classify evidence it applies nothing")
@@ -318,8 +366,9 @@ def cmd_plan(args) -> int:
                 fh.write("### Expected plan\n\nNo DB Schema Dump artifact: no forecast, nothing to classify.\n")
         return 0
     gaps = [rm.not_copied_entry(path) for path in missing]
-    plan = rm.plan_pending(files + gaps, registered)
-    provisional = rm.plan_pending(build(root, sources, classify, assume_classified=True) + gaps, registered)
+    plan = rm.plan_pending(files + gaps, registered, contract=contract)
+    provisional = rm.plan_pending(build(root, sources, classify, assume_classified=True) + gaps, registered,
+                                  contract=contract)
     has_apply = any(s.action == "apply" for p in plan.values() for s in p["steps"])
     needs_classify = any(s.action == "apply" for p in provisional.values() for s in p["steps"])
     pending = sum(len(p["steps"]) for p in plan.values())
@@ -332,8 +381,11 @@ def cmd_plan(args) -> int:
         Path(args.plan_out).write_text(json.dumps({"basis": basis, "owners": plan_json(plan)}, indent=1,
                                                   sort_keys=True), encoding="utf-8")
     if args.summary:
+        mode = ("contract files applied when every job table is idle" if contract
+                else "contract files manual")
         with open(args.summary, "a", encoding="utf-8") as fh:
-            fh.write("\n".join(plan_lines(plan, f"### Expected plan ({basis}; the task re-reads the keys)")) + "\n")
+            fh.write("\n".join(plan_lines(plan, f"### Expected plan ({basis}; {mode}; the task re-reads the keys)"))
+                     + "\n")
     manual = [manual_item(s.kind, s.path) for p in plan.values() for s in p["steps"] if s.action == "stop"
               and not (args.classify_skipped and s.kind == rm.STOP_NO_EVIDENCE)]
     _write_outputs(args.github_output, {"needs_classify": str(needs_classify).lower(),
@@ -359,7 +411,9 @@ def report_lines(result: dict | None) -> list:
         return ["### Auto-apply result", "", "**Result unknown:** no `auto-result` line in the task log (the task did "
                 "not finish, or its log is incomplete). The run is red; the isolation probe and DB Schema Dump run "
                 "anyway. A person checks the task log and `shared.schema_versions`."]
-    lines = ["### Auto-apply result", "", f"Task exit {result.get('exit')} (bundle {result.get('bundle')}).", "",
+    contract = "contract files on (Dev)" if result.get("contract") else "contract files manual"
+    lines = ["### Auto-apply result", "",
+             f"Task exit {result.get('exit')} (bundle {result.get('bundle')}; {contract}).", "",
              "| Owner | Head before | File | Status | Note |", "|---|---|---|---|---|"]
     for owner, o in sorted((result.get("owners") or {}).items()):
         rows = o.get("files") or []
@@ -369,6 +423,8 @@ def report_lines(result: dict | None) -> list:
             note = r.get("reason") or (EXPLAIN.get(r.get("exit"), f"exit {r.get('exit')}") if r.get("exit") else "")
             if r.get("status") == "manual":
                 note = f"{STOP_NOTES[stop_kind(r.get('kind'))][0]}: {note}"
+            elif r.get("class"):
+                note = f"{r['class']} file{': ' + note if note else ''}"
             lines.append(f"| {owner} | {o.get('head_before') or '-'} | `{r['file']}` | {r['status']} | "
                          f"{note.replace('|', '/')[:250]} |")
     return lines
@@ -416,6 +472,9 @@ def main(argv: list | None = None) -> int:
     p.add_argument("--plan-out", help="write the expected plan JSON here")
     p.add_argument("--summary", help="append Markdown (GITHUB_STEP_SUMMARY)")
     p.add_argument("--github-output", help="append key=value outputs (GITHUB_OUTPUT)")
+    p.add_argument("--environment", help="target environment of the run (AA-1032: contract mode needs dev)")
+    p.add_argument("--contract", action="store_true",
+                   help="apply contract files too (only in run_migration.CONTRACT_AUTO_ENVIRONMENTS, root ADR 0017a)")
     p.add_argument("--classify-skipped", action="store_true",
                    help="the classify was skipped on purpose (scheduled list-only run): no-evidence stops are not manual")
     r = sub.add_parser("report", help="run summary from the task log")

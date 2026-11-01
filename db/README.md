@@ -178,7 +178,7 @@ the session advisory lock `pg_try_advisory_lock(993, 1)` (polled every 15 s, up 
 person's DB Migrate run and the auto-apply (M3) never overlap. `check` of any other file and READ_ONLY
 scripts take no lock.
 
-### Copy sync and expand auto-apply (AA-993 M3, root ADR 0017 decisions 2, 5, 6, 8; ADR 0011a)
+### Copy sync and expand auto-apply (AA-993 M3, root ADR 0017 decisions 2, 5, 6, 8; ADR 0011a; contract files on Dev: AA-1032, ADR 0017a)
 **Migration Sync** (`.github/workflows/migration-sync.yml`, every 10 min + manual, `dry_run` input) replaces the hand
 copy PR. Since S258 it does not wait for the cron: each owner repo's `migration-sync-wake.yml` (push to `main`
 touching its migrations folder) comments, as ci-bot with an Issues-write-only token for this repo, on the open issue
@@ -198,17 +198,22 @@ PR that `db/migration_sync.py merge-check` passes: author exactly `aa-ecosys-ci-
 new file of that owner and number,
 byte-identical to the owner's `main`, no lower-numbered owner file (at or above the lowest copy) still missing from
 `main` (it waits: `291` never merges before `290`, even while `290`'s checks run or it is refused), every required
-check of `tools/github/infra-main-ruleset.json` green. Every class is merged (copy is not apply). The merge
+check of `tools/github/infra-main-ruleset.json` green, judged on the **latest** run of each check (name + app): a
+cancelled duplicate run superseded by a green one (two PR events start `gitleaks` twice) no longer refuses the PR
+(AA-1032; `migration_sync.latest_runs`). Every class is merged (copy is not apply). The merge
 pass runs only while the repo is public and `main` carries the ruleset; otherwise a person merges the copy PRs.
 
 **Migration Apply** (`.github/workflows/migration-apply.yml`: push to `main` touching an owner dir, hourly, manual with
-`dry_run`; its own concurrency group `db-auto-apply`, never `db-migrate`) applies the pending **expand** files:
+`dry_run`; its own concurrency group `db-auto-apply`, never `db-migrate`) applies the pending **expand** files and,
+on Dev, the pending **contract** files (AA-1032, root ADR 0017a, "contract mode" below):
 
 1. `plan` (no AWS): owner clones + the latest dump's registered keys; `db/apply_pending.py plan` re-checks every
    copy's bytes against the owner's `main`, lists the owner files that have no copy yet (bundle `not_copied`), and
    forecasts the plan; when an expand file is next in line it runs
    `db/expand_check.py --classify` (replay of Dev on a PostgreSQL 15 container). A copy gets the verdict `ok` in the
-   task's bundle only when its bytes equal the owner's `main` AND the replay classifies it `expand`.
+   task's bundle only when its bytes equal the owner's `main` AND the replay classifies it `expand`; a file without
+   the expand header gets `ok` when its bytes match AND the replay applied it cleanly (role switch and ownership
+   post-check included) with a clean lint (`apply_pending.contract_evidence`).
 2. `apply` (environment `dev-db-auto`, role `aa-cis-infra-db-auto-apply`, uploads under `db-auto-apply/` only): one
    migrator task, `MIGRATION_MODE=apply-pending` (`run_apply_pending` in `run_migration.py`). It takes the apply lock
    for the whole run, reads the registered keys under it, and per owner (cis, booking, tripplanner, crm; never
@@ -219,7 +224,10 @@ pass runs only while the repo is public and `main` carries the ruleset; otherwis
    owner file in `not_copied`, is a stop the task enforces itself). Each file goes through the DB Migrate apply path (role switch, lock risk exit 15, post-check exit 14, CIC
    validity exit 16, 30 s statement timeout, no job-table idle wait, no override, no snapshot); a lock timeout (55P03)
    is retried after 30 s and 90 s; a file naming a hot table during an open rerun wave is deferred to the next run; a
-   failed file stops its owner, the other owners still run. Task log: `MIGRATE auto: …` lines and one
+   failed file stops its owner, the other owners still run. In contract mode a contract file takes DB Migrate's
+   contract path instead: default timeouts and the **all-job-tables-idle wait** (`shared.job`, `booking.job`,
+   `crm.job` and open `shared.rerun_wave` rows, 3 x 20 s, never an override); still busy = deferred (exit 7, the hourly
+   run retries), and the owner's later files wait behind it. Task log: `MIGRATE auto: …` lines and one
    `MIGRATE auto-result {json}` line, summarised by `db/apply_pending.py report`. No such line (even with task exit 0)
    = result unknown: the apply job is red and `applied=unknown` still runs the probe and the dump.
 3. `probe`: the DB Isolation Probe as a **blocking** job (`db-isolation-probe.yml` called as a reusable workflow with
@@ -227,10 +235,19 @@ pass runs only while the repo is public and `main` carries the ruleset; otherwis
    `dev-db-auto` itself), after a file was applied or when the result is unknown.
 4. `dump`: DB Schema Dump with `after_apply=true` (same condition).
 5. `summary`: every owner's stop is on the run's manual list as `kind:owner/file` (`run_migration.STOP_KINDS`:
-   contract, out-of-order, lint, refused-bytes, refused-classify, no-evidence, refused, not-copied, gap, duplicate)
+   contract, destructive, out-of-order, lint, refused-bytes, refused-classify, no-evidence, refused, not-copied, gap,
+   duplicate)
    and gets one note per kind on its copy PR (the MERGED PR that added the file, found from the commit that added it;
    the open copy PR for a file not copied yet) saying what a person does (`db/apply_pending.py STOP_NOTES`). A
    scheduled list-only run skips the classify on purpose, so its `no-evidence` stops are not noted.
+
+**Contract mode (AA-1032, root ADR 0017a):** on when the workflow's `TARGET_ENV` (`dev`) is in `db/owners.yaml`
+`contract_auto_apply_environments` and the repo variable `DB_AUTO_APPLY_CONTRACT` is not `false` (the kill switch;
+unset = on). `apply_pending.py plan --environment dev --contract` writes `"contract": true, "environment": "dev"` into
+the bundle; the task (`read_bundle_contract`) refuses (exit 10) a contract bundle for any other environment, so prod
+keeps the manual contract apply. Destructive files (`-- migrate: destructive`) are always a stop (`destructive`):
+DRY RUN to the tech lead, then DB Migrate (snapshot). With the kill switch `false`, contract files are listed and
+noted on their copy PR as before (manual DB Migrate `check` + `apply`).
 
 **Switch:** the repo variable `DB_AUTO_APPLY`. Anything but `true` (unset by default), a private repo, or a `main`
 without the ruleset = **list only**: the plan runs, the summary shows what would be applied, a person applies with

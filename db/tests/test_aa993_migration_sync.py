@@ -88,8 +88,9 @@ class PlanTest(unittest.TestCase):
             self.assertIn("Refs AA-993", c["commit"])
             self.assertNotRegex(c["commit"], r"(?i)\b(fixes|closes)\b")
         self.assertEqual([c["class"] for c in copies], ["contract", "expand", "destructive"])
-        self.assertIn("manual DB Migrate apply needed", copies[0]["body"])
+        self.assertIn("once every job table is idle", copies[0]["body"])     # AA-1032: Dev applies contract
         self.assertIn("migration-apply", copies[1]["body"])
+        self.assertIn("manual DB Migrate apply needed", copies[2]["body"])     # destructive stays manual
 
     def test_number_already_used_is_a_conflict_not_a_copy(self):
         self.r.copy("033_a.sql")
