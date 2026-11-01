@@ -284,7 +284,7 @@ resource "aws_cloudwatch_metric_alarm" "rds_connections_high" {
 # S263 alert diet (AA-1025, root docs/audits/2026-11-01-S263-alerting-cost/diet.md): what left CloudWatch.
 #
 # Removed here: RDS FreeableMemory, CPUSurplusCreditsCharged, Read/WriteLatency, DiskQueueDepth (never fired; C4.3
-# weekly review), the NAT StatusCheckFailed twin of the recover alarm, the Booking unhealthy-hosts / CPU / API 5XX and
+# weekly review), the NAT combined StatusCheckFailed alarm (now Instance-only, above), the Booking unhealthy-hosts / CPU / API 5XX and
 # the CIS API 5XX / latency alarms (an outage is the no-healthy-task alarm of each service, an app error is a Sentry
 # event), the assembly throttles alarm, and the AA-832 / AA-751 custom-metric alarms below, which became IN-APP checks
 # that read the same database state and mail the same alerts topic (sns:Publish, granted below and in

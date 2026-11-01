@@ -35,7 +35,7 @@
 #     and the ingest key policy SesReceiptEncrypt; neither policy changes shape.
 #   - The app polls raw/ once a minute (its worker hook MailIngestScan queues crm_mail_ingest only when objects exist)
 #     instead of an SNS / S3 event: no new topic, queue or Lambda. An unknown or inactive address is deleted with a count-only log line and the
-#     metric MailIngestDropped in the existing AA/Jobs/Crm namespace (no new PutMetricData grant).
+#     dropped count on the ops_metrics_sampled log line (S263, AA-1025: no CloudWatch metric any more).
 #   - OAuth client of the agencies' send-as: one secret shell crm/<env>/mail-oauth (JSON {google_client_id,
 #     google_client_secret, ms_client_id, ms_client_secret}; no secret_version here, the values are set out of band).
 #     The task maps it as MAIL_OAUTH only with var.crm_mail_oauth_enabled: a task whose valueFrom secret has no value
