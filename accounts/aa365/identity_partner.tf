@@ -17,12 +17,13 @@
 #     Adventure Asia look as EXTERNAL (local.id_branding_settings_external: no "Staff sign-in" header);
 #   - the WAF association when identity_waf_enabled (identity.tf web ACL, off by default);
 #   - the CRM API task role's partner-pool allow-list of decision 5 (AdminCreateUser, ListUsers, AdminDisableUser,
-#     AdminUserGlobalSignOut on this pool only) and AA system mail (ses_send, transactional stream) for the
-#     invitation and owner-recovery mails (crm_app.tf passes the pool, client, origin and sender to the task);
+#     AdminUserGlobalSignOut on this pool only; S263 root ADR 0006b amendment A1: AdminDeleteUser for the clean-up of
+#     never-signed-in accounts) and AA system mail (ses_send, transactional stream) for the invitation and
+#     owner-recovery mails (crm_app.tf passes the pool, client, origin and sender to the task);
 #   - two EventBridge -> SNS alerts on the partner pool (identity_alerts.tf topic): a change of the pool's MFA /
 #     configuration by anyone but the Terraform apply role, and any admin call that bypasses the invitation +
-#     authenticator model (password set or reset, MFA preference, user deletion, AdminCreateUser by anyone but the
-#     CRM API).
+#     authenticator model (password set or reset, MFA preference, user deletion by anyone but the CRM API,
+#     AdminCreateUser by anyone but the CRM API).
 #
 # PASSKEYS (deliberate, recorded in AA-Partner docs/implementation-notes/AA-939.md): the pool starts with password +
 # authenticator (the ADR's "TOTP-only fallback"). AA-930 found that a passkey satisfies required MFA only with
@@ -300,10 +301,15 @@ resource "aws_iam_role_policy" "crm_ecs_task_partner_pool" {
     Statement = [{
       # Invitation claim (create or find the account), member removal (sign out), owner recovery notice (address of
       # an owner). AdminDisableUser is allowed by the ADR but not called by the app today (a person may belong to
-      # several agencies). Nothing else: no password, MFA or attribute writes.
+      # several agencies). S263 (root ADR 0006b amendment A1, AA-939 follow-up): AdminDeleteUser, used only by the
+      # partner-account clean-up (AA-Partner app/members/accounts.py, job crm_partner_accounts) for an account that
+      # never signed in (FORCE_CHANGE_PASSWORD, re-read right before the delete) and that no member, live invitation
+      # or Content studio invitation needs; the app audits each delete in the agency's log. Worst case with a
+      # compromised CRM API: partner accounts deleted (denial of service), never a takeover. Nothing else: no
+      # password, MFA or attribute writes.
       Sid      = "PartnerPoolInvitationAllowList"
       Effect   = "Allow"
-      Action   = ["cognito-idp:AdminCreateUser", "cognito-idp:ListUsers", "cognito-idp:AdminDisableUser", "cognito-idp:AdminUserGlobalSignOut"]
+      Action   = ["cognito-idp:AdminCreateUser", "cognito-idp:ListUsers", "cognito-idp:AdminDisableUser", "cognito-idp:AdminUserGlobalSignOut", "cognito-idp:AdminDeleteUser"]
       Resource = aws_cognito_user_pool.partner.arn
     }]
   })
@@ -366,7 +372,7 @@ resource "aws_cloudwatch_event_target" "identity_partner_pool_config" {
 
 resource "aws_cloudwatch_event_rule" "identity_partner_admin_bypass" {
   name        = "${local.id_prefix}-partner-admin-bypass"
-  description = "AA-939: a partner pool admin call outside the invitation + authenticator model (password set/reset, MFA preference, delete, or AdminCreateUser by anyone but the CRM API).${local.runbook_suffix.incident}"
+  description = "AA-939: a partner pool admin call outside the invitation + authenticator model (password set/reset, MFA preference, or AdminCreateUser / AdminDeleteUser by anyone but the CRM API).${local.runbook_suffix.incident}"
   state       = "ENABLED"
 
   event_pattern = jsonencode({
@@ -378,9 +384,12 @@ resource "aws_cloudwatch_event_rule" "identity_partner_admin_bypass" {
         userPoolId = [aws_cognito_user_pool.partner.id]
       }
       "$or" = [
-        { eventName = ["AdminSetUserPassword", "AdminResetUserPassword", "AdminSetUserMFAPreference", "AdminDeleteUser", "AdminDeleteUserAttributes", "AdminUpdateUserAttributes", "AdminEnableUser", "AdminLinkProviderForUser"] },
+        { eventName = ["AdminSetUserPassword", "AdminResetUserPassword", "AdminSetUserMFAPreference", "AdminDeleteUserAttributes", "AdminUpdateUserAttributes", "AdminEnableUser", "AdminLinkProviderForUser"] },
         {
-          eventName = ["AdminCreateUser"]
+          # S263 (root ADR 0006b amendment A1): the CRM API deletes never-signed-in accounts and audits each delete
+          # in the agency's log; only that role is excluded, every other caller (a person, the e2e identity tool,
+          # any other role or a static key) still alerts.
+          eventName = ["AdminCreateUser", "AdminDeleteUser"]
           userIdentity = {
             sessionContext = {
               sessionIssuer = {
@@ -408,7 +417,7 @@ resource "aws_cloudwatch_event_target" "identity_partner_admin_bypass" {
       time      = "$.detail.eventTime"
       error     = "$.detail.errorCode"
     }
-    input_template = "\"[aa-identity] PARTNER pool ${aws_cognito_user_pool.partner.id}: <event> by <principal> at <time> (errorCode: <error>). Agency people are created only by the CRM invitation flow and reset only by the lost-factor runbook after the agency owner confirms (AA-939 notes). Unless this was that runbook or the e2e identity tool, find the user (ListUsers by time), disable it and sign it out everywhere.${local.runbook_suffix.incident}\""
+    input_template = "\"[aa-identity] PARTNER pool ${aws_cognito_user_pool.partner.id}: <event> by <principal> at <time> (errorCode: <error>). Agency people are created only by the CRM invitation flow, deleted (never signed in) only by the CRM API's account clean-up, and reset only by the lost-factor runbook after the agency owner confirms (AA-939 notes). Unless this was that runbook or the e2e identity tool, find the user (ListUsers by time), disable it and sign it out everywhere.${local.runbook_suffix.incident}\""
   }
 }
 
