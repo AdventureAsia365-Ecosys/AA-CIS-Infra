@@ -456,8 +456,10 @@ class RunTest(unittest.TestCase):
         self.assertIn("still open at preview time", summary["messages"][0]["message"])
 
     def test_preview_needs_a_window(self):
-        with self.assertRaises(ValueError):
-            h.run(clients(), self.sns, self.s3, env=ENV, now=T0, event={"preview": True, "since": iso(T0)})
+        for bad in ({"since": iso(T0)}, {"since": iso(T0 + timedelta(hours=1)), "until": iso(T0 + timedelta(hours=2))},
+                    {"since": iso(T0), "until": iso(T0 - timedelta(hours=1))}):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                h.run(clients(), self.sns, self.s3, env=ENV, now=T0, event={"preview": True, **bad})
 
     def test_cli_session_found_by_access_key_when_username_lookup_misses(self):
         # Username lookups find nothing (rows carry another Username); the AccessKeyId lookup finds the calls.

@@ -571,9 +571,9 @@ def run(clients: dict, sns, s3, *, env: dict, now: datetime, event: dict | None 
 
     if preview:
         since, until = parse_time(event.get("since")), parse_time(event.get("until"))
+        until = min(until, now) if until else None
         if not since or not until or since >= until:
-            raise ValueError("preview needs 'since' < 'until' (ISO 8601)")
-        until = min(until, now)
+            raise ValueError("preview needs 'since' < 'until' (ISO 8601), 'since' in the past")
         store, state = None, {"version": STATE_VERSION, "sessions": {}}
     else:
         since, until = now - lookback, now
