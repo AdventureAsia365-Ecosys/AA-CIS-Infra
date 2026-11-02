@@ -768,6 +768,19 @@ makes CI Terraform Plan fail with 403.
     fixture `tools/terraform/tests/fixtures/plan_guarded.json`, with no AWS step; the expected
     result is a red run at "Plan guard". Tests: `tf-plan-guard-test.yml`. The guard covers the CI
     apply only; a local admin apply is not guarded, so read the plan.
+  - **Job-idle gate (AA-1023, data standards DM-11.4 for Infra applies):** `tools/terraform/job_idle_scope.py`
+    reads the same plan JSON; when the plan changes an `aws_ecs_service`, `aws_ecs_cluster`,
+    `aws_ecs_cluster_capacity_providers`, `aws_db_instance` or `aws_db_parameter_group` (a new
+    `aws_ecs_task_definition` revision alone is only listed: every service ignores `task_definition`), the step
+    "Job-idle gate" runs `.github/scripts/job-idle-gate.sh` right before the apply. It runs the DB Migrate migrator
+    task once with `MIGRATION_MODE=idle-gate` (`db/run_migration.py`: read-only session as `db_migrator`, the same
+    job-table query, exempt kinds and 3 x 20 s re-check as DB Migrate apply, no apply lock) and refuses the apply
+    while `shared.job`, `booking.job`, `crm.job` or `tripplanner.job` holds a queued (due within the horizon) or
+    running non-exempt row, or a `shared.rerun_wave` is open. Fail closed: no clean answer refuses. The input
+    `override_busy_jobs` (tech lead only, one line, at most 200 characters) lets it through with a warning, also
+    when the DB or the migrator task is what the apply fixes. `idle_gate_check=true` runs only the gate (job
+    `idle-gate-check`, no Terraform): the drill and proof path. Tests: `db/tests/test_aa1023_idle_gate.py`,
+    `tools/terraform/tests/test_aa1023_job_idle_scope.py`.
   - Locally, applying the aa365 stack needs MFA-exported credentials because Terraform will not
     prompt for MFA on its own:
     ```
