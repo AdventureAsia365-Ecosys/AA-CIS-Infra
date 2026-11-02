@@ -26,6 +26,18 @@ on:
         type: choice
         options: [aa365, management]
         default: aa365
+      # AA-1023 (DM-11.4 for Infra applies): job-idle gate. When the plan changes an ECS service / cluster or the RDS
+      # instance / parameter group (tools/terraform/job_idle_scope.py), the apply waits for idle job tables first:
+      # .github/scripts/job-idle-gate.sh runs the DB Migrate migrator task in MIGRATION_MODE=idle-gate (shared.job,
+      # booking.job, crm.job, tripplanner.job + open rerun waves, same check as DB Migrate apply) and refuses while busy.
+      override_busy_jobs:
+        description: "Tech lead only: reason to apply although a job table is busy or a rerun wave is open (empty = refuse when busy)"
+        type: string
+        default: ""
+      idle_gate_check:
+        description: "Run only the job-idle gate (no Terraform): a red run = busy, green = idle (drill / proof)"
+        type: boolean
+        default: false
 
 # One apply at a time across both roots (one Terraform process; the plans never race a lock).
 concurrency:
@@ -44,7 +56,8 @@ jobs:
     # AA-866: main only. Main-only is enforced by the IAM ref condition on the apply role; this job
     # guard is the second layer. Environment rules tracked in Linear AA-873 (TL-7).
     # AA-1004: root = management runs the job below instead (a self-test still runs here).
-    if: github.ref == 'refs/heads/main' && (inputs.root != 'management' || inputs.guard_selftest)
+    # AA-1023: idle_gate_check runs only the job idle-gate-check below.
+    if: github.ref == 'refs/heads/main' && !inputs.idle_gate_check && (inputs.root != 'management' || inputs.guard_selftest)
 
     # AA-893: true only after a real apply that changed something (read by docs-gen-dispatch below).
     # A failed apply fails this job, so docs-gen-dispatch (needs: success) does not run then.
@@ -61,15 +74,22 @@ jobs:
       GUARD_SELFTEST: ${{ inputs.guard_selftest && 'true' || 'false' }}
       ALLOW_GUARDED: ${{ inputs.allow_guarded && 'true' || 'false' }}
       ALLOW_REASON: ${{ inputs.allow_reason }}
+      # AA-1023: the job-idle gate's override reason (via env, never interpolated into a script).
+      OVERRIDE: ${{ inputs.override_busy_jobs }}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # AA-846: fail fast, before any AWS step, when allow_guarded comes without a reason.
+      # AA-1023: and when override_busy_jobs is blank or not one line of at most 200 characters.
       - name: Check guard inputs
         run: |
           if [ "$ALLOW_GUARDED" = "true" ] && [ "$GUARD_SELFTEST" != "true" ] && [ -z "$(printf '%s' "$ALLOW_REASON" | tr -d '[:space:]')" ]; then
             echo "allow_guarded=true needs a non-empty allow_reason" >&2
+            exit 1
+          fi
+          if [ -n "$OVERRIDE" ] && { [ -z "$(printf '%s' "$OVERRIDE" | tr -d '[:space:]')" ] || [ "${#OVERRIDE}" -gt 200 ] || [[ "$OVERRIDE" == *$'\n'* ]]; }; then
+            echo "override_busy_jobs must be empty, or one non-blank line of at most 200 characters" >&2
             exit 1
           fi
 
@@ -149,6 +169,14 @@ jobs:
           terraform-bin show -json tfplan > "$RUNNER_TEMP/tfplan.json"
           echo "PLAN_JSON=$RUNNER_TEMP/tfplan.json" >> "$GITHUB_ENV"
 
+      # AA-1023: does the plan restart or replace an ECS task or the RDS instance? Read before the plan guard deletes
+      # the JSON; prints addresses and actions only. An unreadable plan counts as gated (fail closed).
+      - name: Job-idle scope
+        id: scope
+        if: env.GUARD_SELFTEST != 'true' && steps.plan.outputs.exitcode == '2'
+        working-directory: ${{ github.workspace }}
+        run: python3 -B tools/terraform/job_idle_scope.py "$PLAN_JSON" --github-output "$GITHUB_OUTPUT" --summary "$GITHUB_STEP_SUMMARY"
+
       - name: Plan guard
         if: env.GUARD_SELFTEST == 'true' || steps.plan.outputs.exitcode == '2'
         working-directory: ${{ github.workspace }}
@@ -172,6 +200,18 @@ jobs:
           echo "SELF-TEST FAILED: the plan guard accepted the guarded fixture" | tee -a "$GITHUB_STEP_SUMMARY" >&2
           exit 1
 
+      # AA-1023 (DM-11.4): right before the apply, only when the scope above is gated. Refuses while a job table is
+      # busy or a rerun wave is open (3 x 20 s re-check); override_busy_jobs (tech lead only) lets it through, logged.
+      - name: Job-idle gate
+        if: env.GUARD_SELFTEST != 'true' && steps.plan.outputs.exitcode == '2' && steps.scope.outputs.gated == 'true'
+        working-directory: ${{ github.workspace }}
+        env:
+          CLUSTER: aa-cis-dev-cluster
+          SERVICE: aa-cis-dev-api
+          BUCKET: aa-cis-bronze-005097885195
+          LOG_GROUP: /ecs/aa-cis-dev
+        run: bash .github/scripts/job-idle-gate.sh
+
       - name: Terraform Apply
         if: env.GUARD_SELFTEST != 'true' && steps.plan.outputs.exitcode == '2'
         run: |
@@ -182,6 +222,35 @@ jobs:
       - name: Print outputs
         if: env.GUARD_SELFTEST != 'true' && steps.plan.outputs.exitcode == '2'
         run: terraform output
+
+  # AA-1023: the job-idle gate alone (input idle_gate_check): no Terraform, no plan. Green = every job table idle and
+  # no open rerun wave; red = busy (or no clean answer). The game-day proof seeds a busy row, dispatches this (red),
+  # cancels the row and dispatches again (green). override_busy_jobs is honoured here too.
+  idle-gate-check:
+    name: Job-idle gate (check only)
+    runs-on: ubuntu-latest
+    environment: prod
+    if: github.ref == 'refs/heads/main' && inputs.idle_gate_check && inputs.root != 'management' && !inputs.guard_selftest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Job-idle gate
+        env:
+          CLUSTER: aa-cis-dev-cluster
+          SERVICE: aa-cis-dev-api
+          BUCKET: aa-cis-bronze-005097885195
+          LOG_GROUP: /ecs/aa-cis-dev
+          OVERRIDE: ${{ inputs.override_busy_jobs }}
+        run: bash .github/scripts/job-idle-gate.sh
 
   # AA-1004: the management account root (accounts/management/README.md §11), in two jobs so nobody approves blind:
   #
