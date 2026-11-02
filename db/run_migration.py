@@ -35,6 +35,12 @@ same value, so no new environment variable reaches the task:
                         until the first file a person must apply. On Dev (bundle `contract`, root ADR 0017a,
                         AA-1032) contract files are applied too, after the same all-job-tables-idle wait as
                         DB Migrate apply. See run_apply_pending below.
+  idle-gate             AA-1023 (terraform-apply.yml, .github/scripts/job-idle-gate.sh): no file. The same idle check
+                        as apply (every owner job table + open shared.rerun_wave, IDLE_EXEMPT_KINDS, re-checked
+                        IDLE_WAITS x IDLE_WAIT_S), read-only session as the task's login (db_migrator), no apply lock.
+                        Exit 0 when idle, 7 while still busy, unless MIGRATION_IDLE_OVERRIDE carries a reason (then 0,
+                        logged). Changes nothing. A Terraform apply that touches the ECS services or the RDS instance
+                        runs it first (DM-11.4 for Infra applies).
 
 Every migration self-registers in shared.schema_versions (repo convention), so:
   check — print whether the version is applied, change nothing
@@ -120,7 +126,7 @@ a roles/ file, set-password or run-script whose in-task master DSN (MASTER_SECRE
 fails to log in, or logs in as someone other than the master.
 Exit codes: 0 ok · 2 sha256 mismatch · 3 file ran but did not register · 4 lint error ·
 5 destructive apply without a snapshot · 6 PostgreSQL error (lock/statement timeout included) ·
-7 apply refused: a job table is busy or a rerun wave is open · 8 role refused (roles/ under a
+7 apply (or idle-gate) refused: a job table is busy or a rerun wave is open · 8 role refused (roles/ under a
 non-master login, login not a member of the live owner, the owner cannot register the version,
 unknown dir, a file that cannot run under the switch, or a `SET LOCAL ROLE` target the login role
 is not a member of) · 9 ownership post-check failed (rolled
@@ -2058,6 +2064,7 @@ async def run_switched(conn, sql: str, d: Directives, plan: RolePlan, owner_dir:
 SET_PASSWORD = "set-password"
 RUN_SCRIPT = "run-script"
 APPLY_PENDING = "apply-pending"                # AA-993 M3: migration-apply.yml (bundle of copies, see below)
+IDLE_GATE = "idle-gate"                        # AA-1023: terraform-apply.yml job-idle gate (no file, read-only)
 SECRETS_REGION = "us-west-1"                  # acc2: every DSN secret of the shared RDS lives here
 PASSWORD_MIN_LEN = 32                         # plan S17: a new random password of at least 32 characters
 # Printable ASCII only: PostgreSQL's SASLprep returns pure ASCII unchanged, so the verifier computed here
@@ -2077,13 +2084,13 @@ WHOAMI_SQL = ("SELECT current_user::text AS current_user, "
 
 @dataclass(frozen=True)
 class Mode:
-    kind: str           # check | apply | set-password | run-script
+    kind: str           # check | apply | apply-pending | idle-gate | set-password | run-script
     arg: str = ""       # set-password: the role; run-script: db/scripts/<name>.py
 
 
 def parse_mode(value: str) -> Mode:
     """MIGRATION_MODE → Mode; ValueError (exit 10) for anything outside the allowlists."""
-    if value in ("check", "apply", APPLY_PENDING):
+    if value in ("check", "apply", APPLY_PENDING, IDLE_GATE):
         return Mode(value)
     kind, sep, arg = (value or "").partition(":")
     if kind == SET_PASSWORD and sep:
@@ -2095,7 +2102,7 @@ def parse_mode(value: str) -> Mode:
         if not SCRIPT_PATH_RE.fullmatch(arg):
             raise ValueError(f"run-script: {arg!r} is not a db/scripts/<name>.py path")
         return Mode(kind, arg)
-    raise ValueError(f"unknown MIGRATION_MODE {value!r} (check, apply, apply-pending, set-password:<role>, "
+    raise ValueError(f"unknown MIGRATION_MODE {value!r} (check, apply, apply-pending, idle-gate, set-password:<role>, "
                      f"run-script:db/scripts/<name>.py)")
 
 
@@ -2518,6 +2525,38 @@ async def run_script(env, path: str, fetch, connect, sleep, get_secret=_get_secr
         await conn.close()
 
 
+async def run_idle_gate(env, connect, sleep) -> int:
+    """AA-1023: the job-idle gate of terraform-apply.yml (DM-11.4 for Infra applies). No file, nothing written: a
+    read-only session as the task's login (the role DB Migrate's idle check runs as), the same report and wait as
+    apply (job_tables_busy, wait_until_idle), then 0 when idle and 7 while still busy. MIGRATION_IDLE_OVERRIDE (the
+    workflow input override_busy_jobs, the tech lead only) turns a busy answer into 0 with a WARNING line. A table
+    that cannot be read counts as busy (fail closed); a failed login raises, so the task exits non-zero."""
+    settings = dict(DEFAULT_SETTINGS, default_transaction_read_only="on")
+    conn = await connect(env["DATABASE_URL"], settings)
+    try:
+        login = await conn.fetchval(SESSION_USER_SQL)
+        log(f"ran as: {login} (idle-gate, read-only, no apply lock)")
+        report = await job_tables_busy(conn)
+        log_report(report)
+        override = (env.get("MIGRATION_IDLE_OVERRIDE") or "").strip()
+        if override:
+            if any(st.busy for st in report):
+                log(f"WARNING: idle gate OVERRIDDEN ({override}), busy: {busy_summary(report)}")
+            else:
+                log(f"note: idle-gate override set ({override}) but nothing is busy")
+            log("idle-gate: pass (override)")
+            return 0
+        report = await wait_until_idle(conn, first=report, sleep=sleep)
+        if any(st.busy for st in report):
+            log(f"ERROR: idle-gate refused — busy: {busy_summary(report)}. Wait until every job table is idle and no "
+                f"rerun wave is open, or re-dispatch with override_busy_jobs=<reason> (tech lead only)")
+            return 7
+        log("idle-gate: pass (every job table idle, no open rerun wave)")
+        return 0
+    finally:
+        await conn.close()
+
+
 def _fetch(url: str) -> bytes:
     return urllib.request.urlopen(url, timeout=30).read()
 
@@ -2589,6 +2628,8 @@ async def run_task(env=None, fetch=_fetch, connect=_connect, sleep=asyncio.sleep
         return await run_script(env, m.arg, fetch=fetch, connect=connect, sleep=sleep, get_secret=get_secret)
     if m.kind == APPLY_PENDING:
         return await run_apply_pending(env, fetch=fetch, connect=connect, sleep=sleep, get_secret=get_secret)
+    if m.kind == IDLE_GATE:
+        return await run_idle_gate(env, connect=connect, sleep=sleep)
     raw = fetch(env["MIGRATION_URL"])
     digest = hashlib.sha256(raw).hexdigest()
     if digest != env["MIGRATION_SHA256"]:
