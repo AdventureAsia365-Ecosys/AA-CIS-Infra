@@ -729,7 +729,9 @@ makes CI Terraform Plan fail with 403.
   NONE at the gateway, HTTP_PROXY to `/catalog/{catalog_proxy}`; the CIS app verifies the M2M token) serves
   `catalog.http.v1` to the partner CRM on the stage default. `/tenant/membership/{membership_proxy+}` (AA-978, same
   shape, HTTP_PROXY to `/tenant/membership/{membership_proxy}`; only this subtree of `/tenant`) serves
-  `tenant.membership.v1` (scope `cis.tenant/read`) to the CRM worker on the stage default. Per-IP login limits and per-user backoff are in
+  `tenant.membership.v1` (scope `cis.tenant/read`) to the CRM worker on the stage default; `/tenant/v1/{tenant_v1_proxy+}`
+  (AA-1028 R1, same shape, HTTP_PROXY to `/tenant/v1/{tenant_v1_proxy}`) serves `tenant.entitlements.v1` (the tenant
+  account, subscriptions and entitlements; same scope) on the stage default. Per-IP login limits and per-user backoff are in
   the CIS app (`api/core/login_throttle.py`). The login and content overrides keep detailed metrics off where they
   would be new (~0.30 USD per metric-month). The WAF on the REST stages stays deferred (S241: on when customer
   sign-up opens); reusing the existing ALB web ACL would cost ~0.60 USD per million requests inspected, no new ACL
