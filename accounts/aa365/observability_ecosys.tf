@@ -154,10 +154,10 @@ resource "aws_cloudwatch_metric_alarm" "nat_instance_check_failed" {
 # only while the target group publishes nothing; if it alarms after a scale-to-0, that is expected.
 resource "aws_cloudwatch_metric_alarm" "booking_no_healthy_task" {
   alarm_name          = "${local.bk_name_prefix}-no-healthy-task"
-  alarm_description   = "AA-Booking target group ${aws_lb_target_group.booking.name} has no healthy target for 5 minutes (service down or failing /booking/health).${local.runbook_suffix.api_5xx}"
+  alarm_description   = "AA-Booking target group ${module.environment.booking_target_group_name} has no healthy target for 5 minutes (service down or failing /booking/health).${local.runbook_suffix.api_5xx}"
   namespace           = "AWS/ApplicationELB"
   metric_name         = "HealthyHostCount"
-  dimensions          = { TargetGroup = aws_lb_target_group.booking.arn_suffix, LoadBalancer = module.alb.alb_arn_suffix }
+  dimensions          = { TargetGroup = module.environment.booking_target_group_arn_suffix, LoadBalancer = module.alb.alb_arn_suffix }
   statistic           = "Minimum"
   period              = 60
   evaluation_periods  = 5
@@ -350,7 +350,7 @@ resource "aws_cloudwatch_event_target" "rds_instance_event" {
 # the task through booking.tf.
 resource "aws_iam_role_policy" "booking_ecs_task_publish_alerts" {
   name = "${local.bk_name_prefix}-ecs-publish-alerts"
-  role = aws_iam_role.booking_ecs_task.id
+  role = module.environment.booking_ecs_task_role_id
 
   policy = jsonencode({
     Version = "2012-10-17"

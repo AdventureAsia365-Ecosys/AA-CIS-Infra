@@ -5,8 +5,15 @@
 #   AA-Booking is a separate product (repo AdventureAsia365-Ecosys/AA-Booking, FastAPI + asyncpg)
 #   that runs in the SAME acc2 (005097885195) VPC, ECS cluster and RDS as AA-CIS (ADR 0001
 #   decisions 6-7). Same self-contained pattern as tripplanner.tf: every resource here uses the
-#   `aa-booking-<env>-*` name prefix, lives only in this file, and only READS existing module
-#   outputs (module.vpc, module.ecs, module.alb). It creates no VPC/subnet/SG/RDS/cluster/ALB.
+#   `aa-booking-<env>-*` name prefix and only READS the shared platform it is given as module
+#   inputs (VPC, ECS cluster, ALB / VPC link, see variables.tf). It creates no VPC/subnet/SG/RDS/cluster/ALB.
+#
+#   AA-1004 P0 slice 1: this file, booking_media.tf and booking_ops_docs.tf moved from the accounts/aa365 root
+#   into modules/environment (moved blocks in accounts/aa365/environment.tf, a pure no-op for Dev), so a future
+#   accounts/aa-prod root instantiates the same Booking stack. Values the root used to reach directly
+#   (module.vpc, module.ecs, module.alb, module.s3, the workload boundary, the IAM propagation sleep, the SES
+#   configuration set, the M2M pool, the alerts topic, the GitHub OIDC provider, aws_security_group.booking_api)
+#   are now inputs with the same values.
 #
 #   Resources:
 #     - ECR repo aa-booking-dev-api (immutable git-SHA tags, keep last 10)
@@ -16,12 +23,13 @@
 #     - task definition aa-booking-dev-api (placeholder image tag, replaced by the app deploy)
 #     - ECS service aa-booking-dev-api on aa-cis-dev-cluster, desired_count 0 at create
 #     - ALB target group aa-booking-dev-api-tg (health check /booking/health)
-#     - ONE listener rule (/booking, /booking/*) on the existing CIS ALB HTTP listener
+#     - (in the root, accounts/aa365/alb_rules.tf) ONE listener rule (/booking, /booking/*) on the
+#       existing CIS ALB HTTP listener
 #     - REST API aa-booking-dev-api on the existing VPC link (/booking, /booking/{proxy+})
 #     - GitHub OIDC deploy role aa-booking-dev-app-deploy, trusted only by AA-Booking
 #
-#   The ONLY touch on a CIS resource is the new aws_lb_listener_rule on module.alb's HTTP
-#   listener (priority 100, path-scoped). The listener's default action (CIS target group) is
+#   The ONLY touch on a CIS resource is the aws_lb_listener_rule on module.alb's HTTP
+#   listener (priority 100, path-scoped; declared in the root, alb_rules.tf). The listener's default action (CIS target group) is
 #   unchanged, so every non-/booking path still reaches CIS exactly as before.
 #
 # PREREQUISITE: Infra phase 1 (cicd.tf BookingRoleTagging / BookingEcrRepoManage /
@@ -59,8 +67,8 @@ locals {
     Issue       = "AA-678"
   }
 
-  bk_cluster_arn      = module.ecs.cluster_arn
-  bk_service_arn      = "arn:aws:ecs:${var.aws_region}:${var.account_id}:service/${module.ecs.cluster_name}/${local.bk_service}"
+  bk_cluster_arn      = var.ecs_cluster_arn
+  bk_service_arn      = "arn:aws:ecs:${var.aws_region}:${var.account_id}:service/${var.ecs_cluster_name}/${local.bk_service}"
   bk_task_def_pattern = "arn:aws:ecs:${var.aws_region}:${var.account_id}:task-definition/${local.bk_service}:*"
 
   # GitHub OIDC subjects for the AA-Booking deploy role. The org has no org-level subject
@@ -71,13 +79,14 @@ locals {
   # name, pinned org id) and the plain form are accepted. Once the id is set, only the immutable
   # form with that exact id is trusted (fail closed).
   #
-  # Context: ONLY `environment:dev`. AA-1022 (S263): every job that assumes this role runs with
+  # Context: ONLY `environment:<var.environment>` (= `environment:dev` on Dev; AA-1004 P0 builds it from the
+  # environment name so a prod root trusts `environment:prod`, never dev). AA-1022 (S263): every job that assumes this role runs with
   # `environment: dev` (deploy-dev.yml preflight + deploy, post-deploy-verify.yml verify, called by
   # deploy-dev.yml or dispatched); the role ARN is an environment variable of `dev` only, so no job
   # without that environment uses it. The former `ref:refs/heads/main` context (a job without an
   # environment) had no user and is dropped. "main only" is held twice, as for aa-cis-dev-app-deploy:
   # the `dev` environment's deployment-branch policy (main) and the `ref` claim in the trust below.
-  bk_oidc_contexts = ["environment:dev"]
+  bk_oidc_contexts = ["environment:${var.environment}"]
   bk_oidc_repo_id  = var.booking_github_repo_id != "" ? var.booking_github_repo_id : "*"
   bk_oidc_subjects = concat(
     [for c in local.bk_oidc_contexts : "repo:AdventureAsia365-Ecosys@276539096/AA-Booking@${local.bk_oidc_repo_id}:${c}"],
@@ -100,7 +109,7 @@ resource "aws_ecr_repository" "booking" {
   tags = local.bk_tags
 
   # CreateRepository is granted by cicd.tf BookingEcrRepoManage (phase 1).
-  depends_on = [time_sleep.wait_for_iam_propagation]
+  depends_on = [var.iam_propagation_gate]
 }
 
 resource "aws_ecr_lifecycle_policy" "booking" {
@@ -179,12 +188,12 @@ data "aws_iam_policy_document" "booking_ecs_tasks_assume" {
 
 resource "aws_iam_role" "booking_ecs_execution" {
   name                 = "${local.bk_name_prefix}-ecs-execution-role"
-  permissions_boundary = aws_iam_policy.workload_boundary.arn
+  permissions_boundary = var.permissions_boundary_arn
   assume_role_policy   = data.aws_iam_policy_document.booking_ecs_tasks_assume.json
   tags                 = local.bk_tags
 
   # Tagged role -> CreateRole calls iam:TagRole (cicd.tf BookingRoleTagging, phase 1).
-  depends_on = [time_sleep.wait_for_iam_propagation]
+  depends_on = [var.iam_propagation_gate]
 }
 
 resource "aws_iam_role_policy" "booking_ecs_execution" {
@@ -247,11 +256,11 @@ resource "aws_iam_role_policy" "booking_ecs_execution" {
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "booking_ecs_task" {
   name                 = "${local.bk_name_prefix}-ecs-task-role"
-  permissions_boundary = aws_iam_policy.workload_boundary.arn
+  permissions_boundary = var.permissions_boundary_arn
   assume_role_policy   = data.aws_iam_policy_document.booking_ecs_tasks_assume.json
   tags                 = local.bk_tags
 
-  depends_on = [time_sleep.wait_for_iam_propagation]
+  depends_on = [var.iam_propagation_gate]
 }
 
 resource "aws_iam_role_policy" "booking_ecs_task" {
@@ -286,7 +295,7 @@ resource "aws_iam_role_policy" "booking_ecs_task" {
         Sid      = "EcsExecSessionLogWrite"
         Effect   = "Allow"
         Action   = ["logs:CreateLogStream", "logs:DescribeLogStreams", "logs:PutLogEvents"]
-        Resource = "${module.ecs.exec_session_log_group_arn}:*"
+        Resource = "${var.ecs_exec_session_log_group_arn}:*"
       },
     ]
   })
@@ -310,7 +319,7 @@ resource "aws_iam_role_policy" "booking_ecs_task_retention_archive" {
         Sid      = "RetentionArchivePut"
         Effect   = "Allow"
         Action   = ["s3:PutObject"]
-        Resource = "${module.s3.bronze_bucket_arn}/archive/booking/*"
+        Resource = "${var.bronze_bucket_arn}/archive/booking/*"
       },
     ]
   })
@@ -358,12 +367,12 @@ resource "aws_ecs_task_definition" "booking" {
       { name = "DB_SSL", value = "require" },
       { name = "STAFF_NOTIFY_EMAIL", value = var.booking_staff_notify_email },
       { name = "SES_FROM_ADDRESS", value = var.ses_from_address },
-      { name = "SES_CONFIGURATION_SET", value = aws_sesv2_configuration_set.stream["transactional"].configuration_set_name },
+      { name = "SES_CONFIGURATION_SET", value = var.ses_configuration_set_name },
       { name = "STAFF_ADMIN_URL", value = var.booking_staff_admin_url },
       # AA-972: the B2B API /booking/b2b/v1 trusts client-credentials tokens of the M2M pool (identity_m2m.tf) from
       # the AA-Partner (CRM) client only. Public values (issuer, client id); the client secret never reaches Booking.
-      { name = "COGNITO_M2M_ISSUER", value = "https://${aws_cognito_user_pool.m2m.endpoint}" },
-      { name = "COGNITO_M2M_CRM_CLIENT_ID", value = aws_cognito_user_pool_client.m2m_crm.id },
+      { name = "COGNITO_M2M_ISSUER", value = "https://${var.m2m_pool_endpoint}" },
+      { name = "COGNITO_M2M_CRM_CLIENT_ID", value = var.m2m_crm_client_id },
       # AA-835: supplier photos (booking_media.tf); the app writes supply-media/<type>/<entity>/<id>.<ext> there.
       { name = "SUPPLY_MEDIA_BUCKET", value = aws_s3_bucket.booking_supply_media.bucket },
       # AA-682: operations documents (booking_ops_docs.tf); the app writes ops-docs/<kind>/<id>.<ext> there.
@@ -375,7 +384,7 @@ resource "aws_ecs_task_definition" "booking" {
       # (modules/ecs local.job_test_kinds_env): kept on dev after the proof. Any other environment gets "0".
       { name = "JOB_TEST_KINDS", value = var.environment == "dev" ? "1" : "0" },
       # S263 (AA-1025): the in-app job checks (app/jobs/ops_checks.py) publish their alerts to this topic.
-      { name = "ALERTS_TOPIC_ARN", value = aws_sns_topic.alerts.arn },
+      { name = "ALERTS_TOPIC_ARN", value = var.alerts_topic_arn },
       ], var.booking_sentry_enabled ? [
       { name = "SENTRY_REQUIRED", value = "true" },
     ] : [])
@@ -407,13 +416,15 @@ resource "aws_ecs_task_definition" "booking" {
 }
 
 # -----------------------------------------------------------------------------
-# ALB target group + the single listener rule on the CIS ALB's HTTP listener.
+# ALB target group. The single listener rule on the shared ALB's HTTP listener (/booking, /booking/*) stays in the
+# account root (accounts/aa365/alb_rules.tf), next to the priority map that orders every rule on that listener; the
+# root passes its ARN back in as var.booking_listener_rule_gate (aws_ecs_service.booking below waits for it).
 # -----------------------------------------------------------------------------
 resource "aws_lb_target_group" "booking" {
   name        = "${local.bk_service}-tg"
   port        = local.bk_port
   protocol    = "HTTP"
-  vpc_id      = module.vpc.vpc_id
+  vpc_id      = var.vpc_id
   target_type = "ip" # Fargate
 
   # One small task; 300s (AWS default) would make every deploy wait 5 minutes on draining.
@@ -434,29 +445,6 @@ resource "aws_lb_target_group" "booking" {
   tags = local.bk_tags
 }
 
-resource "aws_lb_listener_rule" "booking" {
-  # API Gateway reaches the ALB on :80 through the VPC-link NLB, so the rule goes on the HTTP
-  # listener (modules/alb output http_listener_arn, phase 1). The HTTPS listener is untouched.
-  listener_arn = module.alb.http_listener_arn
-  priority     = local.alb_http_rule_priorities.booking # 100; alb_rules.tf owns the order (AA-931)
-
-  action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.booking.arn
-  }
-
-  condition {
-    path_pattern {
-      values = ["/booking", "/booking/*"]
-    }
-  }
-
-  tags = local.bk_tags
-
-  # CreateRule is granted by cicd.tf BookingAlbListenerRuleManage (phase 1).
-  depends_on = [time_sleep.wait_for_iam_propagation]
-}
-
 # -----------------------------------------------------------------------------
 # ECS service. desired_count = 0 at create: nothing runs (and nothing is billed) until Nghiep has
 # set the DB secret value and the first image is deployed, then scales it to 1 with
@@ -465,7 +453,7 @@ resource "aws_lb_listener_rule" "booking" {
 # -----------------------------------------------------------------------------
 resource "aws_ecs_service" "booking" {
   name            = local.bk_service
-  cluster         = module.ecs.cluster_arn
+  cluster         = var.ecs_cluster_arn
   task_definition = aws_ecs_task_definition.booking.arn
   desired_count   = 0
 
@@ -493,8 +481,8 @@ resource "aws_ecs_service" "booking" {
   health_check_grace_period_seconds = 60
 
   network_configuration {
-    subnets          = module.vpc.private_subnet_ids
-    security_groups  = [aws_security_group.booking_api.id] # ADR 0004b (X1 S13a): own SG, ALB -> 8000 allowed, admitted by RDS
+    subnets          = var.private_subnet_ids
+    security_groups  = [var.booking_security_group_id] # ADR 0004b (X1 S13a): own SG, ALB -> 8000 allowed, admitted by RDS
     assign_public_ip = false
   }
 
@@ -518,18 +506,19 @@ resource "aws_ecs_service" "booking" {
 
   tags = local.bk_tags
 
-  # ECS rejects a service whose target group is not attached to a load balancer yet.
-  depends_on = [aws_lb_listener_rule.booking, aws_iam_role_policy.booking_ecs_execution]
+  # ECS rejects a service whose target group is not attached to a load balancer yet. The listener rule lives in the
+  # root (alb_rules.tf); var.booking_listener_rule_gate is its ARN, so this still waits for it.
+  depends_on = [var.booking_listener_rule_gate, aws_iam_role_policy.booking_ecs_execution]
 }
 
 # -----------------------------------------------------------------------------
-# API Gateway — separate REST API on the EXISTING VPC link (module.alb.vpc_link_id -> NLB).
+# API Gateway — separate REST API on the EXISTING VPC link (var.vpc_link_id = module.alb.vpc_link_id -> NLB).
 # Routes: ANY /booking and ANY /booking/{proxy+} -> http://<nlb>/booking[/{proxy}]. The path keeps
 # its /booking prefix end to end, so the ALB rule above matches it.
 # -----------------------------------------------------------------------------
 resource "aws_api_gateway_rest_api" "booking" {
   name        = local.bk_service
-  description = "AA-Booking Dev API (AA-678). Proxies /booking/* to the shared ALB via the CIS VPC link."
+  description = "AA-Booking ${title(var.environment)} API (AA-678). Proxies /booking/* to the shared ALB via the CIS VPC link."
   endpoint_configuration {
     types = ["REGIONAL"]
   }
@@ -562,8 +551,8 @@ resource "aws_api_gateway_integration" "booking_any" {
   type                    = "HTTP_PROXY"
   integration_http_method = "ANY"
   connection_type         = "VPC_LINK"
-  connection_id           = module.alb.vpc_link_id
-  uri                     = "http://${module.alb.nlb_dns_name}/booking"
+  connection_id           = var.vpc_link_id
+  uri                     = "http://${var.nlb_dns_name}/booking"
 }
 
 resource "aws_api_gateway_method" "booking_proxy_any" {
@@ -584,8 +573,8 @@ resource "aws_api_gateway_integration" "booking_proxy_any" {
   type                    = "HTTP_PROXY"
   integration_http_method = "ANY"
   connection_type         = "VPC_LINK"
-  connection_id           = module.alb.vpc_link_id
-  uri                     = "http://${module.alb.nlb_dns_name}/booking/{proxy}"
+  connection_id           = var.vpc_link_id
+  uri                     = "http://${var.nlb_dns_name}/booking/{proxy}"
 
   request_parameters = {
     "integration.request.path.proxy" = "method.request.path.proxy"
@@ -631,7 +620,7 @@ resource "aws_api_gateway_stage" "booking" {
   tags          = local.bk_tags
 
   # Stage tagging (provider default_tags) — same propagation guard as tripplanner.tf.
-  depends_on = [time_sleep.wait_for_iam_propagation]
+  depends_on = [var.iam_propagation_gate]
 }
 
 # Unauthenticated edge: cap the stage so a scan cannot run up the shared ALB/RDS. Throttling only
@@ -655,13 +644,13 @@ resource "aws_api_gateway_method_settings" "booking_throttle" {
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "booking_app_deploy" {
   name                 = "${local.bk_name_prefix}-app-deploy"
-  permissions_boundary = aws_iam_policy.workload_boundary.arn
+  permissions_boundary = var.permissions_boundary_arn
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
       Effect    = "Allow"
-      Principal = { Federated = aws_iam_openid_connect_provider.github_actions.arn }
+      Principal = { Federated = var.github_oidc_provider_arn }
       Action    = "sts:AssumeRoleWithWebIdentity"
       Condition = {
         # AA-1022: `ref` pins main independently of the GitHub environment settings (AWS evaluates the key for
@@ -679,7 +668,7 @@ resource "aws_iam_role" "booking_app_deploy" {
 
   tags = local.bk_tags
 
-  depends_on = [time_sleep.wait_for_iam_propagation]
+  depends_on = [var.iam_propagation_gate]
 }
 
 resource "aws_iam_role_policy" "booking_app_deploy" {
@@ -771,7 +760,7 @@ resource "aws_iam_role_policy" "booking_app_deploy" {
         Sid      = "EcsDescribeTasksInCluster"
         Effect   = "Allow"
         Action   = ["ecs:DescribeTasks"]
-        Resource = "arn:aws:ecs:${var.aws_region}:${var.account_id}:task/${module.ecs.cluster_name}/*"
+        Resource = "arn:aws:ecs:${var.aws_region}:${var.account_id}:task/${var.ecs_cluster_name}/*"
       },
       {
         # Registering a task definition that names these roles requires PassRole on them.

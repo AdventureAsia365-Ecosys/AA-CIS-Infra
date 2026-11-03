@@ -88,8 +88,15 @@ def test_prod_is_no_longer_trusted():
     assert trusted_environments() == {"dev"}
 
 
+# AA-1004 P0: jobs that run in `prod` for the future prod account, on that account's role (secrets PROD_*), behind
+# .github/scripts/prod-guard.sh. They never use this apply role (test_aa1004_prod_paths.py), so its trust is not theirs.
+PROD_ACCOUNT_JOBS = {"db-migrate.yml:migrate", "deploy-prod.yml:terraform"}
+
+
 def test_every_apply_role_environment_a_workflow_uses_is_trusted():
-    used = {env: jobs for env, jobs in workflow_environments().items() if env in APPLY_ROLE_ENVIRONMENTS}
+    used = {env: jobs - (PROD_ACCOUNT_JOBS if env == "prod" else set())
+            for env, jobs in workflow_environments().items() if env in APPLY_ROLE_ENVIRONMENTS}
+    used = {env: jobs for env, jobs in used.items() if jobs}
     missing = {env: sorted(jobs) for env, jobs in used.items() if env not in trusted_environments()}
     assert not missing, f"jobs in an environment the apply role does not trust: {missing}"
 

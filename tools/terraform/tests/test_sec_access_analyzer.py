@@ -24,11 +24,16 @@ ARCHIVE = (AA365 / "security_access_analyzer_archive.tf").read_text(encoding="ut
 BASELINE = (AA365 / "security_baseline.tf").read_text(encoding="utf-8")
 TFVARS = (AA365 / "terraform.tfvars").read_text(encoding="utf-8")
 OIDC_REF = "aws_iam_openid_connect_provider.github_actions.arn"
+# AA-1004 P0: modules/environment (the environment stack, instantiated by accounts/aa365) holds app roles too; there
+# the OIDC provider arrives as an input.
+ENV_MODULE = ROOT / "modules" / "environment"
+TF_DIRS = (AA365, ENV_MODULE)
+OIDC_REFS = (OIDC_REF, "var.github_oidc_provider_arn")
 
 
 def _blocks(kind: str):
     """(name, block text) for every `resource "<kind>" "<name>"` in accounts/aa365."""
-    for f in sorted(AA365.glob("*.tf")):
+    for f in [f for d in TF_DIRS for f in sorted(d.glob("*.tf"))]:
         text = f.read_text(encoding="utf-8")
         for m in re.finditer(rf'^resource "{kind}" "([a-z0-9_]+)" \{{', text, re.M):
             body = text[m.end():]
@@ -37,7 +42,7 @@ def _blocks(kind: str):
 
 
 def _local(name: str) -> str:
-    for f in sorted(AA365.glob("*.tf")):
+    for f in [f for d in TF_DIRS for f in sorted(d.glob("*.tf"))]:
         m = re.search(rf"^\s*{name}\s*=\s*(.+?)(?=^\s*[a-z_0-9]+\s*=|\Z)", f.read_text(encoding="utf-8"), re.M | re.S)
         if m:
             return m.group(1)
@@ -45,7 +50,7 @@ def _local(name: str) -> str:
 
 
 def oidc_roles():
-    return [(n, f, b) for n, f, b in _blocks("aws_iam_role") if OIDC_REF in b]
+    return [(n, f, b) for n, f, b in _blocks("aws_iam_role") if any(r in b for r in OIDC_REFS)]
 
 
 class ArchiveRuleTest(unittest.TestCase):
@@ -54,6 +59,8 @@ class ArchiveRuleTest(unittest.TestCase):
 
     def test_every_oidc_role_is_in_the_archive_rule(self):
         listed = set(re.findall(r"aws_iam_role\.([a-z0-9_]+)(?:\[\*\])?\.arn", ARCHIVE))
+        # AA-1004 P0: a role of modules/environment is listed through its module output <role>_role_arn.
+        listed |= set(re.findall(r"module\.environment\.([a-z0-9_]+)_role_arn", ARCHIVE))
         for name, f, _ in oidc_roles():
             with self.subTest(role=name, file=f):
                 self.assertIn(name, listed, "new GitHub OIDC role: review its trust, then add it to "

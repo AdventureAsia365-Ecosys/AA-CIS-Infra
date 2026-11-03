@@ -32,15 +32,15 @@ locals {
   # Every role trusted by aws_iam_openid_connect_provider.github_actions, reviewed one by one (S256 triage table).
   sec_aa_github_oidc_roles = concat(
     [
-      aws_iam_role.cis_app_deploy.arn,         # AA-CIS-App, environment dev, ref main
-      aws_iam_role.e2e_mail_reader.arn,        # AA-CIS-App + AA-Partner, environment e2e, ref main
-      aws_iam_role.tf_plan.arn,                # AA-CIS-Infra, pull_request or ref main (read only)
-      aws_iam_role.tf_apply.arn,               # AA-CIS-Infra, environment dev, ref main
-      aws_iam_role.docs_sync.arn,              # root repo, ref master
-      aws_iam_role.booking_app_deploy.arn,     # AA-Booking, environment dev, ref main (AA-1022)
-      aws_iam_role.tripplanner_app_deploy.arn, # AA-TripPlanner-Web, ref main
-      aws_iam_role.crm_app_deploy.arn,         # AA-Partner, environment dev, ref main (AA-1022)
-      aws_iam_role.db_auto_apply.arn,          # AA-CIS-Infra, environment dev-db-auto, ref main (AA-993 I1)
+      aws_iam_role.cis_app_deploy.arn,                # AA-CIS-App, environment dev, ref main
+      aws_iam_role.e2e_mail_reader.arn,               # AA-CIS-App + AA-Partner, environment e2e, ref main
+      aws_iam_role.tf_plan.arn,                       # AA-CIS-Infra, pull_request or ref main (read only)
+      aws_iam_role.tf_apply.arn,                      # AA-CIS-Infra, environment dev, ref main
+      aws_iam_role.docs_sync.arn,                     # root repo, ref master
+      module.environment.booking_app_deploy_role_arn, # AA-Booking, environment dev, ref main (AA-1022)
+      aws_iam_role.tripplanner_app_deploy.arn,        # AA-TripPlanner-Web, ref main
+      aws_iam_role.crm_app_deploy.arn,                # AA-Partner, environment dev, ref main (AA-1022)
+      aws_iam_role.db_auto_apply.arn,                 # AA-CIS-Infra, environment dev-db-auto, ref main (AA-993 I1)
     ],
     aws_iam_role.crm_scrub_corpus[*].arn, # AA-Partner, environment scrub-corpus, ref main (only when the guardrail is on)
   )

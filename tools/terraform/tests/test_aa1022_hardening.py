@@ -29,6 +29,11 @@ OBS = (AA365 / "observability_ecosys.tf").read_text(encoding="utf-8")
 BASELINE = (AA365 / "security_baseline.tf").read_text(encoding="utf-8")
 SSO = (AA365 / "security_sso_signin.tf").read_text(encoding="utf-8")
 OIDC_REF = "aws_iam_openid_connect_provider.github_actions.arn"
+# AA-1004 P0: modules/environment (the environment stack, instantiated by accounts/aa365) holds app roles too; there
+# the OIDC provider arrives as an input.
+ENV_MODULE = ROOT / "modules" / "environment"
+TF_DIRS = (AA365, ENV_MODULE)
+OIDC_REFS = (OIDC_REF, "var.github_oidc_provider_arn")
 
 
 def _resource(text: str, kind: str, name: str) -> str:
@@ -40,7 +45,7 @@ def _resource(text: str, kind: str, name: str) -> str:
 
 
 def _blocks(kind: str):
-    for f in sorted(AA365.glob("*.tf")):
+    for f in [f for d in TF_DIRS for f in sorted(d.glob("*.tf"))]:
         text = f.read_text(encoding="utf-8")
         for m in re.finditer(rf'^resource "{kind}" "([a-z0-9_]+)" \{{', text, re.M):
             body = text[m.end():]
@@ -49,7 +54,7 @@ def _blocks(kind: str):
 
 
 def _local(name: str) -> str:
-    for f in sorted(AA365.glob("*.tf")):
+    for f in [f for d in TF_DIRS for f in sorted(d.glob("*.tf"))]:
         m = re.search(rf"^\s*{name}\s*=\s*(.+?)(?=^\s*[a-z_0-9]+\s*=|\Z)", f.read_text(encoding="utf-8"), re.M | re.S)
         if m:
             return m.group(1)
@@ -124,7 +129,7 @@ class NatRecoverAlarmTest(unittest.TestCase):
 
 class OidcRefPinTest(unittest.TestCase):
     def oidc_roles(self):
-        return [(n, f, b) for n, f, b in _blocks("aws_iam_role") if OIDC_REF in b]
+        return [(n, f, b) for n, f, b in _blocks("aws_iam_role") if any(r in b for r in OIDC_REFS)]
 
     def test_environment_subjects_also_pin_the_ref(self):
         roles = self.oidc_roles()
@@ -148,8 +153,12 @@ class OidcRefPinTest(unittest.TestCase):
 
     def test_booking_has_no_unused_ref_context(self):
         # AA-1022: every Booking job on the role runs in the dev environment; the old ref:refs/heads/main context
-        # (a job without an environment) had no user.
-        self.assertEqual(_local("bk_oidc_contexts").strip().splitlines()[0], '["environment:dev"]')
+        # (a job without an environment) had no user. AA-1004 P0: the context is built from the module's environment
+        # name, and accounts/aa365 instantiates the module with var.environment (= dev, terraform.tfvars).
+        self.assertEqual(_local("bk_oidc_contexts").strip().splitlines()[0], '["environment:${var.environment}"]')
+        env_call = (AA365 / "environment.tf").read_text(encoding="utf-8")
+        self.assertRegex(env_call, r'(?m)^\s*environment\s*=\s*var\.environment\s*$')
+        self.assertRegex((AA365 / "terraform.tfvars").read_text(encoding="utf-8"), r'(?m)^environment\s*=\s*"dev"')
 
 
 class SsoAdminSigninTest(unittest.TestCase):

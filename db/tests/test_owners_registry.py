@@ -325,7 +325,10 @@ class MirrorsAgreeTest(unittest.TestCase):
     def test_db_migrate_workflow(self):
         on, run = validate_step()
         inputs = on["workflow_dispatch"]["inputs"]
-        self.assertEqual(inputs["environment"]["options"], REGISTRY["environments"])
+        # AA-1004 P0: the choice list is the registry plus the guarded prod path (prod-guard.sh, and the step below
+        # refuses an environment owners.yaml does not list, DbMigrateValidateStepTest.test_prod_is_refused_...).
+        self.assertEqual(inputs["environment"]["options"][: len(REGISTRY["environments"])], REGISTRY["environments"])
+        self.assertLessEqual(set(inputs["environment"]["options"]) - set(REGISTRY["environments"]), {"prod"})
         self.assertEqual(inputs["environment"]["default"], REGISTRY["environments"][0])
         dirs = re.search(r'=~ \^\(([a-z|]+)\)/', run).group(1)
         self.assertEqual(set(dirs.split("|")), set(OWNERS))
@@ -366,6 +369,22 @@ class DbMigrateValidateStepTest(unittest.TestCase):
                 code, outputs, log = self.run_step(tmp, f"{name}/999_registry_probe.sql")
                 self.assertEqual(code, 0, log)
                 self.assertEqual(outputs.get("version"), key, log)
+
+    def test_prod_is_refused_while_the_registry_does_not_list_it(self):
+        # AA-1004 P0: prod is a choice of the input, but the step refuses it (before any AWS call) until db/owners.yaml
+        # lists it with the prod blueprint (P3); the job before it (prod-guard.sh ready) refuses it earlier still.
+        self.assertNotIn("prod", REGISTRY["environments"])
+        _, run = validate_step()
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            shutil.copytree(ROOT / "db", tmp / "db", ignore=shutil.ignore_patterns("migrations", "__pycache__"))
+            out, summary = tmp / "out.txt", tmp / "summary.md"
+            env = {"PATH": os.environ.get("PATH", ""), "MODE": "check", "ENVIRONMENT": "prod",
+                   "MIGRATION": "cis/999_registry_probe.sql", "OVERRIDE_BUSY_JOBS": "",
+                   "GITHUB_OUTPUT": str(out), "GITHUB_STEP_SUMMARY": str(summary)}
+            p = subprocess.run(["bash", "-e", "-c", run], cwd=tmp, env=env, capture_output=True, text=True, timeout=60)
+            self.assertNotEqual(p.returncode, 0)
+            self.assertIn("environment prod is not in db/owners.yaml environments (dev)", p.stdout + p.stderr)
 
     def test_unknown_owner_dir_is_refused(self):
         with tempfile.TemporaryDirectory() as d:

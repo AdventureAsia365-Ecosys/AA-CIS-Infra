@@ -135,8 +135,8 @@ resource "aws_api_gateway_domain_name" "booking" {
 resource "aws_api_gateway_base_path_mapping" "booking" {
   count = local.cd_enabled
 
-  api_id      = aws_api_gateway_rest_api.booking.id
-  stage_name  = aws_api_gateway_stage.booking.stage_name
+  api_id      = module.environment.booking_rest_api_id
+  stage_name  = module.environment.booking_stage_name
   domain_name = aws_api_gateway_domain_name.booking[0].domain_name
 }
 

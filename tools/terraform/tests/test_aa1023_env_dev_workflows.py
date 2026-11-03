@@ -34,6 +34,12 @@ def _env(job: dict):
     return env.get("name") if isinstance(env, dict) else env
 
 
+# AA-1004 P0: the only jobs that may run in `prod`: the prod-account paths, each behind .github/scripts/prod-guard.sh
+# and on secrets of their own names (tools/terraform/tests/test_aa1004_prod_paths.py). Never the Dev apply role.
+PROD_ACCOUNT_JOBS = {"db-migrate.yml:migrate", "deploy-prod.yml:terraform"}
+DEV_OR_PROD = "${{ inputs.environment == 'prod' && 'prod' || 'dev' }}"
+
+
 def test_no_workflow_job_runs_in_prod():
     found = []
     for name in sorted(os.listdir(WORKFLOWS)):
@@ -43,7 +49,7 @@ def test_no_workflow_job_runs_in_prod():
             env = _env(job or {})
             if isinstance(env, str) and (env == "prod" or re.search(r"'prod'", env)):
                 found.append(f"{name}:{job_id}")
-    assert not found, f"jobs still in the GitHub environment prod: {found}"
+    assert set(found) <= PROD_ACCOUNT_JOBS, f"jobs in the GitHub environment prod: {sorted(set(found) - PROD_ACCOUNT_JOBS)}"
 
 
 def test_the_apply_role_workflows_run_in_dev():
@@ -53,7 +59,10 @@ def test_the_apply_role_workflows_run_in_dev():
         selected = with_env if jobs is None else {j: with_env[j] for j in jobs}
         assert selected, name
         for job_id, env in selected.items():
-            assert env in ("dev", "${{ inputs.environment || 'dev' }}"), f"{name}:{job_id} runs in {env!r}"
+            allowed = ("dev", "${{ inputs.environment || 'dev' }}")
+            if f"{name}:{job_id}" in PROD_ACCOUNT_JOBS:
+                allowed += (DEV_OR_PROD,)  # AA-1004 P0: dev unless the guarded prod path was chosen
+            assert env in allowed, f"{name}:{job_id} runs in {env!r}"
 
 
 def test_the_isolation_probe_defaults_to_dev():
