@@ -11,7 +11,8 @@
 #                           the CIS services at them, PassRole on the CIS task/execution roles only.
 #   aa-cis-infra-tf-plan    AA-CIS-Infra terraform-plan.yml (pull_request) and docs-gen.yml
 #                           (ref main, AA-893). Read only.
-#   aa-cis-infra-tf-apply   AA-CIS-Infra terraform-apply.yml + db-migrate.yml (environment:prod).
+#   aa-cis-infra-tf-apply   AA-CIS-Infra terraform-apply.yml + db-migrate.yml (environment:prod and, from AA-1023,
+#                           environment:dev during the rename of the Dev environment).
 #                           Same grants as aa-cis-dev-role had (so the cut-over was a drop-in),
 #                           capped by the permissions boundary aa-cis-infra-tf-apply-boundary.
 #
@@ -636,14 +637,20 @@ resource "aws_iam_role" "tf_apply" {
       Principal = { Federated = aws_iam_openid_connect_provider.github_actions.arn }
       Action    = "sts:AssumeRoleWithWebIdentity"
       Condition = {
-        # terraform-apply.yml and db-migrate.yml both run in the `prod` environment ->
-        # `environment:prod`. Main-only is enforced by the IAM `ref` condition below (AA-866; AWS
-        # evaluates it); environment rules tracked in Linear AA-873 (TL-7). Every workflow on this
-        # role runs from main: terraform-apply / db-migrate (job `if`), db-schema-dump and
+        # terraform-apply.yml, db-migrate.yml, db-schema-dump.yml, db-isolation-probe.yml, db-freshness-probe.yml and
+        # db-tour-liveness-gate.yml run in the GitHub environment that applies Dev. Main-only is enforced by the IAM
+        # `ref` condition below (AA-866; AWS evaluates it); environment rules tracked in Linear AA-873 (TL-7). Every
+        # workflow on this role runs from main: terraform-apply / db-migrate (job `if`), db-schema-dump and
         # db-isolation-probe (schedule = default branch, or dispatched by db-migrate with --ref main).
+        # AA-1023 (root ADR 0012 decision 6, step 1 of the rename `prod` -> `dev`): BOTH subjects are trusted for the
+        # cut-over, so the workflows can move to `environment: dev` one PR later without a gap. Step 3 removes
+        # `environment:prod` once every workflow has run green on `dev`; only then may a prod role trust that subject.
         StringEquals = {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
-          "token.actions.githubusercontent.com:sub" = ["${local.oidc_sub_cis_infra}:environment:prod"]
+          "token.actions.githubusercontent.com:sub" = [
+            "${local.oidc_sub_cis_infra}:environment:prod",
+            "${local.oidc_sub_cis_infra}:environment:dev",
+          ]
           "token.actions.githubusercontent.com:ref" = "refs/heads/main"
         }
       }

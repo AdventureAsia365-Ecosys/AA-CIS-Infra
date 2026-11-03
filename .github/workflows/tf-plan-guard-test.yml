@@ -29,6 +29,7 @@ on:
       - "accounts/aa365/crm_storage.tf"
       - "accounts/aa365/identity_partner.tf"
       - "accounts/aa365/identity_iam.tf"
+      - "accounts/aa365/cicd_split.tf" # AA-1023: the apply role trust vs the workflow environments
       - ".github/workflows/crm-key-policy-diff.yml"
       - ".github/workflows/terraform-drift.yml"
       - ".github/workflows/terraform-plan.yml"
@@ -44,6 +45,7 @@ on:
       - "accounts/aa365/crm_storage.tf"
       - "accounts/aa365/identity_partner.tf"
       - "accounts/aa365/identity_iam.tf"
+      - "accounts/aa365/cicd_split.tf" # AA-1023: the apply role trust vs the workflow environments
       - ".github/workflows/crm-key-policy-diff.yml"
       - ".github/workflows/terraform-drift.yml"
       - ".github/workflows/terraform-plan.yml"
