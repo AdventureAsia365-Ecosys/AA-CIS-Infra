@@ -13,6 +13,10 @@
 #   prod-guard.sh identity   env CALLER_ACCOUNT (sts get-caller-identity after OIDC), PROD_ACCOUNT_ID (environment
 #                            secret of `prod`), DEV_ACCOUNT_SHA256 (from `ready`). Refuses unless the caller is the
 #                            configured prod account and is not the Dev account.
+#   prod-guard.sh protected  env GH_TOKEN (github.token, actions: read), REPO (github.repository). Refuses unless the
+#                            GitHub environment `prod` exists with a required_reviewers rule naming at least one
+#                            reviewer and a deployment branch policy (the check terraform-apply.yml runs for `org`).
+#                            A missing environment is refused too: a job naming it would auto-create it unprotected.
 #   prod-guard.sh names NAME=VALUE...
 #                            Refuses an empty value or one that names a Dev resource (a `dev` token: aa-cis-dev-cluster,
 #                            /ecs/aa-cis-dev, dev/terraform.tfstate). For resource names that come from variables.
@@ -60,6 +64,28 @@ cmd_identity() {
   echo "prod guard: identity is the prod account, not Dev"
 }
 
+cmd_protected() {
+  local repo="${REPO:-}" body rc state
+  [[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail "REPO (github.repository) is missing."
+  command -v gh >/dev/null 2>&1 || fail "the gh CLI is not on the runner; cannot prove the prod environment is protected."
+  set +e
+  body=$(gh api "repos/$repo/environments/prod")
+  rc=$?
+  set -e
+  if [ "$rc" -ne 0 ]; then
+    fail "cannot read the GitHub environment prod (gh api exit $rc; a missing one is refused too: create it with a required reviewer and a main-only branch policy first). Nothing ran."
+  fi
+  state=$(jq -r '[([.protection_rules[]? | select(.type == "required_reviewers" and ((.reviewers // []) | length) > 0)] | length > 0), (.deployment_branch_policy != null)] | @tsv' <<<"$body" 2>/dev/null) \
+    || fail "the GitHub environment prod could not be read as JSON. Nothing ran."
+  if [ "$(cut -f1 <<<"$state")" != "true" ]; then
+    fail "the GitHub environment prod has no required reviewer. Nothing ran."
+  fi
+  if [ "$(cut -f2 <<<"$state")" != "true" ]; then
+    fail "the GitHub environment prod has no deployment branch policy (main only). Nothing ran."
+  fi
+  echo "prod guard: environment prod has a required reviewer and a branch policy"
+}
+
 cmd_names() {
   [ "$#" -gt 0 ] || { echo "usage: prod-guard.sh names NAME=VALUE..." >&2; exit 2; }
   local pair name value
@@ -78,6 +104,7 @@ cmd_names() {
 case "${1:-}" in
   ready) shift; cmd_ready "$@" ;;
   identity) shift; cmd_identity "$@" ;;
+  protected) shift; cmd_protected "$@" ;;
   names) shift; cmd_names "$@" ;;
-  *) echo "usage: prod-guard.sh ready | identity | names NAME=VALUE..." >&2; exit 2 ;;
+  *) echo "usage: prod-guard.sh ready | identity | protected | names NAME=VALUE..." >&2; exit 2 ;;
 esac

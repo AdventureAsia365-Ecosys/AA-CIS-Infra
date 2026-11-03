@@ -107,14 +107,17 @@ permissions:
 jobs:
   # AA-1004 P0: environment=prod is an input path, guarded like Deploy Prod (.github/scripts/prod-guard.sh). This job
   # has no GitHub environment and no AWS access: for prod it refuses unless the repo variable PROD_ACCOUNT_READY is
-  # exactly "true" (prod plan P2), so no `prod` environment job starts before then. Dev passes straight through.
+  # exactly "true" (prod plan P2) and the GitHub environment `prod` has a required reviewer and a deployment branch
+  # policy, so no unreviewed `prod` environment job starts. Dev passes straight through.
   target:
     name: Target (${{ inputs.environment }})
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
     timeout-minutes: 5
+    # actions: read for prod-guard.sh protected (GET repos/{repo}/environments/prod with GITHUB_TOKEN).
     permissions:
       contents: read
+      actions: read
     outputs:
       dev_account_sha256: ${{ steps.ready.outputs.dev_account_sha256 }}
     steps:
@@ -129,6 +132,13 @@ jobs:
           PROD_ACCOUNT_READY: ${{ vars.PROD_ACCOUNT_READY }}
           DEV_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
         run: bash .github/scripts/prod-guard.sh ready
+
+      - name: Prod environment protected
+        if: inputs.environment == 'prod'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: bash .github/scripts/prod-guard.sh protected
 
       - name: Dev
         if: inputs.environment == 'dev'
@@ -159,6 +169,15 @@ jobs:
       OVERRIDE_BUSY_JOBS: ${{ inputs.override_busy_jobs }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # AA-1004 P0: if `prod` lost its reviewer or branch policy after the target job, this job is already running
+      # unreviewed; stop it here, before any secret or credential (the workflow grants actions: write, which reads).
+      - name: Prod environment protected
+        if: inputs.environment == 'prod'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: bash .github/scripts/prod-guard.sh protected
 
       # X1 S12: each mode takes only its own input (MIGRATION above carries it to the steps below).
       - name: Unused inputs

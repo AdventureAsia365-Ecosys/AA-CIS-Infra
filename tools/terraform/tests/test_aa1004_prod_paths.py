@@ -6,9 +6,11 @@ Migrate environment=prod (.github/workflows/db-migrate.yml). Both go through .gi
   ready     refuses unless the repo variable PROD_ACCOUNT_READY is exactly "true" (set in P2), in a job with no
             GitHub environment and no AWS access, before any `prod` environment job starts;
   identity  right after OIDC: the caller account is PROD_ACCOUNT_ID and is not the Dev account (by hash);
+  protected the GitHub environment `prod` has a required reviewer and a deployment branch policy (it exists today
+            without either, left by AA-1023), checked before any `prod` job starts and again inside it;
   names     prod resource names are set and none names Dev.
 
-Offline: runs the script with bash and reads the workflows; no AWS. Run from the repo root:
+Offline: runs the script with bash (a fake `gh` on PATH for `protected`) and reads the workflows; no AWS, no GitHub. Run from the repo root:
     python3 -m pytest -p no:cacheprovider -q tools/terraform/tests/test_aa1004_prod_paths.py
 """
 from __future__ import annotations
@@ -44,6 +46,25 @@ def guard(*args: str, tmp: Path, **env: str) -> tuple[int, str, dict]:
     p = subprocess.run(["bash", str(GUARD), *args], env=full, capture_output=True, text=True, timeout=30)
     outputs = dict(line.split("=", 1) for line in out.read_text().splitlines() if "=" in line)
     return p.returncode, p.stdout + p.stderr, outputs
+
+
+def fake_gh(tmp: Path, body: str, rc: int = 0) -> str:
+    """A PATH with a `gh` that records its arguments and prints `body` (exit `rc`), then the real PATH."""
+    bin_dir = tmp / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    (tmp / "gh_body.json").write_text(body)
+    gh = bin_dir / "gh"
+    gh.write_text(f'#!/usr/bin/env bash\nprintf "%s\\n" "$*" > "{tmp}/gh_args"\ncat "{tmp}/gh_body.json"\nexit {rc}\n')
+    gh.chmod(0o755)
+    return f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"
+
+
+PROTECTED = (
+    '{"name": "prod", "protection_rules": ['
+    '{"type": "required_reviewers", "reviewers": [{"type": "User", "reviewer": {"login": "someone"}}]},'
+    '{"type": "branch_policy"}],'
+    ' "deployment_branch_policy": {"protected_branches": false, "custom_branch_policies": true}}'
+)
 
 
 def sha(s: str) -> str:
@@ -125,6 +146,50 @@ def test_names_pass_for_prod_names(tmp_path):
     assert rc == 0, log
 
 
+needs_jq = pytest.mark.skipif(shutil.which("jq") is None, reason="prod-guard.sh protected reads the reply with jq")
+
+
+@needs_jq
+def test_protected_passes_for_a_reviewed_main_only_environment(tmp_path):
+    rc, log, _ = guard("protected", tmp=tmp_path, PATH=fake_gh(tmp_path, PROTECTED), REPO="example-org/example-infra",
+                       GH_TOKEN="x")
+    assert rc == 0, log
+    assert (tmp_path / "gh_args").read_text().split() == ["api", "repos/example-org/example-infra/environments/prod"]
+
+
+@needs_jq
+@pytest.mark.parametrize("body,why", [
+    # what the environment looks like today: exists, no rules, no branch policy
+    ('{"name": "prod", "protection_rules": [], "deployment_branch_policy": null}', "no required reviewer"),
+    # a required_reviewers rule with nobody in it
+    ('{"name": "prod", "protection_rules": [{"type": "required_reviewers", "reviewers": []}],'
+     ' "deployment_branch_policy": {"protected_branches": false, "custom_branch_policies": true}}', "no required reviewer"),
+    # a reviewer but any branch may deploy
+    ('{"name": "prod", "protection_rules": [{"type": "required_reviewers", "reviewers": [{"type": "User"}]}],'
+     ' "deployment_branch_policy": null}', "no deployment branch policy"),
+    ("not json", "could not be read as JSON"),
+])
+def test_protected_refuses_an_unprotected_environment(tmp_path, body, why):
+    rc, log, _ = guard("protected", tmp=tmp_path, PATH=fake_gh(tmp_path, body), REPO="example-org/example-infra",
+                       GH_TOKEN="x")
+    assert rc == 1, log
+    assert why in log
+
+
+@needs_jq
+def test_protected_refuses_a_missing_environment(tmp_path):
+    """A job naming a missing environment auto-creates it unprotected, so a 404 is a refusal, not a pass."""
+    rc, log, _ = guard("protected", tmp=tmp_path, PATH=fake_gh(tmp_path, '{"message": "Not Found"}', rc=1),
+                       REPO="example-org/example-infra", GH_TOKEN="x")
+    assert rc == 1 and "cannot read the GitHub environment prod" in log
+
+
+def test_protected_refuses_without_the_repo(tmp_path):
+    rc, log, _ = guard("protected", tmp=tmp_path, PATH=fake_gh(tmp_path, PROTECTED), REPO="")
+    assert rc == 1 and "REPO" in log
+    assert not (tmp_path / "gh_args").exists()
+
+
 def test_bad_usage(tmp_path):
     assert guard(tmp=tmp_path)[0] == 2
     assert guard("names", tmp=tmp_path)[0] == 2
@@ -145,10 +210,14 @@ def test_deploy_prod_guard_job_comes_first_without_aws():
     jobs = load(DEPLOY_PROD)["jobs"]
     g = jobs["guard"]
     assert "environment" not in g
-    assert (g.get("permissions") or {}).get("id-token") is None
+    assert g["permissions"] == {"contents": "read", "actions": "read"}
     assert load(DEPLOY_PROD)["permissions"] == {"contents": "read"}
     runs = [s.get("run", "") for s in g["steps"]]
     assert any("prod-guard.sh ready" in r for r in runs)
+    prot = next(s for s in g["steps"] if s.get("name") == "Prod environment protected")
+    assert prot["run"] == "bash .github/scripts/prod-guard.sh protected"
+    assert prot["env"] == {"GH_TOKEN": "${{ github.token }}", "REPO": "${{ github.repository }}"}
+    assert "if" not in prot
     assert not any(s.get("uses", "").startswith("aws-actions/") for s in g["steps"])
     assert jobs["terraform"]["needs"] == "guard"
     assert set(jobs) == {"guard", "terraform"}
@@ -174,6 +243,36 @@ def test_deploy_prod_terraform_job_is_prod_only():
     assert "dev/terraform.tfstate" not in text
     apply = next(s for s in steps if s.get("name") == "Terraform Apply")
     assert "inputs.action == 'apply'" in apply["if"]
+    # the first step after checkout re-checks the environment protection, before any secret is read
+    assert names[1] == "Prod environment protected"
+    assert steps[1]["run"] == "bash .github/scripts/prod-guard.sh protected"
+    assert "secrets." not in yaml.safe_dump(steps[:2])
+    assert job["permissions"]["actions"] == "read"
+
+
+def test_deploy_prod_never_prints_plan_or_apply_text():
+    """Public repo: applied resource ids are ARNs / URLs with the prod account id. Every terraform plan / apply writes
+    -json into a temp file, and only drift_report.py (addresses and actions) reaches the summary."""
+    steps = {s.get("name"): s for s in load(DEPLOY_PROD)["jobs"]["terraform"]["steps"]}
+    apply = steps["Terraform Apply"]["run"]
+    cmd = next(line for line in apply.splitlines() if line.strip().startswith("terraform ") and " apply " in line)
+    assert " -json " in cmd and "-no-color" not in cmd
+    assert cmd.rstrip().endswith('> "$LOG"'), cmd
+    assert "drift_report.py --mode apply" in apply and '--exit-code "$RC"' in apply
+    assert "umask 077" in apply and "rm -f \"$LOG\"" in apply
+    assert apply.rstrip().endswith("exit $RC")
+    plan = steps["Terraform Plan (summary only)"]["run"]
+    cmd = next(line for line in plan.splitlines() if line.strip().startswith("terraform ") and " plan " in line)
+    assert " -json " in cmd and cmd.rstrip().endswith('> "$LOG"'), cmd
+    # no other step runs a terraform command whose output reaches the log, other than init / validate / show -json
+    for name, step in steps.items():
+        for line in step.get("run", "").splitlines():
+            line = line.strip()
+            if line.startswith("terraform "):
+                verb = re.search(r"terraform (?:-chdir=\S+ )?(\w+)", line).group(1)
+                assert verb in {"init", "validate", "plan", "apply", "show"}, (name, line)
+                if verb == "show":
+                    assert "-json" in line and ">" in line, (name, line)
 
 
 def test_deploy_prod_requires_the_confirmation():
@@ -198,9 +297,15 @@ def test_db_migrate_prod_is_a_choice_behind_the_target_guard():
     assert env_in["options"] == ["dev", "prod"] and env_in["default"] == "dev"
     target, migrate = wf["jobs"]["target"], wf["jobs"]["migrate"]
     assert "environment" not in target
-    assert target["permissions"] == {"contents": "read"}
+    assert target["permissions"] == {"contents": "read", "actions": "read"}
     ready = next(s for s in target["steps"] if "prod-guard.sh ready" in s.get("run", ""))
     assert ready["if"] == "inputs.environment == 'prod'"
+    names = [s.get("name", "") for s in target["steps"]]
+    prot = target["steps"][names.index("Prod environment protected")]
+    assert names.index("Prod environment protected") > names.index("Prod account ready")
+    assert prot["if"] == "inputs.environment == 'prod'"
+    assert prot["run"] == "bash .github/scripts/prod-guard.sh protected"
+    assert prot["env"] == {"GH_TOKEN": "${{ github.token }}", "REPO": "${{ github.repository }}"}
     assert migrate["needs"] == "target"
     assert migrate["environment"] == "${{ inputs.environment == 'prod' && 'prod' || 'dev' }}"
 
@@ -230,6 +335,11 @@ def test_db_migrate_prod_never_falls_back_to_the_dev_role():
     assert steps[oidc + 1]["if"] == "inputs.environment == 'prod'"
     assert "prod-guard.sh identity" in steps[oidc + 1]["run"]
     assert names.index("Validate input") < oidc
+    # inside the `prod` job, the environment protection is re-checked first, before any secret or credential
+    assert names[1] == "Prod environment protected"
+    assert steps[1]["if"] == "inputs.environment == 'prod'"
+    assert steps[1]["run"] == "bash .github/scripts/prod-guard.sh protected"
+    assert "secrets." not in yaml.safe_dump(steps[:2])
 
 
 def test_db_migrate_follow_up_dispatches_stay_dev_only():

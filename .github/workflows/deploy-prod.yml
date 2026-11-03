@@ -7,15 +7,20 @@ name: Deploy Prod
 #   - manual dispatch only, from main only (no pull_request / push / schedule trigger);
 #   - job `guard` (no environment, no id-token) refuses unless the repo variable PROD_ACCOUNT_READY is exactly "true"
 #     (.github/scripts/prod-guard.sh ready), the root accounts/aa-prod exists and an apply carries the confirmation;
-#   - job `terraform` runs in the GitHub environment `prod` (created in P2 with a required reviewer and a main-only
-#     branch policy; AA-1023 renamed the old `prod` environment of the Dev apply to `dev`) with secrets of its own
-#     names (PROD_TF_ROLE_ARN, PROD_ACCOUNT_ID, PROD_TF_STATE_BUCKET): never the Dev AWS_ROLE_ARN / TF_STATE_BUCKET;
+#   - the GitHub environment `prod` must have a required reviewer and a deployment branch policy (main only):
+#     prod-guard.sh protected checks it in the guard job (so no unreviewed `prod` job starts, and a missing `prod` is
+#     not auto-created by a run) and again as the first step of the `prod` job, like terraform-apply.yml does for `org`.
+#     The environment exists today without protection (left by AA-1023, which moved the Dev apply to `dev`), so the
+#     check refuses it until it is protected;
+#   - job `terraform` runs in the GitHub environment `prod` with secrets of its own names (PROD_TF_ROLE_ARN,
+#     PROD_ACCOUNT_ID, PROD_TF_STATE_BUCKET): never the Dev AWS_ROLE_ARN / TF_STATE_BUCKET;
 #   - right after OIDC, prod-guard.sh identity refuses credentials of the Dev account (compared by hash with the Dev
 #     plan role's account) and of any account other than PROD_ACCOUNT_ID; the backend key is prod/terraform.tfstate and
 #     prod-guard.sh names refuses a state bucket or key that names Dev.
-# The plan text is never printed (public repo): tools/terraform/drift_report.py writes only addresses and actions to
-# the job summary. The apply runs the saved, guard-checked plan (tools/terraform/plan_guard.py).
-# P2 sets up: environment `prod` + its secrets + the plan/apply role in the prod account (OIDC subject
+# Neither the plan nor the apply text is printed (public repo: resource ids are ARNs / URLs with the account id): both
+# run with -json into a private temp file and tools/terraform/drift_report.py (--mode plan / --mode apply) writes only
+# addresses and actions to the job summary. The apply runs the saved, guard-checked plan (tools/terraform/plan_guard.py).
+# P2 sets up: environment `prod` protection (required reviewer, main-only branch policy) + its secrets + the plan/apply role in the prod account (OIDC subject
 # <AA-CIS-Infra>:environment:prod, ref main), then PROD_ACCOUNT_READY=true. P3 adds accounts/aa-prod.
 run-name: Deploy Prod ${{ inputs.action }}
 
@@ -48,6 +53,10 @@ jobs:
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
     timeout-minutes: 5
+    # actions: read for prod-guard.sh protected (GET repos/{repo}/environments/prod with GITHUB_TOKEN).
+    permissions:
+      contents: read
+      actions: read
     outputs:
       dev_account_sha256: ${{ steps.ready.outputs.dev_account_sha256 }}
     steps:
@@ -61,6 +70,12 @@ jobs:
           PROD_ACCOUNT_READY: ${{ vars.PROD_ACCOUNT_READY }}
           DEV_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
         run: bash .github/scripts/prod-guard.sh ready
+
+      - name: Prod environment protected
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: bash .github/scripts/prod-guard.sh protected
 
       - name: Inputs and root
         env:
@@ -88,6 +103,7 @@ jobs:
     permissions:
       id-token: write
       contents: read
+      actions: read
     env:
       ROOT: accounts/aa-prod
       TF_IN_AUTOMATION: "1"
@@ -97,6 +113,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      # Before any secret or credential: if `prod` lost its reviewer or branch policy after the guard job, this job is
+      # already running unreviewed; stop it here (same check as the guard job).
+      - name: Prod environment protected
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: bash .github/scripts/prod-guard.sh protected
 
       # Before any AWS call: the prod names are set and none names Dev.
       - name: Prod names
@@ -167,9 +191,22 @@ jobs:
           terraform -chdir="$ROOT" show -json "$RUNNER_TEMP/tfplan" > "$J"
           python3 -B tools/terraform/plan_guard.py "$J" --allow-reason="" --summary "$GITHUB_STEP_SUMMARY"
 
+      # -json into a private file, never the job log: applied resource ids carry the prod account id (public repo).
+      # drift_report.py --mode apply lists what was applied (or why it failed) in the summary and exits 1 on a failure.
       - name: Terraform Apply
         if: inputs.action == 'apply' && steps.plan.outputs.exitcode == '2'
-        run: terraform -chdir="$ROOT" apply -input=false -no-color "$RUNNER_TEMP/tfplan"
+        run: |
+          umask 077
+          LOG="$RUNNER_TEMP/prod-apply.jsonl"
+          trap 'rm -f "$LOG"' EXIT
+          set +e
+          terraform -chdir="$ROOT" apply -input=false -auto-approve -json "$RUNNER_TEMP/tfplan" > "$LOG"
+          RC=$?
+          set -e
+          echo "terraform apply exit code: $RC"
+          python3 -B tools/terraform/drift_report.py --mode apply --plan-log "$LOG" --exit-code "$RC" --root "$ROOT" \
+            --summary "$GITHUB_STEP_SUMMARY"
+          exit $RC
 
       - name: Remove the saved plan
         if: always()

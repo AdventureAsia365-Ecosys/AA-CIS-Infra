@@ -37,6 +37,16 @@ applied. The earlier AA-1004 notes (management account root) are in `AA-1004.md`
   repo secret `AWS_ROLE_ARN` (the Dev plan role); the prod job compares the hash of its caller account with it, and
   requires the caller to equal the `prod` environment secret `PROD_ACCOUNT_ID`. A hash crosses jobs (GitHub drops job
   outputs that contain a secret) and never shows the id.
+- **`prod-guard.sh protected` (review fix)**: the GitHub environment `prod` already exists (left by AA-1023) with no
+  required reviewer, no branch policy and no secrets, so "P2 creates it protected" was wrong. Both prod paths now
+  refuse unless `prod` has a `required_reviewers` rule naming at least one reviewer and a non-null deployment branch
+  policy: in the guard / target job (no environment, `actions: read`, so no unreviewed `prod` job starts and a
+  missing `prod` is never auto-created by a run) and again as the first step of the `prod` job, before any secret
+  (the same check `terraform-apply.yml` runs for `org`). Read with `gh api` + `jq` in the script, so the tests drive
+  it with a fake `gh` on PATH. A missing environment (404) is a refusal.
+- **Prod apply prints nothing (review fix)**: `apply -json > $LOG` + `drift_report.py --mode apply`, like the
+  management apply; the earlier `apply -no-color` would have printed every `[id=...]` (ARNs / URLs with the prod
+  account id) to a public log.
 - **Prod jobs use secrets of their own names** (`PROD_TF_ROLE_ARN`, `PROD_DB_MIGRATE_ROLE_ARN`,
   `PROD_TF_STATE_BUCKET`, `PROD_ACCOUNT_ID`). With the same name, an unset environment secret would silently fall
   back to the repo-level Dev secret.
@@ -84,7 +94,8 @@ applied. The earlier AA-1004 notes (management account root) are in `AA-1004.md`
 - Left for P1+: the CRM stack (`crm_*.tf`), TripPlanner (`tripplanner*.tf`), identity (`identity*.tf`, `ses.tf`, DNS),
   observability + security, then the platform module calls of `main.tf`; account bootstrap (`cicd*.tf`,
   `agent_session.tf`, the boundaries, the OIDC provider, `security_baseline.tf`) stays in each account root.
-- P2 GitHub setup for the prod paths: environment `prod` (required reviewer, main-only), its secrets
+- P2 GitHub setup for the prod paths: protect the existing environment `prod` (required reviewer, main-only
+  branch policy; until then `protected` refuses every prod run, independent of `PROD_ACCOUNT_READY`), its secrets
   `PROD_ACCOUNT_ID`, `PROD_TF_ROLE_ARN`, `PROD_TF_STATE_BUCKET`, `PROD_DB_MIGRATE_ROLE_ARN`, variables
   `PROD_AWS_REGION`, `DB_MIGRATE_{CLUSTER,SERVICE,BUCKET,LOG_GROUP,DB_INSTANCE}`, the prod roles trusting
   `<AA-CIS-Infra>:environment:prod` + ref main; then repo variable `PROD_ACCOUNT_READY=true`.

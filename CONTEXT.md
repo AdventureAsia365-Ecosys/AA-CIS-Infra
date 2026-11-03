@@ -796,18 +796,21 @@ makes CI Terraform Plan fail with 403.
     export $(aws configure export-credentials --profile aa365-admin --format env | xargs) && unset AWS_PROFILE
     ```
     then `terraform -chdir=accounts/aa365 apply`.
-- **prod** (AA-1004 P0 skeleton, prod plan P0): no prod account, root or environment exists yet. Two prod paths are
-  wired and refuse to run: **Deploy Prod** (`deploy-prod.yml`, dispatch only, plan / apply of the future
-  `accounts/aa-prod` root in the GitHub environment `prod`, state key `prod/terraform.tfstate`, plan text never
-  printed) and **DB Migrate `environment=prod`**. Both go through `.github/scripts/prod-guard.sh`: `ready` (a job with
-  no environment and no AWS access) refuses unless the repo variable `PROD_ACCOUNT_READY` is exactly `true`;
+- **prod** (AA-1004 P0 skeleton, prod plan P0): no prod account or root exists yet; the GitHub environment `prod`
+  exists without protection (left by AA-1023). Two prod paths are wired and refuse to run: **Deploy Prod**
+  (`deploy-prod.yml`, dispatch only, plan / apply of the future `accounts/aa-prod` root in the GitHub environment
+  `prod`, state key `prod/terraform.tfstate`, plan and apply text never printed: both `-json` into a temp file,
+  `drift_report.py` summary only) and **DB Migrate `environment=prod`**. Both go through
+  `.github/scripts/prod-guard.sh`: `ready` (a job with no environment and no AWS access) refuses unless the repo
+  variable `PROD_ACCOUNT_READY` is exactly `true`; `protected` (same job, and again first in the `prod` job) refuses
+  unless the environment `prod` exists with a required reviewer and a deployment branch policy (the `org` check);
   `names` refuses an unset prod resource name or one that names Dev; `identity`, right after OIDC, refuses
   credentials of the Dev account (compared by hash with the account of the Dev plan role) or of any account other
   than the `prod` environment secret `PROD_ACCOUNT_ID`. Prod jobs use secrets of their own names
   (`PROD_TF_ROLE_ARN`, `PROD_DB_MIGRATE_ROLE_ARN`, `PROD_TF_STATE_BUCKET`), never `AWS_ROLE_ARN` /
   `TF_STATE_BUCKET`. DB Migrate also refuses an environment `db/owners.yaml` does not list (prod comes with P3) and
-  its follow-up dispatches (schema dump, isolation probe) stay Dev only. P2 creates the account, the environment and
-  its secrets, then sets `PROD_ACCOUNT_READY`; P3 adds `accounts/aa-prod` (instantiating `modules/environment`), the
+  its follow-up dispatches (schema dump, isolation probe) stay Dev only. P2 creates the account, protects the environment and
+  adds its secrets, then sets `PROD_ACCOUNT_READY`; P3 adds `accounts/aa-prod` (instantiating `modules/environment`), the
   prod migrator and its names (`migrator-task.sh` is Dev-shaped today). Tests:
   `tools/terraform/tests/test_aa1004_prod_paths.py`.
 
