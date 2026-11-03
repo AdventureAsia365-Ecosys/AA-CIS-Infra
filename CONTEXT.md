@@ -687,7 +687,7 @@ makes CI Terraform Plan fail with 403.
   `aa-cis-dev-app-deploy` (AA-CIS-App, `environment:dev`, CIS ECR/task families/services only),
   `aa-cis-infra-tf-plan` (`pull_request`, plus `ref:refs/heads/main` for docs-gen.yml since AA-893,
   crm-key-policy-diff.yml and terraform-drift.yml (AA-879); read only) and `aa-cis-infra-tf-apply`
-  (`environment:prod`, plus `environment:dev` while the Dev environment is renamed `prod` -> `dev`, AA-1023 /
+  (`environment:dev` only: the GitHub environment was renamed from `prod` in AA-1023 /
   root ADR 0012 decision 6; boundary `aa-cis-infra-tf-apply-boundary`). `aa-cis-dev-role` was removed in
   step 3 (S239), together with phase 3 (`tf_apply_require_boundary_on_role_policy_writes = true`:
   role policy writes only on roles that carry the workload boundary). **Every new `aws_iam_role` must set

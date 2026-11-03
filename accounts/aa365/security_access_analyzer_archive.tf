@@ -35,7 +35,7 @@ locals {
       aws_iam_role.cis_app_deploy.arn,         # AA-CIS-App, environment dev, ref main
       aws_iam_role.e2e_mail_reader.arn,        # AA-CIS-App + AA-Partner, environment e2e, ref main
       aws_iam_role.tf_plan.arn,                # AA-CIS-Infra, pull_request or ref main (read only)
-      aws_iam_role.tf_apply.arn,               # AA-CIS-Infra, environment prod, ref main
+      aws_iam_role.tf_apply.arn,               # AA-CIS-Infra, environment dev, ref main
       aws_iam_role.docs_sync.arn,              # root repo, ref master
       aws_iam_role.booking_app_deploy.arn,     # AA-Booking, environment dev, ref main (AA-1022)
       aws_iam_role.tripplanner_app_deploy.arn, # AA-TripPlanner-Web, ref main
