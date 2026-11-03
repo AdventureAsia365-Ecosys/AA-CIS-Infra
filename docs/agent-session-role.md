@@ -2,7 +2,7 @@
 
 Agent shells (Kiro, Claude Code on WSL) assume **`aa-cis-dev-agent-session`** instead of the MFA'd
 `aa365-admin` session. The admin profile stays with Nghiệp; Terraform applies and prod migrations
-stay in GitHub workflows (`Terraform Apply Prod`, `DB Migrate`).
+stay in GitHub workflows (`Terraform Apply Dev`, `DB Migrate`).
 
 Defined in `accounts/aa365/agent_session.tf`.
 

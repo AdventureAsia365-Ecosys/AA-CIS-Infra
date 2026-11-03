@@ -117,7 +117,7 @@ def test_apply_job_for_management_runs_in_org_with_the_guard_before_the_apply():
     root = on["workflow_dispatch"]["inputs"]["root"]
     assert root["default"] == "aa365" and root["options"] == ["aa365", "management"]
     aa365 = wf["jobs"]["terraform-apply"]
-    assert "inputs.root != 'management'" in aa365["if"] and aa365["environment"] == "prod"
+    assert "inputs.root != 'management'" in aa365["if"] and aa365["environment"] == "dev"
     job = wf["jobs"]["terraform-apply-management"]
     assert job["environment"] == "org"
     assert "github.ref == 'refs/heads/main'" in job["if"] and "inputs.root == 'management'" in job["if"]

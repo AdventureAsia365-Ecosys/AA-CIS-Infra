@@ -41,7 +41,7 @@ name: Docs Gen (generated infra docs)
 #   - a Contents + Pull requests WRITE token minted right before the final push / gh step, after every AWS and
 #     Terraform step, and used only there; no other step can read it from disk.
 # Secrets and variables (repo level): AWS_ROLE_ARN (the plan role, as in terraform-plan.yml; this job has no
-# environment, so the prod environment's apply-role value does not apply), TF_STATE_BUCKET, the variable
+# environment, so the dev environment's apply-role value does not apply), TF_STATE_BUCKET, the variable
 # AA_CI_BOT_APP_ID and the secret AA_CI_BOT_PRIVATE_KEY (repo level: this private repo on GitHub Free has no
 # environment branch rule, so the job's main-only guard is what keeps the key off other refs).
 # Cost: $0 AWS (state read from S3, a few GET requests); GitHub Actions about 1 minute a night.

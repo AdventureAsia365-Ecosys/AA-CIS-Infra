@@ -419,7 +419,7 @@ MIGRATE ERROR: refusing apply — busy: booking.job (queued=1). Wait until every
   is still busy. Run `check` first: a destructive apply takes its RDS snapshot before the task
   starts, so a refusal wastes one snapshot.
 - **Override:** the workflow input `override_busy_jobs` (one line, at most 200 characters, a
-  reason; Nghiệp only, dispatch stays behind `environment: prod`) reaches the task as
+  reason; Nghiệp only, dispatch stays behind `environment: dev`) reaches the task as
   `MIGRATION_IDLE_OVERRIDE`. The run then logs `MIGRATE WARNING: idle check OVERRIDDEN (<reason>)`
   with the busy list and applies without waiting. The reason is also in the job summary.
 

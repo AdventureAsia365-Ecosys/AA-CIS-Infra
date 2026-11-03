@@ -28,7 +28,7 @@ name: DB Isolation Probe (shared RDS)
 # AA-993 M3 (root ADR 0017 d5): also a reusable workflow. migration-apply.yml calls it as its BLOCKING probe job after
 # an auto-apply, with environment dev-db-auto (the narrow role aa-cis-infra-db-auto-apply, which may run the migrator
 # family and write only under s3://<bronze>/db-auto-apply/) and s3_root db-auto-apply/probe. Dispatch, nightly and DB
-# Migrate runs keep environment prod and the db-isolation-probe/ prefix.
+# Migrate runs keep environment dev (named prod before AA-1023) and the db-isolation-probe/ prefix.
 # No new environment variable reaches the task: its configuration is one JSON argument.
 on:
   workflow_dispatch:
@@ -46,10 +46,10 @@ on:
         type: string
         default: auto-apply
       environment:
-        description: "GitHub environment of the AWS role: prod (aa-cis-infra-tf-apply) or dev-db-auto (aa-cis-infra-db-auto-apply)"
+        description: "GitHub environment of the AWS role: dev (aa-cis-infra-tf-apply) or dev-db-auto (aa-cis-infra-db-auto-apply)"
         required: false
         type: string
-        default: prod
+        default: dev
       s3_root:
         description: "S3 prefix root of the probe upload (the role must be allowed to write under it)"
         required: false
@@ -73,9 +73,9 @@ jobs:
   probe:
     name: Isolation probe
     runs-on: ubuntu-latest
-    # Same OIDC subject as DB Migrate and the schema dump (environment:prod -> aa-cis-infra-tf-apply); called from
+    # Same OIDC subject as DB Migrate and the schema dump (environment:dev -> aa-cis-infra-tf-apply); called from
     # migration-apply: environment:dev-db-auto -> aa-cis-infra-db-auto-apply (AA-993 M3).
-    environment: ${{ inputs.environment || 'prod' }}
+    environment: ${{ inputs.environment || 'dev' }}
     if: github.ref == 'refs/heads/main'
     timeout-minutes: 30
     env:
@@ -104,7 +104,7 @@ jobs:
           ROLE: ${{ secrets.AWS_ROLE_ARN }}
         run: |
           if [ -z "$ROLE" ]; then
-            echo "::error::AWS_ROLE_ARN is empty for environment ${{ inputs.environment || 'prod' }} (a caller must pass secrets: inherit)"
+            echo "::error::AWS_ROLE_ARN is empty for environment ${{ inputs.environment || 'dev' }} (a caller must pass secrets: inherit)"
             exit 1
           fi
 

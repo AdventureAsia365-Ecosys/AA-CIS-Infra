@@ -205,7 +205,7 @@ def render(root: str, exit_code: int, rep: PlanReport, mode: str = "drift") -> t
     if exit_code == 2:
         lines += [
             "**Not in sync** (exit 2). Either something changed outside Terraform (drift), or `main` holds a change "
-            "that was never applied. Read the tables, then: apply `main` (Terraform Apply Prod) when the code is "
+            "that was never applied. Read the tables, then: apply `main` (Terraform Apply Dev) when the code is "
             "right, or fix the code / revert the manual change when the live value is right. Rerun this workflow "
             "after; it must end in sync.",
             "",

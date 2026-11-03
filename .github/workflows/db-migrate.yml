@@ -108,7 +108,7 @@ jobs:
   migrate:
     name: Migrate (${{ inputs.environment }} ${{ inputs.mode }} ${{ inputs.migration }}${{ inputs.role }}${{ inputs.script }})
     runs-on: ubuntu-latest
-    environment: prod
+    environment: dev
     if: github.ref == 'refs/heads/main'
     env:
       AWS_REGION: us-west-1

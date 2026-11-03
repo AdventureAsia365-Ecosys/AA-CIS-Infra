@@ -57,7 +57,7 @@ placeholder (services ignore `task_definition`); never push or deploy `:latest`.
   orchestrating agent merges its own PRs after green CI, infra and IAM included, after an agent review for
   risky changes; subagents never merge. From the first prod environment or paying tenant, Nghiệp approves
   every Terraform/IAM PR before merge.
-- **Apply is deliberate, never on merge:** `terraform-apply.yml` (manual dispatch, `environment: prod`,
+- **Apply is deliberate, never on merge:** `terraform-apply.yml` (manual dispatch, `environment: dev` (named `prod` before AA-1023),
   role `aa-cis-infra-tf-apply`) or locally from `accounts/aa365/` with MFA credentials
   (`export $(aws configure export-credentials --profile aa365-admin --format env | xargs) && unset AWS_PROFILE`).
   `terraform plan` before every apply; read the plan for destroys.

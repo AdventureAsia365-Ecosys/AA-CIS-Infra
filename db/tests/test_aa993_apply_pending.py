@@ -530,6 +530,8 @@ class WorkflowShapeTest(unittest.TestCase):
         self.assertIn('[ "$PRIVATE" = "false" ]', self.apply_text)              # d8: public repo only
         self.assertIn("required_status_checks", self.apply_text)                # d8: ruleset in force
         self.assertNotIn("environment: prod", self.apply_text)
+        # AA-1023: the apply role's environment is now `dev`; migration-apply never runs in it (only dev-db-auto)
+        self.assertNotRegex(self.apply_text, r"environment: dev\s*\n")
 
     def test_apply_uploads_only_under_the_narrow_prefix_and_never_overrides(self):
         self.assertIn('PREFIX="db-auto-apply/', self.apply_text)
@@ -543,7 +545,7 @@ class WorkflowShapeTest(unittest.TestCase):
         # (the M3 review assumed otherwise); the callee still names no secrets and its environment picks the role.
         self.assertEqual(self.apply["jobs"]["probe"].get("secrets"), "inherit")
         self.assertNotIn("secrets", self.probe[True]["workflow_call"])
-        self.assertEqual(self.probe["jobs"]["probe"]["environment"], "${{ inputs.environment || 'prod' }}")
+        self.assertEqual(self.probe["jobs"]["probe"]["environment"], "${{ inputs.environment || 'dev' }}")
 
     def test_missing_result_fails_and_still_probes_and_dumps(self):
         self.assertIn('echo "applied=unknown" >> "$GITHUB_OUTPUT"', self.apply_text)
@@ -565,7 +567,7 @@ class WorkflowShapeTest(unittest.TestCase):
         self.assertTrue(probe["with"]["s3_root"].startswith("db-auto-apply/"))
         self.assertNotIn("continue-on-error", str(probe))
         self.assertIn("workflow_call", self.probe[True])                        # PyYAML reads `on:` as True
-        self.assertIn("environment: ${{ inputs.environment || 'prod' }}", self.probe_text)
+        self.assertIn("environment: ${{ inputs.environment || 'dev' }}", self.probe_text)
         self.assertIn('PREFIX="$S3_ROOT/', self.probe_text)
 
     def test_dump_is_dispatched_with_after_apply(self):

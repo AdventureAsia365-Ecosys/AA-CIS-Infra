@@ -805,7 +805,7 @@ makes CI Terraform Plan fail with 403.
   ARNs masked). No plan file is saved or uploaded.
 - `-lock=false` on purpose: a plan never writes the state, and holding `<key>.tflock` for the refresh would make an
   apply or PR plan started meanwhile fail on the lock. A run that overlaps an apply may show false drift: rerun it.
-- When red with exit 2: if the code on `main` is what we want, dispatch Terraform Apply Prod (read its plan first);
+- When red with exit 2: if the code on `main` is what we want, dispatch Terraform Apply Dev (read its plan first);
   if the live value is what we want (a hand change that should stay), change the code in a PR; if neither, revert
   the hand change. Then dispatch Terraform Drift again; it must end green. A merged PR that was never applied also
   shows here: that is the point (main and the account must match).
