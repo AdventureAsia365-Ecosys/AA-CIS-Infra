@@ -290,8 +290,8 @@ resource "aws_api_gateway_integration" "catalog" {
 }
 
 # /tenant/membership/{membership_proxy+} — AA-978: tenant.membership.v1 for the partner CRM (service-to-service; the
-# CRM worker's crm_membership_pull). Only the membership subtree is routed, not /tenant/*: CIS has no other /tenant
-# route the public edge should reach. NONE at the gateway like /catalog: FastAPI verifies the aa-m2m token (CRM client
+# CRM worker's crm_membership_pull). Only the membership subtree is routed, not /tenant/* (AA-1028 adds /tenant/v1
+# below, the only other /tenant subtree the public edge should reach). NONE at the gateway like /catalog: FastAPI verifies the aa-m2m token (CRM client
 # + scope cis.tenant/read, api/core/m2m_auth.py) and answers 401 / 403 itself.
 resource "aws_api_gateway_resource" "tenant" {
   rest_api_id = aws_api_gateway_rest_api.this.id
@@ -334,6 +334,49 @@ resource "aws_api_gateway_integration" "membership" {
 
   request_parameters = {
     "integration.request.path.membership_proxy" = "method.request.path.membership_proxy"
+  }
+}
+
+# /tenant/v1/{tenant_v1_proxy+} — AA-1028 R1: tenant.entitlements.v1 (root ADR 0019 d2) for the other apps
+# (service-to-service: the CRM's crm_entitlement_pull, later Booking's bk_tenant_pull): GET tenants/{id}/account and
+# GET account-events. Only this subtree is routed, under the same /tenant resource as the membership feed. NONE at the
+# gateway like /tenant/membership: FastAPI verifies the aa-m2m token (CRM client + scope cis.tenant/read,
+# api/core/m2m_auth.py) and answers 401 / 403 itself.
+resource "aws_api_gateway_resource" "tenant_v1" {
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  parent_id   = aws_api_gateway_resource.tenant.id
+  path_part   = "v1"
+}
+
+resource "aws_api_gateway_resource" "tenant_v1_proxy" {
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  parent_id   = aws_api_gateway_resource.tenant_v1.id
+  path_part   = "{tenant_v1_proxy+}"
+}
+
+resource "aws_api_gateway_method" "tenant_v1_any" {
+  rest_api_id   = aws_api_gateway_rest_api.this.id
+  resource_id   = aws_api_gateway_resource.tenant_v1_proxy.id
+  http_method   = "ANY"
+  authorization = "NONE"
+
+  request_parameters = {
+    "method.request.path.tenant_v1_proxy" = true
+  }
+}
+
+resource "aws_api_gateway_integration" "tenant_v1" {
+  rest_api_id             = aws_api_gateway_rest_api.this.id
+  resource_id             = aws_api_gateway_resource.tenant_v1_proxy.id
+  http_method             = aws_api_gateway_method.tenant_v1_any.http_method
+  type                    = "HTTP_PROXY"
+  integration_http_method = "ANY"
+  connection_type         = "VPC_LINK"
+  connection_id           = var.vpc_link_id
+  uri                     = "http://${var.nlb_dns_name}/tenant/v1/{tenant_v1_proxy}"
+
+  request_parameters = {
+    "integration.request.path.tenant_v1_proxy" = "method.request.path.tenant_v1_proxy"
   }
 }
 
@@ -539,6 +582,7 @@ resource "aws_api_gateway_deployment" "this" {
     aws_api_gateway_integration.content,
     aws_api_gateway_integration.catalog,    # AA-976
     aws_api_gateway_integration.membership, # AA-978
+    aws_api_gateway_integration.tenant_v1,  # AA-1028
     aws_api_gateway_integration.docs,
     aws_api_gateway_integration.openapi,
     aws_api_gateway_integration.redoc,
@@ -555,6 +599,7 @@ resource "aws_api_gateway_deployment" "this" {
       aws_api_gateway_integration.content.uri,
       aws_api_gateway_integration.catalog.uri,    # AA-976: new resource must redeploy the stage (AA-432/AA-583 trap)
       aws_api_gateway_integration.membership.uri, # AA-978: same trap
+      aws_api_gateway_integration.tenant_v1.uri,  # AA-1028: same trap
       aws_api_gateway_integration.docs.uri,
       aws_api_gateway_integration.openapi.uri,
       # AA-583: added when /redoc + /docs/oauth2-redirect resources were created — same
@@ -575,6 +620,7 @@ resource "aws_api_gateway_deployment" "this" {
       aws_api_gateway_method.content_any.authorization,
       aws_api_gateway_method.catalog_any.authorization,    # AA-976
       aws_api_gateway_method.membership_any.authorization, # AA-978
+      aws_api_gateway_method.tenant_v1_any.authorization,  # AA-1028
       # AA-876: the two explicit login resources — without these the stage keeps the old snapshot and the
       # login throttle overrides point at methods the live deployment does not have (AA-432/AA-465/AA-583 trap).
       join(",", [for k in sort(tolist(local.login_paths)) : aws_api_gateway_integration.login[k].uri]),
