@@ -294,7 +294,7 @@ resource "aws_wafv2_web_acl_association" "identity_partner" {
 # -----------------------------------------------------------------------------
 resource "aws_iam_role_policy" "crm_ecs_task_partner_pool" {
   name = "${local.crm_name_prefix}-ecs-task-partner-pool"
-  role = aws_iam_role.crm_ecs_task.id
+  role = module.environment.crm_ecs_task_role_id
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -317,7 +317,7 @@ resource "aws_iam_role_policy" "crm_ecs_task_partner_pool" {
 
 resource "aws_iam_role_policy" "crm_ecs_task_ses_send" {
   name   = "${local.crm_name_prefix}-ecs-ses-send"
-  role   = aws_iam_role.crm_ecs_task.id
+  role   = module.environment.crm_ecs_task_role_id
   policy = data.aws_iam_policy_document.ses_send.json
 }
 
@@ -393,7 +393,7 @@ resource "aws_cloudwatch_event_rule" "identity_partner_admin_bypass" {
           userIdentity = {
             sessionContext = {
               sessionIssuer = {
-                arn = [{ "anything-but" = [aws_iam_role.crm_ecs_task.arn] }, { exists = false }]
+                arn = [{ "anything-but" = [module.environment.crm_ecs_task_role_arn] }, { exists = false }]
               }
             }
           }

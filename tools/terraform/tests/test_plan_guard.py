@@ -187,7 +187,7 @@ def test_cli_compliance_lock_is_refused_and_names_the_mode(tmp_path):
 def test_terraform_never_puts_dev_in_compliance():
     # Static guard on the source (design v3 §3.6: Dev governance only): only audit-c can switch, behind a
     # variable that defaults to false and a precondition that refuses it on Dev; audit-g is GOVERNANCE.
-    tf = open(os.path.join(REPO_ROOT, "accounts", "aa365", "crm_storage.tf"), encoding="utf-8").read()
+    tf = open(os.path.join(REPO_ROOT, "modules", "environment", "crm_storage.tf"), encoding="utf-8").read()  # AA-1004 slice 2
     var = tf.split('variable "crm_audit_compliance_enabled"', 1)[1].split("\n}", 1)[0]
     assert "default     = false" in var
     assert tf.count('"COMPLIANCE"') == 1

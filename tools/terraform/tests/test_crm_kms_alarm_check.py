@@ -1,4 +1,4 @@
-"""AA-932: the CRM KMS alarm patterns in accounts/aa365/crm_data.tf against the live-check events, offline.
+"""AA-932: the CRM KMS alarm patterns in modules/environment/crm_data.tf against the live-check events, offline.
 
 EventBridge matching is evaluated here by a small matcher that covers exactly the operators the two rules use (exact
 values, prefix, anything-but list, nested objects, arrays of objects, $or). The live check
@@ -17,7 +17,8 @@ sys.path.insert(0, str(ROOT / "tools" / "terraform"))
 
 import crm_kms_alarm_check as chk  # noqa: E402
 
-TF = (ROOT / "accounts" / "aa365" / "crm_data.tf").read_text(encoding="utf-8")
+# AA-1004 slice 2: crm_data.tf moved from accounts/aa365 into modules/environment.
+TF = (ROOT / "modules" / "environment" / "crm_data.tf").read_text(encoding="utf-8")
 ACCOUNT, REGION, ENV = "005097885195", "us-west-1", "dev"
 KEYS = {n: (f"{n}-0000-1111", f"arn:aws:kms:{REGION}:{ACCOUNT}:key/{n}-0000-1111") for n in ("data", "ingest", "seal")}
 
@@ -106,7 +107,7 @@ class AlarmPatternTest(unittest.TestCase):
     def test_every_rule_has_a_runbook_and_crm_tags(self):
         for rule in ("crm_kms_key_admin", "crm_kms_foreign_use"):
             block = TF.split(f'resource "aws_cloudwatch_event_rule" "{rule}"', 1)[1].split("\nresource ", 1)[0]
-            self.assertIn("${local.runbook_suffix.crm_keys}", block)
+            self.assertIn("${var.runbook_suffix.crm_keys}", block)  # module input (AA-1004 slice 2)
             self.assertIn("local.crm_tags", block)
 
     def test_key_policies_never_give_crypto_to_root(self):

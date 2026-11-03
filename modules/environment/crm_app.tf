@@ -6,6 +6,11 @@
 # tag App = "crm"), lives in this file (plus the security group in app_security_groups.tf and the job alarms in
 # observability_ecosys.tf) and only READS module outputs. No VPC / subnet / RDS / cluster / ALB / NLB is created.
 #
+# AA-1004 slice 2 (S266): this file and the other CRM files now live in modules/environment (one moved block per
+# resource in accounts/aa365/environment.tf). Root objects arrive as module inputs (crm_inputs.tf, variables.tf); the
+# listener rule below stays in accounts/aa365/alb_rules.tf with the shared listener's order, and the edge files
+# (crm_*edge.tf) stay in the root. File names below without a path are in this module or in accounts/aa365.
+#
 #   Resources:
 #     - ECR repo aa-crm-dev-api (IMMUTABLE, one tag per git SHA, scan on push, keep last 10)
 #     - log group /ecs/aa-crm-dev (30 days, AA-872)
@@ -98,8 +103,8 @@ locals {
 
   crm_app_tags = merge(local.crm_tags, { Service = "crm", Issue = "AA-933" })
 
-  crm_cluster_arn      = module.ecs.cluster_arn
-  crm_service_arn      = "arn:aws:ecs:${var.aws_region}:${var.account_id}:service/${module.ecs.cluster_name}/${local.crm_service}"
+  crm_cluster_arn      = var.ecs_cluster_arn
+  crm_service_arn      = "arn:aws:ecs:${var.aws_region}:${var.account_id}:service/${var.ecs_cluster_name}/${local.crm_service}"
   crm_task_def_pattern = "arn:aws:ecs:${var.aws_region}:${var.account_id}:task-definition/${local.crm_service}:*"
 
   # GitHub OIDC subjects (same model as booking.tf): AA-Partner turns on GitHub's immutable subject at repo level
@@ -112,7 +117,8 @@ locals {
   # AA-1022 (S263): the trust also checks the `ref` claim (main), so a branch job is refused even if the environment's
   # branch policy changes. Jobs on this role today, all `environment: dev` on main: deploy-dev.yml, deploy-web-dev.yml,
   # deploy-portal-dev.yml and post-deploy-verify.yml (called by them or dispatched).
-  crm_oidc_contexts = ["environment:dev"]
+  # AA-1004 slice 2: the context is the module's environment name (accounts/aa365 passes var.environment = dev).
+  crm_oidc_contexts = ["environment:${var.environment}"]
   crm_oidc_repo_id  = var.crm_github_repo_id != "" ? var.crm_github_repo_id : "*"
   crm_oidc_subjects = concat(
     [for c in local.crm_oidc_contexts : "repo:AdventureAsia365-Ecosys@276539096/AA-Partner@${local.crm_oidc_repo_id}:${c}"],
@@ -129,17 +135,17 @@ locals {
   # (IAM allow-list in identity_partner.tf), the partner host origin (join links), and AA system mail (ses.tf sender +
   # transactional configuration set, IAM ses_send attached to the task role in identity_partner.tf).
   crm_identity_env = [
-    { name = "COGNITO_WORKFORCE_ISSUER", value = "https://${aws_cognito_user_pool.workforce.endpoint}" },
-    { name = "COGNITO_CIS_ADMIN_CLIENT_ID", value = aws_cognito_user_pool_client.workforce["cis-admin"].id },
-    { name = "COGNITO_BREAKGLASS_CLIENT_ID", value = aws_cognito_user_pool_client.workforce["breakglass"].id },
-    { name = "COGNITO_CRM_STAFF_CLIENT_ID", value = aws_cognito_user_pool_client.workforce["crm-staff"].id },
-    { name = "COGNITO_PARTNER_ISSUER", value = local.idpartner_issuer },
-    { name = "COGNITO_PARTNER_WEB_CLIENT_ID", value = aws_cognito_user_pool_client.partner["partner-web"].id },
-    { name = "COGNITO_PARTNER_POOL_ID", value = aws_cognito_user_pool.partner.id },
+    { name = "COGNITO_WORKFORCE_ISSUER", value = "https://${var.cognito_workforce_pool_endpoint}" },
+    { name = "COGNITO_CIS_ADMIN_CLIENT_ID", value = var.cognito_workforce_cis_admin_client_id },
+    { name = "COGNITO_BREAKGLASS_CLIENT_ID", value = var.cognito_workforce_breakglass_client_id },
+    { name = "COGNITO_CRM_STAFF_CLIENT_ID", value = var.cognito_workforce_crm_staff_client_id },
+    { name = "COGNITO_PARTNER_ISSUER", value = var.cognito_partner_issuer },
+    { name = "COGNITO_PARTNER_WEB_CLIENT_ID", value = var.cognito_partner_web_client_id },
+    { name = "COGNITO_PARTNER_POOL_ID", value = var.cognito_partner_pool_id },
     # AA-979 clean-up: join links on the agency host (portal.); the old partner host answers 301 there except /crm/*.
-    { name = "PARTNER_WEB_ORIGIN", value = "https://${local.crm_agency_host}" },
+    { name = "PARTNER_WEB_ORIGIN", value = "https://${var.crm_agency_host}" },
     { name = "SES_FROM_ADDRESS", value = var.ses_from_address },
-    { name = "SES_CONFIGURATION_SET", value = aws_sesv2_configuration_set.stream["transactional"].configuration_set_name },
+    { name = "SES_CONFIGURATION_SET", value = var.ses_configuration_set_name },
   ]
 }
 
@@ -157,7 +163,7 @@ resource "aws_ecr_repository" "crm_api" {
   tags = local.crm_app_tags
 
   # CreateRepository: cicd_crm.tf CrmEcrRepoManage (aa-crm-<env>-*).
-  depends_on = [time_sleep.wait_for_iam_propagation]
+  depends_on = [var.iam_propagation_gate]
 }
 
 resource "aws_ecr_lifecycle_policy" "crm_api" {
@@ -199,11 +205,11 @@ resource "aws_secretsmanager_secret" "crm_sentry_dsn" {
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "crm_ecs_execution" {
   name                 = "${local.crm_name_prefix}-ecs-execution-role"
-  permissions_boundary = aws_iam_policy.workload_boundary.arn
+  permissions_boundary = var.permissions_boundary_arn
   assume_role_policy   = data.aws_iam_policy_document.booking_ecs_tasks_assume.json # ecs-tasks, this account only
   tags                 = local.crm_app_tags
 
-  depends_on = [time_sleep.wait_for_iam_propagation]
+  depends_on = [var.iam_propagation_gate]
 }
 
 resource "aws_iam_role_policy" "crm_ecs_execution" {
@@ -240,7 +246,7 @@ resource "aws_iam_role_policy" "crm_ecs_execution" {
         Resource = [
           aws_secretsmanager_secret.crm_db.arn,
           aws_secretsmanager_secret.crm_sentry_dsn.arn,
-          aws_secretsmanager_secret.m2m_crm_client.arn,
+          var.m2m_crm_client_secret_arn,
           # AA-945: the agencies' send-as OAuth clients (crm_mail.tf), mapped only with crm_mail_oauth_enabled.
           aws_secretsmanager_secret.crm_mail_oauth.arn,
         ]
@@ -255,11 +261,11 @@ resource "aws_iam_role_policy" "crm_ecs_execution" {
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "crm_ecs_task" {
   name                 = local.crm_task_role_name
-  permissions_boundary = aws_iam_policy.workload_boundary.arn
+  permissions_boundary = var.permissions_boundary_arn
   assume_role_policy   = data.aws_iam_policy_document.booking_ecs_tasks_assume.json
   tags                 = local.crm_app_tags
 
-  depends_on = [time_sleep.wait_for_iam_propagation]
+  depends_on = [var.iam_propagation_gate]
 }
 
 resource "aws_iam_role_policy" "crm_ecs_task" {
@@ -292,7 +298,7 @@ resource "aws_iam_role_policy" "crm_ecs_task" {
         Sid      = "EcsExecSessionLogWrite"
         Effect   = "Allow"
         Action   = ["logs:CreateLogStream", "logs:DescribeLogStreams", "logs:PutLogEvents"]
-        Resource = "${module.ecs.exec_session_log_group_arn}:*"
+        Resource = "${var.ecs_exec_session_log_group_arn}:*"
       },
       {
         # S263 alert diet (AA-1025): the in-app checks of the job sampler (AA-Partner api/app/observability/
@@ -301,7 +307,7 @@ resource "aws_iam_role_policy" "crm_ecs_task" {
         Sid      = "PublishOpsAlerts"
         Effect   = "Allow"
         Action   = "sns:Publish"
-        Resource = aws_sns_topic.alerts.arn
+        Resource = var.alerts_topic_arn
       },
       {
         # AA-934 (CRM-06, design v3 §4.1): the KeyProvider's envelope keys. One DEK per agency per purpose, generated
@@ -449,7 +455,7 @@ resource "aws_ecs_task_definition" "crm_api" {
       { name = "KMS_SEAL_KEY_ID", value = aws_kms_alias.crm["seal"].name },
       # AA-936: the public inquiry form (app.intake.public): pages on the client host may post; limits per
       # address per minute and per form per hour.
-      { name = "INTAKE_PAGE_ORIGINS", value = local.crm_intake_origin },
+      { name = "INTAKE_PAGE_ORIGINS", value = var.crm_intake_origin },
       { name = "RATE_LIMIT_INTAKE_PER_MINUTE", value = "5" },
       { name = "RATE_LIMIT_INTAKE_FORM_PER_HOUR", value = "200" },
       { name = "DOCUMENTS_BUCKET", value = aws_s3_bucket.crm["documents"].bucket },
@@ -467,13 +473,13 @@ resource "aws_ecs_task_definition" "crm_api" {
       # AA-946: the portal code echo, Dev only (synthetic agencies, no mailbox); the API refuses it elsewhere.
       { name = "PORTAL_OTP_DEV_ECHO", value = var.environment == "dev" ? "true" : "false" },
       # S263 (AA-1025): the in-app ops checks publish their alerts here (task role PublishOpsAlerts).
-      { name = "ALERTS_TOPIC_ARN", value = aws_sns_topic.alerts.arn },
+      { name = "ALERTS_TOPIC_ARN", value = var.alerts_topic_arn },
       ], local.crm_identity_env, local.crm_scrub_env, local.crm_llm_env, local.crm_mail_env, var.crm_sentry_enabled ? [
       { name = "SENTRY_REQUIRED", value = "true" },
     ] : [])
     secrets = concat([
       { name = "DATABASE_URL", valueFrom = aws_secretsmanager_secret.crm_db.arn },
-      { name = "M2M_CLIENT", valueFrom = aws_secretsmanager_secret.m2m_crm_client.arn }, # AA-978, identity_m2m.tf
+      { name = "M2M_CLIENT", valueFrom = var.m2m_crm_client_secret_arn }, # AA-978, identity_m2m.tf
       ], local.crm_mail_secrets, var.crm_sentry_enabled ? [
       { name = "SENTRY_DSN", valueFrom = aws_secretsmanager_secret.crm_sentry_dsn.arn },
     ] : [])
@@ -500,13 +506,14 @@ resource "aws_ecs_task_definition" "crm_api" {
 }
 
 # -----------------------------------------------------------------------------
-# ALB target group + the CloudFront-path rule (priority: alb_rules.tf crm_api; order checked by alb_rule_order.py).
+# ALB target group. The CloudFront-path rule is accounts/aa365 alb_rules.tf crm_api (priority and order checked there by
+# alb_rule_order.py); the service waits for it through var.crm_api_listener_rule_gate.
 # -----------------------------------------------------------------------------
 resource "aws_lb_target_group" "crm_api" {
   name                 = "${local.crm_service}-tg"
   port                 = local.crm_port
   protocol             = "HTTP"
-  vpc_id               = module.vpc.vpc_id
+  vpc_id               = var.vpc_id
   target_type          = "ip" # Fargate
   deregistration_delay = 30
 
@@ -525,41 +532,6 @@ resource "aws_lb_target_group" "crm_api" {
   tags = local.crm_app_tags
 }
 
-resource "aws_lb_listener_rule" "crm_api" {
-  count = local.crm_edge_on
-
-  listener_arn = module.alb.http_listener_arn
-  priority     = local.alb_http_rule_priorities.crm_api
-
-  action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.crm_api.arn
-  }
-
-  condition {
-    host_header {
-      values = [local.crm_partner_host]
-    }
-  }
-
-  condition {
-    http_header {
-      http_header_name = local.alb_origin_header_name
-      values           = [random_password.crm_origin_verify[0].result]
-    }
-  }
-
-  condition {
-    path_pattern {
-      values = ["/crm", "/crm/*"]
-    }
-  }
-
-  tags = local.crm_app_tags
-
-  depends_on = [time_sleep.wait_for_iam_propagation]
-}
-
 # -----------------------------------------------------------------------------
 # ECS service. desired_count 0 at create: nothing runs until the crm_app DSN is set, crm-001 / crm-002 are applied and
 # the first image is deployed; then `aws ecs update-service ... --desired-count 1` (a separate step). ignore_changes
@@ -567,7 +539,7 @@ resource "aws_lb_listener_rule" "crm_api" {
 # -----------------------------------------------------------------------------
 resource "aws_ecs_service" "crm_api" {
   name            = local.crm_service
-  cluster         = module.ecs.cluster_arn
+  cluster         = var.ecs_cluster_arn
   task_definition = aws_ecs_task_definition.crm_api.arn
   desired_count   = 0
 
@@ -591,18 +563,18 @@ resource "aws_ecs_service" "crm_api" {
     rollback = true
   }
 
-  health_check_grace_period_seconds = local.crm_edge_on == 1 ? 60 : null
+  health_check_grace_period_seconds = var.crm_edge_on == 1 ? 60 : null
 
   network_configuration {
-    subnets          = module.vpc.private_subnet_ids
-    security_groups  = [aws_security_group.crm_api.id] # ADR 0004b: own group, ALB -> 8000, admitted by RDS
+    subnets          = var.private_subnet_ids
+    security_groups  = [var.crm_api_security_group_id] # ADR 0004b: own group, ALB -> 8000, admitted by RDS
     assign_public_ip = false
   }
 
   # Without the edge there is no rule in front of the target group, and ECS rejects a target group that is not
   # attached to a load balancer.
   dynamic "load_balancer" {
-    for_each = local.crm_edge_on == 1 ? [1] : []
+    for_each = var.crm_edge_on == 1 ? [1] : []
     content {
       target_group_arn = aws_lb_target_group.crm_api.arn
       container_name   = local.crm_container
@@ -622,7 +594,7 @@ resource "aws_ecs_service" "crm_api" {
 
   tags = local.crm_app_tags
 
-  depends_on = [aws_lb_listener_rule.crm_api, aws_iam_role_policy.crm_ecs_execution]
+  depends_on = [var.crm_api_listener_rule_gate, aws_iam_role_policy.crm_ecs_execution]
 }
 
 # -----------------------------------------------------------------------------
@@ -633,13 +605,13 @@ resource "aws_ecs_service" "crm_api" {
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "crm_app_deploy" {
   name                 = "${local.crm_name_prefix}-app-deploy"
-  permissions_boundary = aws_iam_policy.workload_boundary.arn
+  permissions_boundary = var.permissions_boundary_arn
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
       Effect    = "Allow"
-      Principal = { Federated = aws_iam_openid_connect_provider.github_actions.arn }
+      Principal = { Federated = var.github_oidc_provider_arn }
       Action    = "sts:AssumeRoleWithWebIdentity"
       Condition = {
         StringEquals = {
@@ -655,7 +627,7 @@ resource "aws_iam_role" "crm_app_deploy" {
 
   tags = local.crm_app_tags
 
-  depends_on = [time_sleep.wait_for_iam_propagation]
+  depends_on = [var.iam_propagation_gate]
 }
 
 resource "aws_iam_role_policy" "crm_app_deploy" {
@@ -766,7 +738,7 @@ resource "aws_iam_role_policy" "crm_app_deploy" {
         Sid      = "EcsDescribeTasksInCluster"
         Effect   = "Allow"
         Action   = ["ecs:DescribeTasks"]
-        Resource = "arn:aws:ecs:${var.aws_region}:${var.account_id}:task/${module.ecs.cluster_name}/*"
+        Resource = "arn:aws:ecs:${var.aws_region}:${var.account_id}:task/${var.ecs_cluster_name}/*"
       },
       {
         Sid    = "PassCrmTaskRoles"
@@ -794,23 +766,23 @@ resource "aws_iam_role_policy" "crm_app_deploy" {
 # S263 alert diet (AA-1025): only no-healthy-task stays; unhealthy-hosts (the same event with one task) and CPU went.
 # -----------------------------------------------------------------------------
 resource "aws_cloudwatch_metric_alarm" "crm_no_healthy_task" {
-  count = local.crm_edge_on
+  count = var.crm_edge_on
 
   alarm_name          = "${local.crm_name_prefix}-no-healthy-task"
-  alarm_description   = "AA-Partner target group ${aws_lb_target_group.crm_api.name} has no healthy target for 5 minutes (service down or failing /crm/health).${local.runbook_suffix.api_5xx}"
+  alarm_description   = "AA-Partner target group ${aws_lb_target_group.crm_api.name} has no healthy target for 5 minutes (service down or failing /crm/health).${var.runbook_suffix.api_5xx}"
   namespace           = "AWS/ApplicationELB"
   metric_name         = "HealthyHostCount"
-  dimensions          = { TargetGroup = aws_lb_target_group.crm_api.arn_suffix, LoadBalancer = module.alb.alb_arn_suffix }
+  dimensions          = { TargetGroup = aws_lb_target_group.crm_api.arn_suffix, LoadBalancer = var.alb_arn_suffix }
   statistic           = "Minimum"
   period              = 60
   evaluation_periods  = 5
   comparison_operator = "LessThanThreshold"
   threshold           = 1
   treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
+  alarm_actions       = [var.alerts_topic_arn]
+  ok_actions          = [var.alerts_topic_arn]
 
-  tags = merge(local.ecosys_tags, { App = "crm" })
+  tags = merge(var.ecosys_tags, { App = "crm" })
 }
 
 # -----------------------------------------------------------------------------
@@ -835,5 +807,5 @@ output "crm_task_definition_family" {
 
 output "crm_api_base_url" {
   description = "AA-933: CRM_API_BASE_URL of the AA-Partner dev environment; health = <this>/crm/health and /crm/health/ready."
-  value       = "https://${local.crm_partner_host}"
+  value       = "https://${var.crm_partner_host}"
 }

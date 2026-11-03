@@ -25,7 +25,7 @@ locals {
   alb_origin_header_name = "X-AA-Origin"
 
   alb_http_rule_priorities = {
-    crm_api             = 5   # crm_app.tf: partner-dev. host + /crm, /crm/* -> AA-Partner API (AA-933)
+    crm_api             = 5   # below (was crm_app.tf): partner-dev. host + /crm, /crm/* -> AA-Partner API (AA-933)
     crm_client_public   = 6   # crm_client_edge.tf: go-dev. host + /crm/public/* -> AA-Partner API (AA-936)
     crm_agency_api      = 7   # crm_agency_edge.tf: portal. host + /crm, /crm/* -> AA-Partner API (AA-979)
     crm_agency_studio   = 8   # crm_agency_edge.tf: portal. host + /portal*, /api/*, /tenant-login* -> Content studio (AA-979)
@@ -61,5 +61,44 @@ resource "aws_lb_listener_rule" "booking" {
   tags = local.bk_tags
 
   # CreateRule is granted by cicd.tf BookingAlbListenerRuleManage (phase 1).
+  depends_on = [time_sleep.wait_for_iam_propagation]
+}
+
+# AA-933: the AA-Partner API's CloudFront-path rule (was crm_app.tf; AA-1004 slice 2 moved the CRM stack into
+# modules/environment and kept the rule here with the shared listener's order). Host = the partner host AND
+# X-AA-Origin = the CloudFront secret AND path /crm or /crm/*, above crm_partner_default. The CRM ECS service waits for
+# it through module input crm_api_listener_rule_gate.
+resource "aws_lb_listener_rule" "crm_api" {
+  count = local.crm_edge_on
+
+  listener_arn = module.alb.http_listener_arn
+  priority     = local.alb_http_rule_priorities.crm_api
+
+  action {
+    type             = "forward"
+    target_group_arn = module.environment.crm_api_target_group_arn
+  }
+
+  condition {
+    host_header {
+      values = [local.crm_partner_host]
+    }
+  }
+
+  condition {
+    http_header {
+      http_header_name = local.alb_origin_header_name
+      values           = [random_password.crm_origin_verify[0].result]
+    }
+  }
+
+  condition {
+    path_pattern {
+      values = ["/crm", "/crm/*"]
+    }
+  }
+
+  tags = local.crm_app_tags
+
   depends_on = [time_sleep.wait_for_iam_propagation]
 }

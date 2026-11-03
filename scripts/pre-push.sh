@@ -76,10 +76,10 @@ patterns_for() {
     tf-fmt) # D5 (CI gap until H2 adds `terraform fmt -check` to terraform-plan.yml)
       printf '%s\n' '**/*.tf' '**/*.tfvars' ;;
     alb-rule-order) # alb-rule-order.yml
-      printf '%s\n' 'accounts/aa365/**' 'modules/alb/**' 'tools/terraform/**' '.github/workflows/alb-rule-order.yml' ;;
+      printf '%s\n' 'accounts/aa365/**' 'modules/alb/**' 'modules/environment/**' 'tools/terraform/**' '.github/workflows/alb-rule-order.yml' ;;
     connection-budget) # connection-budget.yml
       printf '%s\n' 'db/connection_budget.json' 'db/check_connection_budget.py' 'db/migrations/roles/**' \
-        'db/migrations/cis/**' 'modules/ecs/**' 'modules/rds/**' 'accounts/aa365/*.tf' \
+        'db/migrations/cis/**' 'modules/ecs/**' 'modules/rds/**' 'accounts/aa365/*.tf' 'modules/environment/*.tf' \
         '.github/workflows/connection-budget.yml' ;;
     contract-copy) # contract-copy-guard.yml
       printf '%s\n' 'tools/contracts/**' '.github/workflows/contract-copy-guard.yml' ;;
@@ -119,7 +119,7 @@ patterns_for() {
       printf '%s\n' 'tools/secrets/**' '.github/workflows/secrets-register-check-test.yml' ;;
     tf-plan-guard) # tf-plan-guard-test.yml
       printf '%s\n' 'tools/terraform/**' '.github/workflows/terraform-apply.yml' '.github/workflows/tf-plan-guard-test.yml' \
-        'accounts/aa365/crm_storage.tf' '.github/workflows/crm-key-policy-diff.yml' \
+        'modules/environment/crm_storage.tf' '.github/workflows/crm-key-policy-diff.yml' \
         '.github/workflows/terraform-drift.yml' '.github/workflows/terraform-plan.yml' 'tools/docs/aws_mask.py' \
         'accounts/management/**' ;;
     hook-self-test) # this hook
@@ -263,6 +263,8 @@ self_test() {
   expect "lock file" "accounts/aa365/.terraform.lock.hcl" "tf-validate:aa365 alb-rule-order managed-login-branding"
   expect "satellite root" "accounts/acc3-bedrock/batch.tf" "tf-fmt tf-validate:acc3-bedrock docs-gen"
   expect "module" "modules/rds/main.tf" "tf-fmt tf-validate:aa365 connection-budget docs-gen"
+  expect "environment module crm (AA-1004)" "modules/environment/crm_storage.tf" \
+    "tf-fmt tf-validate:aa365 alb-rule-order connection-budget docs-gen tf-plan-guard"
   expect "migration copy" "db/migrations/cis/300_x.sql" "connection-budget migration-guard"
   expect "crm migration copy" "db/migrations/crm/030_x.sql" "migration-guard"
   expect "plan guard tool" "tools/terraform/plan_guard.py" "alb-rule-order tf-plan-guard"

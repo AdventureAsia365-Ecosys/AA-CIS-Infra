@@ -54,7 +54,7 @@ locals {
 
   crm_portal_tags = merge(local.crm_tags, { Service = "crm-portal", Issue = "AA-979" })
 
-  crm_portal_service_arn      = "arn:aws:ecs:${var.aws_region}:${var.account_id}:service/${module.ecs.cluster_name}/${local.crm_portal_service}"
+  crm_portal_service_arn      = "arn:aws:ecs:${var.aws_region}:${var.account_id}:service/${var.ecs_cluster_name}/${local.crm_portal_service}"
   crm_portal_task_def_pattern = "arn:aws:ecs:${var.aws_region}:${var.account_id}:task-definition/${local.crm_portal_service}:*"
 
   # Env names read by the portal (AA-Partner portal/lib/config.ts). Public values only.
@@ -62,10 +62,10 @@ locals {
     { name = "ENVIRONMENT", value = var.environment },
     # The CIS API (server to server; the same base the Vercel project uses).
     { name = "API_URL", value = var.crm_cis_api_url },
-    { name = "PORTAL_HOSTS", value = local.crm_agency_host },
+    { name = "PORTAL_HOSTS", value = var.crm_agency_host },
     # Behind CloudFront -> ALB the standalone server sees its bind address; redirects and the same-origin write guard
     # use this public origin instead (critic C2).
-    { name = "PORTAL_PUBLIC_ORIGIN", value = "https://${local.crm_agency_host}" },
+    { name = "PORTAL_PUBLIC_ORIGIN", value = "https://${var.crm_agency_host}" },
     { name = "PORTAL_API_KEY_SIGNIN", value = var.crm_portal_api_key_signin ? "true" : "false" },
     # The CRM web's refresh route on the same host (it renews the partner session or falls back to managed login).
     { name = "CRM_WEB_SIGN_IN_PATH", value = "/auth/refresh" },
@@ -91,7 +91,7 @@ resource "aws_ecr_repository" "crm_portal" {
   tags = local.crm_portal_tags
 
   # CreateRepository: cicd_crm.tf CrmEcrRepoManage (aa-crm-<env>-*).
-  depends_on = [time_sleep.wait_for_iam_propagation]
+  depends_on = [var.iam_propagation_gate]
 }
 
 resource "aws_ecr_lifecycle_policy" "crm_portal" {
@@ -125,11 +125,11 @@ resource "aws_secretsmanager_secret" "crm_portal_sentry_dsn" {
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "crm_portal_ecs_execution" {
   name                 = "${local.crm_portal_service}-ecs-execution-role"
-  permissions_boundary = aws_iam_policy.workload_boundary.arn
+  permissions_boundary = var.permissions_boundary_arn
   assume_role_policy   = data.aws_iam_policy_document.booking_ecs_tasks_assume.json
   tags                 = local.crm_portal_tags
 
-  depends_on = [time_sleep.wait_for_iam_propagation]
+  depends_on = [var.iam_propagation_gate]
 }
 
 resource "aws_iam_role_policy" "crm_portal_ecs_execution" {
@@ -173,11 +173,11 @@ resource "aws_iam_role_policy" "crm_portal_ecs_execution" {
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "crm_portal_ecs_task" {
   name                 = "${local.crm_portal_service}-ecs-task-role"
-  permissions_boundary = aws_iam_policy.workload_boundary.arn
+  permissions_boundary = var.permissions_boundary_arn
   assume_role_policy   = data.aws_iam_policy_document.booking_ecs_tasks_assume.json
   tags                 = local.crm_portal_tags
 
-  depends_on = [time_sleep.wait_for_iam_propagation]
+  depends_on = [var.iam_propagation_gate]
 }
 
 resource "aws_iam_role_policy" "crm_portal_ecs_task" {
@@ -208,7 +208,7 @@ resource "aws_iam_role_policy" "crm_portal_ecs_task" {
         Sid      = "EcsExecSessionLogWrite"
         Effect   = "Allow"
         Action   = ["logs:CreateLogStream", "logs:DescribeLogStreams", "logs:PutLogEvents"]
-        Resource = "${module.ecs.exec_session_log_group_arn}:*"
+        Resource = "${var.ecs_exec_session_log_group_arn}:*"
       },
     ]
   })
@@ -273,7 +273,7 @@ resource "aws_lb_target_group" "crm_portal" {
   name                 = "${local.crm_portal_service}-tg"
   port                 = local.crm_portal_port
   protocol             = "HTTP"
-  vpc_id               = module.vpc.vpc_id
+  vpc_id               = var.vpc_id
   target_type          = "ip"
   deregistration_delay = 30
 
@@ -297,7 +297,7 @@ resource "aws_lb_target_group" "crm_portal" {
 # -----------------------------------------------------------------------------
 resource "aws_ecs_service" "crm_portal" {
   name            = local.crm_portal_service
-  cluster         = module.ecs.cluster_arn
+  cluster         = var.ecs_cluster_arn
   task_definition = aws_ecs_task_definition.crm_portal.arn
   desired_count   = 0
 
@@ -315,16 +315,16 @@ resource "aws_ecs_service" "crm_portal" {
     rollback = true
   }
 
-  health_check_grace_period_seconds = local.crm_edge_on == 1 ? 60 : null
+  health_check_grace_period_seconds = var.crm_edge_on == 1 ? 60 : null
 
   network_configuration {
-    subnets          = module.vpc.private_subnet_ids
-    security_groups  = [aws_security_group.crm_portal.id] # ALB -> 3000 only; not admitted by RDS
+    subnets          = var.private_subnet_ids
+    security_groups  = [var.crm_portal_security_group_id] # ALB -> 3000 only; not admitted by RDS
     assign_public_ip = false
   }
 
   dynamic "load_balancer" {
-    for_each = local.crm_edge_on == 1 ? [1] : []
+    for_each = var.crm_edge_on == 1 ? [1] : []
     content {
       target_group_arn = aws_lb_target_group.crm_portal.arn
       container_name   = local.crm_portal_container
@@ -341,7 +341,7 @@ resource "aws_ecs_service" "crm_portal" {
 
   tags = local.crm_portal_tags
 
-  depends_on = [aws_lb_listener_rule.crm_agency_studio, aws_iam_role_policy.crm_portal_ecs_execution]
+  depends_on = [var.crm_agency_studio_rule_gate, aws_iam_role_policy.crm_portal_ecs_execution]
 }
 
 # -----------------------------------------------------------------------------
@@ -349,23 +349,23 @@ resource "aws_ecs_service" "crm_portal" {
 # no-healthy-task stays.
 # -----------------------------------------------------------------------------
 resource "aws_cloudwatch_metric_alarm" "crm_portal_no_healthy_task" {
-  count = local.crm_edge_on
+  count = var.crm_edge_on
 
   alarm_name          = "${local.crm_portal_service}-no-healthy-task"
-  alarm_description   = "AA-Partner Content studio target group ${aws_lb_target_group.crm_portal.name} has no healthy target for 5 minutes (service down or failing /healthz).${local.runbook_suffix.api_5xx}"
+  alarm_description   = "AA-Partner Content studio target group ${aws_lb_target_group.crm_portal.name} has no healthy target for 5 minutes (service down or failing /healthz).${var.runbook_suffix.api_5xx}"
   namespace           = "AWS/ApplicationELB"
   metric_name         = "HealthyHostCount"
-  dimensions          = { TargetGroup = aws_lb_target_group.crm_portal.arn_suffix, LoadBalancer = module.alb.alb_arn_suffix }
+  dimensions          = { TargetGroup = aws_lb_target_group.crm_portal.arn_suffix, LoadBalancer = var.alb_arn_suffix }
   statistic           = "Minimum"
   period              = 60
   evaluation_periods  = 5
   comparison_operator = "LessThanThreshold"
   threshold           = 1
   treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
+  alarm_actions       = [var.alerts_topic_arn]
+  ok_actions          = [var.alerts_topic_arn]
 
-  tags = merge(local.ecosys_tags, { App = "crm" })
+  tags = merge(var.ecosys_tags, { App = "crm" })
 }
 
 # -----------------------------------------------------------------------------
