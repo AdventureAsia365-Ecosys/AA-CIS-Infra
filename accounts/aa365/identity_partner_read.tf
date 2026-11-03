@@ -10,16 +10,18 @@
 #
 # Allowed:   cognito-idp:ListUsers on the partner pool ARN only. Nothing that writes, creates, signs in or changes a
 #            partner account (the CRM task role keeps the invitation and removal writes, identity_partner.tf).
-# Denied:    the takeover actions on the partner pool, explicitly, so a later broad grant on this role cannot undo the
-#            exclusion (the same fail-closed pattern as DenyStaffTakeoverActions in identity_iam.tf, which covers the
-#            WORKFORCE and EXTERNAL pools).
+# Denied:    every other action on the partner pool (NotAction ListUsers), explicitly, so a later broad grant on this
+#            role (cognito-idp:*, cognito-idp:Update*) cannot undo the exclusion: the per-user admin calls and the
+#            pool, app-client and identity-provider configuration writes alike (the fail-closed pattern of
+#            DenyStaffTakeoverActions in identity_iam.tf, which covers the WORKFORCE and EXTERNAL pools).
 #
 # Role: module.ecs task role (aa-cis-<env>-ecs-task-role), used by the api AND the worker task definitions; the mail
 # job runs on the worker. The role carries the AA-806 workload boundary, which allows cognito-idp.
 #
 # After apply (seconds; no redeploy): the next tour_notice_email job resolves its recipients (its result says
-# `sent`); before it, the job defers the notices to the next daily digest (`recipients unavailable: AccessDenied...`),
-# nothing is lost. Probe: one retire of a synthetic E2E tour (live step of the CIS PR).
+# `sent`); before it, the job defers the notices to the next daily digest (`recipients unavailable: AccessDenied...`).
+# The digest reads the notices of the last 14 days, so apply this before (or with) the CIS rollout: a notice still
+# deferred after 14 days is not mailed. Probe: one retire of a synthetic E2E tour (live step of the CIS PR).
 # Cost: $0 (IAM; ListUsers is not billed as a MAU).
 # =============================================================================
 
@@ -31,20 +33,15 @@ data "aws_iam_policy_document" "cis_partner_pool_read" {
     resources = [aws_cognito_user_pool.partner.arn]
   }
 
+  # Every other action on the partner pool is denied, not only the per-user admin calls: the pool, app-client and
+  # identity-provider configuration writes (UpdateUserPoolClient / CreateUserPoolClient adding a callback URL,
+  # Create/UpdateIdentityProvider, UpdateUserPool triggers, SetUserPoolMfaConfig) allow an account takeover as well.
+  # NotAction keeps the one read the mail needs.
   statement {
-    sid    = "DenyPartnerTakeoverActions"
-    effect = "Deny"
-    actions = [
-      "cognito-idp:AdminSetUserPassword",
-      "cognito-idp:AdminUpdateUserAttributes",
-      "cognito-idp:AdminLinkProviderForUser",
-      "cognito-idp:AdminInitiateAuth",
-      "cognito-idp:AdminRespondToAuthChallenge",
-      "cognito-idp:AdminDeleteUser",
-      "cognito-idp:AdminSetUserMFAPreference",
-      "cognito-idp:AdminCreateUser",
-    ]
-    resources = [aws_cognito_user_pool.partner.arn]
+    sid         = "DenyPartnerTakeoverActions"
+    effect      = "Deny"
+    not_actions = ["cognito-idp:ListUsers"]
+    resources   = [aws_cognito_user_pool.partner.arn]
   }
 }
 

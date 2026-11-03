@@ -2,7 +2,8 @@
 
 1. The allow statement is exactly cognito-idp:ListUsers on the partner pool ARN (the tour notice e-mail looks up a
    member's verified address by sub; nothing that writes, creates or signs in).
-2. An explicit Deny keeps the takeover and create actions off the partner pool for the CIS role.
+2. An explicit Deny keeps every other action off the partner pool for the CIS role (NotAction ListUsers): the
+   takeover and create calls and the pool, app-client and identity-provider configuration writes.
 3. The policy is attached to the CIS ECS task role (api and worker), and tf-plan-guard-test runs when the file changes.
 
 Run: python3 -m pytest -q tools/terraform/tests/test_aa1039_cis_partner_pool_read.py
@@ -35,15 +36,23 @@ class CisPartnerPoolRead(unittest.TestCase):
         self.assertEqual(_actions(body), ["cognito-idp:ListUsers"])
         self.assertIn("resources = [aws_cognito_user_pool.partner.arn]", body)
 
-    def test_takeover_and_create_actions_are_denied(self) -> None:
+    def test_every_other_partner_pool_action_is_denied(self) -> None:
+        """NotAction ListUsers: the per-user takeover calls and the pool, app-client and IdP configuration writes
+        (a callback URL added to the hosted-UI client, a new IdP, triggers, MFA off) are all denied."""
         body = _statement("DenyPartnerTakeoverActions")
-        self.assertIn('effect = "Deny"', body)
-        denied = set(_actions(body))
+        self.assertIn('effect      = "Deny"', body)
+        m = re.search(r"not_actions\s*=\s*\[(.*?)\]", body, re.S)
+        assert m, "not_actions not found"
+        excepted = re.findall(r'"([^"]+)"', m.group(1))
+        self.assertEqual(excepted, ["cognito-idp:ListUsers"])
+        self.assertNotRegex(body, r"(?m)^\s*actions\s*=")
+        self.assertIn("resources   = [aws_cognito_user_pool.partner.arn]", body)
         for action in ("AdminSetUserPassword", "AdminUpdateUserAttributes", "AdminLinkProviderForUser",
-                       "AdminInitiateAuth", "AdminRespondToAuthChallenge", "AdminDeleteUser",
-                       "AdminSetUserMFAPreference", "AdminCreateUser"):
-            self.assertIn(f"cognito-idp:{action}", denied)
-        self.assertIn("resources = [aws_cognito_user_pool.partner.arn]", body)
+                       "AdminInitiateAuth", "AdminRespondToAuthChallenge", "AdminDeleteUser", "AdminCreateUser",
+                       "AdminSetUserMFAPreference", "AdminResetUserPassword", "AdminConfirmSignUp",
+                       "AdminAddUserToGroup", "UpdateUserPoolClient", "CreateUserPoolClient",
+                       "CreateIdentityProvider", "UpdateIdentityProvider", "UpdateUserPool", "SetUserPoolMfaConfig"):
+            self.assertNotIn(f"cognito-idp:{action}", excepted)
 
     def test_attached_to_the_cis_task_role(self) -> None:
         m = re.search(r'^resource "aws_iam_role_policy" "cis_ecs_task_partner_pool_read" \{(.*?)^\}', TF, re.S | re.M)
