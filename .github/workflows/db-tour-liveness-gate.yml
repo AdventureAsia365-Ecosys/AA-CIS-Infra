@@ -44,9 +44,9 @@ jobs:
   gate:
     name: Tour liveness gate
     runs-on: ubuntu-latest
-    # Same OIDC subject as DB Migrate, the schema dump and the isolation probe (environment:prod ->
+    # Same OIDC subject as DB Migrate, the schema dump and the isolation probe (environment:dev ->
     # aa-cis-infra-tf-apply).
-    environment: prod
+    environment: dev
     if: github.ref == 'refs/heads/main'
     timeout-minutes: 30
     env:

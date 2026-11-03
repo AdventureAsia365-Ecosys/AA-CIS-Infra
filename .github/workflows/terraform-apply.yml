@@ -1,4 +1,4 @@
-name: Terraform Apply Prod
+name: Terraform Apply Dev
 
 on:
   workflow_dispatch:
@@ -18,11 +18,11 @@ on:
         description: "Self-test only: run the plan guard on the committed guarded fixture (expect a red run), no AWS access"
         type: boolean
         default: false
-      # AA-1004: which root to apply. aa365 = job terraform-apply (environment prod); management = job
+      # AA-1004: which root to apply. aa365 = job terraform-apply (environment dev); management = job
       # terraform-apply-management (environment org, required reviewer; accounts/management/README.md §11).
       # guard_selftest always runs in the aa365 job (no AWS step, whatever the root).
       root:
-        description: "Terraform root: aa365 (environment prod) or management (environment org, needs a reviewer)"
+        description: "Terraform root: aa365 (environment dev) or management (environment org, needs a reviewer)"
         type: choice
         options: [aa365, management]
         default: aa365
@@ -50,9 +50,9 @@ permissions:
 
 jobs:
   terraform-apply:
-    name: Terraform Apply (prod)
+    name: Terraform Apply (dev)
     runs-on: ubuntu-latest
-    environment: prod
+    environment: dev
     # AA-866: main only. Main-only is enforced by the IAM ref condition on the apply role; this job
     # guard is the second layer. Environment rules tracked in Linear AA-873 (TL-7).
     # AA-1004: root = management runs the job below instead (a self-test still runs here).
@@ -229,7 +229,7 @@ jobs:
   idle-gate-check:
     name: Job-idle gate (check only)
     runs-on: ubuntu-latest
-    environment: prod
+    environment: dev
     if: github.ref == 'refs/heads/main' && inputs.idle_gate_check && inputs.root != 'management' && !inputs.guard_selftest
     timeout-minutes: 30
     steps:

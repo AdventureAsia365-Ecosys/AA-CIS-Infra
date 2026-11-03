@@ -294,7 +294,7 @@ def render(changes: list[GuardedChange], allow_reason: Optional[str]) -> tuple[s
         f"Plan guard: REFUSED. The plan changes {len(changes)} guarded resource(s) ({types}):"
     )
     tail = (
-        "Nothing was applied. If the change is intended, re-run Terraform Apply Prod with "
+        "Nothing was applied. If the change is intended, re-run Terraform Apply Dev with "
         "allow_guarded=true and allow_reason set (it is echoed to the job summary)."
     )
     return head + "\n" + "\n".join(lines) + "\n" + tail, 1

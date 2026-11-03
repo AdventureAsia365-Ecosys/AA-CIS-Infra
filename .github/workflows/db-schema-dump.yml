@@ -40,7 +40,7 @@ name: DB Schema Dump (shared RDS)
 #    drift fingerprint (findings a replay gap explains are left out of it) opens the root PR like a structural
 #    change. When the drift job fails, the publish job carries master's drift section over unchanged.
 #
-# Jobs (AA-853 review round): `dump` (environment prod, AWS OIDC: steps 1-2 and the erd.json upload) -> `drift`
+# Jobs (AA-853 review round): `dump` (environment dev, AWS OIDC: steps 1-2 and the erd.json upload) -> `drift`
 # (no environment, no id-token, no secrets: it runs owner SQL as a superuser in the container, so it gets nothing
 # worth stealing; capped at 15 min for the replay) -> `publish` (no AWS: the root PR and step 4, with the App token).
 # The dump job's 45 min cap is unchanged by the replay. Files move between jobs as this run's artifacts.
@@ -92,10 +92,10 @@ jobs:
   dump:
     name: Dump schema, regenerate reference
     runs-on: ubuntu-latest
-    # Same OIDC subject as DB Migrate (environment:prod -> aa-cis-infra-tf-apply). If a required
+    # Same OIDC subject as DB Migrate (environment:dev -> aa-cis-infra-tf-apply). If a required
     # reviewer is ever added to `prod`, the nightly run waits for approval: give the dump its own
     # read-only role and environment then (AA-807 X1).
-    environment: prod
+    environment: dev
     if: github.ref == 'refs/heads/main'
     timeout-minutes: 45
     permissions:

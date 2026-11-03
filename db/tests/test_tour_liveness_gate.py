@@ -236,7 +236,7 @@ class WorkflowTest(unittest.TestCase):
         self.assertIn("  workflow_dispatch:", t)
         self.assertRegex(t, r"concurrency:\n  group: db-tour-liveness-gate\n  cancel-in-progress: false")
         self.assertIn("    if: github.ref == 'refs/heads/main'", t)
-        self.assertIn("    environment: prod", t)
+        self.assertIn("    environment: dev", t)
 
     def test_runs_the_probe_as_a_read_only_run_script(self):
         t = self.TEXT
