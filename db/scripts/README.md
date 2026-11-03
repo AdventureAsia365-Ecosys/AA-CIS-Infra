@@ -354,3 +354,11 @@ the `tripplanner` grants 351 revokes with their grantor (`by_owner=t` = cis_owne
 E5 build is live, again after a TripPlanner smoke (the write counters must not move), and after both applies as the
 independent verify (`exists=f`, `cis_grant none=t`). Counts, sums, names and timestamps only. Test:
 `db/tests/test_aa1027_tp_spend_daily_dry_run.py` (fake connection).
+
+`aa1027_e4_stage_params_probe.py` (AA-1027 E4, S265; writes, always rolled back): proves a `shared.stage_model_params`
+row for `tp_compose` reaches TripPlanner's contract view `catalog.v_llm_gateway_config_v1` (CIS 350 `stage_params`,
+`supports_temperature`). In one transaction: insert a probe row for the stage's primary model (temperature 0.3,
+effort low; skipped when a row already exists), read the view as `tripplanner` when the master may `SET ROLE` to it
+(else as the master), roll back; then check no probe row is left. Ends with `SCRIPT verdict view_carries_params=…
+clean=…` and exits 1 unless both are true. No Lambda ever sees the row (it is never committed). Test:
+`db/tests/test_aa1027_e4_stage_params_probe.py`.
