@@ -7,7 +7,7 @@ status: active
 owner: nghiep
 audience: [engineer, devops, agent]
 applies_to: [aa-cis-infra, ecosystem]
-last_reviewed: 2026-11-01
+last_reviewed: 2026-11-03
 review_every_days: 90
 related: [ARCH-01, ARCH-05, ARCH-08, docs/adr/README.md]
 ---
@@ -145,17 +145,14 @@ accounts/
                                    EventBridge Scheduler tick 19:30 UTC, no Lambda retry, alarms errors >= 1
                                    and not-run 2 days, log group 30 d. Live override of the outbox
                                    redaction closed unless var.tripplanner_jobs_retention_override_enabled)
-    booking.tf                    (AA-Booking ECS service, ECR, ALB rule /booking/*, REST API on the
-                                   existing VPC link, OIDC deploy role — AA-678; AA-871: secret shell
-                                   booking/<env>/sentry-dsn (no version, execution-role read) mapped to
-                                   SENTRY_DSN + SENTRY_REQUIRED only when var.booking_sentry_enabled)
-    booking_media.tf              (AA-835: bucket aa-booking-<env>-supply-media-<account> for supplier photos,
-                                   SSE-S3, versioned (noncurrent 30 d), TLS only, CIS task role denied writes;
-                                   Booking task role Put/Get on supply-media/*; env SUPPLY_MEDIA_BUCKET)
-    booking_ops_docs.tf           (AA-682: bucket aa-booking-<env>-ops-docs-<account> for operations documents
-                                   (vouchers, payment evidence, bills; PII), SSE-S3 (no CMK), versioned
-                                   (noncurrent 30 d), TLS only, object verbs denied to every principal but the
-                                   Booking task role; Booking task role Put/Get on ops-docs/*; env OPS_DOCS_BUCKET)
+    environment.tf                (AA-1004 P0: `module "environment"` = the Dev instance of modules/environment,
+                                   the environment-scoped stack a future accounts/aa-prod root instantiates too;
+                                   one moved block per moved resource, so the Dev plan stays a pure no-op. Slice 1
+                                   (S266): the AA-Booking stack. Also the root outputs booking_* (same names), the
+                                   locals bk_name_prefix / bk_port / bk_tags read from the module, and the
+                                   ecs-tasks assume document the CRM roles use)
+    (booking.tf, booking_media.tf, booking_ops_docs.tf: moved to modules/environment, AA-1004 P0 slice 1;
+     booking_variables.tf stays here and is passed through)
     bedrock_satellite_assume.tf   (cross-account Bedrock assume-role trust)
     cost_explorer_satellite_assume.tf (acc2 → acc3 Cost Explorer read role, AA-623; acc1 removed, AA-998)
     dfs_balance.tf                (ops-probe Lambda: 06:15 UTC schedule POSTs the admin probes, AA-627/720/727,
@@ -463,6 +460,14 @@ accounts/
                     bootstrap). State in the management account's own bucket; apply only through the GitHub
                     environment org with the tech lead as reviewer
 modules/          ← reusable building blocks, consumed by the account roots
+  environment     ← AA-1004 P0: the environment-scoped stack (one instance per account root, no provider or backend
+                    of its own; inputs = the environment + the shared platform still in the root). Slice 1: booking.tf
+                    (AA-Booking ECS service, ECR, REST API on the existing VPC link, OIDC deploy role trusting
+                    environment:<env> + ref main, secret shells booking/<env>/database-url and sentry-dsn),
+                    booking_media.tf (supplier-photo bucket, CIS task role denied writes), booking_ops_docs.tf (ops
+                    documents bucket, PII, only the Booking task role touches objects). The listener rule /booking/*
+                    stays in the root (alb_rules.tf). Later slices (CRM, TripPlanner, identity, observability, then the
+                    platform module calls below) move the same way; tools/terraform/tests/test_aa1004_environment_moves.py
   vpc, rds, ecs, alb, api_gateway, s3, secrets, waf, dynamodb,
   elasticache, eventbridge, langfuse (monitoring: removed S263, AA-1025)
   (modules/efs removed in S257: aa-cis-dev-efs was mounted by no task definition, AA-697 drift finding)
@@ -576,7 +581,7 @@ ALB rules (`alb_rules.tf`): partner host + secret → partner target group; clie
 Booking rule and the CIS default. CloudFront bypasses API Gateway throttling: the AA-Partner app rate-limits on
 `CloudFront-Viewer-Address` (AA-933); the CloudFront WAF comes at Go-real (W8).
 
-**AA-Booking** (`booking.tf`, AA-678, root ADR 0004) is a separate app on the same cluster, VPC,
+**AA-Booking** (`modules/environment/booking.tf` since AA-1004 P0, AA-678, root ADR 0004) is a separate app on the same cluster, VPC,
 ALB and RDS: ECS service `aa-booking-dev-api` (created at `desired_count = 0`, scaled by hand,
 `ignore_changes` on count and task definition), ECR `aa-booking-dev-api` (immutable git-SHA tags),
 own execution/task roles, secret `booking/dev/database-url` (container only, value set out-of-band),
@@ -585,7 +590,7 @@ rights-cleared photos, never writes), operations-document bucket `aa-booking-dev
 (`booking_ops_docs.tf`, AA-682; PII, only the Booking task role touches its objects).
 Routing: its own REST API `aa-booking-dev-api` on the existing VPC link → NLB → ALB HTTP listener
 rule `/booking`, `/booking/*` (priority 100) → target group `aa-booking-dev-api-tg` (health
-`/booking/health`). That listener rule is the only object attached to a CIS resource. Dev uses
+`/booking/health`). That listener rule (in the root, `alb_rules.tf`) is the only object attached to a CIS resource. Dev uses
 the execute-api URL (output `booking_api_base_url`); both CIS custom domains use an empty base
 path, so a `booking` mapping cannot be added there, and the ACM cert has no Booking name yet.
 
@@ -658,7 +663,7 @@ makes CI Terraform Plan fail with 403.
 - App repos deploy via **GitHub Actions OIDC**, assuming IAM roles defined in `cicd_split.tf`
   (`aa-cis-dev-app-deploy` for AA-CIS-App, `aa-cis-infra-tf-plan` / `aa-cis-infra-tf-apply` for this
   repo's own Terraform / DB Migrate / schema-dump workflows), `tripplanner.tf`
-  (`aa-tripplanner-dev-app-deploy`), `booking.tf` (`aa-booking-dev-app-deploy`) and `crm_app.tf`
+  (`aa-tripplanner-dev-app-deploy`), `modules/environment/booking.tf` (`aa-booking-dev-app-deploy`) and `crm_app.tf`
   (`aa-crm-dev-app-deploy`, AA-Partner, AA-933), plus `crm_scrub.tf` (`aa-crm-dev-scrub-corpus`, AA-Partner
   "Scrub corpus" workflow, environment `scrub-corpus`, AA-938), and `docs_reader.tf` (`aa-cis-dev-docs-sync`, the root repo's
   "Docs sync" workflow on `master`, AA-898). Each app repo
@@ -791,8 +796,20 @@ makes CI Terraform Plan fail with 403.
     export $(aws configure export-credentials --profile aa365-admin --format env | xargs) && unset AWS_PROFILE
     ```
     then `terraform -chdir=accounts/aa365 apply`.
-- **prod**: there is no separate prod apply pipeline wired to merges; a `workflow_dispatch` apply
-  targets the same dev state and would show "No changes" if the stack is already in sync.
+- **prod** (AA-1004 P0 skeleton, prod plan P0): no prod account, root or environment exists yet. Two prod paths are
+  wired and refuse to run: **Deploy Prod** (`deploy-prod.yml`, dispatch only, plan / apply of the future
+  `accounts/aa-prod` root in the GitHub environment `prod`, state key `prod/terraform.tfstate`, plan text never
+  printed) and **DB Migrate `environment=prod`**. Both go through `.github/scripts/prod-guard.sh`: `ready` (a job with
+  no environment and no AWS access) refuses unless the repo variable `PROD_ACCOUNT_READY` is exactly `true`;
+  `names` refuses an unset prod resource name or one that names Dev; `identity`, right after OIDC, refuses
+  credentials of the Dev account (compared by hash with the account of the Dev plan role) or of any account other
+  than the `prod` environment secret `PROD_ACCOUNT_ID`. Prod jobs use secrets of their own names
+  (`PROD_TF_ROLE_ARN`, `PROD_DB_MIGRATE_ROLE_ARN`, `PROD_TF_STATE_BUCKET`), never `AWS_ROLE_ARN` /
+  `TF_STATE_BUCKET`. DB Migrate also refuses an environment `db/owners.yaml` does not list (prod comes with P3) and
+  its follow-up dispatches (schema dump, isolation probe) stay Dev only. P2 creates the account, the environment and
+  its secrets, then sets `PROD_ACCOUNT_READY`; P3 adds `accounts/aa-prod` (instantiating `modules/environment`), the
+  prod migrator and its names (`migrator-task.sh` is Dev-shaped today). Tests:
+  `tools/terraform/tests/test_aa1004_prod_paths.py`.
 
 ### Scheduled drift check (AA-879)
 
@@ -920,5 +937,5 @@ makes CI Terraform Plan fail with 403.
   Terraform roots create, drawn from `infra.py`; catalog page `docs/architecture/diagrams/README.md` (shown in the CIS
   admin at `/admin/docs?path=docs/architecture/diagrams/README.md`), checked against the live state on 2026-10-28.
 - `accounts/aa365/versions.tf` — the authoritative state backend + provider config.
-- `accounts/aa365/cicd.tf`, `accounts/aa365/tripplanner.tf`, `accounts/aa365/booking.tf` — the OIDC deploy roles and their
+- `accounts/aa365/cicd.tf`, `accounts/aa365/tripplanner.tf`, `modules/environment/booking.tf` — the OIDC deploy roles and their
   corrected trust subjects.
