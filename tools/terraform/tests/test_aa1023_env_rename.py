@@ -83,6 +83,11 @@ def test_dev_is_trusted():
     assert "dev" in trusted_environments()
 
 
+def test_prod_is_no_longer_trusted():
+    """Step 3: `environment:prod` is reserved for a future prod apply role (ADR 0012 decision 6 step 4)."""
+    assert trusted_environments() == {"dev"}
+
+
 def test_every_apply_role_environment_a_workflow_uses_is_trusted():
     used = {env: jobs for env, jobs in workflow_environments().items() if env in APPLY_ROLE_ENVIRONMENTS}
     missing = {env: sorted(jobs) for env, jobs in used.items() if env not in trusted_environments()}

@@ -11,8 +11,8 @@
 #                           the CIS services at them, PassRole on the CIS task/execution roles only.
 #   aa-cis-infra-tf-plan    AA-CIS-Infra terraform-plan.yml (pull_request) and docs-gen.yml
 #                           (ref main, AA-893). Read only.
-#   aa-cis-infra-tf-apply   AA-CIS-Infra terraform-apply.yml + db-migrate.yml (environment:prod and, from AA-1023,
-#                           environment:dev during the rename of the Dev environment).
+#   aa-cis-infra-tf-apply   AA-CIS-Infra terraform-apply.yml + db-migrate.yml + the migrator-task workflows
+#                           (environment:dev; named prod until AA-1023, root ADR 0012 decision 6).
 #                           Same grants as aa-cis-dev-role had (so the cut-over was a drop-in),
 #                           capped by the permissions boundary aa-cis-infra-tf-apply-boundary.
 #
@@ -350,7 +350,7 @@ data "aws_iam_policy_document" "tf_apply_boundary" {
   }
 
   # AA-873 (S261, architecture review F2): the identity policy carries SecretsManagerReadWrite, so without this the
-  # apply role (trusted for environment:prod + ref main) could read every secret value in the account: the RDS
+  # apply role (trusted for environment:dev + ref main) could read every secret value in the account: the RDS
   # master, every app DSN, the WORKFORCE break-glass login, the aa-agent GitHub App key and the Linear key.
   # Terraform itself only needs the values it refreshes, which are exactly local.tf_plan_secret_arns (the plan
   # role's read list): every other GetSecretValue is denied. BatchGetSecretValue checks GetSecretValue per
@@ -623,11 +623,11 @@ resource "aws_iam_role_policy" "tf_plan" {
 }
 
 # -----------------------------------------------------------------------------
-# aa-cis-infra-tf-apply — AA-CIS-Infra terraform-apply.yml + db-migrate.yml (environment prod)
+# aa-cis-infra-tf-apply — AA-CIS-Infra terraform-apply.yml + db-migrate.yml (environment dev)
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "tf_apply" {
   name                 = local.tf_apply_role_name
-  description          = "AA-806: AA-CIS-Infra terraform apply + DB Migrate (environment prod)"
+  description          = "AA-806: AA-CIS-Infra terraform apply + DB Migrate (environment dev)"
   permissions_boundary = aws_iam_policy.tf_apply_boundary.arn
 
   assume_role_policy = jsonencode({
@@ -642,15 +642,12 @@ resource "aws_iam_role" "tf_apply" {
         # `ref` condition below (AA-866; AWS evaluates it); environment rules tracked in Linear AA-873 (TL-7). Every
         # workflow on this role runs from main: terraform-apply / db-migrate (job `if`), db-schema-dump and
         # db-isolation-probe (schedule = default branch, or dispatched by db-migrate with --ref main).
-        # AA-1023 (root ADR 0012 decision 6, step 1 of the rename `prod` -> `dev`): BOTH subjects are trusted for the
-        # cut-over, so the workflows can move to `environment: dev` one PR later without a gap. Step 3 removes
-        # `environment:prod` once every workflow has run green on `dev`; only then may a prod role trust that subject.
+        # AA-1023 (root ADR 0012 decision 6): the environment was named `prod` until the rename; step 3 removed
+        # `environment:prod` from this trust after every workflow ran green on `dev`. The subject `environment:prod` is
+        # reserved for a future prod apply role (decision 6 step 4) and must never be trusted here again.
         StringEquals = {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
-          "token.actions.githubusercontent.com:sub" = [
-            "${local.oidc_sub_cis_infra}:environment:prod",
-            "${local.oidc_sub_cis_infra}:environment:dev",
-          ]
+          "token.actions.githubusercontent.com:sub" = ["${local.oidc_sub_cis_infra}:environment:dev"]
           "token.actions.githubusercontent.com:ref" = "refs/heads/main"
         }
       }
