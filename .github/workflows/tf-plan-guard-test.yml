@@ -29,6 +29,7 @@ on:
       - "modules/environment/crm_storage.tf" # AA-1004 slice 2 (was accounts/aa365); also under modules/environment/** below
       - "accounts/aa365/identity_partner.tf"
       - "accounts/aa365/identity_iam.tf"
+      - "accounts/aa365/identity_partner_read.tf" # AA-1039 R6: the CIS read of partner member addresses
       - "accounts/aa365/cicd_split.tf" # AA-1023: the apply role trust vs the workflow environments
       - "accounts/aa365/environment.tf" # AA-1004 P0: the moved blocks into modules/environment
       - "modules/environment/**"
@@ -48,6 +49,7 @@ on:
       - "modules/environment/crm_storage.tf" # AA-1004 slice 2 (was accounts/aa365); also under modules/environment/** below
       - "accounts/aa365/identity_partner.tf"
       - "accounts/aa365/identity_iam.tf"
+      - "accounts/aa365/identity_partner_read.tf" # AA-1039 R6: the CIS read of partner member addresses
       - "accounts/aa365/cicd_split.tf" # AA-1023: the apply role trust vs the workflow environments
       - "accounts/aa365/environment.tf" # AA-1004 P0: the moved blocks into modules/environment
       - "modules/environment/**"
