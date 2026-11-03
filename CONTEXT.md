@@ -441,6 +441,14 @@ accounts/
                                    AA-Partner's "Scrub corpus" workflow; task env SCRUB_GUARDRAIL_ID / _VERSION / _REGION
                                    via local.crm_scrub_env in crm_app.tf. Needs the MFA bootstrap apply of cicd_crm.tf
                                    CrmBedrockGuardrail* first. ~ $0.75/month)
+    crm_llm.tf                    (AA-1027 F4 interim path, behind var.crm_llm_bedrock_enabled (default false, true in
+                                   terraform.tfvars): the CRM AI gateway model, Amazon Nova Lite on acc2 with the task
+                                   role (acc3 refuses every model; no CRM_LLM_ROLE_ARN). Inline policy
+                                   aa-crm-<env>-ecs-task-llm (bedrock:InvokeModel on the us. Nova Lite inference profile
+                                   and its foundation model in the US regions only) on the CRM task role; task env
+                                   CRM_LLM_PROVIDER / _MODEL_ID / _USD_PER_MTOK_IN / _OUT (= the CIS catalogue prices) /
+                                   _REGION / _MAX_TOKENS via local.crm_llm_env in crm_app.tf. The draft route itself is
+                                   AA-Partner crm-042. < $0.05/month on Dev)
     crm_mail.tf                   (AA-945: the CRM forward-in mailbox, SES receiving only, -> S3 under the ingest key)
     (crm_membership_alarms.tf, crm_support_alarms.tf, crm_ops_release_alarms.tf, tenant_pool_alarms.tf: deleted by the
      S263 alert diet, AA-1025; those log events are in-app checks of AA-Partner and AA-CIS-App now)

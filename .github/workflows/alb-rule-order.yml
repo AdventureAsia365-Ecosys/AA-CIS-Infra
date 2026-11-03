@@ -58,8 +58,9 @@ jobs:
       # AA-1022: S3 gateway endpoint (modules/vpc, hence that path), NAT recover alarm, OIDC ref pins, Identity Center
       # administrator session alert.
       # AA-1025 (S263 alert diet): the alarms the diet must keep (NAT instance check, identity unexpected-error alarm).
-      - name: Unit tests (rule-order checker + CRM edge live check + CRM KMS alarm patterns + security alerts + secret read guards + AA-1022 hardening + AA-1025 alert diet)
-        run: python -B -m pytest -p no:cacheprovider -q tools/terraform/tests/test_alb_rule_order.py tools/terraform/tests/test_crm_edge_live_check.py tools/terraform/tests/test_crm_kms_alarm_check.py tools/terraform/tests/test_sec_access_analyzer.py tools/terraform/tests/test_secret_read_guards.py tools/terraform/tests/test_aa1022_hardening.py tools/terraform/tests/test_sec_admin_digest.py tools/terraform/tests/test_aa1025_alert_diet.py
+      # AA-1027 F4: the CRM model grant stays least privilege (crm_llm.tf: InvokeModel on Nova Lite only).
+      - name: Unit tests (rule-order checker + CRM edge live check + CRM KMS alarm patterns + security alerts + secret read guards + AA-1022 hardening + AA-1025 alert diet + AA-1027 CRM model grant)
+        run: python -B -m pytest -p no:cacheprovider -q tools/terraform/tests/test_alb_rule_order.py tools/terraform/tests/test_crm_edge_live_check.py tools/terraform/tests/test_crm_kms_alarm_check.py tools/terraform/tests/test_sec_access_analyzer.py tools/terraform/tests/test_secret_read_guards.py tools/terraform/tests/test_aa1022_hardening.py tools/terraform/tests/test_sec_admin_digest.py tools/terraform/tests/test_aa1025_alert_diet.py tools/terraform/tests/test_aa1027_crm_llm.py
 
       - name: Check accounts/aa365 listener rules
         run: python3 -B tools/terraform/alb_rule_order.py --source accounts/aa365
