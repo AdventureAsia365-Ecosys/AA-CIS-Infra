@@ -20,6 +20,7 @@ on:
       - "modules/ecs/**"
       - "modules/rds/**"
       - "accounts/aa365/*.tf"
+      - "modules/environment/*.tf" # AA-1004 P0: the Booking service (deployment_maximum_percent) lives here
       - ".github/workflows/connection-budget.yml"
   push:
     branches: [main]
@@ -31,6 +32,7 @@ on:
       - "modules/ecs/**"
       - "modules/rds/**"
       - "accounts/aa365/*.tf"
+      - "modules/environment/*.tf" # AA-1004 P0: the Booking service (deployment_maximum_percent) lives here
       - ".github/workflows/connection-budget.yml"
   schedule:
     - cron: "43 2 * * *"   # nightly, 02:43 UTC

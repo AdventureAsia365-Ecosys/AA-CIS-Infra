@@ -69,7 +69,7 @@ output "ecs" {
   description = "ECS cluster and its services."
   value = {
     cluster_name = module.ecs.cluster_name
-    services     = [module.ecs.service_name, module.ecs.worker_service_name, aws_ecs_service.booking.name, aws_ecs_service.crm_api.name]
+    services     = [module.ecs.service_name, module.ecs.worker_service_name, module.environment.booking_ecs_service_name, aws_ecs_service.crm_api.name]
   }
 }
 
@@ -87,8 +87,8 @@ output "api_gateway" {
   value = {
     cis_rest_api_id         = module.api_gateway.api_gateway_id
     cis_stage               = module.api_gateway.stage_name
-    booking_rest_api_id     = aws_api_gateway_rest_api.booking.id
-    booking_stage           = aws_api_gateway_stage.booking.stage_name
+    booking_rest_api_id     = module.environment.booking_rest_api_id
+    booking_stage           = module.environment.booking_stage_name
     vpc_link_id             = module.alb.vpc_link_id
     tripplanner_http_api_id = aws_apigatewayv2_api.tripplanner.id
   }

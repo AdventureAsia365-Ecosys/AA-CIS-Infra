@@ -68,10 +68,10 @@ on:
         type: string
         default: ""
       environment:
-        description: "Target database (db/owners.yaml environments; only dev exists)"
+        description: "Target database (db/owners.yaml environments). prod: refused until the prod account is ready (PROD_ACCOUNT_READY) and owners.yaml lists it (AA-1004 P3)"
         required: true
         type: choice
-        options: [dev]
+        options: [dev, prod]
         default: dev
       mode:
         description: "check = report only; apply = run the file; set-password = set the role's password from its DSN secret; run-script = run a db/scripts/ file as the master"
@@ -105,18 +105,62 @@ permissions:
   actions: write     # dispatch db-schema-dump.yml and db-isolation-probe.yml after an apply
 
 jobs:
+  # AA-1004 P0: environment=prod is an input path, guarded like Deploy Prod (.github/scripts/prod-guard.sh). This job
+  # has no GitHub environment and no AWS access: for prod it refuses unless the repo variable PROD_ACCOUNT_READY is
+  # exactly "true" (prod plan P2) and the GitHub environment `prod` has a required reviewer and a deployment branch
+  # policy, so no unreviewed `prod` environment job starts. Dev passes straight through.
+  target:
+    name: Target (${{ inputs.environment }})
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    timeout-minutes: 5
+    # actions: read for prod-guard.sh protected (GET repos/{repo}/environments/prod with GITHUB_TOKEN).
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      dev_account_sha256: ${{ steps.ready.outputs.dev_account_sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Prod account ready
+        id: ready
+        if: inputs.environment == 'prod'
+        env:
+          PROD_ACCOUNT_READY: ${{ vars.PROD_ACCOUNT_READY }}
+          DEV_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+        run: bash .github/scripts/prod-guard.sh ready
+
+      - name: Prod environment protected
+        if: inputs.environment == 'prod'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: bash .github/scripts/prod-guard.sh protected
+
+      - name: Dev
+        if: inputs.environment == 'dev'
+        run: echo "target is dev, no prod guard"
+
   migrate:
     name: Migrate (${{ inputs.environment }} ${{ inputs.mode }} ${{ inputs.migration }}${{ inputs.role }}${{ inputs.script }})
+    needs: target
     runs-on: ubuntu-latest
-    environment: dev
+    # AA-1004 P0: dev unchanged; prod runs in the GitHub environment `prod` (P2) with that environment's variables
+    # (DB_MIGRATE_*, PROD_AWS_REGION) and secrets (PROD_DB_MIGRATE_ROLE_ARN, PROD_ACCOUNT_ID). Every Dev value below is
+    # selected by `inputs.environment == 'dev'` first, so a prod variable left unset is empty (and refused by
+    # "Prod names"), never a Dev name.
+    environment: ${{ inputs.environment == 'prod' && 'prod' || 'dev' }}
     if: github.ref == 'refs/heads/main'
     env:
-      AWS_REGION: us-west-1
-      CLUSTER: aa-cis-dev-cluster
-      SERVICE: aa-cis-dev-api
-      BUCKET: aa-cis-bronze-005097885195
-      LOG_GROUP: /ecs/aa-cis-dev
-      DB_INSTANCE: aa-cis-dev-db
+      AWS_REGION: ${{ inputs.environment == 'dev' && 'us-west-1' || vars.PROD_AWS_REGION }}
+      CLUSTER: ${{ inputs.environment == 'dev' && 'aa-cis-dev-cluster' || vars.DB_MIGRATE_CLUSTER }}
+      SERVICE: ${{ inputs.environment == 'dev' && 'aa-cis-dev-api' || vars.DB_MIGRATE_SERVICE }}
+      BUCKET: ${{ inputs.environment == 'dev' && 'aa-cis-bronze-005097885195' || vars.DB_MIGRATE_BUCKET }}
+      LOG_GROUP: ${{ inputs.environment == 'dev' && '/ecs/aa-cis-dev' || vars.DB_MIGRATE_LOG_GROUP }}
+      DB_INSTANCE: ${{ inputs.environment == 'dev' && 'aa-cis-dev-db' || vars.DB_MIGRATE_DB_INSTANCE }}
       # X1 S12: no new variable names. MIGRATION carries the input the mode uses (check/apply: migration,
       # set-password: role, run-script: script); "Unused inputs" below refuses the others.
       MIGRATION: ${{ inputs.mode == 'set-password' && inputs.role || (inputs.mode == 'run-script' && inputs.script || inputs.migration) }}
@@ -125,6 +169,15 @@ jobs:
       OVERRIDE_BUSY_JOBS: ${{ inputs.override_busy_jobs }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # AA-1004 P0: if `prod` lost its reviewer or branch policy after the target job, this job is already running
+      # unreviewed; stop it here, before any secret or credential (the workflow grants actions: write, which reads).
+      - name: Prod environment protected
+        if: inputs.environment == 'prod'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: bash .github/scripts/prod-guard.sh protected
 
       # X1 S12: each mode takes only its own input (MIGRATION above carries it to the steps below).
       - name: Unused inputs
@@ -139,10 +192,14 @@ jobs:
       - name: Validate input
         id: file
         run: |
-          # The resources below (cluster, service, bucket, instance) are the dev ones; a second
-          # environment needs its own values before it is added to the choice list and owners.yaml.
+          # The resources of dev are the job env above. AA-1004 P0: prod (the choice list) also needs db/owners.yaml to
+          # list it, which comes with the prod blueprint (P3: prod migrator, prod owners), so today it stops here.
           if [ "$ENVIRONMENT" != "dev" ]; then
-            echo "::error::environment must be dev (db/owners.yaml environments)"; exit 1
+            ENVS=$(sed -n 's/^environments:[[:space:]]*\[\(.*\)\][[:space:]]*$/\1/p' db/owners.yaml | tr -d ' ')
+            case ",$ENVS," in
+              *",$ENVIRONMENT,"*) ;;
+              *) echo "::error::environment $ENVIRONMENT is not in db/owners.yaml environments ($ENVS)"; exit 1 ;;
+            esac
           fi
           # Trimmed the same way the runner .strip()s MIGRATION_IDLE_OVERRIDE, so the summary and the
           # task agree on whether an override is present. A value of only spaces is rejected.
@@ -216,11 +273,30 @@ jobs:
           echo "destructive=$(jq -r '.destructive' <<<"$INSPECT")" >> "$GITHUB_OUTPUT"
           jq -r '"- transaction: \(if .no_transaction then "no (statement by statement)" else "yes" end), destructive: \(.destructive), expand: \(.expand), lock_timeout \(.settings.lock_timeout), statement_timeout \(.settings.statement_timeout)"' <<<"$INSPECT" >> "$GITHUB_STEP_SUMMARY"
 
+      # AA-1004 P0: before any AWS call, the prod resource names are set and none names Dev.
+      - name: Prod names
+        if: inputs.environment == 'prod'
+        run: >-
+          bash .github/scripts/prod-guard.sh names AWS_REGION="$AWS_REGION" CLUSTER="$CLUSTER" SERVICE="$SERVICE"
+          BUCKET="$BUCKET" LOG_GROUP="$LOG_GROUP" DB_INSTANCE="$DB_INSTANCE"
+
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: us-west-1
+          # Dev first: prod never falls back to the Dev role (an unset prod secret is empty and the action fails).
+          role-to-assume: ${{ inputs.environment == 'dev' && secrets.AWS_ROLE_ARN || secrets.PROD_DB_MIGRATE_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # AA-1004 P0: right after OIDC, before any AWS write: the credentials are the prod account's, never Dev's.
+      - name: Prod identity (never Dev)
+        if: inputs.environment == 'prod'
+        env:
+          PROD_ACCOUNT_ID: ${{ secrets.PROD_ACCOUNT_ID }}
+          DEV_ACCOUNT_SHA256: ${{ needs.target.outputs.dev_account_sha256 }}
+        run: |
+          CALLER_ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+          export CALLER_ACCOUNT
+          bash .github/scripts/prod-guard.sh identity
 
       # MIG-12: the only undo for a destructive file that does not roll back all three apps. Taken on
       # every destructive apply dispatch (also when the version turns out to be applied already).
@@ -385,7 +461,7 @@ jobs:
       # The run already succeeded: a failed dispatch only warns (the nightly dump catches up).
       # run-script may change the structure too (X1 S12).
       - name: Regenerate the schema reference (DB Schema Dump)
-        if: success() && (inputs.mode == 'apply' || inputs.mode == 'run-script')
+        if: success() && (inputs.mode == 'apply' || inputs.mode == 'run-script') && inputs.environment == 'dev'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
@@ -400,7 +476,7 @@ jobs:
       # x1:password-set marker) and run-script. Same rule as the dump: the run already succeeded, so a
       # failed dispatch only warns (the nightly probe catches up).
       - name: Re-run the isolation probe (DB Isolation Probe)
-        if: success() && inputs.mode != 'check'
+        if: success() && inputs.mode != 'check' && inputs.environment == 'dev'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}

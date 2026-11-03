@@ -82,7 +82,7 @@
       "role": "booking",
       "max_size": 5,
       "source": {"repo": "AA-Booking", "path": "backend/app/db.py", "regex": "create_pool\\(.*?max_size=(\\d+)"},
-      "processes": {"tf_file": "accounts/aa365/booking.tf", "tf_regex": "resource \"aws_ecs_service\" \"booking\" \\{.*?deployment_maximum_percent\\s*=\\s*(\\d+)", "scale": 0.01, "note": "1 task (Dev, no autoscaling) x deployment overlap 200 %"}
+      "processes": {"tf_file": "modules/environment/booking.tf", "tf_regex": "resource \"aws_ecs_service\" \"booking\" \\{.*?deployment_maximum_percent\\s*=\\s*(\\d+)", "scale": 0.01, "note": "1 task (Dev, no autoscaling) x deployment overlap 200 %"}
     },
     {
       "name": "crm-api",

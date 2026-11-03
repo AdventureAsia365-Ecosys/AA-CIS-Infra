@@ -30,6 +30,9 @@ on:
       - "accounts/aa365/identity_partner.tf"
       - "accounts/aa365/identity_iam.tf"
       - "accounts/aa365/cicd_split.tf" # AA-1023: the apply role trust vs the workflow environments
+      - "accounts/aa365/environment.tf" # AA-1004 P0: the moved blocks into modules/environment
+      - "modules/environment/**"
+      - ".github/scripts/prod-guard.sh" # AA-1004 P0: Deploy Prod / DB Migrate prod guard
       - ".github/workflows/crm-key-policy-diff.yml"
       - ".github/workflows/terraform-drift.yml"
       - ".github/workflows/terraform-plan.yml"
@@ -46,6 +49,9 @@ on:
       - "accounts/aa365/identity_partner.tf"
       - "accounts/aa365/identity_iam.tf"
       - "accounts/aa365/cicd_split.tf" # AA-1023: the apply role trust vs the workflow environments
+      - "accounts/aa365/environment.tf" # AA-1004 P0: the moved blocks into modules/environment
+      - "modules/environment/**"
+      - ".github/scripts/prod-guard.sh" # AA-1004 P0: Deploy Prod / DB Migrate prod guard
       - ".github/workflows/crm-key-policy-diff.yml"
       - ".github/workflows/terraform-drift.yml"
       - ".github/workflows/terraform-plan.yml"

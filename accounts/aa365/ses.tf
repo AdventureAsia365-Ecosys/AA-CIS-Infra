@@ -215,7 +215,7 @@ resource "aws_iam_role_policy" "cis_ecs_task_ses_send" {
 
 resource "aws_iam_role_policy" "booking_ecs_task_ses_send" {
   name   = "${local.bk_name_prefix}-ecs-ses-send"
-  role   = aws_iam_role.booking_ecs_task.id
+  role   = module.environment.booking_ecs_task_role_id
   policy = data.aws_iam_policy_document.ses_send.json
 }
 

@@ -141,7 +141,7 @@ data "aws_iam_policy_document" "booking_supply_media" {
     resources = ["${aws_s3_bucket.booking_supply_media.arn}/${local.bk_supply_media_prefix}*"]
     principals {
       type        = "AWS"
-      identifiers = [module.ecs.task_role_arn]
+      identifiers = [var.cis_task_role_arn]
     }
   }
 
@@ -156,7 +156,7 @@ data "aws_iam_policy_document" "booking_supply_media" {
     resources = ["${aws_s3_bucket.booking_supply_media.arn}/*"]
     principals {
       type        = "AWS"
-      identifiers = [module.ecs.task_role_arn]
+      identifiers = [var.cis_task_role_arn]
     }
   }
 }
