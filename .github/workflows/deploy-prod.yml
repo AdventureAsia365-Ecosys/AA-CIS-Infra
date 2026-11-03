@@ -1,0 +1,176 @@
+name: Deploy Prod
+# AA-1004 P0 (prod plan P0, root docs/audits/2026-11-03-S265-ecosystem-restructure/clarifications.md section 5): the
+# Terraform plan / apply of the future prod root accounts/aa-prod, in the future prod account (ADR 0018, amended by
+# ADR 0019: US region by default). SKELETON: the prod account, its roles, its state bucket and the root do not exist
+# yet (P2 / P3), so every run is refused by the guard job, before any GitHub environment `prod` job starts and before
+# any AWS call. It cannot target Dev:
+#   - manual dispatch only, from main only (no pull_request / push / schedule trigger);
+#   - job `guard` (no environment, no id-token) refuses unless the repo variable PROD_ACCOUNT_READY is exactly "true"
+#     (.github/scripts/prod-guard.sh ready), the root accounts/aa-prod exists and an apply carries the confirmation;
+#   - job `terraform` runs in the GitHub environment `prod` (created in P2 with a required reviewer and a main-only
+#     branch policy; AA-1023 renamed the old `prod` environment of the Dev apply to `dev`) with secrets of its own
+#     names (PROD_TF_ROLE_ARN, PROD_ACCOUNT_ID, PROD_TF_STATE_BUCKET): never the Dev AWS_ROLE_ARN / TF_STATE_BUCKET;
+#   - right after OIDC, prod-guard.sh identity refuses credentials of the Dev account (compared by hash with the Dev
+#     plan role's account) and of any account other than PROD_ACCOUNT_ID; the backend key is prod/terraform.tfstate and
+#     prod-guard.sh names refuses a state bucket or key that names Dev.
+# The plan text is never printed (public repo): tools/terraform/drift_report.py writes only addresses and actions to
+# the job summary. The apply runs the saved, guard-checked plan (tools/terraform/plan_guard.py).
+# P2 sets up: environment `prod` + its secrets + the plan/apply role in the prod account (OIDC subject
+# <AA-CIS-Infra>:environment:prod, ref main), then PROD_ACCOUNT_READY=true. P3 adds accounts/aa-prod.
+run-name: Deploy Prod ${{ inputs.action }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "plan = show what would change (summary only); apply = apply that plan"
+        required: true
+        type: choice
+        options: [plan, apply]
+        default: plan
+      confirm:
+        description: "apply only: type 'apply prod' to confirm"
+        required: false
+        type: string
+        default: ""
+
+# One prod Terraform run at a time; never shares the Dev apply's group (terraform-apply.yml).
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    name: Prod guard
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    timeout-minutes: 5
+    outputs:
+      dev_account_sha256: ${{ steps.ready.outputs.dev_account_sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Prod account ready
+        id: ready
+        env:
+          PROD_ACCOUNT_READY: ${{ vars.PROD_ACCOUNT_READY }}
+          DEV_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+        run: bash .github/scripts/prod-guard.sh ready
+
+      - name: Inputs and root
+        env:
+          ACTION: ${{ inputs.action }}
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$ACTION" = "apply" ] && [ "$CONFIRM" != "apply prod" ]; then
+            echo "::error::action=apply needs confirm = 'apply prod'"; exit 1
+          fi
+          if [ "$ACTION" = "plan" ] && [ -n "$CONFIRM" ]; then
+            echo "::error::confirm is for action=apply only"; exit 1
+          fi
+          if [ ! -f accounts/aa-prod/versions.tf ]; then
+            echo "::error::the prod root accounts/aa-prod does not exist yet (prod plan P3). Nothing ran."; exit 1
+          fi
+          echo "### Deploy Prod $ACTION: guard passed" >> "$GITHUB_STEP_SUMMARY"
+
+  terraform:
+    name: Terraform ${{ inputs.action }} (prod)
+    needs: guard
+    runs-on: ubuntu-latest
+    environment: prod
+    if: github.ref == 'refs/heads/main'
+    timeout-minutes: 60
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      ROOT: accounts/aa-prod
+      TF_IN_AUTOMATION: "1"
+      AWS_REGION: ${{ vars.PROD_AWS_REGION }}
+      STATE_KEY: prod/terraform.tfstate
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Before any AWS call: the prod names are set and none names Dev.
+      - name: Prod names
+        env:
+          STATE_BUCKET: ${{ secrets.PROD_TF_STATE_BUCKET }}
+          DEV_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+        run: |
+          bash .github/scripts/prod-guard.sh names AWS_REGION="$AWS_REGION" STATE_KEY="$STATE_KEY" STATE_BUCKET="$STATE_BUCKET"
+          if [ -n "$DEV_STATE_BUCKET" ] && [ "$STATE_BUCKET" = "$DEV_STATE_BUCKET" ]; then
+            echo "::error::prod guard: PROD_TF_STATE_BUCKET is the Dev state bucket. Nothing ran."; exit 1
+          fi
+
+      - name: Configure AWS credentials (OIDC, prod Terraform role)
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ secrets.PROD_TF_ROLE_ARN }}
+          aws-region: ${{ vars.PROD_AWS_REGION }}
+
+      - name: Prod identity (never Dev)
+        env:
+          PROD_ACCOUNT_ID: ${{ secrets.PROD_ACCOUNT_ID }}
+          DEV_ACCOUNT_SHA256: ${{ needs.guard.outputs.dev_account_sha256 }}
+        run: |
+          CALLER_ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+          export CALLER_ACCOUNT
+          bash .github/scripts/prod-guard.sh identity
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: "1.15.5"
+          terraform_wrapper: false
+
+      - name: Terraform Init
+        env:
+          STATE_BUCKET: ${{ secrets.PROD_TF_STATE_BUCKET }}
+        run: |
+          terraform -chdir="$ROOT" init -input=false -lockfile=readonly \
+            -backend-config="bucket=$STATE_BUCKET" \
+            -backend-config="key=$STATE_KEY" \
+            -backend-config="region=$AWS_REGION"
+
+      - name: Terraform Validate
+        run: terraform -chdir="$ROOT" validate -no-color
+
+      - name: Terraform Plan (summary only)
+        id: plan
+        run: |
+          umask 077
+          LOG="$RUNNER_TEMP/prod-plan.jsonl"
+          set +e
+          terraform -chdir="$ROOT" plan -input=false -detailed-exitcode -json -out="$RUNNER_TEMP/tfplan" > "$LOG"
+          RC=$?
+          set -e
+          echo "exitcode=$RC" >> "$GITHUB_OUTPUT"
+          echo "terraform plan exit code: $RC"
+          python3 -B tools/terraform/drift_report.py --mode plan --plan-log "$LOG" --exit-code "$RC" --root "$ROOT" \
+            --summary "$GITHUB_STEP_SUMMARY"
+          rm -f "$LOG"
+          [ "$RC" != "1" ] || exit 1
+
+      - name: Plan guard
+        if: inputs.action == 'apply' && steps.plan.outputs.exitcode == '2'
+        run: |
+          umask 077
+          J="$RUNNER_TEMP/tfplan.json"
+          trap 'rm -f "$J"' EXIT
+          terraform -chdir="$ROOT" show -json "$RUNNER_TEMP/tfplan" > "$J"
+          python3 -B tools/terraform/plan_guard.py "$J" --allow-reason="" --summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Terraform Apply
+        if: inputs.action == 'apply' && steps.plan.outputs.exitcode == '2'
+        run: terraform -chdir="$ROOT" apply -input=false -no-color "$RUNNER_TEMP/tfplan"
+
+      - name: Remove the saved plan
+        if: always()
+        run: rm -f "$RUNNER_TEMP/tfplan"
