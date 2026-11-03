@@ -342,3 +342,23 @@ migration under the catalog recipe. Dropping the kept old vectors (`<column>__pr
 not this script. Tests: `db/tests/test_aa1026_embedding_shadow_script.py` (fake connection),
 `db/tests/test_aa1026_embedding_shadow_script_pg.py` (real PostgreSQL, local only). Runbook: AA-Ecosys
 `docs/ops/runbooks/embedding-re-embed.md`.
+
+`aa1027_tp_spend_daily_dry_run.py` (AA-1027 E5, S265; read-only DRY RUN, step 1 of `skill/aa-cis-schema/references/
+destructive-ops.md`): before TripPlanner tp-025 drops `tripplanner.llm_spend_daily` (the tp-010 spend counter) and
+before CIS 351 revokes the `tripplanner` SELECT on `shared.llm_role_config` / `shared.llm_model_catalog`. Prints the
+counter's rows, days, last write, sums and pg_stat counters next to the ledger sums of the same UTC days (app
+`tripplanner`, the online stages), `pg_stat_statements` calls naming the table per role, its dependents and grants,
+the `tripplanner` grants 351 revokes with their grantor (`by_owner=t` = cis_owner's REVOKE removes them) and whether
+`tripplanner` still reads the two contract views. Ends with `SCRIPT verdict drop_ready=… revoke_ready=… reasons=…`
+(`drop_ready` = no dependent and no row written in the last hour, tp-025's guard). Dispatch it after the TripPlanner
+E5 build is live, again after a TripPlanner smoke (the write counters must not move), and after both applies as the
+independent verify (`exists=f`, `cis_grant none=t`). Counts, sums, names and timestamps only. Test:
+`db/tests/test_aa1027_tp_spend_daily_dry_run.py` (fake connection).
+
+`aa1027_e4_stage_params_probe.py` (AA-1027 E4, S265; writes, always rolled back): proves a `shared.stage_model_params`
+row for `tp_compose` reaches TripPlanner's contract view `catalog.v_llm_gateway_config_v1` (CIS 350 `stage_params`,
+`supports_temperature`). In one transaction: insert a probe row for the stage's primary model (temperature 0.3,
+effort low; skipped when a row already exists), read the view as `tripplanner` when the master may `SET ROLE` to it
+(else as the master), roll back; then check no probe row is left. Ends with `SCRIPT verdict view_carries_params=…
+clean=…` and exits 1 unless both are true. No Lambda ever sees the row (it is never committed). Test:
+`db/tests/test_aa1027_e4_stage_params_probe.py`.
