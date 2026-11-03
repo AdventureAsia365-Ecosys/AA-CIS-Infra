@@ -400,6 +400,16 @@ resource "aws_iam_role_policy" "ecs_task_policy" {
         Effect   = "Allow"
         Action   = ["s3:DeleteObject"]
         Resource = "arn:aws:s3:::${var.bronze_bucket_name}/photos/supply/*"
+      },
+      # AA-1024 D2 (S263 gateway plan, OPS-04) — the nightly llm_model_lifecycle_sync job (AA-CIS-App
+      # services/jobs/llm_model_lifecycle_job.py) reads the lifecycle status and end-of-life date of the foundation
+      # models on acc2 (task-role Bedrock connection). Read only, free; ListFoundationModels has no resource-level
+      # permission, so the resource is "*". The acc3 side is the satellite role's own grant (accounts/acc3-bedrock).
+      {
+        Sid      = "BedrockModelLifecycleRead"
+        Effect   = "Allow"
+        Action   = ["bedrock:ListFoundationModels"]
+        Resource = "*"
       }
       ],
       # AA-835 (S6 review) — the same job invalidates the deleted copies on the photos CDN (TTL up to a year, min one
