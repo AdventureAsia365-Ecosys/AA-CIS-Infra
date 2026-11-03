@@ -54,7 +54,7 @@ locals {
     "${local.secret_arn_prefix}${var.project}/${var.environment}/rds-app-user-??????",
     aws_secretsmanager_secret.rds_cis_app.arn,
     aws_secretsmanager_secret.db_migrator.arn,
-    aws_secretsmanager_secret.booking_db.arn,
+    module.environment.booking_database_url_secret_arn,
     aws_secretsmanager_secret.tripplanner_db.arn,
     aws_secretsmanager_secret.crm_db.arn, # AA-932: crm_app set-password + isolation probe login
   ]

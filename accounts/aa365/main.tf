@@ -321,7 +321,7 @@ module "waf" {
   # after that grant is applied (separate cicd.tf PR), see var.waf_protect_rest_api_stages.
   rest_api_stage_arns = var.waf_protect_rest_api_stages ? {
     cis     = module.api_gateway.stage_arn
-    booking = aws_api_gateway_stage.booking.arn
+    booking = module.environment.booking_stage_arn
   } : {}
 
   depends_on = [module.alb]
