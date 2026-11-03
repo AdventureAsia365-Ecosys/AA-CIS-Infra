@@ -319,7 +319,7 @@ root warn and skip (they fail instead once the repo variable `MGMT_CI_LIVE` is `
 |---|---|---|---|
 | Terraform Plan, job "Terraform Plan (management)" | A PR touching `accounts/management/**`, `terraform-plan.yml` or `drift_report.py` | `aa-terraform-plan` (read only) | `...:pull_request` |
 | Terraform Drift, matrix entry `accounts/management` | Nightly 05:37 UTC and by hand, from `main` | `aa-terraform-plan` | `...:ref:refs/heads/main` |
-| Terraform Apply Prod, `root = management`, job "Terraform Plan (management, for review)" | Manual dispatch from `main` | `aa-terraform-plan` | `...:ref:refs/heads/main` |
+| Terraform Apply Dev, `root = management`, job "Terraform Plan (management, for review)" | Manual dispatch from `main` | `aa-terraform-plan` | `...:ref:refs/heads/main` |
 | Same run, job "Terraform Apply (management)" | After the `org` environment's reviewer approves | `aa-terraform-apply` (boundary `aa-terraform-apply-boundary`) | `...:environment:org`, plus the `ref` claim `refs/heads/main` |
 
 - **No blind approval.** The review-plan job writes the masked plan summary and a digest (SHA-256 of the sorted
@@ -443,7 +443,7 @@ protection rule, and the apply job would then run unreviewed (its own check stop
    or someone changed the account outside Terraform. Do not apply until the difference is explained. An AccessDenied
    during refresh names a read missing from `aa-terraform-plan` (`PlanRefreshReads` in `cicd.tf`): add it and repeat
    11.1 (local apply).
-4. **First CI apply** only for a real change: Terraform Apply Prod, `root = management`. Read the summary of
+4. **First CI apply** only for a real change: Terraform Apply Dev, `root = management`. Read the summary of
    "Terraform Plan (management, for review)", then approve the `org` deployment; the apply job's summary shows the
    environment check, the re-plan (same digest), the guard result and what was applied.
 

@@ -48,8 +48,9 @@ jobs:
   probe:
     name: Downstream freshness probe
     runs-on: ubuntu-latest
-    # Same OIDC subject as DB Migrate and the other migrator-task workflows (environment:prod -> aa-cis-infra-tf-apply).
-    environment: prod
+    # Same OIDC subject as DB Migrate and the other migrator-task workflows (environment:dev -> aa-cis-infra-tf-apply;
+    # renamed from `prod` in AA-1023, root ADR 0012 decision 6).
+    environment: dev
     if: github.ref == 'refs/heads/main'
     timeout-minutes: 30
     env:

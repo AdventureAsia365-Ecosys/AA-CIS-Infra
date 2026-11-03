@@ -133,7 +133,7 @@ def test_override_input_reaches_the_gate_only_through_env():
 def test_check_only_job_runs_the_same_gate_without_terraform():
     wf = _workflow()
     job = wf["jobs"]["idle-gate-check"]
-    assert job["environment"] == "prod"
+    assert job["environment"] == "dev"
     assert "inputs.idle_gate_check" in job["if"] and "refs/heads/main" in job["if"]
     runs = " ".join(s.get("run") or "" for s in job["steps"])
     assert "bash .github/scripts/job-idle-gate.sh" in runs

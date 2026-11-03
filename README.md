@@ -13,7 +13,7 @@ applies reviewed app migrations to the shared RDS.
 
 | Root | Account | What | Applied by |
 |---|---|---|---|
-| `accounts/aa365/` | acc2 `005097885195`, us-west-1 | **Live stack**: CIS (ECS api + worker, RDS, ALB, API GW, WAF, S3, ops-probe Lambda, alarms) and TripPlanner (2 Lambdas, HTTP API, artifacts, OIDC role) | CI workflow `Terraform Apply Prod` |
+| `accounts/aa365/` | acc2 `005097885195`, us-west-1 | **Live stack**: CIS (ECS api + worker, RDS, ALB, API GW, WAF, S3, ops-probe Lambda, alarms) and TripPlanner (2 Lambdas, HTTP API, artifacts, OIDC role) | CI workflow `Terraform Apply Dev` |
 | `accounts/acc3-bedrock/` | acc3 `786888028788` | Bedrock invoker role (the only LLM satellite), Bedrock Batch, Cost Explorer reader | a human, locally (profile `nghiep_aa365`) |
 
 ```
@@ -40,7 +40,7 @@ db/               run_migration.py + migrations/<owner>/ copies applied by DB Mi
 
 1. PR → **Terraform Plan** runs in CI (required). Read the plan; say in the PR what it should show.
 2. Merge after review (human approval).
-3. Run **Terraform Apply Prod** (`workflow_dispatch` on `main`); check `Apply complete! …` matches
+3. Run **Terraform Apply Dev** (`workflow_dispatch` on `main`); check `Apply complete! …` matches
    the plan.
 
 Locally (acc2 needs MFA-exported credentials):
