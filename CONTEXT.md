@@ -82,6 +82,9 @@ lets the main stack (acc2) and TripPlanner reach Bedrock in acc3 lives in
 `accounts/acc1-bedrock/` was destroyed on 28/10/2026 (7 resources, state bucket deleted) and removed from the repo (AA-998).
 The satellite invoker roles trust only the ECS task role (`aa-cis-dev-ecs-task-role`), not an
 admin session — Claude cannot be called from a local shell.
+Model lifecycle read (AA-1024 D2): `bedrock:ListFoundationModels` (read only, free) on the CIS task role (`modules/ecs`,
+Sid `BedrockModelLifecycleRead`) and on `AA3-Bedrock-Invoker` (Sid `ListFoundationModelsForLifecycle`), for the CIS
+nightly job that fills `shared.llm_model_catalog.lifecycle_status` / `eol_date`.
 
 Cross-account pieces added 15-25/09/2026 (same assume-role pattern as the Bedrock satellite):
 
