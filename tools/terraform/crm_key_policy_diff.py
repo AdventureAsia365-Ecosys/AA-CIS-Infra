@@ -2,8 +2,10 @@
 """Nightly CRM KMS key-policy diff (AA-932, design v3 §4.1 "a nightly GetKeyPolicy diff").
 
 Compares the live key policy of each AA-Partner (CRM) KMS key (aws_kms_key.crm_data, crm_ingest, crm_seal in
-accounts/aa365/crm_data.tf) with the policy Terraform last applied (the state of accounts/aa365). Both sides are
+modules/environment/crm_data.tf) with the policy Terraform last applied (the state of accounts/aa365). Both sides are
 normalised first (statement order, list order, single value vs one-element list), so only a real change counts.
+AA-1004 slice 2 moved the keys into module.environment: the state names them module.environment.aws_kms_key.<name>
+once the moves are applied, aws_kms_key.<name> before; both addresses are read, a key found under both is an error.
 
 Why the state and not the code: a merged-but-not-applied PR is not drift; a PutKeyPolicy outside Terraform (Console,
 CLI, a script) is. Every PutKeyPolicy also fires the aa-crm-<env>-kms-key-admin alarm at once; this check catches what
@@ -31,6 +33,8 @@ import sys
 from typing import Callable, Iterator, Optional
 
 KEY_RESOURCES = {"crm_data": "data", "crm_ingest": "ingest", "crm_seal": "seal"}
+# Where the keys live in the state of accounts/aa365: the root before AA-1004 slice 2, module.environment after.
+KEY_ADDRESS_PREFIXES = ("aws_kms_key.", "module.environment.aws_kms_key.")
 _LIST_FIELDS = ("Action", "NotAction", "Resource", "NotResource")
 
 
@@ -107,12 +111,15 @@ def state_policies(state: dict) -> dict[str, dict]:
         return {}  # empty state
     found = {}
     for r in _resources(root):
-        if r.get("mode") == "managed" and r.get("type") == "aws_kms_key" and r.get("name") in KEY_RESOURCES \
-                and r.get("address", "").startswith("aws_kms_key."):
+        name = r.get("name")
+        if r.get("mode") == "managed" and r.get("type") == "aws_kms_key" and name in KEY_RESOURCES \
+                and r.get("address", "") in {p + name for p in KEY_ADDRESS_PREFIXES}:
             vals = r.get("values") or {}
             if not vals.get("key_id") or not vals.get("policy"):
                 raise InputError(f"{r.get('address')}: key_id or policy missing in the state")
-            found[KEY_RESOURCES[r["name"]]] = {"key_id": vals["key_id"], "policy": vals["policy"]}
+            if KEY_RESOURCES[name] in found:
+                raise InputError(f"aws_kms_key.{name}: found twice in the state (root and module.environment)")
+            found[KEY_RESOURCES[name]] = {"key_id": vals["key_id"], "policy": vals["policy"]}
     return found
 
 

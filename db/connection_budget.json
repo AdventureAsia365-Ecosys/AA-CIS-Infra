@@ -90,7 +90,7 @@
       "max_size": 3,
       "source": {"repo": "AA-Partner", "path": "api/app/db.py", "regex": "create_pool\\(.*?max_size=(\\d+)"},
       "processes": {
-        "tf_file": "accounts/aa365/crm_app.tf",
+        "tf_file": "modules/environment/crm_app.tf",
         "tf_regex": "resource \"aws_ecs_service\" \"crm_api\" \\{.*?deployment_maximum_percent\\s*=\\s*(\\d+)",
         "scale": 0.01,
         "note": "AA-933: AA-Partner api + in-process crm.job worker, 1 task (Dev, no autoscaling) x deployment overlap 200 %"

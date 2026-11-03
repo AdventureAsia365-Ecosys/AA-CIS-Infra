@@ -4,7 +4,7 @@ name: Terraform Plan Guard Tests
 # changes a guarded type (aws_secretsmanager_secret_version, random_password, aws_db_instance).
 # AA-932: plus the Object Lock rule (COMPLIANCE create, any change to a lock configuration, deleting an Object
 # Lock bucket) and the CRM key-policy diff tool (tools/terraform/crm_key_policy_diff.py), same test folder.
-# Two tests read files outside tools/terraform (crm_storage.tf: Dev never COMPLIANCE; crm-key-policy-diff.yml:
+# Two tests read files outside tools/terraform (modules/environment/crm_storage.tf: Dev never COMPLIANCE; crm-key-policy-diff.yml:
 # read-only, nightly, plan role), so those paths trigger this workflow too.
 # AA-879: plus the scheduled drift report (tools/terraform/drift_report.py): its shape test reads terraform-drift.yml and
 # terraform-plan.yml (same roots), and the report masks through tools/docs/aws_mask.py, so those paths trigger it too.
@@ -26,7 +26,7 @@ on:
       - ".github/workflows/**"
       - ".github/workflows/terraform-apply.yml"
       - ".github/workflows/tf-plan-guard-test.yml"
-      - "accounts/aa365/crm_storage.tf"
+      - "modules/environment/crm_storage.tf" # AA-1004 slice 2 (was accounts/aa365); also under modules/environment/** below
       - "accounts/aa365/identity_partner.tf"
       - "accounts/aa365/identity_iam.tf"
       - "accounts/aa365/cicd_split.tf" # AA-1023: the apply role trust vs the workflow environments
@@ -45,7 +45,7 @@ on:
       - ".github/workflows/**"
       - ".github/workflows/terraform-apply.yml"
       - ".github/workflows/tf-plan-guard-test.yml"
-      - "accounts/aa365/crm_storage.tf"
+      - "modules/environment/crm_storage.tf" # AA-1004 slice 2 (was accounts/aa365); also under modules/environment/** below
       - "accounts/aa365/identity_partner.tf"
       - "accounts/aa365/identity_iam.tf"
       - "accounts/aa365/cicd_split.tf" # AA-1023: the apply role trust vs the workflow environments

@@ -56,7 +56,7 @@ locals {
     aws_secretsmanager_secret.db_migrator.arn,
     module.environment.booking_database_url_secret_arn,
     aws_secretsmanager_secret.tripplanner_db.arn,
-    aws_secretsmanager_secret.crm_db.arn, # AA-932: crm_app set-password + isolation probe login
+    module.environment.crm_db_secret_arn, # AA-932: crm_app set-password + isolation probe login
   ]
 
   # The only S3 write a migrator task makes itself: db/schema_dump.py put_object of

@@ -430,13 +430,13 @@ resource "aws_cloudwatch_log_metric_filter" "crm_kms_decrypt" {
 
 resource "aws_cloudwatch_metric_alarm" "crm_kms_decrypt_anomaly" {
   alarm_name          = "${local.crm_name_prefix}-kms-decrypt-anomaly"
-  alarm_description   = "CRM KMS Decrypt calls (data, ingest, seal) above the anomaly band in 2 of 3 five-minute periods: a DEK cache miss storm, a bulk export, or someone decrypting. Read the events in ${local.crm_decrypt_log_group}. AA-932, design v3 §4.1.${local.runbook_suffix.crm_keys}"
+  alarm_description   = "CRM KMS Decrypt calls (data, ingest, seal) above the anomaly band in 2 of 3 five-minute periods: a DEK cache miss storm, a bulk export, or someone decrypting. Read the events in ${local.crm_decrypt_log_group}. AA-932, design v3 §4.1.${var.runbook_suffix.crm_keys}"
   comparison_operator = "GreaterThanUpperThreshold"
   evaluation_periods  = 3
   datapoints_to_alarm = 2
   threshold_metric_id = "band"
   treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
+  alarm_actions       = [var.alerts_topic_arn]
 
   metric_query {
     id          = "band"

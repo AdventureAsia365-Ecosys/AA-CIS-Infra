@@ -149,10 +149,16 @@ accounts/
                                    the environment-scoped stack a future accounts/aa-prod root instantiates too;
                                    one moved block per moved resource, so the Dev plan stays a pure no-op. Slice 1
                                    (S266): the AA-Booking stack. Also the root outputs booking_* (same names), the
-                                   locals bk_name_prefix / bk_port / bk_tags read from the module, and the
-                                   ecs-tasks assume document the CRM roles use)
+                                   locals bk_name_prefix / bk_port / bk_tags read from the module. Slice 2
+                                   (S266): the AA-Partner CRM stack, 70 resources; the root outputs crm_* (same
+                                   names) and the locals crm_name_prefix / crm_tags / crm_*_port / crm_*_tags /
+                                   crm_oidc_repo_id read from the module)
     (booking.tf, booking_media.tf, booking_ops_docs.tf: moved to modules/environment, AA-1004 P0 slice 1;
      booking_variables.tf stays here and is passed through)
+    (crm_app.tf, crm_web.tf, crm_portal.tf, crm_data.tf, crm_storage.tf, crm_mail.tf, crm_scrub.tf, crm_llm.tf,
+     described below: moved to modules/environment, AA-1004 slice 2. Still here: crm_variables.tf (same variables,
+     passed through), the ALB rule crm_api (alb_rules.tf), crm_mail_receipt.tf (MX record + SES receipt rule, in the
+     shared zone and rule set), the edge files crm_edge.tf / crm_agency_edge.tf / crm_client_edge.tf, and cicd_crm.tf)
     bedrock_satellite_assume.tf   (cross-account Bedrock assume-role trust)
     cost_explorer_satellite_assume.tf (acc2 → acc3 Cost Explorer read role, AA-623; acc1 removed, AA-998)
     dfs_balance.tf                (ops-probe Lambda: 06:15 UTC schedule POSTs the admin probes, AA-627/720/727,
@@ -474,7 +480,10 @@ modules/          ← reusable building blocks, consumed by the account roots
                     environment:<env> + ref main, secret shells booking/<env>/database-url and sentry-dsn),
                     booking_media.tf (supplier-photo bucket, CIS task role denied writes), booking_ops_docs.tf (ops
                     documents bucket, PII, only the Booking task role touches objects). The listener rule /booking/*
-                    stays in the root (alb_rules.tf). Later slices (CRM, TripPlanner, identity, observability, then the
+                    stays in the root (alb_rules.tf). Slice 2: the AA-Partner CRM stack (crm_app.tf, crm_web.tf,
+                    crm_portal.tf, crm_data.tf, crm_storage.tf, crm_mail.tf, crm_scrub.tf, crm_llm.tf; crm_inputs.tf =
+                    the CRM naming contract + the root inputs, crm_outputs.tf = what the root reads back); the CRM
+                    edge, the crm_api listener rule and the SES receipt rule stay in the root. Later slices (TripPlanner, identity, observability, then the
                     platform module calls below) move the same way; tools/terraform/tests/test_aa1004_environment_moves.py
   vpc, rds, ecs, alb, api_gateway, s3, secrets, waf, dynamodb,
   elasticache, eventbridge, langfuse (monitoring: removed S263, AA-1025)
