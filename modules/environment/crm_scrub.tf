@@ -136,14 +136,14 @@ resource "aws_iam_role" "crm_scrub_corpus" {
   count = local.crm_scrub_enabled ? 1 : 0
 
   name                 = "${local.crm_name_prefix}-scrub-corpus"
-  permissions_boundary = aws_iam_policy.workload_boundary.arn
+  permissions_boundary = var.permissions_boundary_arn
   max_session_duration = 3600
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
       Effect    = "Allow"
-      Principal = { Federated = aws_iam_openid_connect_provider.github_actions.arn }
+      Principal = { Federated = var.github_oidc_provider_arn }
       Action    = "sts:AssumeRoleWithWebIdentity"
       Condition = {
         # AA-1022: scrub-corpus.yml runs only on main (schedule, push to main, dispatch with a main-only job `if`), so
@@ -159,7 +159,7 @@ resource "aws_iam_role" "crm_scrub_corpus" {
 
   tags = local.crm_scrub_tags
 
-  depends_on = [time_sleep.wait_for_iam_propagation]
+  depends_on = [var.iam_propagation_gate]
 }
 
 resource "aws_iam_role_policy" "crm_scrub_corpus" {

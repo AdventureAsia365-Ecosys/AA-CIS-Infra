@@ -164,7 +164,7 @@ resource "aws_lb_listener_rule" "crm_agency_api" {
 
   action {
     type             = "forward"
-    target_group_arn = aws_lb_target_group.crm_api.arn
+    target_group_arn = module.environment.crm_api_target_group_arn
   }
 
   condition {
@@ -197,7 +197,7 @@ resource "aws_lb_listener_rule" "crm_agency_studio" {
 
   action {
     type             = "forward"
-    target_group_arn = aws_lb_target_group.crm_portal.arn
+    target_group_arn = module.environment.crm_portal_target_group_arn
   }
 
   condition {
@@ -231,7 +231,7 @@ resource "aws_lb_listener_rule" "crm_agency_studio_x" {
 
   action {
     type             = "forward"
-    target_group_arn = aws_lb_target_group.crm_portal.arn
+    target_group_arn = module.environment.crm_portal_target_group_arn
   }
 
   condition {
@@ -264,7 +264,7 @@ resource "aws_lb_listener_rule" "crm_agency_default" {
 
   action {
     type             = "forward"
-    target_group_arn = aws_lb_target_group.crm_web.arn
+    target_group_arn = module.environment.crm_web_target_group_arn
   }
 
   condition {

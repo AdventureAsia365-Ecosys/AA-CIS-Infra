@@ -39,14 +39,9 @@
 # =============================================================================
 
 locals {
-  crm_name_prefix = "aa-crm-${var.environment}"
-
-  crm_tags = {
-    Project     = "AA-Partner"
-    Environment = var.environment
-    ManagedBy   = "terraform"
-    App         = "crm" # DM-10.1 cost allocation; the KMS grants and boundary denies key on it
-  }
+  # AA-1004 slice 2: the CRM naming contract (aa-crm-<env>, tags with App = "crm") has one definition, in
+  # modules/environment/crm_inputs.tf; this root reads it back (environment.tf re-exports it as local.crm_name_prefix
+  # and local.crm_tags for this file, the edge files and the identity grants).
 
   crm_kms_key_arns   = "arn:aws:kms:${var.aws_region}:${var.account_id}:key/*"
   crm_kms_alias_arns = "arn:aws:kms:${var.aws_region}:${var.account_id}:alias/crm-*"

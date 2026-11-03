@@ -69,7 +69,7 @@ output "ecs" {
   description = "ECS cluster and its services."
   value = {
     cluster_name = module.ecs.cluster_name
-    services     = [module.ecs.service_name, module.ecs.worker_service_name, module.environment.booking_ecs_service_name, aws_ecs_service.crm_api.name]
+    services     = [module.ecs.service_name, module.ecs.worker_service_name, module.environment.booking_ecs_service_name, module.environment.crm_ecs_service_name]
   }
 }
 

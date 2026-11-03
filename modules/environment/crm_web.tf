@@ -66,19 +66,19 @@ locals {
 
   crm_web_tags = merge(local.crm_tags, { Service = "crm-web", Issue = "AA-935" })
 
-  crm_web_service_arn      = "arn:aws:ecs:${var.aws_region}:${var.account_id}:service/${module.ecs.cluster_name}/${local.crm_web_service}"
+  crm_web_service_arn      = "arn:aws:ecs:${var.aws_region}:${var.account_id}:service/${var.ecs_cluster_name}/${local.crm_web_service}"
   crm_web_task_def_pattern = "arn:aws:ecs:${var.aws_region}:${var.account_id}:task-definition/${local.crm_web_service}:*"
 
   # Managed login of the pool the web signs in with (AA-939, safe rollout): the partner pool's partner-web client once
   # crm_partner_signin_enabled = true, else the EXTERNAL cis-portal client (custom domain when on, else the prefix
   # domain). The client secret in crm/dev/web must belong to the same client: after flipping the variable and
   # applying, run tools/identity/crm_dev_identity.py web-secret --pool partner --apply, then deploy the web.
-  crm_web_external_domain = local.id_custom_domains ? "https://${var.identity_external_custom_domain}" : "https://${aws_cognito_user_pool_domain.external_prefix.domain}.auth.${var.aws_region}.amazoncognito.com"
-  crm_web_cognito_domain  = var.crm_partner_signin_enabled ? local.idpartner_login_base : local.crm_web_external_domain
-  crm_web_client_id       = var.crm_partner_signin_enabled ? aws_cognito_user_pool_client.partner["partner-web"].id : aws_cognito_user_pool_client.external["cis-portal"].id
+  crm_web_external_domain = var.identity_custom_domains_enabled ? "https://${var.identity_external_custom_domain}" : "https://${var.cognito_external_prefix_domain}.auth.${var.aws_region}.amazoncognito.com"
+  crm_web_cognito_domain  = var.crm_partner_signin_enabled ? var.cognito_partner_login_base : local.crm_web_external_domain
+  crm_web_client_id       = var.crm_partner_signin_enabled ? var.cognito_partner_web_client_id : var.cognito_external_cis_portal_client_id
   # AA-1019: the WORKFORCE managed login (staff-auth. custom domain when on, else the prefix domain; same expression as
   # identity.tf output identity_managed_login_base_urls.workforce).
-  crm_web_staff_domain = local.id_custom_domains ? "https://${var.identity_workforce_custom_domain}" : "https://${aws_cognito_user_pool_domain.workforce_prefix.domain}.auth.${var.aws_region}.amazoncognito.com"
+  crm_web_staff_domain = var.identity_custom_domains_enabled ? "https://${var.identity_workforce_custom_domain}" : "https://${var.cognito_workforce_prefix_domain}.auth.${var.aws_region}.amazoncognito.com"
 
   # Env names read by the web (AA-Partner web/lib/config.ts). Public values only; the two secrets come from
   # crm/dev/web.
@@ -86,14 +86,14 @@ locals {
     { name = "ENVIRONMENT", value = var.environment },
     # AA-979 clean-up: the fallback public origin is the agency host (the old partner host answers 301 there except
     # /crm/*, so the web only sees portal. requests).
-    { name = "WEB_PUBLIC_ORIGIN", value = "https://${local.crm_agency_host}" },
+    { name = "WEB_PUBLIC_ORIGIN", value = "https://${var.crm_agency_host}" },
     # AA-979 P2b (Q1, Q12): the web answers BOTH hosts, each with its own public origin (AA-Partner web/lib/hosts.ts
     # publicOriginFor); kept after the clean-up so removing the partner-host 301 needs no web change. CRM_API_ORIGIN
     # stays on the partner host: server to server, /crm/* is not redirected.
-    { name = "WEB_PARTNER_HOSTS", value = join(",", local.crm_edge_on == 1 ? [local.crm_partner_host, local.crm_agency_host] : [local.crm_partner_host]) },
+    { name = "WEB_PARTNER_HOSTS", value = join(",", var.crm_edge_on == 1 ? [var.crm_partner_host, var.crm_agency_host] : [var.crm_partner_host]) },
     # AA-936: the client host of crm_client_edge.tf, plus any extra host given here.
-    { name = "WEB_CLIENT_HOSTS", value = join(",", distinct(concat(local.crm_client_hosts, var.crm_web_client_hosts))) },
-    { name = "CRM_API_ORIGIN", value = "https://${local.crm_partner_host}" },
+    { name = "WEB_CLIENT_HOSTS", value = join(",", distinct(concat(var.crm_client_hosts, var.crm_web_client_hosts))) },
+    { name = "CRM_API_ORIGIN", value = "https://${var.crm_partner_host}" },
     { name = "COGNITO_DOMAIN", value = local.crm_web_cognito_domain },
     { name = "COGNITO_CLIENT_ID", value = local.crm_web_client_id },
     # Content studio cross-link (design v3 Fix C10): the tenant portal host (custom_domains_variables.tf `portal`).
@@ -104,7 +104,7 @@ locals {
     { name = "CIS_API_URL", value = var.crm_cis_api_url },
     # AA-1019: the AA staff console's WORKFORCE client (its secret and cookie key come from crm/dev/web).
     { name = "STAFF_COGNITO_DOMAIN", value = local.crm_web_staff_domain },
-    { name = "STAFF_COGNITO_CLIENT_ID", value = aws_cognito_user_pool_client.workforce["crm-staff"].id },
+    { name = "STAFF_COGNITO_CLIENT_ID", value = var.cognito_workforce_crm_staff_client_id },
   ]
 }
 
@@ -122,7 +122,7 @@ resource "aws_ecr_repository" "crm_web" {
   tags = local.crm_web_tags
 
   # CreateRepository: cicd_crm.tf CrmEcrRepoManage (aa-crm-<env>-*).
-  depends_on = [time_sleep.wait_for_iam_propagation]
+  depends_on = [var.iam_propagation_gate]
 }
 
 resource "aws_ecr_lifecycle_policy" "crm_web" {
@@ -157,11 +157,11 @@ resource "aws_secretsmanager_secret" "crm_web" {
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "crm_web_ecs_execution" {
   name                 = "${local.crm_web_service}-ecs-execution-role"
-  permissions_boundary = aws_iam_policy.workload_boundary.arn
+  permissions_boundary = var.permissions_boundary_arn
   assume_role_policy   = data.aws_iam_policy_document.booking_ecs_tasks_assume.json
   tags                 = local.crm_web_tags
 
-  depends_on = [time_sleep.wait_for_iam_propagation]
+  depends_on = [var.iam_propagation_gate]
 }
 
 resource "aws_iam_role_policy" "crm_web_ecs_execution" {
@@ -204,11 +204,11 @@ resource "aws_iam_role_policy" "crm_web_ecs_execution" {
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "crm_web_ecs_task" {
   name                 = "${local.crm_web_service}-ecs-task-role"
-  permissions_boundary = aws_iam_policy.workload_boundary.arn
+  permissions_boundary = var.permissions_boundary_arn
   assume_role_policy   = data.aws_iam_policy_document.booking_ecs_tasks_assume.json
   tags                 = local.crm_web_tags
 
-  depends_on = [time_sleep.wait_for_iam_propagation]
+  depends_on = [var.iam_propagation_gate]
 }
 
 resource "aws_iam_role_policy" "crm_web_ecs_task" {
@@ -239,7 +239,7 @@ resource "aws_iam_role_policy" "crm_web_ecs_task" {
         Sid      = "EcsExecSessionLogWrite"
         Effect   = "Allow"
         Action   = ["logs:CreateLogStream", "logs:DescribeLogStreams", "logs:PutLogEvents"]
-        Resource = "${module.ecs.exec_session_log_group_arn}:*"
+        Resource = "${var.ecs_exec_session_log_group_arn}:*"
       },
     ]
   })
@@ -305,7 +305,7 @@ resource "aws_lb_target_group" "crm_web" {
   name                 = "${local.crm_web_service}-tg"
   port                 = local.crm_web_port
   protocol             = "HTTP"
-  vpc_id               = module.vpc.vpc_id
+  vpc_id               = var.vpc_id
   target_type          = "ip"
   deregistration_delay = 30
 
@@ -330,7 +330,7 @@ resource "aws_lb_target_group" "crm_web" {
 # -----------------------------------------------------------------------------
 resource "aws_ecs_service" "crm_web" {
   name            = local.crm_web_service
-  cluster         = module.ecs.cluster_arn
+  cluster         = var.ecs_cluster_arn
   task_definition = aws_ecs_task_definition.crm_web.arn
   desired_count   = 0
 
@@ -348,16 +348,16 @@ resource "aws_ecs_service" "crm_web" {
     rollback = true
   }
 
-  health_check_grace_period_seconds = local.crm_edge_on == 1 ? 60 : null
+  health_check_grace_period_seconds = var.crm_edge_on == 1 ? 60 : null
 
   network_configuration {
-    subnets          = module.vpc.private_subnet_ids
-    security_groups  = [aws_security_group.crm_web.id] # ALB -> 3000 only; not admitted by RDS
+    subnets          = var.private_subnet_ids
+    security_groups  = [var.crm_web_security_group_id] # ALB -> 3000 only; not admitted by RDS
     assign_public_ip = false
   }
 
   dynamic "load_balancer" {
-    for_each = local.crm_edge_on == 1 ? [1] : []
+    for_each = var.crm_edge_on == 1 ? [1] : []
     content {
       target_group_arn = aws_lb_target_group.crm_web.arn
       container_name   = local.crm_web_container
@@ -374,7 +374,7 @@ resource "aws_ecs_service" "crm_web" {
 
   tags = local.crm_web_tags
 
-  depends_on = [aws_lb_listener_rule.crm_partner_default, aws_iam_role_policy.crm_web_ecs_execution]
+  depends_on = [var.crm_partner_default_rule_gate, aws_iam_role_policy.crm_web_ecs_execution]
 }
 
 # -----------------------------------------------------------------------------
@@ -382,23 +382,23 @@ resource "aws_ecs_service" "crm_web" {
 # no-healthy-task stays.
 # -----------------------------------------------------------------------------
 resource "aws_cloudwatch_metric_alarm" "crm_web_no_healthy_task" {
-  count = local.crm_edge_on
+  count = var.crm_edge_on
 
   alarm_name          = "${local.crm_web_service}-no-healthy-task"
-  alarm_description   = "AA-Partner web target group ${aws_lb_target_group.crm_web.name} has no healthy target for 5 minutes (service down or failing /healthz).${local.runbook_suffix.api_5xx}"
+  alarm_description   = "AA-Partner web target group ${aws_lb_target_group.crm_web.name} has no healthy target for 5 minutes (service down or failing /healthz).${var.runbook_suffix.api_5xx}"
   namespace           = "AWS/ApplicationELB"
   metric_name         = "HealthyHostCount"
-  dimensions          = { TargetGroup = aws_lb_target_group.crm_web.arn_suffix, LoadBalancer = module.alb.alb_arn_suffix }
+  dimensions          = { TargetGroup = aws_lb_target_group.crm_web.arn_suffix, LoadBalancer = var.alb_arn_suffix }
   statistic           = "Minimum"
   period              = 60
   evaluation_periods  = 5
   comparison_operator = "LessThanThreshold"
   threshold           = 1
   treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
+  alarm_actions       = [var.alerts_topic_arn]
+  ok_actions          = [var.alerts_topic_arn]
 
-  tags = merge(local.ecosys_tags, { App = "crm" })
+  tags = merge(var.ecosys_tags, { App = "crm" })
 }
 
 # -----------------------------------------------------------------------------

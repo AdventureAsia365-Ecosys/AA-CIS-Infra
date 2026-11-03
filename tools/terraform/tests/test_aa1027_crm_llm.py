@@ -1,4 +1,4 @@
-"""AA-1027 F4 (interim path): offline guards for the CRM AI gateway model on acc2 (accounts/aa365/crm_llm.tf).
+"""AA-1027 F4 (interim path): offline guards for the CRM AI gateway model on acc2 (modules/environment/crm_llm.tf).
 
 1. The CRM task role's model grant is least privilege: one statement, bedrock:InvokeModel only, on the Nova Lite us.
    inference profile of this account and region plus that one foundation model in the US regions; no wildcard
@@ -15,8 +15,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 AA365 = ROOT / "accounts" / "aa365"
-LLM = (AA365 / "crm_llm.tf").read_text(encoding="utf-8")
-APP = (AA365 / "crm_app.tf").read_text(encoding="utf-8")
+# AA-1004 slice 2: the CRM stack lives in modules/environment (instantiated by accounts/aa365, which keeps tfvars).
+ENV_MODULE = ROOT / "modules" / "environment"
+LLM = (ENV_MODULE / "crm_llm.tf").read_text(encoding="utf-8")
+APP = (ENV_MODULE / "crm_app.tf").read_text(encoding="utf-8")
 TFVARS = (AA365 / "terraform.tfvars").read_text(encoding="utf-8")
 
 PROFILE = "us.amazon.nova-lite-v1:0"

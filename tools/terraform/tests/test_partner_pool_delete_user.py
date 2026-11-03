@@ -51,7 +51,7 @@ class PartnerPoolDeleteUser(unittest.TestCase):
                 ]
             ),
         )
-        self.assertIn("role = aws_iam_role.crm_ecs_task.id", body)
+        self.assertIn("role = module.environment.crm_ecs_task_role_id", body)  # AA-1004 slice 2
         self.assertIn("Resource = aws_cognito_user_pool.partner.arn", body)
         self.assertNotIn("*", "".join(actions))
 
@@ -68,7 +68,7 @@ class PartnerPoolDeleteUser(unittest.TestCase):
         self.assertEqual(sorted(json.loads(m.group(1))), ["AdminCreateUser", "AdminDeleteUser"])
         self.assertRegex(
             m.group(2),
-            r'arn = \[\{ "anything-but" = \[aws_iam_role\.crm_ecs_task\.arn\] \}, \{ exists = false \}\]',
+            r'arn = \[\{ "anything-but" = \[module\.environment\.crm_ecs_task_role_arn\] \}, \{ exists = false \}\]',
         )
 
     def test_the_staff_pools_never_get_a_delete(self) -> None:

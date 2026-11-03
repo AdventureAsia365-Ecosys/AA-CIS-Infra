@@ -42,6 +42,32 @@ def _state(*names: str, policy=POLICY) -> dict:
     return {"format_version": "1.0", "values": {"root_module": {"resources": res}}}
 
 
+def _module_state(*names: str, policy=POLICY) -> dict:
+    """The state after AA-1004 slice 2: the keys under module.environment (a child module), plus a same-named key in
+    another module that must be ignored."""
+    keys = [{"address": f"module.environment.aws_kms_key.{n}", "mode": "managed", "type": "aws_kms_key", "name": n,
+             "values": {"key_id": f"{n}-id", "policy": json.dumps(policy)}} for n in names]
+    other = [{"address": "module.other.aws_kms_key.crm_data", "mode": "managed", "type": "aws_kms_key",
+              "name": "crm_data", "values": {"key_id": "x", "policy": "{}"}}]
+    return {"format_version": "1.0", "values": {"root_module": {"resources": [], "child_modules": [
+        {"address": "module.environment", "resources": keys},
+        {"address": "module.other", "resources": other},
+    ]}}}
+
+
+def test_state_keys_under_module_environment_are_read():
+    found = kd.state_policies(_module_state("crm_data", "crm_ingest", "crm_seal"))
+    assert sorted(found) == ["data", "ingest", "seal"]
+    assert found["data"]["key_id"] == "crm_data-id"
+
+
+def test_a_key_in_both_the_root_and_the_module_fails_closed():
+    state = _module_state("crm_data")
+    state["values"]["root_module"]["resources"] = _state("crm_data")["values"]["root_module"]["resources"]
+    with pytest.raises(kd.InputError, match="found twice"):
+        kd.state_policies(state)
+
+
 def _reshuffled(policy: dict) -> dict:
     """Same policy as KMS might return it: statements and lists reordered, one-element lists as strings."""
     p = json.loads(json.dumps(policy))
@@ -151,5 +177,5 @@ def test_guard_test_workflow_triggers_on_the_files_its_tests_read():
     on = wf.get("on", wf.get(True))
     for event in ("pull_request", "push"):
         paths = on[event]["paths"]
-        for needed in ("accounts/aa365/crm_storage.tf", ".github/workflows/crm-key-policy-diff.yml"):
+        for needed in ("modules/environment/crm_storage.tf", ".github/workflows/crm-key-policy-diff.yml"):
             assert needed in paths, (event, needed)

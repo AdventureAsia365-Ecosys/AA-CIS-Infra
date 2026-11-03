@@ -56,6 +56,10 @@
 #
 # Runbook (checks after apply, the SSE-KMS fallback, poison objects, the OAuth secret steps):
 # docs/runbooks/crm-mail-ingest.md.
+#
+# AA-1004 slice 2 (S266): parts 1 (MX record) and 2 (receipt rule) of this file stay in the account root
+# (accounts/aa365/crm_mail_receipt.tf) with the zone and the region's one active rule set; they read
+# output crm_ingest_receipt (crm_outputs.tf). Parts 3 and 4 and the task env are here.
 # =============================================================================
 
 variable "crm_ingest_subdomain" {
@@ -85,7 +89,7 @@ locals {
   crm_mail_oauth_name = "crm/${var.environment}/mail-oauth"
   # AA-979 clean-up: the agency host (the web's /connect/mail/callback). The Google (and later Microsoft) OAuth client
   # must list https://portal.<zone>/connect/mail/callback as a redirect URI BEFORE the API runs with this value.
-  crm_mail_redirect    = "https://${local.crm_agency_host}"
+  crm_mail_redirect    = "https://${var.crm_agency_host}"
   crm_mail_object_arns = ["${local.crm_ingest_bucket.arn}/${local.crm_ingest_raw}*", "${local.crm_ingest_bucket.arn}/${local.crm_ingest_imports}*"]
 
   # Task environment (AA-Partner api/app/settings.py; crm_app.tf concatenates it). Bucket and domain are not secrets.
@@ -97,38 +101,6 @@ locals {
   crm_mail_secrets = var.crm_mail_oauth_enabled ? [
     { name = "MAIL_OAUTH", valueFrom = aws_secretsmanager_secret.crm_mail_oauth.arn },
   ] : []
-}
-
-# ── 1. DNS: MX for the forward-in domain ─────────────────────────────────────────────────────────
-resource "aws_route53_record" "crm_ingest_mx" {
-  zone_id = aws_route53_zone.lumiguides.zone_id
-  name    = local.crm_ingest_domain
-  type    = "MX"
-  ttl     = 300
-  records = ["10 inbound-smtp.${var.aws_region}.amazonaws.com"]
-}
-
-# ── 2. The receipt rule, in the region's one active set, after e2e-cognito ───────────────────────
-resource "aws_ses_receipt_rule" "crm_ingest" {
-  name          = local.crm_ingest_rule
-  rule_set_name = aws_ses_receipt_rule_set.e2e.rule_set_name
-  after         = aws_ses_receipt_rule.e2e_cognito.name
-  # A domain recipient matches every address of the domain; the app decides per local part (unknown = discarded).
-  recipients   = [local.crm_ingest_domain]
-  enabled      = true
-  scan_enabled = true
-  # Gmail and Microsoft 365 forward over TLS; a plaintext relay has no legitimate reason to deliver client mail here.
-  tls_policy = "Require"
-
-  s3_action {
-    position          = 1
-    bucket_name       = local.crm_ingest_bucket.id
-    object_key_prefix = local.crm_ingest_raw
-  }
-
-  # SES writes a setup-notification object when the rule is created: the bucket policy (crm_storage.tf) and the key
-  # policy (crm_data.tf, SesReceiptEncrypt with kms:Decrypt) must be in place first.
-  depends_on = [aws_s3_bucket_policy.crm, aws_kms_key.crm_ingest]
 }
 
 # ── 3. Task role: the ingest bucket's raw/ and imports/ prefixes ─────────────────────────────────

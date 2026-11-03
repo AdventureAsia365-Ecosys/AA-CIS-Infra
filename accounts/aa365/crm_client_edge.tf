@@ -142,7 +142,7 @@ resource "aws_lb_listener_rule" "crm_client_public" {
 
   action {
     type             = "forward"
-    target_group_arn = aws_lb_target_group.crm_api.arn
+    target_group_arn = module.environment.crm_api_target_group_arn
   }
 
   condition {
@@ -175,7 +175,7 @@ resource "aws_lb_listener_rule" "crm_client_default" {
 
   action {
     type             = "forward"
-    target_group_arn = aws_lb_target_group.crm_web.arn
+    target_group_arn = module.environment.crm_web_target_group_arn
   }
 
   condition {

@@ -29,7 +29,7 @@ def _default_rule() -> str:
 def test_terraform_default_rule_forwards_to_the_web():
     rule = _default_rule()
     assert re.search(r'type\s*=\s*"forward"', rule)
-    assert re.search(r"target_group_arn\s*=\s*aws_lb_target_group\.crm_web\.arn", rule)
+    assert re.search(r"target_group_arn\s*=\s*module\.environment\.crm_web_target_group_arn", rule)
     assert "fixed-response" not in rule
 
 
@@ -130,10 +130,10 @@ def _agency_rule(name: str) -> str:
 
 
 def test_agency_rules_forward_to_the_expected_target_groups():
-    assert "aws_lb_target_group.crm_api.arn" in _agency_rule("crm_agency_api")
-    assert "aws_lb_target_group.crm_portal.arn" in _agency_rule("crm_agency_studio")
-    assert "aws_lb_target_group.crm_portal.arn" in _agency_rule("crm_agency_studio_x")
-    assert "aws_lb_target_group.crm_web.arn" in _agency_rule("crm_agency_default")
+    assert "module.environment.crm_api_target_group_arn" in _agency_rule("crm_agency_api")
+    assert "module.environment.crm_portal_target_group_arn" in _agency_rule("crm_agency_studio")
+    assert "module.environment.crm_portal_target_group_arn" in _agency_rule("crm_agency_studio_x")
+    assert "module.environment.crm_web_target_group_arn" in _agency_rule("crm_agency_default")
     assert '"/portal*"' in _agency_rule("crm_agency_studio")  # also the /portal-assets/ prefix
 
 

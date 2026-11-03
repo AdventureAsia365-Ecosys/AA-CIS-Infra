@@ -1,6 +1,6 @@
 # AA-Partner forward-in mail (CRM-17) — runbook
 
-Terraform: `accounts/aa365/crm_mail.tf` (AA-945). App: AA-Partner `api/app/mail/ingest.py` (job `crm_mail_ingest`,
+Terraform: `modules/environment/crm_mail.tf` (AA-945; the MX record and the receipt rule are `accounts/aa365/crm_mail_receipt.tf`, AA-1004 slice 2). App: AA-Partner `api/app/mail/ingest.py` (job `crm_mail_ingest`,
 queued by the worker hook `MailIngestScan` only while `raw/` holds objects).
 
 ```

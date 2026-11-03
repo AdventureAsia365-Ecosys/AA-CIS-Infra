@@ -397,7 +397,7 @@ locals {
 
 resource "aws_cloudwatch_event_rule" "crm_kms_key_admin" {
   name        = "${local.crm_name_prefix}-kms-key-admin"
-  description = "CRM KMS keys (data, ingest, seal): key policy, grant, deletion, disable, rotation-off, alias or key-material change (CloudTrail). AA-932, design v3 §4.1.${local.runbook_suffix.crm_keys}"
+  description = "CRM KMS keys (data, ingest, seal): key policy, grant, deletion, disable, rotation-off, alias or key-material change (CloudTrail). AA-932, design v3 §4.1.${var.runbook_suffix.crm_keys}"
   state       = "ENABLED"
 
   event_pattern = jsonencode({
@@ -424,17 +424,17 @@ resource "aws_cloudwatch_event_rule" "crm_kms_key_admin" {
 resource "aws_cloudwatch_event_target" "crm_kms_key_admin" {
   rule      = aws_cloudwatch_event_rule.crm_kms_key_admin.name
   target_id = "alerts-sns"
-  arn       = aws_sns_topic.alerts.arn
+  arn       = var.alerts_topic_arn
 
   input_transformer {
     input_paths    = local.crm_kms_alert_input_paths
-    input_template = "\"[aa-crm] CRM KMS key change: <event> on <key> by <principal> from <ip> at <time> (errorCode: <error>). Only a planned local MFA apply may change a CRM key; otherwise treat it as an incident (design v3 §4.1).${local.runbook_suffix.crm_keys}\""
+    input_template = "\"[aa-crm] CRM KMS key change: <event> on <key> by <principal> from <ip> at <time> (errorCode: <error>). Only a planned local MFA apply may change a CRM key; otherwise treat it as an incident (design v3 §4.1).${var.runbook_suffix.crm_keys}\""
   }
 }
 
 resource "aws_cloudwatch_event_rule" "crm_kms_foreign_use" {
   name        = "${local.crm_name_prefix}-kms-foreign-use"
-  description = "CRM KMS keys: a crypto call (allowed or denied) by a principal other than the CRM task role or an AWS service. AA-932, design v3 §4.1.${local.runbook_suffix.crm_keys}"
+  description = "CRM KMS keys: a crypto call (allowed or denied) by a principal other than the CRM task role or an AWS service. AA-932, design v3 §4.1.${var.runbook_suffix.crm_keys}"
   state       = "ENABLED_WITH_ALL_CLOUDTRAIL_MANAGEMENT_EVENTS"
 
   event_pattern = jsonencode({
@@ -460,11 +460,11 @@ resource "aws_cloudwatch_event_rule" "crm_kms_foreign_use" {
 resource "aws_cloudwatch_event_target" "crm_kms_foreign_use" {
   rule      = aws_cloudwatch_event_rule.crm_kms_foreign_use.name
   target_id = "alerts-sns"
-  arn       = aws_sns_topic.alerts.arn
+  arn       = var.alerts_topic_arn
 
   input_transformer {
     input_paths    = local.crm_kms_alert_input_paths
-    input_template = "\"[aa-crm] CRM KMS key used by a foreign principal: <event> on <key> by <principal> from <ip> at <time> (errorCode: <error>). Only the CRM task role uses these keys; a break-glass use must have a ticket, anything else is an incident (design v3 §4.1).${local.runbook_suffix.crm_keys}\""
+    input_template = "\"[aa-crm] CRM KMS key used by a foreign principal: <event> on <key> by <principal> from <ip> at <time> (errorCode: <error>). Only the CRM task role uses these keys; a break-glass use must have a ticket, anything else is an incident (design v3 §4.1).${var.runbook_suffix.crm_keys}\""
   }
 }
 
