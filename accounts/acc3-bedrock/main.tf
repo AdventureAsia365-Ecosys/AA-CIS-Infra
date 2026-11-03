@@ -174,6 +174,16 @@ resource "aws_iam_role_policy" "bedrock_invoker_policy" {
         ]
         Resource = "arn:aws:bedrock:us-west-1:786888028788:model-invocation-job/*"
       },
+      # AA-1024 D2 (S263 gateway plan, OPS-04) — the AA-CIS-App nightly llm_model_lifecycle_sync job reads the
+      # lifecycle status and end-of-life date of the foundation models on acc3 through this role. Read only, free;
+      # ListFoundationModels has no resource-level permission ("*"). The job fails soft while acc3 refuses Bedrock
+      # (it records the connection's access state and keeps the last known status).
+      {
+        Sid      = "ListFoundationModelsForLifecycle"
+        Effect   = "Allow"
+        Action   = ["bedrock:ListFoundationModels"]
+        Resource = "*"
+      },
       # AA-399 — Bedrock itself needs PassRole on the acc3 batch service role
       # (aa3-bedrock-batch-inference-role, batch.tf) to assume it when running
       # the job — separate from the caller's own CreateModelInvocationJob above.
