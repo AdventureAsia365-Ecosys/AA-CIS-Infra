@@ -1,6 +1,6 @@
 # =============================================================================
 # AA-1004 slice 2 (S266) — the AA-Partner (CRM) settings of this root. The CRM stack moved into modules/environment
-# (crm_app.tf, crm_web.tf, crm_portal.tf, crm_data.tf, crm_storage.tf, crm_mail.tf, crm_scrub.tf, crm_llm.tf); the
+# (crm_app.tf, crm_web.tf, crm_data.tf, crm_storage.tf, crm_mail.tf, crm_scrub.tf, crm_llm.tf); the
 # module declares the same variables next to the resources that read them, and environment.tf passes each one through
 # unchanged. Same names, types, defaults and validations as before the move, so terraform.tfvars and every -var stay
 # valid. Change a setting here AND in the module file (tools/terraform/tests/test_aa1004_environment_moves.py checks
@@ -79,20 +79,6 @@ variable "crm_web_client_hosts" {
   description = "AA-935: extra traveller (client) hosts the CRM web serves /c/* on (WEB_CLIENT_HOSTS). AA-936 adds go-dev. itself (crm_client_edge.tf); list only additional hosts here."
   type        = list(string)
   default     = []
-}
-
-# as in modules/environment/crm_portal.tf
-variable "crm_portal_sentry_enabled" {
-  description = "AA-979: map secret crm/<env>/portal-sentry-dsn into the portal task (SENTRY_DSN). Turn on only AFTER the secret has a value (Sentry project aa-partner-portal): a task whose secret has no value fails to start."
-  type        = bool
-  default     = false
-}
-
-# as in modules/environment/crm_portal.tf
-variable "crm_portal_api_key_signin" {
-  description = "AA-979 (Q3): the Content studio's people-facing tenant API-key sign-in (/tenant-login). It was on during the P2b window only; false since the clean-up (runbook 4.5): /tenant-login answers 308 to the partner sign-in. Machines keep X-API-Key on the CIS API either way."
-  type        = bool
-  default     = false
 }
 
 # as in modules/environment/crm_storage.tf

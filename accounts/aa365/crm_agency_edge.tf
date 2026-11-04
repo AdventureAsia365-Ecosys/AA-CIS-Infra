@@ -5,16 +5,13 @@
 #   viewer -> CloudFront portal.<zone>  (+ X-AA-Origin: <the crm_edge.tf secret>)
 #          -> the same VPC origin on the internal NLB (crm_edge.tf) -> ALB :80 (alb_rules.tf order)
 #             crm_agency_api       (Host + secret + /crm, /crm/*)                       -> AA-Partner API
-#             crm_agency_studio    (Host + secret + /portal*, /api/*, /tenant-login*)   -> AA-Partner web (AA-1036)
-#             crm_agency_studio_x  (Host + secret + /terms, /privacy, /assets/*)        -> AA-Partner web (AA-1036)
 #             crm_agency_default   (Host + secret, any other path)                      -> AA-Partner web
 #             crm_origin_deny      (crm_edge.tf)                                        -> 403 for anything else
 #
-# AA-1036 (R3 slice 2, root ADR 0019 d6, cut-over): the Content studio is part of the AA-Partner web (AA-Partner #210,
-# web/app/(studio)), so the two studio rules forward to the WEB target group, like the default rule. They stay as
-# rules for one step only: rollback of the cut-over = point them back at module.environment.crm_portal_target_group_arn
-# (the old studio service aa-crm-<env>-portal keeps running, it just receives no traffic). The retire step removes
-# both rules (the default rule then serves the same paths) together with crm_portal.tf.
+# AA-1036 (R3 slice 2, root ADR 0019 d6): the Content studio is part of the AA-Partner web (AA-Partner #210,
+# web/app/(studio)). The cut-over pointed the two studio rules crm_agency_studio (/portal*, /api/*, /tenant-login*) and
+# crm_agency_studio_x (/terms, /privacy, /assets/*) at the web target group; the retire step deleted them with the
+# studio service (crm_portal.tf): the default rule serves those paths. Priorities 8 and 9 are free (alb_rules.tf).
 #
 # The portal. CNAME points at this distribution. P2b phase 2 (S253, 27/10/2026) flipped it from the Vercel project
 # aa-cis-portal with a one-off cutover switch; the P2b clean-up (runbook 4.5, S256) removed the switch, the
@@ -28,7 +25,7 @@
 # distribution for no gain on Dev.
 #
 # Cost (est., D-19): distribution and VPC-origin reuse $0 (traffic inside the always-free 1 TB / 10M requests), ACM $0,
-# Route 53 validation record + queries ~ $0, four ALB rules inside the LCU rule allowance (< $0.10/month).
+# Route 53 validation record + queries ~ $0, two ALB rules inside the LCU rule allowance (< $0.10/month).
 # =============================================================================
 
 variable "crm_agency_subdomain" {
@@ -186,75 +183,6 @@ resource "aws_lb_listener_rule" "crm_agency_api" {
   condition {
     path_pattern {
       values = ["/crm", "/crm/*"]
-    }
-  }
-
-  tags = local.crm_agency_tags
-}
-
-resource "aws_lb_listener_rule" "crm_agency_studio" {
-  count = local.crm_edge_on
-
-  listener_arn = module.alb.http_listener_arn
-  priority     = local.alb_http_rule_priorities.crm_agency_studio
-
-  # AA-1036 cut-over: the merged agency web (was crm_portal_target_group_arn, the retiring studio).
-  action {
-    type             = "forward"
-    target_group_arn = module.environment.crm_web_target_group_arn
-  }
-
-  condition {
-    host_header {
-      values = [local.crm_agency_host]
-    }
-  }
-
-  condition {
-    http_header {
-      http_header_name = local.alb_origin_header_name
-      values           = [random_password.crm_origin_verify[0].result]
-    }
-  }
-
-  condition {
-    path_pattern {
-      # /portal* also covered the old studio's Next assets under /portal-assets/ (assetPrefix); the web serves /_next/.
-      values = ["/portal*", "/api/*", "/tenant-login*"]
-    }
-  }
-
-  tags = local.crm_agency_tags
-}
-
-resource "aws_lb_listener_rule" "crm_agency_studio_x" {
-  count = local.crm_edge_on
-
-  listener_arn = module.alb.http_listener_arn
-  priority     = local.alb_http_rule_priorities.crm_agency_studio_x
-
-  # AA-1036 cut-over: the merged agency web (was crm_portal_target_group_arn, the retiring studio).
-  action {
-    type             = "forward"
-    target_group_arn = module.environment.crm_web_target_group_arn
-  }
-
-  condition {
-    host_header {
-      values = [local.crm_agency_host]
-    }
-  }
-
-  condition {
-    http_header {
-      http_header_name = local.alb_origin_header_name
-      values           = [random_password.crm_origin_verify[0].result]
-    }
-  }
-
-  condition {
-    path_pattern {
-      values = ["/terms", "/privacy", "/assets/*"]
     }
   }
 

@@ -2,7 +2,7 @@
 """Job-idle scope of a Terraform plan (AA-1023, data standards DM-11.4 for Infra applies).
 
 Reads the JSON of a saved plan (`terraform show -json tfplan`) and says whether the apply would restart or replace
-something a running job lives in: an ECS task (CIS api/worker, Booking api, CRM api/web/portal) or the shared RDS
+something a running job lives in: an ECS task (CIS api/worker, Booking api, CRM api/web) or the shared RDS
 instance. When it does, terraform-apply.yml runs the job-idle gate (.github/scripts/job-idle-gate.sh: the migrator
 task in MIGRATION_MODE=idle-gate, the same check as DB Migrate apply) before `terraform apply`, and refuses while
 shared.job / booking.job / crm.job / tripplanner.job hold a queued or running non-exempt row or a rerun wave is open.

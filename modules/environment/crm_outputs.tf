@@ -30,14 +30,6 @@ output "crm_web_tags" {
   value = local.crm_web_tags
 }
 
-output "crm_portal_port" {
-  value = local.crm_portal_port
-}
-
-output "crm_portal_tags" {
-  value = local.crm_portal_tags
-}
-
 output "crm_oidc_repo_id" {
   description = "AA-Partner repo id in the GitHub OIDC subjects ('*' while crm_github_repo_id is empty); e2e_mailbox.tf trusts the e2e environment with it."
   value       = local.crm_oidc_repo_id
@@ -51,10 +43,6 @@ output "crm_api_target_group_arn" {
 
 output "crm_web_target_group_arn" {
   value = aws_lb_target_group.crm_web.arn
-}
-
-output "crm_portal_target_group_arn" {
-  value = aws_lb_target_group.crm_portal.arn
 }
 
 output "crm_ecs_task_role_id" {

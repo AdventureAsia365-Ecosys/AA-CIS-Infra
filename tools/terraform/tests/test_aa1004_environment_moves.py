@@ -305,7 +305,26 @@ SLICE_3_OUTPUTS = {
     "tripplanner_artifacts_bucket", "tripplanner_api_key_secret_arn", "tripplanner_jobs_function_name",
 }
 
-SLICES = SLICE_1 | SLICE_2 | SLICE_3
+# AA-1036 (R3 slice 2, retire, root ADR 0019 d6): the Content studio service (the former crm_portal.tf of slice 2) was
+# deleted after its cut-over to the AA-Partner web, with its moved blocks (the state had moved at slice 2), its
+# security-group and listener-rule inputs and its two settings. The slice lists above stay frozen; the checks skip these.
+RETIRED_AA1036 = {
+    "aws_ecr_repository.crm_portal",
+    "aws_ecr_lifecycle_policy.crm_portal",
+    "aws_secretsmanager_secret.crm_portal_sentry_dsn",
+    "aws_iam_role.crm_portal_ecs_execution",
+    "aws_iam_role_policy.crm_portal_ecs_execution",
+    "aws_iam_role.crm_portal_ecs_task",
+    "aws_iam_role_policy.crm_portal_ecs_task",
+    "aws_ecs_task_definition.crm_portal",
+    "aws_lb_target_group.crm_portal",
+    "aws_ecs_service.crm_portal",
+    "aws_cloudwatch_metric_alarm.crm_portal_no_healthy_task",
+}
+RETIRED_AA1036_INPUTS = {"crm_portal_security_group_id", "crm_agency_studio_rule_gate"}
+RETIRED_AA1036_SETTINGS = {"crm_portal_sentry_enabled", "crm_portal_api_key_signin"}
+
+SLICES = SLICE_1 | (SLICE_2 - RETIRED_AA1036) | SLICE_3
 
 PREFIX = "module.environment."
 
@@ -335,6 +354,7 @@ def test_the_parsers_see_the_files():
     assert len(_resources(ENV_MODULE)) >= len(SLICES)
     assert len(_env_moves()) >= len(SLICES)
     assert len(SLICE_2) == 70 and not SLICE_1 & SLICE_2
+    assert RETIRED_AA1036 <= SLICE_2 and len(RETIRED_AA1036) == 11
     assert len(SLICE_3) == 42 and not (SLICE_1 | SLICE_2) & SLICE_3
 
 
@@ -418,18 +438,34 @@ def test_slice_2_inputs_pass_the_exact_root_expression():
     inputs = _inputs()
     module_vars = _variable_blocks(ENV_MODULE)
     for name, expr in SLICE_2_INPUTS.items():
+        if name in RETIRED_AA1036_INPUTS:
+            assert name not in module_vars and name not in inputs, f"{name}: retired with the studio service (AA-1036)"
+            continue
         assert name in module_vars, f"modules/environment declares no variable {name}"
         assert inputs.get(name) == expr, f"{name}: the root passes {inputs.get(name)!r}, the moved code read {expr!r}"
 
 
 def test_slice_2_settings_are_declared_identically_and_passed_through():
     root_vars, module_vars, inputs = _variable_blocks(AA365), _variable_blocks(ENV_MODULE), _inputs()
-    for name in sorted(SLICE_2_SETTINGS):
+    for name in sorted(SLICE_2_SETTINGS - RETIRED_AA1036_SETTINGS):
         assert name in root_vars and name in module_vars, f"{name}: declared in the root and in the module"
         assert root_vars[name] == module_vars[name], f"{name}: root and module declarations differ"
         assert inputs.get(name) == f"var.{name}", f"{name}: passed through as var.{name}"
     # Every CRM setting of the module is one of these (a new one must be added to the root and passed through too).
-    assert {n for n in module_vars if n.startswith("crm_") and n not in SLICE_2_INPUTS} == SLICE_2_SETTINGS
+    assert {n for n in module_vars if n.startswith("crm_") and n not in SLICE_2_INPUTS} == (
+        SLICE_2_SETTINGS - RETIRED_AA1036_SETTINGS
+    )
+    for name in RETIRED_AA1036_SETTINGS:
+        assert name not in root_vars and name not in module_vars and name not in inputs, f"{name}: retired (AA-1036)"
+
+
+def test_the_retired_studio_is_declared_and_moved_nowhere():
+    """AA-1036: the studio's resources are gone from both trees, and no moved block names them any more."""
+    declared = _resources(AA365) | _resources(ENV_MODULE)
+    named = {a for a, _ in _moves()} | {b[len(PREFIX):] if b.startswith(PREFIX) else b for _, b in _moves()}
+    for addr in sorted(RETIRED_AA1036):
+        assert addr not in declared, f"{addr} is still declared"
+        assert addr not in named, f"{addr} still has a moved block"
 
 
 def test_every_module_variable_without_a_default_is_passed():
