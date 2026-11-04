@@ -1,4 +1,3 @@
--- migrate: expand
 -- Migration 372: AA-1045 (S268, AI gateway usage analytics explorer) — the hourly usage rollup of every paid-call
 -- ledger CIS can read, and the explorer's saved views.
 --
@@ -29,9 +28,12 @@
 -- Behaviour. None on apply: both tables are empty; nothing reads them until the AA-1045 code PR ships, and that code
 -- answers 503 "needs migration 372" (explorer) or skips the job while a table is missing.
 --
--- Class: expand (root ADR 0017 d3): two new tables, their constraints and indexes, grants on them and comments; no
--- existing object changes, no seed row, no DO block. Retention rows (DM-7.1): root data standards Part B section 7,
--- in the root PR of this change (merged before the Infra copy).
+-- Class: contract (no '-- migrate:' directive). Two new tables, their constraints and indexes, grants on them and
+-- comments; no existing object changes. It is not expand because shared.ai_usage_hourly has a tenant_id column
+-- with RLS off on purpose (a CIS-only rollup; tenant_id is attribution; X2 allowlist rule a), and the expand
+-- classify refuses a new tenant_id table without ENABLE and FORCE ROW LEVEL SECURITY. Applied by hand with DB
+-- Migrate (S268). Retention rows (DM-7.1): root data standards Part B section 7, in the root PR of this change
+-- (merged before the Infra copy).
 --
 -- Number. 371 is the highest on main (04/11, after the S268 route control and route policy files). Migration-only PR
 -- (no readiness raise: the code tolerates the missing tables).
