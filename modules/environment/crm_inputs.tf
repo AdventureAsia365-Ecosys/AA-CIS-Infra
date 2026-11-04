@@ -1,7 +1,7 @@
 # =============================================================================
 # AA-1004 slice 2 (S266) — the AA-Partner (CRM) stack's naming contract and the inputs it reads from the account root.
 #
-# The CRM stack (crm_app.tf, crm_web.tf, crm_portal.tf, crm_data.tf, crm_storage.tf, crm_mail.tf, crm_scrub.tf,
+# The CRM stack (crm_app.tf, crm_web.tf, crm_data.tf, crm_storage.tf, crm_mail.tf, crm_scrub.tf,
 # crm_llm.tf) moved here from accounts/aa365 with one `moved` block per resource (accounts/aa365/environment.tf). Its
 # per-app settings (crm_github_repo_id, crm_*_enabled, ...) stay declared in the file that reads them, as before the
 # move, and the root declares the same variables (accounts/aa365/crm_variables.tf) and passes them through.
@@ -66,11 +66,6 @@ variable "crm_web_security_group_id" {
   type        = string
 }
 
-variable "crm_portal_security_group_id" {
-  description = "Security group of the Content studio tasks (aws_security_group.crm_portal)."
-  type        = string
-}
-
 # ---- CRM edge (crm_edge.tf, crm_agency_edge.tf, crm_client_edge.tf) ----
 
 variable "crm_edge_on" {
@@ -110,11 +105,6 @@ variable "crm_api_listener_rule_gate" {
 
 variable "crm_partner_default_rule_gate" {
   description = "ARNs of the root's aws_lb_listener_rule.crm_partner_default (crm_edge.tf). The web service waits for it."
-  type        = list(string)
-}
-
-variable "crm_agency_studio_rule_gate" {
-  description = "ARNs of the root's aws_lb_listener_rule.crm_agency_studio (crm_agency_edge.tf). The Content studio service waits for it."
   type        = list(string)
 }
 
