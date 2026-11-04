@@ -136,6 +136,9 @@ resource "aws_api_gateway_integration" "auth" {
 # callers of a method, so a tight one on auth_any would let one client cut every BFF off session verification.
 # Any other method on these two paths now gets API Gateway's 403 instead of FastAPI's 405 (no browser sends a
 # preflight: the API has no CORS on Dev since AA-876).
+# AA-1036 R3 slice 3: tenant API keys are gone and CIS answers POST /auth/tenant-login with 410 Gone for any body. The
+# resource stays on purpose: an old caller keeps getting the 410 (under the tight throttle) instead of a different
+# answer from {auth_proxy+}, and removing it would only churn the deployment.
 locals {
   login_paths = toset(["admin-login", "tenant-login"])
 }
