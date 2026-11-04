@@ -35,13 +35,13 @@ runbook); pass --agency-direct to go through DNS (portal. points at the distribu
   agency-root     https://<agency host>/              the CRM web (crm_agency_default) with WEB_CONTENT_HOME on (AA-1036,
                                                      root ADR 0019 d7): 307 to /portal/dashboard, or 503
   agency-healthz  https://<agency host>/healthz       200 {"service": "aa-crm-web"} or 503 (no healthy web task)
-  agency-studio   https://<agency host>/tenant-login  crm_agency_studio -> the web (AA-1036 cut-over): 308 to
+  agency-studio   https://<agency host>/tenant-login  the web (crm_agency_default since AA-1036): 308 to
                                                      /auth/refresh?next=%2Fportal%2Fdashboard (API-key sign-in gone),
                                                      or 503 (no healthy web task); never the web's 404 page
-  agency-studio-api  https://<agency host>/api/healthz  crm_agency_studio -> the web: 200 {"service": "aa-crm-web",
+  agency-studio-api  https://<agency host>/api/healthz  the web's studio BFF: 200 {"service": "aa-crm-web",
                                                      "studio": "merged"}, or 503; the old studio's
-                                                     {"service": "aa-partner-portal"} fails (rule not cut over)
-  agency-legal    https://<agency host>/terms         crm_agency_studio_x -> the web: 308 to /legal/partner-terms (the
+                                                     {"service": "aa-partner-portal"} fails (a studio rule came back)
+  agency-legal    https://<agency host>/terms         the web: 308 to /legal/partner-terms (the
                                                      studio's draft terms moved there, AA-1036 slice 1), or 503
   agency-studio-page https://<agency host>/legal/partner-terms  the web's public studio page: 200 HTML, or 503
   agency-crm      https://<agency host>/crm/health    the CRM API (crm_agency_api): 200, or 503
@@ -159,12 +159,12 @@ def eval_studio_page(status: int, body: bytes, ctype: str, location: str = "") -
 
 
 def eval_studio_api_health(status: int, body: bytes, ctype: str, location: str = "") -> Result:
-    """AA-1036 cut-over: /api/* on the agency host (crm_agency_studio) reaches the merged web's studio BFF."""
+    """AA-1036: /api/* on the agency host reaches the merged web's studio BFF (no studio rule left in front of it)."""
     data = _json(body)
     if status == 200 and isinstance(data, dict) and data.get("service") == "aa-crm-web" and data.get("studio") == "merged":
         return True, f"status=200 service=aa-crm-web studio=merged sha={data.get('sha')}"
     if status == 200 and isinstance(data, dict) and data.get("service") == "aa-partner-portal":
-        return False, "status=200 from the OLD studio (aa-partner-portal): crm_agency_studio still forwards to the portal group"
+        return False, "status=200 from the OLD studio (aa-partner-portal): an agency-host rule still forwards to it"
     if status == 503 and data is None:
         return True, "status=503 (rule matched, aa-crm-dev-web has no healthy task: desired 0?)"
     return False, f"status={status} type={ctype or '-'} body={body[:80]!r}"
@@ -199,7 +199,7 @@ def legal_moved(agency_host: str, old: str, new: str) -> Callable[..., Result]:
         if status == 503 and _json(body) is None:
             return True, "status=503 (rule matched, aa-crm-dev-web has no healthy task: desired 0?)"
         if status == 200:
-            return False, f"status=200 on {old}: the OLD studio still serves it (crm_agency_studio_x not cut over)"
+            return False, f"status=200 on {old}: the OLD studio still serves it (an agency-host rule still forwards to it)"
         return False, f"status={status} location={location or '-'} (expected 308 -> {new})"
 
     return evaluate

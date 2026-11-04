@@ -138,19 +138,21 @@ def _forward_target(rule: str) -> str:
 
 def test_agency_rules_forward_to_the_expected_target_groups():
     assert _forward_target(_agency_rule("crm_agency_api")) == "module.environment.crm_api_target_group_arn"
-    # AA-1036 cut-over (root ADR 0019 d6): the studio paths are served by the merged agency web.
-    assert _forward_target(_agency_rule("crm_agency_studio")) == "module.environment.crm_web_target_group_arn"
-    assert _forward_target(_agency_rule("crm_agency_studio_x")) == "module.environment.crm_web_target_group_arn"
     assert _forward_target(_agency_rule("crm_agency_default")) == "module.environment.crm_web_target_group_arn"
-    assert '"/portal*"' in _agency_rule("crm_agency_studio")
 
 
-def test_no_agency_rule_sends_traffic_to_the_old_studio():
-    """AA-1036: after the cut-over no listener rule forwards to the retiring studio's target group."""
+def test_the_studio_service_is_retired():
+    """AA-1036 (root ADR 0019 d6): the studio is part of the web; its rules, service and files are gone."""
     code = "\n".join(line for line in AGENCY_TF.splitlines() if not line.lstrip().startswith("#"))
-    assert "crm_portal_target_group_arn" not in code
+    assert re.findall(r'resource "aws_lb_listener_rule" "(\w+)"', code) == ["crm_agency_api", "crm_agency_default"]
+    assert "crm_portal" not in code
     rules = (REPO / "accounts" / "aa365" / "alb_rules.tf").read_text(encoding="utf-8")
-    assert "crm_portal_target_group_arn" not in rules
+    assert "crm_agency_studio" not in rules and "crm_portal" not in rules
+    assert not (REPO / "modules" / "environment" / "crm_portal.tf").exists()
+    for d in (REPO / "accounts" / "aa365", REPO / "modules" / "environment"):
+        for f in d.glob("*.tf"):
+            body = "\n".join(line for line in f.read_text(encoding="utf-8").splitlines() if not line.lstrip().startswith("#"))
+            assert "crm_portal" not in body, f"{f.name} still refers to the retired studio"
 
 
 def test_web_task_lands_on_content():

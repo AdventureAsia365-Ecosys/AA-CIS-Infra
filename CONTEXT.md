@@ -162,7 +162,7 @@ accounts/
                                    tp_name_prefix / tp_tags read from the module)
     (booking.tf, booking_media.tf, booking_ops_docs.tf: moved to modules/environment, AA-1004 P0 slice 1;
      booking_variables.tf stays here and is passed through)
-    (crm_app.tf, crm_web.tf, crm_portal.tf, crm_data.tf, crm_storage.tf, crm_mail.tf, crm_scrub.tf, crm_llm.tf,
+    (crm_app.tf, crm_web.tf, crm_data.tf, crm_storage.tf, crm_mail.tf, crm_scrub.tf, crm_llm.tf,
      described below: moved to modules/environment, AA-1004 slice 2. Still here: crm_variables.tf (same variables,
      passed through), the ALB rule crm_api (alb_rules.tf), crm_mail_receipt.tf (MX record + SES receipt rule, in the
      shared zone and rule set), the edge files crm_edge.tf / crm_agency_edge.tf / crm_client_edge.tf, and cicd_crm.tf)
@@ -359,26 +359,18 @@ accounts/
     crm_agency_edge.tf            (AA-979 CRM-P2b, the AGENCY host portal.lumiguides.it.com, CRM + Content studio:
                                    its own CloudFront distribution on the same VPC origin and X-AA-Origin secret, a
                                    WILDCARD ACM us-east-1 certificate (the Vercel CNAME's CAA forbids a portal.-only
-                                   one before the flip), ALB rules crm_agency_api (/crm, /crm/*) -> CRM API,
-                                   crm_agency_studio (/portal*, /api/*, /tenant-login*) and crm_agency_studio_x
-                                   (/terms, /privacy, /assets/*) -> the CRM web since the AA-1036 cut-over (the studio
-                                   is part of the web, root ADR 0019 d6; was the Content studio service),
-                                   crm_agency_default -> CRM web; the
+                                   one before the flip), ALB rules crm_agency_api (/crm, /crm/*) -> CRM API and
+                                   crm_agency_default -> CRM web (every other path, the Content studio's /portal*,
+                                   /api/*, /tenant-login* included: the studio is part of the web since AA-1036, root
+                                   ADR 0019 d6; its two rules crm_agency_studio(_x) went with the studio service); the
                                    portal. CNAME (moved from custom_domains.tf vercel_frontend["portal"]) -> this
                                    distribution, TTL 300. The S253 cutover switch crm_agency_live, the Vercel target and
                                    the 60 s TTL were removed at the P2b clean-up (runbook 4.5, S256); the Vercel project
                                    aa-cis-portal is deleted)
-    crm_portal.tf                 (AA-979 CRM-P2b, the RETIRING Content studio runtime: no listener rule forwards to it
-                                   since the AA-1036 cut-over; removed in the AA-1036 retire step. ECR aa-crm-<env>-portal (IMMUTABLE),
-                                   secret shell crm/<env>/portal-sentry-dsn (mapped with crm_portal_sentry_enabled),
-                                   execution role (portal repo, CRM log group stream prefix portal, reads crm/<env>/web
-                                   for the shared session key only + the Sentry DSN), task role (ECS Exec only), task
-                                   definition Fargate ARM64 port 3000 (API_URL = CIS API, PORTAL_HOSTS,
-                                   PORTAL_PUBLIC_ORIGIN, PORTAL_API_KEY_SIGNIN = false since the clean-up), target
-                                   group aa-crm-<env>-portal-tg
-                                   (/healthz), service aa-crm-<env>-portal (desired 0, FARGATE_SPOT), three alarms;
-                                   security group sg-crm-portal (ALB -> 3000, egress 443 only); deployed by the CRM
-                                   deploy role (crm_app.tf))
+    (crm_portal.tf                (AA-979 CRM-P2b, the separate Content studio service aa-crm-<env>-portal: retired in
+                                   AA-1036 after the cut-over to the CRM web, with its ECR repository, task
+                                   definition family, target group, roles, Sentry secret shell, alarm and security
+                                   group sg-crm-portal)
     crm_client_edge.tf            (AA-936 CRM-08, the AA-Partner CLIENT host go-dev.lumiguides.it.com: its own
                                    CloudFront distribution + ACM us-east-1 + alias records on the same VPC origin
                                    and X-AA-Origin secret; ALB rules crm_client_public (Host + secret +
@@ -492,7 +484,7 @@ modules/          ← reusable building blocks, consumed by the account roots
                     booking_media.tf (supplier-photo bucket, CIS task role denied writes), booking_ops_docs.tf (ops
                     documents bucket, PII, only the Booking task role touches objects). The listener rule /booking/*
                     stays in the root (alb_rules.tf). Slice 2: the AA-Partner CRM stack (crm_app.tf, crm_web.tf,
-                    crm_portal.tf, crm_data.tf, crm_storage.tf, crm_mail.tf, crm_scrub.tf, crm_llm.tf; crm_inputs.tf =
+                    crm_data.tf, crm_storage.tf, crm_mail.tf, crm_scrub.tf, crm_llm.tf (crm_portal.tf was retired in AA-1036); crm_inputs.tf =
                     the CRM naming contract + the root inputs, crm_outputs.tf = what the root reads back); the CRM
                     edge, the crm_api listener rule and the SES receipt rule stay in the root. Later slices (TripPlanner, identity, observability, then the
                     platform module calls below) move the same way; tools/terraform/tests/test_aa1004_environment_moves.py
