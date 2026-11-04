@@ -183,6 +183,7 @@ CONSUMER_GRANTS = (
     ("cis_app", ("USAGE", "SELECT"), "booking.v_ops_inquiry_inbox", "bk-035"),     # AA-1003 TP-03 key views
     ("cis_app", ("USAGE", "SELECT"), "tripplanner.v_ops_inquiry_keys", "tp-022"),
     ("tripplanner", ("USAGE", "SELECT"), "booking.v_from_prices", "bk-039"),       # AA-1029 price.from.v1
+    ("cis_app", ("USAGE", "SELECT"), "booking.v_from_prices", "bk-040"),           # AA-1029 studio Marketplace
 )
 CONSUMER_GRANT_KEYS = tuple(sorted({k for *_, k in CONSUMER_GRANTS if k}))
 # DB Migrate mode=set-password (X1 S12) ends with COMMENT ON ROLE <role> IS '<marker> <UTC time> …': a
