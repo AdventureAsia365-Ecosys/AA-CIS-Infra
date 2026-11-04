@@ -77,7 +77,7 @@ resource "aws_s3_object" "tripplanner_jobs_zip" {
 # ── Execution role ───────────────────────────────────────────────────────────
 resource "aws_iam_role" "tripplanner_jobs_exec" {
   name                 = "${local.tp_jobs_fn_name}-exec"
-  permissions_boundary = aws_iam_policy.workload_boundary.arn
+  permissions_boundary = var.permissions_boundary_arn
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -152,8 +152,8 @@ resource "aws_lambda_function" "tripplanner_jobs" {
   s3_key    = "jobs.zip"
 
   vpc_config {
-    subnet_ids         = module.vpc.private_subnet_ids
-    security_group_ids = [aws_security_group.tp_lambda.id] # ADR 0004b: same no-ingress SG as browse / assembly
+    subnet_ids         = var.private_subnet_ids
+    security_group_ids = [var.tripplanner_lambda_security_group_id] # ADR 0004b: same no-ingress SG as browse / assembly
   }
 
   environment {
@@ -195,7 +195,7 @@ resource "aws_lambda_function_event_invoke_config" "tripplanner_jobs" {
 # both need a person. One error is enough for a daily function. Event alarm: ALARM e-mail only (S263, AA-1025).
 resource "aws_cloudwatch_metric_alarm" "tripplanner_jobs_errors" {
   alarm_name          = "${local.tp_jobs_fn_name}-errors"
-  alarm_description   = "AA-861: the TripPlanner jobs Lambda failed or reported a job that needs attention (failed job, or tp_retention_outbox_redact HELD over 2x the last live run). Read its log group (job_finished / jobs_run lines) and the job: aws lambda invoke --function-name ${local.tp_jobs_fn_name} with {\"op\":\"status\"}.${local.runbook_suffix.queue_stuck}"
+  alarm_description   = "AA-861: the TripPlanner jobs Lambda failed or reported a job that needs attention (failed job, or tp_retention_outbox_redact HELD over 2x the last live run). Read its log group (job_finished / jobs_run lines) and the job: aws lambda invoke --function-name ${local.tp_jobs_fn_name} with {\"op\":\"status\"}.${var.runbook_suffix.queue_stuck}"
   namespace           = "AWS/Lambda"
   metric_name         = "Errors"
   dimensions          = { FunctionName = aws_lambda_function.tripplanner_jobs.function_name }
@@ -205,7 +205,7 @@ resource "aws_cloudwatch_metric_alarm" "tripplanner_jobs_errors" {
   threshold           = 1
   comparison_operator = "GreaterThanOrEqualToThreshold"
   treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
+  alarm_actions       = [var.alerts_topic_arn]
   tags                = local.tp_jobs_tags
 }
 
@@ -215,7 +215,7 @@ resource "aws_cloudwatch_metric_alarm" "tripplanner_jobs_errors" {
 # (AA-TripPlanner-Web docs/jobs-runbook.md "First deploy"; never before the code deploy, the placeholder fails).
 resource "aws_cloudwatch_metric_alarm" "tripplanner_jobs_not_run" {
   alarm_name          = "${local.tp_jobs_fn_name}-not-run"
-  alarm_description   = "AA-861: the TripPlanner jobs Lambda was not invoked for 2 days (its daily EventBridge schedule ${local.tp_jobs_fn_name}-daily stopped). Outbox PII redaction (DM-6.6) is not running.${local.runbook_suffix.queue_stuck}"
+  alarm_description   = "AA-861: the TripPlanner jobs Lambda was not invoked for 2 days (its daily EventBridge schedule ${local.tp_jobs_fn_name}-daily stopped). Outbox PII redaction (DM-6.6) is not running.${var.runbook_suffix.queue_stuck}"
   namespace           = "AWS/Lambda"
   metric_name         = "Invocations"
   dimensions          = { FunctionName = aws_lambda_function.tripplanner_jobs.function_name }
@@ -226,8 +226,8 @@ resource "aws_cloudwatch_metric_alarm" "tripplanner_jobs_not_run" {
   threshold           = 1
   comparison_operator = "LessThanThreshold"
   treat_missing_data  = "breaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
+  alarm_actions       = [var.alerts_topic_arn]
+  ok_actions          = [var.alerts_topic_arn]
   tags                = local.tp_jobs_tags
 }
 
@@ -237,7 +237,7 @@ resource "aws_cloudwatch_metric_alarm" "tripplanner_jobs_not_run" {
 # applied by DB Migrate before this apply (AA-861 implementation notes, "Order").
 resource "aws_iam_role" "tripplanner_jobs_scheduler" {
   name                 = "${local.tp_jobs_fn_name}-scheduler"
-  permissions_boundary = aws_iam_policy.workload_boundary.arn
+  permissions_boundary = var.permissions_boundary_arn
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -270,7 +270,7 @@ resource "aws_scheduler_schedule" "tripplanner_jobs_daily" {
   name        = "${local.tp_jobs_fn_name}-daily"
   description = "AA-861 — daily tick of the TripPlanner jobs Lambda (tripplanner.job; outbox PII redaction, DM-6.6)"
   # The CI role's scheduler grants are scoped to the module.eventbridge group (see dfs_balance.tf).
-  group_name = module.eventbridge.schedule_group_name
+  group_name = var.eventbridge_schedule_group_name
 
   schedule_expression          = var.tripplanner_jobs_schedule_expression
   schedule_expression_timezone = "UTC"

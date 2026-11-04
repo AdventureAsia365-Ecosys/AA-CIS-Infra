@@ -30,7 +30,7 @@
 #
 # The WAF association on the Booking REST stage (var.waf_protect_rest_api_stages) is per stage, so
 # it covers traffic through the custom domain too. HTTP APIs (TripPlanner) cannot carry a web ACL;
-# their stage throttles (tripplanner.tf) apply the same through the custom domain.
+# their stage throttles (modules/environment/tripplanner.tf) apply the same through the custom domain.
 # =============================================================================
 
 locals {
@@ -175,9 +175,9 @@ resource "aws_apigatewayv2_domain_name" "tripplanner" {
 resource "aws_apigatewayv2_api_mapping" "tripplanner" {
   count = local.cd_enabled
 
-  api_id      = aws_apigatewayv2_api.tripplanner.id
+  api_id      = module.environment.tripplanner_http_api_id
   domain_name = aws_apigatewayv2_domain_name.tripplanner[0].id
-  stage       = aws_apigatewayv2_stage.tripplanner.id
+  stage       = module.environment.tripplanner_stage_id
 }
 
 resource "aws_route53_record" "tripplanner_api" {

@@ -38,10 +38,11 @@ locals {
     ManagedBy   = "terraform"
   }
 
-  # TripPlanner functions, keyed by short name (aws_lambda_function.tripplanner_* in tripplanner.tf).
+  # TripPlanner functions, keyed by short name (aws_lambda_function.tripplanner_* in modules/environment/tripplanner.tf,
+  # AA-1004 slice 3).
   tp_functions = {
-    browse   = aws_lambda_function.tripplanner_browse.function_name
-    assembly = aws_lambda_function.tripplanner_assembly.function_name
+    browse   = module.environment.tripplanner_browse_function_name
+    assembly = module.environment.tripplanner_assembly_function_name
   }
 
   # Execution-log group API Gateway creates for the CIS REST API stage (modules/api_gateway,

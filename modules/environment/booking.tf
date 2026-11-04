@@ -3,7 +3,7 @@
 #
 # WHAT THIS FILE ADDS (report for reviewers):
 #   AA-Booking is a separate product (repo AdventureAsia365-Ecosys/AA-Booking, FastAPI + asyncpg)
-#   that runs in the SAME acc2 (005097885195) VPC, ECS cluster and RDS as AA-CIS (ADR 0001
+#   that runs in the SAME acc2 VPC, ECS cluster and RDS as AA-CIS (ADR 0001
 #   decisions 6-7). Same self-contained pattern as tripplanner.tf: every resource here uses the
 #   `aa-booking-<env>-*` name prefix and only READS the shared platform it is given as module
 #   inputs (VPC, ECS cluster, ALB / VPC link, see variables.tf). It creates no VPC/subnet/SG/RDS/cluster/ALB.

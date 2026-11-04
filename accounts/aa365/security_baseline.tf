@@ -35,7 +35,7 @@
 # `aws ec2 describe-security-groups` (no alert: read-only) and add + revoke a rule on a throwaway SG -> "sg_change".
 #
 # Expected on the first apply (not an incident): the analyzer's first scan reports every role that trusts the GitHub
-# OIDC provider (the CI / deploy roles of cicd_split.tf, booking.tf, tripplanner.tf, crm_*.tf, e2e_mailbox.tf) as
+# OIDC provider (the CI / deploy roles of cicd_split.tf, modules/environment booking.tf, tripplanner.tf, crm_*.tf, e2e_mailbox.tf) as
 # external access, so about one "[aa-sec] access_analyzer" e-mail per such role arrives within ~30 minutes. Check
 # that each finding's condition pins the repo subject (token.actions.githubusercontent.com:sub), then archive it with
 # a reason (or add an archive rule); a finding without that pin is a real trust bug.

@@ -11,7 +11,7 @@ resource "aws_iam_openid_connect_provider" "github_actions" {
 # AA-806 step 3 (S239): the legacy shared CI role aa-cis-dev-role (aws_iam_role.cicd, its 10
 # managed attachments, the CISDevInlinePolicy inline policy, local.cicd_oidc_subjects and output
 # cicd_role_arn) is retired. Its last AssumeRoleWithWebIdentity was 14/10/2026 (CloudTrail); every
-# CI job now uses a per-job role from cicd_split.tf, tripplanner.tf or booking.tf.
+# CI job now uses a per-job role from cicd_split.tf or modules/environment (tripplanner.tf, booking.tf, crm_app.tf).
 #
 # The two lists below are no longer attached to any role in this file: they are the grant set of
 # the Terraform apply role aa-cis-infra-tf-apply (cicd_split.tf), which takes
@@ -275,7 +275,7 @@ locals {
     },
     {
       # AA-TripPlanner — the TripPlanner roles (lambda-exec + app-deploy,
-      # accounts/aa365/tripplanner.tf) are tagged, so CreateRole calls
+      # modules/environment/tripplanner.tf) are tagged, so CreateRole calls
       # iam:TagRole. Same gap/precedent as the EventBridgeSchedulerRoleTagging
       # statement above (IAMRoleManage grants Create/Put/PassRole with
       # Resource "*" but not TagRole). Scoped to the aa-tripplanner-* name
