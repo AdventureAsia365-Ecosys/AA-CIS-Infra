@@ -220,10 +220,11 @@ def moved_to(agency_host: str, path: str) -> Callable[..., Result]:
 def studio_sign_in_gone(agency_host: str) -> Callable[..., Result]:
     """AA-979 clean-up: /tenant-login on the agency host is a 308 to the CRM web's sign-in (the merged web since
     AA-1036)."""
-    want = f"https://{agency_host}/auth/refresh?next=%2Fportal%2Fdashboard"
+    want = "/auth/refresh?next=%2Fportal%2Fdashboard"
 
     def evaluate(status: int, body: bytes, ctype: str, location: str = "") -> Result:
-        if status == 308 and location == want:
+        # AA-1036: the merged web answers a relative Location (same host); the old studio sent an absolute one.
+        if status == 308 and _same_origin_path(agency_host, location, want):
             return True, f"status=308 -> {location} (API-key sign-in gone)"
         if status == 503 and _json(body) is None:
             return True, "status=503 (rule matched, aa-crm-dev-web has no healthy task: desired 0?)"

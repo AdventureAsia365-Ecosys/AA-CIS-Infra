@@ -219,6 +219,8 @@ def test_studio_page_pass_and_fail():
 def test_studio_sign_in_gone():
     ok = chk.studio_sign_in_gone("portal.example")
     assert ok(308, b"", "text/plain", "https://portal.example/auth/refresh?next=%2Fportal%2Fdashboard")[0]
+    assert ok(308, b"", "text/plain", "/auth/refresh?next=%2Fportal%2Fdashboard")[0]  # the merged web (AA-1036)
+    assert not ok(308, b"", "text/plain", "https://evil.example/auth/refresh?next=%2Fportal%2Fdashboard")[0]
     assert ok(503, b"<html>503</html>", "text/html")[0]
     assert not ok(200, b"<html>Sign in</html>", "text/html")[0]  # the API-key page is still served: flag still on
     assert not ok(307, b"", "text/plain", "https://portal.example/auth/refresh?next=%2Fportal%2Fdashboard")[0]
