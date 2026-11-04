@@ -8,7 +8,8 @@
 #
 # Slice 1 (S266): the AA-Booking service stack (booking.tf, booking_media.tf, booking_ops_docs.tf). Slice 2 (S266,
 # AA-1004 P1): the AA-Partner CRM stack (crm_*.tf; its root inputs and naming contract in crm_inputs.tf, what the root
-# reads back in crm_outputs.tf). What stays in the account root and why: accounts/aa365/environment.tf header.
+# reads back in crm_outputs.tf). Slice 3 (S267): the AA-TripPlanner stack (tripplanner.tf, tripplanner_jobs.tf; inputs
+# in tripplanner_inputs.tf, read-backs in tripplanner_outputs.tf, settings in tripplanner_variables.tf). What stays in the account root and why: accounts/aa365/environment.tf header.
 #
 # No provider block and no backend: the root passes its default aws provider (region, default_tags). Account-level
 # bootstrap objects (CI roles, permission boundaries, the OIDC provider, the agent session role) never move here;
@@ -19,6 +20,10 @@ terraform {
   required_providers {
     aws = {
       source = "hashicorp/aws"
+    }
+    # AA-1004 slice 3: random_password.tripplanner_api_key (the root's default random provider, no configuration).
+    random = {
+      source = "hashicorp/random"
     }
   }
 }

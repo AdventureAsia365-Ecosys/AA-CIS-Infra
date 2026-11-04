@@ -223,7 +223,7 @@ resource "aws_iam_role_policy" "booking_ecs_task_ses_send" {
 # inquiry e-mail, TripPlanner notify.py only logs. Kept for a future traveller e-mail from TripPlanner.
 resource "aws_iam_role_policy" "tripplanner_lambda_ses_send" {
   name   = "${local.tp_name_prefix}-lambda-ses-send"
-  role   = aws_iam_role.tripplanner_lambda_exec.id
+  role   = module.environment.tripplanner_lambda_exec_role_id
   policy = data.aws_iam_policy_document.ses_send.json
 }
 

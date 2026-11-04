@@ -17,7 +17,7 @@ applies reviewed app migrations to the shared RDS.
 | `accounts/acc3-bedrock/` | acc3 `786888028788` | Bedrock invoker role (the only LLM satellite), Bedrock Batch, Cost Explorer reader | a human, locally (profile `nghiep_aa365`) |
 
 ```
-accounts/aa365/   main.tf, cicd.tf, tripplanner.tf, booking.tf, observability.tf, observability_ecosys.tf, dfs_balance.tf, … (+ lambda_src/)
+accounts/aa365/   main.tf, cicd.tf, environment.tf (module "environment": the Booking, CRM and TripPlanner stacks), observability.tf, observability_ecosys.tf, dfs_balance.tf, … (+ lambda_src/)
 modules/          vpc, rds, ecs, alb, api_gateway, s3, secrets, waf, eventbridge, monitoring, …
 db/               run_migration.py + migrations/<owner>/ copies applied by DB Migrate,
                   check_migration_copies.py + check_migration_files.py (+ tests/) for the guards,

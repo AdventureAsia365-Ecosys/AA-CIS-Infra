@@ -97,8 +97,8 @@ locals {
   # The apply boundary (DenySecretValuesTerraformDoesNotRefresh below) uses this same list as its only exception.
   tf_plan_secret_arns = concat(
     [
-      aws_secretsmanager_secret.tripplanner_db.arn,
-      aws_secretsmanager_secret.tripplanner_api_key.arn,
+      module.environment.tripplanner_db_secret_arn,
+      module.environment.tripplanner_api_key_secret_arn,
       module.elasticache.auth_secret_arn,
     ],
     aws_secretsmanager_secret.identity_traveller_bff[*].arn,

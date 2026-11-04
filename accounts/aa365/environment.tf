@@ -34,8 +34,22 @@
 #     set, ordered by e2e_mailbox.tf).
 #   - the CRM grants that live with their topic: identity_partner.tf (partner pool, SES send) on the CRM task role.
 #   - cicd_crm.tf (account bootstrap); it reads the CRM naming contract back from the module.
-# Left for P1+ (one slice each, same pattern): TripPlanner (tripplanner*.tf), identity (identity*.tf, ses.tf, dns,
-# the CRM edge), observability + security, then the platform module calls of main.tf (vpc, rds, alb, ecs,
+#
+# Slice 3 (S267, AA-1004 P1): the AA-TripPlanner stack, i.e. the former tripplanner.tf (edge key + random value, DB
+# DSN and Sentry DSN secret shells, the Lambda artifacts bucket and its placeholder objects, the browse / assembly
+# execution role, the two Lambdas, the HTTP API with its routes, stage and invoke permissions, the app deploy role)
+# and tripplanner_jobs.tf (the jobs Lambda, its role, log group, alarms, scheduler role and daily schedule): 42
+# resources, one moved block each below. The TripPlanner settings (tripplanner_variables.tf of this root) are
+# declared identically in the module and passed through.
+# Kept in this root on purpose:
+#   - aws_security_group.tp_lambda (app_security_groups.tf, ADR 0004b), passed in as
+#     tripplanner_lambda_security_group_id.
+#   - the grants and observability that live with their topic: ses.tf tripplanner_lambda_ses_send on the execution
+#     role, observability_ecosys.tf (the browse / assembly log groups, errors and throttles alarms).
+#   - the custom domain api-tripplanner. (custom_domains.tf: domain name, API mapping, DNS record); it moves with DNS.
+#   - the two Mapbox `removed` blocks (tripplanner_removed.tf): they name root addresses.
+# Left for P1+ (one slice each, same pattern): identity (identity*.tf, ses.tf, dns, the CRM edge, the TripPlanner
+# custom domain), observability + security, then the platform module calls of main.tf (vpc, rds, alb, ecs,
 # api_gateway, waf, ...) as module.environment.module.<name>. Account bootstrap (cicd*.tf, agent_session.tf, the
 # boundaries, the OIDC provider, security_baseline.tf) stays in each account root.
 # =============================================================================
@@ -125,6 +139,26 @@ module "environment" {
   booking_staff_notify_email = var.booking_staff_notify_email
   booking_staff_admin_url    = var.booking_staff_admin_url
   booking_sentry_enabled     = var.booking_sentry_enabled
+
+  # Slice 3 (TripPlanner) platform inputs (tripplanner_inputs.tf of the module).
+  tripplanner_lambda_security_group_id = aws_security_group.tp_lambda.id
+  bedrock_acct_primary                 = local.bedrock_acct_primary
+  eventbridge_schedule_group_name      = module.eventbridge.schedule_group_name
+  tripplanner_placeholder_zip          = "${path.module}/artifacts/placeholder.zip"
+
+  # TripPlanner settings (tripplanner_variables.tf of this root, passed through unchanged).
+  tripplanner_throttle_rate_limit             = var.tripplanner_throttle_rate_limit
+  tripplanner_throttle_burst_limit            = var.tripplanner_throttle_burst_limit
+  tripplanner_narrate_throttle_rate_limit     = var.tripplanner_narrate_throttle_rate_limit
+  tripplanner_narrate_throttle_burst_limit    = var.tripplanner_narrate_throttle_burst_limit
+  tripplanner_search_throttle_rate_limit      = var.tripplanner_search_throttle_rate_limit
+  tripplanner_search_throttle_burst_limit     = var.tripplanner_search_throttle_burst_limit
+  tripplanner_browse_reserved_concurrency     = var.tripplanner_browse_reserved_concurrency
+  tripplanner_lambda_reserved_concurrency     = var.tripplanner_lambda_reserved_concurrency
+  tripplanner_jobs_reserved_concurrency       = var.tripplanner_jobs_reserved_concurrency
+  tripplanner_daily_spend_cap_usd             = var.tripplanner_daily_spend_cap_usd
+  tripplanner_jobs_schedule_expression        = var.tripplanner_jobs_schedule_expression
+  tripplanner_jobs_retention_override_enabled = var.tripplanner_jobs_retention_override_enabled
 }
 
 locals {
@@ -146,6 +180,11 @@ locals {
   crm_portal_port  = module.environment.crm_portal_port
   crm_portal_tags  = module.environment.crm_portal_tags
   crm_oidc_repo_id = module.environment.crm_oidc_repo_id
+
+  # TripPlanner naming for the root files that still build TripPlanner-named objects (app_security_groups.tf
+  # tp_lambda, ses.tf tripplanner_lambda_ses_send). One definition, in the module (tripplanner.tf).
+  tp_name_prefix = module.environment.tripplanner_name_prefix
+  tp_tags        = module.environment.tripplanner_tags
 }
 
 # -----------------------------------------------------------------------------
@@ -285,6 +324,34 @@ output "crm_scrub_corpus_role_arn" {
 output "crm_llm_model_id" {
   description = "AA-1027 F4: CRM_LLM_MODEL_ID of the AA-Partner task (null = the stub provider)."
   value       = module.environment.crm_llm_model_id
+}
+
+# -----------------------------------------------------------------------------
+# Outputs that were declared in tripplanner.tf / tripplanner_jobs.tf, same names and values (the AA-TripPlanner-Web
+# deploy and runbooks read them by name).
+# -----------------------------------------------------------------------------
+output "tripplanner_api_base_url" {
+  value = module.environment.tripplanner_api_base_url
+}
+
+output "tripplanner_lambda_exec_role_arn" {
+  value = module.environment.tripplanner_lambda_exec_role_arn
+}
+
+output "tripplanner_app_deploy_role_arn" {
+  value = module.environment.tripplanner_app_deploy_role_arn
+}
+
+output "tripplanner_artifacts_bucket" {
+  value = module.environment.tripplanner_artifacts_bucket
+}
+
+output "tripplanner_api_key_secret_arn" {
+  value = module.environment.tripplanner_api_key_secret_arn
+}
+
+output "tripplanner_jobs_function_name" {
+  value = module.environment.tripplanner_jobs_function_name
 }
 
 # -----------------------------------------------------------------------------
@@ -859,4 +926,221 @@ moved {
 moved {
   from = aws_iam_role_policy.crm_ecs_task_llm
   to   = module.environment.aws_iam_role_policy.crm_ecs_task_llm
+}
+
+# -----------------------------------------------------------------------------
+# Slice 3 moves (S267): the AA-TripPlanner stack, one per resource (tools/terraform/tests/
+# test_aa1004_environment_moves.py SLICE_3).
+# -----------------------------------------------------------------------------
+
+# tripplanner.tf
+moved {
+  from = random_password.tripplanner_api_key
+  to   = module.environment.random_password.tripplanner_api_key
+}
+
+moved {
+  from = aws_secretsmanager_secret.tripplanner_db
+  to   = module.environment.aws_secretsmanager_secret.tripplanner_db
+}
+
+moved {
+  from = aws_secretsmanager_secret_version.tripplanner_db
+  to   = module.environment.aws_secretsmanager_secret_version.tripplanner_db
+}
+
+moved {
+  from = aws_secretsmanager_secret.tripplanner_api_key
+  to   = module.environment.aws_secretsmanager_secret.tripplanner_api_key
+}
+
+moved {
+  from = aws_secretsmanager_secret_version.tripplanner_api_key
+  to   = module.environment.aws_secretsmanager_secret_version.tripplanner_api_key
+}
+
+moved {
+  from = aws_secretsmanager_secret.tripplanner_sentry_dsn
+  to   = module.environment.aws_secretsmanager_secret.tripplanner_sentry_dsn
+}
+
+moved {
+  from = aws_s3_bucket.tripplanner_artifacts
+  to   = module.environment.aws_s3_bucket.tripplanner_artifacts
+}
+
+moved {
+  from = aws_s3_bucket_versioning.tripplanner_artifacts
+  to   = module.environment.aws_s3_bucket_versioning.tripplanner_artifacts
+}
+
+moved {
+  from = aws_s3_bucket_public_access_block.tripplanner_artifacts
+  to   = module.environment.aws_s3_bucket_public_access_block.tripplanner_artifacts
+}
+
+moved {
+  from = aws_s3_bucket_server_side_encryption_configuration.tripplanner_artifacts
+  to   = module.environment.aws_s3_bucket_server_side_encryption_configuration.tripplanner_artifacts
+}
+
+moved {
+  from = aws_s3_object.tripplanner_browse_zip
+  to   = module.environment.aws_s3_object.tripplanner_browse_zip
+}
+
+moved {
+  from = aws_s3_object.tripplanner_assembly_zip
+  to   = module.environment.aws_s3_object.tripplanner_assembly_zip
+}
+
+moved {
+  from = aws_iam_role.tripplanner_lambda_exec
+  to   = module.environment.aws_iam_role.tripplanner_lambda_exec
+}
+
+moved {
+  from = aws_iam_role_policy_attachment.tripplanner_lambda_vpc
+  to   = module.environment.aws_iam_role_policy_attachment.tripplanner_lambda_vpc
+}
+
+moved {
+  from = aws_iam_role_policy.tripplanner_lambda_permissions
+  to   = module.environment.aws_iam_role_policy.tripplanner_lambda_permissions
+}
+
+moved {
+  from = aws_lambda_function.tripplanner_browse
+  to   = module.environment.aws_lambda_function.tripplanner_browse
+}
+
+moved {
+  from = aws_lambda_function.tripplanner_assembly
+  to   = module.environment.aws_lambda_function.tripplanner_assembly
+}
+
+moved {
+  from = aws_apigatewayv2_api.tripplanner
+  to   = module.environment.aws_apigatewayv2_api.tripplanner
+}
+
+moved {
+  from = aws_apigatewayv2_integration.tripplanner_browse
+  to   = module.environment.aws_apigatewayv2_integration.tripplanner_browse
+}
+
+moved {
+  from = aws_apigatewayv2_integration.tripplanner_assembly
+  to   = module.environment.aws_apigatewayv2_integration.tripplanner_assembly
+}
+
+moved {
+  from = aws_apigatewayv2_route.tripplanner_browse
+  to   = module.environment.aws_apigatewayv2_route.tripplanner_browse
+}
+
+moved {
+  from = aws_apigatewayv2_route.tripplanner_assembly
+  to   = module.environment.aws_apigatewayv2_route.tripplanner_assembly
+}
+
+moved {
+  from = aws_apigatewayv2_route.tripplanner_me
+  to   = module.environment.aws_apigatewayv2_route.tripplanner_me
+}
+
+moved {
+  from = aws_apigatewayv2_route.tripplanner_narrate
+  to   = module.environment.aws_apigatewayv2_route.tripplanner_narrate
+}
+
+moved {
+  from = aws_apigatewayv2_route.tripplanner_search
+  to   = module.environment.aws_apigatewayv2_route.tripplanner_search
+}
+
+moved {
+  from = aws_apigatewayv2_stage.tripplanner
+  to   = module.environment.aws_apigatewayv2_stage.tripplanner
+}
+
+moved {
+  from = aws_lambda_permission.tripplanner_browse_apigw
+  to   = module.environment.aws_lambda_permission.tripplanner_browse_apigw
+}
+
+moved {
+  from = aws_lambda_permission.tripplanner_assembly_apigw
+  to   = module.environment.aws_lambda_permission.tripplanner_assembly_apigw
+}
+
+moved {
+  from = aws_iam_role.tripplanner_app_deploy
+  to   = module.environment.aws_iam_role.tripplanner_app_deploy
+}
+
+moved {
+  from = aws_iam_role_policy.tripplanner_app_deploy
+  to   = module.environment.aws_iam_role_policy.tripplanner_app_deploy
+}
+
+# tripplanner_jobs.tf
+moved {
+  from = aws_s3_object.tripplanner_jobs_zip
+  to   = module.environment.aws_s3_object.tripplanner_jobs_zip
+}
+
+moved {
+  from = aws_iam_role.tripplanner_jobs_exec
+  to   = module.environment.aws_iam_role.tripplanner_jobs_exec
+}
+
+moved {
+  from = aws_iam_role_policy_attachment.tripplanner_jobs_vpc
+  to   = module.environment.aws_iam_role_policy_attachment.tripplanner_jobs_vpc
+}
+
+moved {
+  from = aws_iam_role_policy.tripplanner_jobs_permissions
+  to   = module.environment.aws_iam_role_policy.tripplanner_jobs_permissions
+}
+
+moved {
+  from = aws_cloudwatch_log_group.tripplanner_jobs
+  to   = module.environment.aws_cloudwatch_log_group.tripplanner_jobs
+}
+
+moved {
+  from = aws_lambda_function.tripplanner_jobs
+  to   = module.environment.aws_lambda_function.tripplanner_jobs
+}
+
+moved {
+  from = aws_lambda_function_event_invoke_config.tripplanner_jobs
+  to   = module.environment.aws_lambda_function_event_invoke_config.tripplanner_jobs
+}
+
+moved {
+  from = aws_cloudwatch_metric_alarm.tripplanner_jobs_errors
+  to   = module.environment.aws_cloudwatch_metric_alarm.tripplanner_jobs_errors
+}
+
+moved {
+  from = aws_cloudwatch_metric_alarm.tripplanner_jobs_not_run
+  to   = module.environment.aws_cloudwatch_metric_alarm.tripplanner_jobs_not_run
+}
+
+moved {
+  from = aws_iam_role.tripplanner_jobs_scheduler
+  to   = module.environment.aws_iam_role.tripplanner_jobs_scheduler
+}
+
+moved {
+  from = aws_iam_role_policy.tripplanner_jobs_scheduler_invoke
+  to   = module.environment.aws_iam_role_policy.tripplanner_jobs_scheduler_invoke
+}
+
+moved {
+  from = aws_scheduler_schedule.tripplanner_jobs_daily
+  to   = module.environment.aws_scheduler_schedule.tripplanner_jobs_daily
 }

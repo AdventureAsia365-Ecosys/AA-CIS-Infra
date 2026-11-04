@@ -131,6 +131,11 @@ accounts/
                                    Bootstrap (outside aa-*-dev-*), applied by a human. GitHub side (environment,
                                    ruleset on main): tools/github/db_auto_apply_gate.sh; proof:
                                    db-auto-apply-role-check.yml)
+    (tripplanner.tf, tripplanner_jobs.tf, described below: moved to modules/environment, AA-1004 slice 3 (S267).
+     Still here: tripplanner_variables.tf (same variables, passed through), tripplanner_removed.tf (the two Mapbox
+     removed blocks), the tp_lambda security group (app_security_groups.tf), the SES grant (ses.tf), the browse /
+     assembly log groups and alarms (observability_ecosys.tf) and the api-tripplanner. custom domain
+     (custom_domains.tf))
     tripplanner.tf                (TripPlanner OIDC deploy role + TripPlanner-specific resources.
                                    AA-878: no secret value in the Lambda env; the edge key is read by
                                    name tripplanner/<ENVIRONMENT>/api-key (grant ReadApiKeySecret);
@@ -152,7 +157,9 @@ accounts/
                                    locals bk_name_prefix / bk_port / bk_tags read from the module. Slice 2
                                    (S266): the AA-Partner CRM stack, 70 resources; the root outputs crm_* (same
                                    names) and the locals crm_name_prefix / crm_tags / crm_*_port / crm_*_tags /
-                                   crm_oidc_repo_id read from the module)
+                                   crm_oidc_repo_id read from the module. Slice 3 (S267): the AA-TripPlanner stack,
+                                   42 resources; the root outputs tripplanner_* (same names) and the locals
+                                   tp_name_prefix / tp_tags read from the module)
     (booking.tf, booking_media.tf, booking_ops_docs.tf: moved to modules/environment, AA-1004 P0 slice 1;
      booking_variables.tf stays here and is passed through)
     (crm_app.tf, crm_web.tf, crm_portal.tf, crm_data.tf, crm_storage.tf, crm_mail.tf, crm_scrub.tf, crm_llm.tf,
@@ -679,7 +686,7 @@ makes CI Terraform Plan fail with 403.
 
 - App repos deploy via **GitHub Actions OIDC**, assuming IAM roles defined in `cicd_split.tf`
   (`aa-cis-dev-app-deploy` for AA-CIS-App, `aa-cis-infra-tf-plan` / `aa-cis-infra-tf-apply` for this
-  repo's own Terraform / DB Migrate / schema-dump workflows), `tripplanner.tf`
+  repo's own Terraform / DB Migrate / schema-dump workflows), `modules/environment/tripplanner.tf`
   (`aa-tripplanner-dev-app-deploy`), `modules/environment/booking.tf` (`aa-booking-dev-app-deploy`) and `crm_app.tf`
   (`aa-crm-dev-app-deploy`, AA-Partner, AA-933), plus `crm_scrub.tf` (`aa-crm-dev-scrub-corpus`, AA-Partner
   "Scrub corpus" workflow, environment `scrub-corpus`, AA-938), and `docs_reader.tf` (`aa-cis-dev-docs-sync`, the root repo's
@@ -959,5 +966,5 @@ makes CI Terraform Plan fail with 403.
   Terraform roots create, drawn from `infra.py`; catalog page `docs/architecture/diagrams/README.md` (shown in the CIS
   admin at `/admin/docs?path=docs/architecture/diagrams/README.md`), checked against the live state on 2026-10-28.
 - `accounts/aa365/versions.tf` — the authoritative state backend + provider config.
-- `accounts/aa365/cicd.tf`, `accounts/aa365/tripplanner.tf`, `modules/environment/booking.tf` — the OIDC deploy roles and their
+- `accounts/aa365/cicd.tf`, `modules/environment/tripplanner.tf`, `modules/environment/booking.tf` — the OIDC deploy roles and their
   corrected trust subjects.

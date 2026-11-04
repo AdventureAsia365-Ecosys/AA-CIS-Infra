@@ -180,7 +180,7 @@ resource "aws_security_group" "crm_portal" {
   tags = merge(local.crm_portal_tags, { Name = "${local.name_prefix}-sg-crm-portal" })
 }
 
-# ── TripPlanner Lambdas (browse + assembly, tripplanner.tf): no ingress ─────────
+# ── TripPlanner Lambdas (browse + assembly + jobs, modules/environment/tripplanner*.tf): no ingress ─────────
 resource "aws_security_group" "tp_lambda" {
   name        = "${local.name_prefix}-sg-tp-lambda"
   description = "TripPlanner browse and assembly Lambdas, no ingress (ADR 0004b)"

@@ -33,7 +33,7 @@ resource "aws_iam_role" "bedrock_invoker" {
       },
       # AA-TripPlanner — new B2C service in the SAME acc2, separate Lambda
       # exec role (aa-tripplanner-dev-lambda-exec, defined in
-      # accounts/aa365/tripplanner.tf). Additive: does NOT modify or replace
+      # modules/environment/tripplanner.tf). Additive: does NOT modify or replace
       # the AA-CIS ECS statement above. Same ExternalId as CIS on acc3.
       {
         Sid    = "AllowAcc2TripPlannerLambdaAssume"
@@ -133,7 +133,7 @@ resource "aws_iam_role_policy" "bedrock_invoker_policy" {
       # authorizes InvokeModel against the foundation-model ARN in whichever
       # member region serves the call (seen live on acc2, us-east-1), hence the
       # region wildcards — same ARN set as acc2's TripPlanner BedrockEmbedDirect
-      # (accounts/aa365/tripplanner.tf, AA-856). InvokeModel only: embeddings
+      # (modules/environment/tripplanner.tf, AA-856). InvokeModel only: embeddings
       # do not stream. Separate statement so the existing ones stay untouched.
       {
         Sid    = "InvokeCohereEmbedV4"
