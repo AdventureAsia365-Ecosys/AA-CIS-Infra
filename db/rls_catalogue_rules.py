@@ -196,6 +196,8 @@ ALLOWLIST: dict[str, dict[str, str]] = {
         "booking.v_ops_data_totals:cis_app": "contract: CIS data coverage page, counts only (bk-025)",
         "booking.v_ops_trip_plan_keys:cis_app": "contract: CIS data coverage page, plan catalog keys only (bk-025)",
         "booking.v_ops_inquiry_inbox:cis_app": "contract: CIS TP-03 handoff check, keys and states (bk-035)",
+        "booking:tripplanner": "contract: schema USAGE for the public from price view (bk-039)",
+        "booking.v_from_prices:tripplanner": "contract: price.from.v1, the tour page from price, RRP only (bk-039)",
         "tripplanner:booking": "contract: schema USAGE for the inquiry outbox (tp-009)",
         "tripplanner.v_inquiry_outbox:booking": "contract: Booking inquiry intake (tp-009)",
         "tripplanner:cis_app": "contract: schema USAGE for the CIS ops view (tp-015)",

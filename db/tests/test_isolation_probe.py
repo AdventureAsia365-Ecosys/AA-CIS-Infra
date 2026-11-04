@@ -406,7 +406,7 @@ class BuildCellsTest(unittest.TestCase):
         # cell is unaffected.
         # bk-023: AA-835 supply views; bk-025 / tp-020: AA-992 data coverage views; bk-035 / tp-022: AA-1003 TP-03 key
         # views.
-        self.assertEqual(p.CONSUMER_GRANT_KEYS, ("bk-017", "bk-023", "bk-025", "bk-035", "tp-015", "tp-020", "tp-022"))
+        self.assertEqual(p.CONSUMER_GRANT_KEYS, ("bk-017", "bk-023", "bk-025", "bk-035", "bk-039", "tp-015", "tp-020", "tp-022"))
         for k in p.CONSUMER_GRANT_KEYS:
             self.assertIn(k, p.VERSION_KEYS)
             self.assertIn(k, p.KEY_TEXT)
@@ -477,6 +477,21 @@ class BuildCellsTest(unittest.TestCase):
         st, _ = statuses(f)
         self.assertEqual(st["consumer.contract_grants.tp-022"], "pass")
         self.assertEqual(st["consumer.contract_grants.bk-035"], "pending")
+
+    def test_from_price_view_grant_is_its_own_cell(self):
+        # AA-1029: TripPlanner reads booking.v_from_prices (price.from.v1), created by the contract file bk-039; the
+        # cell waits for that apply and passes once bk-039 is registered with the grant held.
+        objs = {c[2]: (c[0], c[3]) for c in p.CONSUMER_GRANTS if c[3] == "bk-039"}
+        self.assertEqual(objs, {"booking.v_from_prices": ("tripplanner", "bk-039")})
+        f = today_facts()
+        st, _ = statuses(f)
+        self.assertEqual(st["consumer.contract_grants.bk-039"], "pending")
+        f["catalog"]["registered"] = ["bk-039"]
+        for c in f["consumer"]["grants"]:
+            if c["from"] == "bk-039":
+                c["missing"] = []
+        st, _ = statuses(f)
+        self.assertEqual(st["consumer.contract_grants.bk-039"], "pass")
 
     def test_cis_app_login_waits_for_set_password(self):
         f = today_facts()

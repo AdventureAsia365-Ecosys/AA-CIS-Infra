@@ -207,6 +207,7 @@ owners:
       - {grantee: cis_app, privilege: "USAGE, SELECT", object: booking.v_ops_data_totals,  status: contract, source: "bk-025 (AA-992)", expected_from: bk-025}
       - {grantee: cis_app, privilege: "USAGE, SELECT", object: booking.v_ops_trip_plan_keys, status: contract, source: "bk-025 (AA-992)", expected_from: bk-025}
       - {grantee: cis_app, privilege: "USAGE, SELECT", object: booking.v_ops_inquiry_inbox, status: contract, source: "bk-035 (AA-1003)", expected_from: bk-035}
+      - {grantee: tripplanner, privilege: "USAGE, SELECT", object: booking.v_from_prices, status: contract, source: "bk-039 (AA-1029, price.from.v1)", expected_from: bk-039}
 
   tripplanner:
     repo: AA-TripPlanner-Web

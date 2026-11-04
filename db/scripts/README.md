@@ -196,6 +196,20 @@ FX row and departures with the fee % the check expects (`SCRIPT verify`) and `SC
 PR `READ_ONLY = False`. No cleanup action: FX rows are append-only (a later real VND row supersedes it); the departures
 go with the AA-973 seed cleanup. Notes: `docs/implementation-notes/AA-974.md`.
 
+`aa1029_price_chain_seed.py` (AA-1029, S267, Dev only; merged `READ_ONLY = True` = DRY RUN): loads one invented
+supplier rate sheet and one `b2b` margin rule for the tour price chain live check (Booking bk-039). Two inactive seed
+staff rows (maker / checker), a `SYNTHETIC S267` supplier, hotel, twin room type, guide and transfer services, a USD
+contract with the six rates of the invented fixture sheet of the Booking test `test_aa1029_price_chain.py` (draft by
+the maker, published by the checker), the day 1-2 components of ONE catalog tour (the seed's own plan, else the first
+`catalog.v_tour` key of at least 2 days whose plan has no component and no price row) and, when the approved `b2b` rule
+in force has no RRP markup, a `b2b` rule dated today with the same ratios and `rrp_markup_pct = 0.25` (approved by the
+checker). Refuses before bk-039. Writes as `bk_owner` in one transaction under an advisory lock; idempotent
+(`SCRIPT summary steps=0`). The Booking worker's `bk_price_recompute` then prices the plan on its next tick; the script
+prints the expected from price (`SCRIPT expect … rrp=235.00` with the default ratios) and what `booking.v_from_prices`
+serves now (`SCRIPT verify what=from_price_now …`), so a later DRY RUN shows the result. Apply = one-line PR
+`READ_ONLY = False`; cleanup = one-line PR `ACTION = "cleanup"` (components removed, contract expired, supply
+inactive; the rule stays, rules are append-only). Notes: `docs/implementation-notes/AA-1029.md`.
+
 `aa682_s1_live_check.py` (AA-682 S1, S252, Dev only; merged `MODE = "dry_run"`): the supplier-bookings live check
 (Booking bk-026; the agent's Dev staff sessions are read-only, so the writes are SQL as `bk_owner`). One transaction: a
 `SYNTHETIC S252 AA-682` supplier (room type + service), a synthetic customer (`…@example.invalid`), a B2C trip case at
