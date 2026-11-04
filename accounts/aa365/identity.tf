@@ -1232,7 +1232,7 @@ resource "aws_wafv2_web_acl" "identity" {
 }
 
 # AA-908: the value that marks the TripPlanner BFF's Cognito calls (BffRatePerTravellerIp above). Generated here
-# like the TripPlanner edge key (tripplanner.tf) and kept in Secrets Manager as the single source: the orchestrator
+# like the TripPlanner edge key (modules/environment/tripplanner.tf) and kept in Secrets Manager as the single source: the orchestrator
 # pipes it into the Vercel env TP_COGNITO_BFF_KEY (Production + Preview of aa-tripplanner); nothing else reads it
 # (the CIS task role is denied tripplanner/*). random_password and the secret version are plan-guard types: the
 # first CI apply needs allow_guarded=true. The plan role reads the version on refresh, so its ARN is in

@@ -3,17 +3,24 @@
 #
 # WHY THIS FILE EXISTS / WHAT IT ADDS (report for reviewers):
 #   AA-TripPlanner is a separate B2C product (repo: AA-TripPlanner-Web). Its
-#   two Python Lambdas run in the SAME acc2 (005097885195) VPC as AA-CIS so
-#   they can reach the shared RDS. To use the existing account-aa365 CI/CD
-#   pipeline (terraform-plan on PR, terraform-apply via workflow_dispatch —
-#   both hardcode working-directory: accounts/aa365) WITHOUT modifying any
-#   workflow, the resources live in this dedicated file inside the aa365 root.
+#   two Python Lambdas run in the SAME VPC as AA-CIS so they can reach the
+#   shared RDS.
 #
-#   Everything here is prefixed `tripplanner*` / uses the `aa-tripplanner-dev-*`
-#   name prefix and is self-contained in this file. It does NOT modify any
-#   existing AA-CIS resource. It only READS existing module outputs
-#   (module.vpc.*, module.rds.*) to place the Lambdas in-VPC and build the DB
-#   connection secret — it creates NO new VPC/RDS/subnet/SG.
+#   AA-1004 slice 3 (S267): moved here from accounts/aa365 with one `moved`
+#   block per resource (accounts/aa365/environment.tf), so the Dev plan is a
+#   pure no-op and a future prod root instantiates the same stack. The root
+#   objects it reads arrive as module inputs (tripplanner_inputs.tf, and the
+#   slice-1 inputs in variables.tf): the private subnets and the Lambda
+#   security group, the workload boundary, the GitHub OIDC provider, the
+#   satellite account. Kept in the root: the security group
+#   (app_security_groups.tf, ADR 0004b), the SES send grant (ses.tf), the
+#   browse / assembly log groups and alarms (observability_ecosys.tf), the
+#   custom domain (custom_domains.tf) and the Mapbox `removed` blocks
+#   (tripplanner_removed.tf).
+#
+#   Everything here is prefixed `tripplanner*` / uses the `aa-tripplanner-<env>-*`
+#   name prefix. It does NOT modify any existing AA-CIS resource and creates
+#   NO new VPC/RDS/subnet/SG.
 #
 #   Bedrock model access mirrors AA-CIS/ACPv2 exactly (verified live):
 #     - Claude (compose/renarrate): acc2 is a channel-program account and
@@ -73,9 +80,10 @@ locals {
     "arn:aws:bedrock:::foundation-model/cohere.embed-v4:0",
   ]
 
-  # Satellite invoker role (Claude). Same ARN AA-CIS uses; acc3 only (AA-998).
+  # Satellite invoker role (Claude). Same ARN AA-CIS uses; acc3 only (AA-998). The account arrives as an input
+  # (var.bedrock_acct_primary, the root's local.bedrock_acct_primary).
   tp_satellite_invoker_arns = [
-    "arn:aws:iam::786888028788:role/AA3-Bedrock-Invoker", # acc3
+    "arn:aws:iam::${var.bedrock_acct_primary}:role/AA3-Bedrock-Invoker", # acc3
   ]
 }
 
@@ -138,30 +146,8 @@ resource "aws_secretsmanager_secret" "tripplanner_sentry_dsn" {
   tags                    = merge(local.tp_tags, { Issue = "AA-871" })
 }
 
-# -----------------------------------------------------------------------------
-# AA-878 (S243): the Mapbox geocoding token secret (AA-675, tour-day extraction) has had no reader
-# since AA-712 slice 6a moved extraction to CIS: no code on main reads MAPBOX_GEOCODING_TOKEN_ARN,
-# and CloudTrail since 18/10 shows only the plan role (refresh) reading it. Terraform FORGETS the
-# secret and its version here; it does not delete them (recovery_window_in_days was 0 in dev, so a
-# plain resource removal would have deleted the secret at once, with no recovery). The secret is
-# then deleted by hand with a 30-day recovery window after a DRY RUN (AA-878 step M2), and the
-# token itself is revoked in the Mapbox account.
-# -----------------------------------------------------------------------------
-removed {
-  from = aws_secretsmanager_secret.tripplanner_mapbox
-
-  lifecycle {
-    destroy = false
-  }
-}
-
-removed {
-  from = aws_secretsmanager_secret_version.tripplanner_mapbox
-
-  lifecycle {
-    destroy = false
-  }
-}
+# AA-878 (S243): the Mapbox geocoding token secret and its version are forgotten by two `removed` blocks; they name
+# root addresses, so they stay in the account root (accounts/aa365/tripplanner_removed.tf).
 
 # -----------------------------------------------------------------------------
 # Lambda deployment artifacts — S3, with a clean split of responsibility:
@@ -209,13 +195,14 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "tripplanner_artif
 }
 
 # A tiny valid Lambda zip (a single placeholder.py returning 501), committed
-# at artifacts/placeholder.zip, used ONLY to create the functions on first
+# at accounts/aa365/artifacts/placeholder.zip, used ONLY to create the functions on first
 # apply. The App deploy workflow (AA-TripPlanner-Web) replaces this with the
 # real code via lambda:UpdateFunctionCode immediately after. Committed as a
 # static file (209 bytes) rather than generated so no extra Terraform provider
-# (hashicorp/archive) is needed.
+# (hashicorp/archive) is needed. The path arrives as an input (the root's own
+# "${path.module}/artifacts/placeholder.zip"), so the object's source value is unchanged by the move.
 locals {
-  tp_placeholder_zip = "${path.module}/artifacts/placeholder.zip"
+  tp_placeholder_zip = var.tripplanner_placeholder_zip
 }
 
 resource "aws_s3_object" "tripplanner_browse_zip" {
@@ -267,7 +254,7 @@ resource "aws_s3_object" "tripplanner_assembly_zip" {
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "tripplanner_lambda_exec" {
   name                 = "${local.tp_name_prefix}-lambda-exec"
-  permissions_boundary = aws_iam_policy.workload_boundary.arn
+  permissions_boundary = var.permissions_boundary_arn
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -284,7 +271,7 @@ resource "aws_iam_role" "tripplanner_lambda_exec" {
   # grant for that (cicd.tf, "TripPlannerLambdaRoleTagging") is applied in
   # this same run, so wait for IAM propagation before creating the role —
   # same eventual-consistency mitigation the budgets/CloudTrail resources use.
-  depends_on = [time_sleep.wait_for_iam_propagation]
+  depends_on = [var.iam_propagation_gate]
 }
 
 # ENI-in-VPC (reach RDS) — AWS-managed policy, same as the CIS lambda module.
@@ -371,8 +358,8 @@ resource "aws_lambda_function" "tripplanner_browse" {
   s3_key    = "browse.zip"
 
   vpc_config {
-    subnet_ids         = module.vpc.private_subnet_ids
-    security_group_ids = [aws_security_group.tp_lambda.id] # ADR 0004b (X1 S13b)
+    subnet_ids         = var.private_subnet_ids
+    security_group_ids = [var.tripplanner_lambda_security_group_id] # ADR 0004b (X1 S13b)
   }
 
   environment {
@@ -384,7 +371,7 @@ resource "aws_lambda_function" "tripplanner_browse" {
       BEDROCK_REGION               = var.aws_region
       # AA-902: account IDs left the public TripPlanner repo; browse embeds through the same satellite
       # (acc3 only, AA-998).
-      BEDROCK_ACCT_PRIMARY = local.bedrock_acct_primary
+      BEDROCK_ACCT_PRIMARY = var.bedrock_acct_primary
       # AA-1015: the customer-facing daily AI spend cap, set explicitly (was the app's implicit 5.0 default).
       TP_DAILY_SPEND_CAP_USD = var.tripplanner_daily_spend_cap_usd
     }
@@ -417,8 +404,8 @@ resource "aws_lambda_function" "tripplanner_assembly" {
   s3_key    = "assembly.zip"
 
   vpc_config {
-    subnet_ids         = module.vpc.private_subnet_ids
-    security_group_ids = [aws_security_group.tp_lambda.id] # ADR 0004b (X1 S13b)
+    subnet_ids         = var.private_subnet_ids
+    security_group_ids = [var.tripplanner_lambda_security_group_id] # ADR 0004b (X1 S13b)
   }
 
   environment {
@@ -426,7 +413,7 @@ resource "aws_lambda_function" "tripplanner_assembly" {
       ENVIRONMENT                  = var.environment
       TRIPPLANNER_DATABASE_URL_ARN = aws_secretsmanager_secret.tripplanner_db.arn
       BEDROCK_REGION               = var.aws_region
-      BEDROCK_ACCT_PRIMARY         = local.bedrock_acct_primary
+      BEDROCK_ACCT_PRIMARY         = var.bedrock_acct_primary
       # acc3 is the only satellite (AA-998: the acc1 fallback env is gone).
       BEDROCK_ROLE_NAME_PRIMARY   = "AA3-Bedrock-Invoker"
       BEDROCK_EXTERNAL_ID_PRIMARY = "aa296-satellite-bedrock-acc3"
@@ -475,7 +462,7 @@ resource "aws_apigatewayv2_api" "tripplanner" {
 
   # Tagging (provider default_tags -> apigateway:TagResource) — wait for the
   # CI/CD role's TagResource grant to propagate, same as the stage below.
-  depends_on = [time_sleep.wait_for_iam_propagation]
+  depends_on = [var.iam_propagation_gate]
 }
 
 resource "aws_apigatewayv2_integration" "tripplanner_browse" {
@@ -569,7 +556,7 @@ resource "aws_apigatewayv2_stage" "tripplanner" {
   # Creating the stage calls apigateway:TagResource (provider default_tags).
   # That grant was added to the CI/CD role in the same apply, so wait for IAM
   # propagation first — same mitigation the tagged IAM roles use.
-  depends_on = [time_sleep.wait_for_iam_propagation]
+  depends_on = [var.iam_propagation_gate]
 }
 
 resource "aws_lambda_permission" "tripplanner_browse_apigw" {
@@ -616,13 +603,13 @@ locals {
 
 resource "aws_iam_role" "tripplanner_app_deploy" {
   name                 = "${local.tp_name_prefix}-app-deploy"
-  permissions_boundary = aws_iam_policy.workload_boundary.arn
+  permissions_boundary = var.permissions_boundary_arn
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
       Effect    = "Allow"
-      Principal = { Federated = aws_iam_openid_connect_provider.github_actions.arn }
+      Principal = { Federated = var.github_oidc_provider_arn }
       Action    = "sts:AssumeRoleWithWebIdentity"
       Condition = {
         # The AA-TripPlanner-Web repo has GitHub's immutable OIDC subject ON (read 14/10/2026 via
@@ -652,7 +639,7 @@ resource "aws_iam_role" "tripplanner_app_deploy" {
 
   # Tagged role -> CreateRole calls iam:TagRole; wait for the widened CI/CD
   # grant (cicd.tf "TripPlannerRoleTagging") to propagate first.
-  depends_on = [time_sleep.wait_for_iam_propagation]
+  depends_on = [var.iam_propagation_gate]
 }
 
 resource "aws_iam_role_policy" "tripplanner_app_deploy" {

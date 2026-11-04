@@ -145,7 +145,33 @@ class ApplyBoundarySecretDenyTest(unittest.TestCase):
                     want = sid
                 with self.subTest(version=m.group(2), file=f.name):
                     self.assertIn(want, TF_PLAN_SECRET_ARNS)
-        self.assertGreaterEqual(found, 6)
+        # AA-1004 slice 3: the two TripPlanner versions (tripplanner_db, tripplanner_api_key) moved to
+        # modules/environment; test_environment_module_secret_versions_are_in_the_list checks them.
+        self.assertGreaterEqual(found, 4)
+
+    def test_environment_module_secret_versions_are_in_the_list(self):
+        # modules/environment (AA-1004): each version's secret reaches the list through a module output that returns
+        # exactly that secret's ARN, read as module.environment.<output>.
+        env = ROOT / "modules" / "environment"
+        texts = {f.name: f.read_text(encoding="utf-8") for f in sorted(env.glob("*.tf"))}
+        outputs = {}
+        for text in texts.values():
+            for m in re.finditer(r'^output "([a-z0-9_]+)" \{', text, re.M):
+                val = re.search(r"value\s*=\s*(\S+)", _block_after(text, m.end() - 1))
+                if val:
+                    outputs[val.group(1)] = m.group(1)
+        found = 0
+        for name, text in texts.items():
+            for m in re.finditer(r'^(resource|data) "aws_secretsmanager_secret_version" "([a-z0-9_]+)"', text, re.M):
+                found += 1
+                sid = re.search(r"secret_id\s*=\s*(\S+)", _block_after(text, m.end())).group(1)
+                ref = re.match(r"aws_secretsmanager_secret\.([a-z0-9_]+)\.id$", sid)
+                with self.subTest(version=m.group(2), file=name):
+                    self.assertTrue(ref, f"{name}: {m.group(2)} secret_id {sid}")
+                    out = outputs.get(f"aws_secretsmanager_secret.{ref.group(1)}.arn")
+                    self.assertTrue(out, f"no module output returns aws_secretsmanager_secret.{ref.group(1)}.arn")
+                    self.assertIn(f"module.environment.{out}", TF_PLAN_SECRET_ARNS)
+        self.assertGreaterEqual(found, 2)
 
     def test_module_secret_versions_are_in_the_list(self):
         # modules/elasticache owns the Redis AUTH version (write-only value, refresh still reads it).
@@ -153,7 +179,7 @@ class ApplyBoundarySecretDenyTest(unittest.TestCase):
         self.assertIn('resource "aws_secretsmanager_secret_version" "redis_auth"', mod)
         self.assertIn("module.elasticache.auth_secret_arn", TF_PLAN_SECRET_ARNS)
         for d in sorted((ROOT / "modules").iterdir()):
-            if d.name == "elasticache" or not d.is_dir():
+            if d.name in ("elasticache", "environment") or not d.is_dir():
                 continue
             for f in d.glob("*.tf"):
                 with self.subTest(file=str(f.relative_to(ROOT))):

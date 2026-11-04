@@ -1,6 +1,8 @@
 # =============================================================================
-# AA-TripPlanner variables (see tripplanner.tf). Kept separate so the
-# TripPlanner surface is easy to review/diff against the AA-CIS resources.
+# AA-TripPlanner variables. Kept separate so the TripPlanner surface is easy to review/diff against the AA-CIS
+# resources. AA-1004 slice 3 (S267): the stack lives in modules/environment (tripplanner.tf, tripplanner_jobs.tf);
+# every variable here is declared identically there and passed through as var.<same name> (environment.tf), so
+# terraform.tfvars and every -var keep working. db/connection_budget.json reads the defaults from this file.
 # =============================================================================
 
 # tripplanner_advisor_email removed (AA-811, S238): TripPlanner sends no e-mail; AA-Booking sends the staff
@@ -102,4 +104,29 @@ variable "tripplanner_daily_spend_cap_usd" {
   type        = string
   description = "TripPlanner daily customer-facing AI spend cap in USD (TP_DAILY_SPEND_CAP_USD on the browse and assembly Lambdas). The app default is 5.0."
   default     = "5.0"
+}
+
+# -----------------------------------------------------------------------------
+# AA-861: the jobs Lambda's schedule and its live-override switch. Declared next to the code in
+# modules/environment/tripplanner_jobs.tf (as before AA-1004 slice 3) and here, identically, for the root.
+# -----------------------------------------------------------------------------
+variable "tripplanner_jobs_schedule_expression" {
+  description = "AA-861 — when the TripPlanner jobs Lambda wakes (queues the daily runs, then runs due jobs)"
+  type        = string
+  # 19:30 UTC = 02:30 ICT: outside VN working hours, after Booking's 19:00 retention runs, before the 20:30 CIS
+  # retention enqueue and the 22:00 snapshot expiry, away from the RDS backup window (03:00-04:00 UTC).
+  default = "cron(30 19 * * ? *)"
+}
+
+variable "tripplanner_jobs_retention_override_enabled" {
+  description = "AA-861 — \"true\" (exact string) opens the LIVE manual_override of tp_retention_outbox_redact on this deployment (Dev proof runs before rows reach 90 days); a DRY RUN override never needs it"
+  type        = string
+  # Closed by default: a live override redacts Dev outbox rows younger than 90 days. Open it only for an approved
+  # proof run (destructive-ops.md), then close it again.
+  default = "false"
+
+  validation {
+    condition     = contains(["true", "false"], var.tripplanner_jobs_retention_override_enabled)
+    error_message = "tripplanner_jobs_retention_override_enabled must be \"true\" or \"false\"."
+  }
 }

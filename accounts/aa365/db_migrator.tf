@@ -55,7 +55,7 @@ locals {
     aws_secretsmanager_secret.rds_cis_app.arn,
     aws_secretsmanager_secret.db_migrator.arn,
     module.environment.booking_database_url_secret_arn,
-    aws_secretsmanager_secret.tripplanner_db.arn,
+    module.environment.tripplanner_db_secret_arn,
     module.environment.crm_db_secret_arn, # AA-932: crm_app set-password + isolation probe login
   ]
 

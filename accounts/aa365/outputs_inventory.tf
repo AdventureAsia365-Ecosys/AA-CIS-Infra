@@ -90,7 +90,7 @@ output "api_gateway" {
     booking_rest_api_id     = module.environment.booking_rest_api_id
     booking_stage           = module.environment.booking_stage_name
     vpc_link_id             = module.alb.vpc_link_id
-    tripplanner_http_api_id = aws_apigatewayv2_api.tripplanner.id
+    tripplanner_http_api_id = module.environment.tripplanner_http_api_id
   }
 }
 
