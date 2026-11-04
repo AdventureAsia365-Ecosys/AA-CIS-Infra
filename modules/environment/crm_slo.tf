@@ -6,7 +6,7 @@
 # (ALB metrics, no custom metric, no metric filter). Per-route-group latency and the crm.job lag are read from the
 # logs the API already writes (request_completed, ops_metrics_sampled) with the saved queries below, which cost
 # nothing until someone runs one (Logs Insights bills per GB scanned). The crm.job lag alarm itself stays the in-app
-# check jobs_starved (AA-Partner app/observability/ops_alerts.py, > 900 s), per the S263 alert diet (no custom
+# check jobs_stuck (AA-Partner app/observability/ops_alerts.py, > 900 s), per the S263 alert diet (no custom
 # metrics, observability_ecosys.tf).
 #
 # Cost: three alarm metrics (5xx rate = 2 metrics in one metric-math alarm, p95 latency = 1) at the standard
