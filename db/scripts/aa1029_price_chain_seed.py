@@ -59,7 +59,7 @@ import uuid
 from datetime import timedelta
 from decimal import Decimal
 
-READ_ONLY = True
+READ_ONLY = False
 ACTION = "seed"  # "seed" or "cleanup"
 
 SCRIPT_NAME = "aa1029_price_chain_seed"
