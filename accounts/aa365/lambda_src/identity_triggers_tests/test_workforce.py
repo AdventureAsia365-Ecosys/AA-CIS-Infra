@@ -128,8 +128,22 @@ def test_default_staff_groups_match_terraform_groups():
     block = re.search(r"id_staff_groups = \{(.*?)\n  \}", tf, re.S).group(1)
     tf_groups = set(re.findall(r'^\s*"([a-z_-]+)"\s*=', block, re.M))
     assert tf_groups == set(workforce.DEFAULT_STAFF_GROUPS.split(","))
-    booking_roles = {"admin", "sales", "contracting", "content_creator"}
+    booking_roles = {"admin", "sales", "contracting", "content_creator", "finance"}   # finance: AA-1035
     assert {g.removeprefix("booking-") for g in tf_groups if g.startswith("booking-")} == booking_roles
+
+
+def test_r2_staff_groups_are_kept_and_ranked_in_the_cis_band():
+    """AA-1035 R2 (root ADR 0019 d3): the six new CIS groups and booking-finance pass the trigger; the CIS groups sit in
+    precedence 10-39 below Booking (40+), booking-finance at 75 (between content_creator 70 and the CRM 80)."""
+    r2 = ["cis-content_lead", "cis-ai_ops", "cis-customer_success", "cis-finance", "cis-tenant_qa", "cis-support"]
+    out = workforce.pre_token_generation(token_event(STAFF, r2 + ["booking-finance", "cis-viewer", "rogue"]))
+    kept = out["response"]["claimsAndScopeOverrideDetails"]["groupOverrideDetails"]["groupsToOverride"]
+    assert sorted(kept) == sorted(r2 + ["booking-finance"])
+    tf = (Path(__file__).resolve().parents[2] / "identity.tf").read_text()
+    block = re.search(r"id_staff_groups = \{(.*?)\n  \}", tf, re.S).group(1)
+    prec = {g: int(p) for g, p in re.findall(r'^\s*"([a-z_-]+)"\s*=\s*\{\s*precedence\s*=\s*(\d+)', block, re.M)}
+    assert all(10 <= prec[g] <= 39 for g in prec if g.startswith("cis-"))
+    assert prec["booking-finance"] == 75 and len(set(prec.values())) == len(prec)
 
 
 # ------------------------------------------------------------------ TEMPORARY E2E test address (AA-816)

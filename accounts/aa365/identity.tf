@@ -139,14 +139,26 @@ locals {
 
   # ADR 0006 decision 3: group name = <app>-<role>. Precedence only matters for cognito:preferred_role (unused).
   id_staff_groups = {
-    "cis-admin"           = { precedence = 10, description = "CIS admin (shared.admin_role = admin)" }
-    "cis-reviewer"        = { precedence = 20, description = "CIS reviewer (shared.admin_role = reviewer)" }
+    "cis-admin" = { precedence = 10, description = "CIS admin (shared.admin_role = admin)" }
+    # AA-1035 R2 / root ADR 0019 d3: the six new CIS staff roles, ranked 10-39 (Booking starts at 40). The CIS API
+    # takes the highest cis-* group (api/core/staff_identity.py GROUP_ROLES, same order).
+    "cis-content_lead"     = { precedence = 12, description = "CIS content lead (shared.admin_role = content_lead)" }
+    "cis-ai_ops"           = { precedence = 14, description = "CIS AI operations (shared.admin_role = ai_ops)" }
+    "cis-customer_success" = { precedence = 16, description = "CIS customer success (shared.admin_role = customer_success)" }
+    "cis-finance"          = { precedence = 18, description = "CIS finance (shared.admin_role = finance)" }
+    # AA-1035: an alias of cis-content for one release (CIS 363 merged the reviewer rows into content).
+    "cis-reviewer"        = { precedence = 20, description = "CIS reviewer, alias of content for one release (AA-1035)" }
+    "cis-tenant_qa"       = { precedence = 24, description = "CIS tenant content QA (shared.admin_role = tenant_qa)" }
+    "cis-support"         = { precedence = 26, description = "CIS support (shared.admin_role = support)" }
     "cis-content"         = { precedence = 30, description = "CIS content (shared.admin_role = content)" }
     "booking-admin"       = { precedence = 40, description = "Booking staff admin" }
     "booking-sales"       = { precedence = 50, description = "Booking sales" }
     "booking-contracting" = { precedence = 60, description = "Booking contracting" }
     # S241 Q4/Q5 (AA-854): every Booking staff role has a group, content_creator included.
     "booking-content_creator" = { precedence = 70, description = "Booking content creator" }
+    # AA-1035 / root ADR 0019 d3 + d9: Booking finance (invoices and payments), granted by the CIS Staff page through
+    # shared.staff_app_grant role 'finance' (CIS 363); Booking reads it from cognito:groups.
+    "booking-finance" = { precedence = 75, description = "Booking finance (invoices and payments)" }
     # AA-939 / root ADR 0006b decision 6: AA-Partner staff groups. crm-platform-admin writes on the L1 console
     # (/crm/ops/v1), crm-ops and crm-support use /crm/staff/v1 (support also needs an active owner grant, CRM-13b).
     "crm-platform-admin" = { precedence = 80, description = "AA-Partner L1 platform console writes (/crm/ops/v1)" }

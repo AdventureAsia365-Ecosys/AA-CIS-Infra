@@ -96,7 +96,9 @@ DEV_ONLY_E2E_ON = "true"
 
 DEFAULT_STAFF_GROUPS = (
     "cis-admin,cis-reviewer,cis-content,"
-    "booking-admin,booking-sales,booking-contracting,booking-content_creator,"
+    # AA-1035 R2 / root ADR 0019 d3: the six new CIS staff groups and Booking finance (identity.tf local.id_staff_groups).
+    "cis-content_lead,cis-ai_ops,cis-customer_success,cis-finance,cis-tenant_qa,cis-support,"
+    "booking-admin,booking-sales,booking-contracting,booking-content_creator,booking-finance,"
     # AA-939 / root ADR 0006b decision 6: AA-Partner staff groups.
     "crm-platform-admin,crm-ops,crm-support"
 )
