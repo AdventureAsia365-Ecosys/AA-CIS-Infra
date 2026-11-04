@@ -361,12 +361,15 @@ accounts/
                                    WILDCARD ACM us-east-1 certificate (the Vercel CNAME's CAA forbids a portal.-only
                                    one before the flip), ALB rules crm_agency_api (/crm, /crm/*) -> CRM API,
                                    crm_agency_studio (/portal*, /api/*, /tenant-login*) and crm_agency_studio_x
-                                   (/terms, /privacy, /assets/*) -> Content studio, crm_agency_default -> CRM web; the
+                                   (/terms, /privacy, /assets/*) -> the CRM web since the AA-1036 cut-over (the studio
+                                   is part of the web, root ADR 0019 d6; was the Content studio service),
+                                   crm_agency_default -> CRM web; the
                                    portal. CNAME (moved from custom_domains.tf vercel_frontend["portal"]) -> this
                                    distribution, TTL 300. The S253 cutover switch crm_agency_live, the Vercel target and
                                    the 60 s TTL were removed at the P2b clean-up (runbook 4.5, S256); the Vercel project
                                    aa-cis-portal is deleted)
-    crm_portal.tf                 (AA-979 CRM-P2b, the Content studio runtime: ECR aa-crm-<env>-portal (IMMUTABLE),
+    crm_portal.tf                 (AA-979 CRM-P2b, the RETIRING Content studio runtime: no listener rule forwards to it
+                                   since the AA-1036 cut-over; removed in the AA-1036 retire step. ECR aa-crm-<env>-portal (IMMUTABLE),
                                    secret shell crm/<env>/portal-sentry-dsn (mapped with crm_portal_sentry_enabled),
                                    execution role (portal repo, CRM log group stream prefix portal, reads crm/<env>/web
                                    for the shared session key only + the Sentry DSN), task role (ECS Exec only), task
@@ -432,7 +435,8 @@ accounts/
                                    role (ECS Exec only), task definition Fargate ARM64 port 3000 (env: public origin,
                                    partner/client hosts (WEB_PUBLIC_ORIGIN = the agency host portal. since the AA-979
                                    clean-up), CRM_API_ORIGIN = the public partner host (/crm/* is not redirected), the
-                                   EXTERNAL cis-portal client until AA-939, CONTENT_STUDIO_URL, CIS_API_URL = var.crm_cis_api_url
+                                   EXTERNAL cis-portal client until AA-939, CONTENT_STUDIO_URL, WEB_CONTENT_HOME = true
+                                   (AA-1036: "/" lands on the Content studio inside the web), CIS_API_URL = var.crm_cis_api_url
                                    for the client-host trip page's CIS GET /v1/trip/{id}, AA-979 P2b), target group
                                    aa-crm-<env>-web-tg
                                    (/healthz) behind crm_partner_default, service aa-crm-<env>-web (desired 0,

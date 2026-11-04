@@ -32,12 +32,18 @@ Checks (exit 1 if any fails):
 AA-979 (CRM-P2b), only with --agency-cf-domain: the agency host portal.<zone> on its OWN distribution. The checks
 connect to the distribution's *.cloudfront.net name and send SNI + Host = the agency host (the `curl --resolve` of the
 runbook); pass --agency-direct to go through DNS (portal. points at the distribution since the S253 cutover).
-  agency-root     https://<agency host>/              the CRM web (crm_agency_default): 307 to /auth/refresh, or 503
+  agency-root     https://<agency host>/              the CRM web (crm_agency_default) with WEB_CONTENT_HOME on (AA-1036,
+                                                     root ADR 0019 d7): 307 to /portal/dashboard, or 503
   agency-healthz  https://<agency host>/healthz       200 {"service": "aa-crm-web"} or 503 (no healthy web task)
-  agency-studio   https://<agency host>/tenant-login  the Content studio (crm_agency_studio): since the clean-up 308 to
-                                                     /auth/refresh?next=%2Fportal%2Fdashboard (API-key sign-in off),
-                                                     or 503 (aa-crm-dev-portal at desired 0); never the web's 404 page
-  agency-legal    https://<agency host>/terms         the Content studio (crm_agency_studio_x): 200 HTML, or 503
+  agency-studio   https://<agency host>/tenant-login  crm_agency_studio -> the web (AA-1036 cut-over): 308 to
+                                                     /auth/refresh?next=%2Fportal%2Fdashboard (API-key sign-in gone),
+                                                     or 503 (no healthy web task); never the web's 404 page
+  agency-studio-api  https://<agency host>/api/healthz  crm_agency_studio -> the web: 200 {"service": "aa-crm-web",
+                                                     "studio": "merged"}, or 503; the old studio's
+                                                     {"service": "aa-partner-portal"} fails (rule not cut over)
+  agency-legal    https://<agency host>/terms         crm_agency_studio_x -> the web: 308 to /legal/partner-terms (the
+                                                     studio's draft terms moved there, AA-1036 slice 1), or 503
+  agency-studio-page https://<agency host>/legal/partner-terms  the web's public studio page: 200 HTML, or 503
   agency-crm      https://<agency host>/crm/health    the CRM API (crm_agency_api): 200, or 503
   agency-raw-cf   https://<agency cf domain>/         403 "Forbidden" from the deny rule (no Host rule matches)
 """
@@ -143,12 +149,60 @@ def eval_client_public(status: int, body: bytes, ctype: str, location: str = "")
 
 
 def eval_studio_page(status: int, body: bytes, ctype: str, location: str = "") -> Result:
-    """AA-979: a studio path on the agency host reaches the Content studio (a 200 HTML page), not the web."""
+    """A public Content studio page on the agency host (a 200 HTML page, never the web's 404 page). Since the AA-1036
+    cut-over the studio is part of the AA-Partner web."""
     if status == 200 and ctype.split(";")[0].strip() == "text/html" and b"aa-partner-web-404" not in body:
-        return True, "status=200 page (Content studio answers)"
+        return True, "status=200 page (the studio page answers)"
     if status == 503 and _json(body) is None:
-        return True, "status=503 (rule matched, aa-crm-dev-portal has no healthy task: desired 0?)"
+        return True, "status=503 (rule matched, aa-crm-dev-web has no healthy task: desired 0?)"
     return False, f"status={status} type={ctype or '-'} location={location or '-'} body={body[:60]!r}"
+
+
+def eval_studio_api_health(status: int, body: bytes, ctype: str, location: str = "") -> Result:
+    """AA-1036 cut-over: /api/* on the agency host (crm_agency_studio) reaches the merged web's studio BFF."""
+    data = _json(body)
+    if status == 200 and isinstance(data, dict) and data.get("service") == "aa-crm-web" and data.get("studio") == "merged":
+        return True, f"status=200 service=aa-crm-web studio=merged sha={data.get('sha')}"
+    if status == 200 and isinstance(data, dict) and data.get("service") == "aa-partner-portal":
+        return False, "status=200 from the OLD studio (aa-partner-portal): crm_agency_studio still forwards to the portal group"
+    if status == 503 and data is None:
+        return True, "status=503 (rule matched, aa-crm-dev-web has no healthy task: desired 0?)"
+    return False, f"status={status} type={ctype or '-'} body={body[:80]!r}"
+
+
+def _same_origin_path(agency_host: str, location: str, path: str) -> bool:
+    """A redirect to ``path`` on the agency host: absolute (the web's public origin) or relative (Next redirects)."""
+    return location in (path, f"https://{agency_host}{path}")
+
+
+def content_home(agency_host: str) -> Callable[..., Result]:
+    """AA-1036 (root ADR 0019 d7): with WEB_CONTENT_HOME on, "/" on the agency host lands on Content."""
+    want = "/portal/dashboard"
+
+    def evaluate(status: int, body: bytes, ctype: str, location: str = "") -> Result:
+        if status == 307 and _same_origin_path(agency_host, location, want):
+            return True, f"status=307 -> {location} (Content is home)"
+        if status == 503 and _json(body) is None:
+            return True, "status=503 (rule matched, aa-crm-dev-web has no healthy task: desired 0?)"
+        hint = " (WEB_CONTENT_HOME off: deploy the web after the apply)" if "/auth/refresh" in location else ""
+        return False, f"status={status} location={location or '-'} (expected 307 -> {want}){hint}"
+
+    return evaluate
+
+
+def legal_moved(agency_host: str, old: str, new: str) -> Callable[..., Result]:
+    """AA-1036: the studio's old legal path answers 308 to its /legal/* page in the merged web."""
+
+    def evaluate(status: int, body: bytes, ctype: str, location: str = "") -> Result:
+        if status == 308 and _same_origin_path(agency_host, location, new):
+            return True, f"status=308 {old} -> {location}"
+        if status == 503 and _json(body) is None:
+            return True, "status=503 (rule matched, aa-crm-dev-web has no healthy task: desired 0?)"
+        if status == 200:
+            return False, f"status=200 on {old}: the OLD studio still serves it (crm_agency_studio_x not cut over)"
+        return False, f"status={status} location={location or '-'} (expected 308 -> {new})"
+
+    return evaluate
 
 
 def moved_to(agency_host: str, path: str) -> Callable[..., Result]:
@@ -164,14 +218,16 @@ def moved_to(agency_host: str, path: str) -> Callable[..., Result]:
 
 
 def studio_sign_in_gone(agency_host: str) -> Callable[..., Result]:
-    """AA-979 clean-up: /tenant-login on the agency host is the studio's 308 to the CRM web's sign-in."""
-    want = f"https://{agency_host}/auth/refresh?next=%2Fportal%2Fdashboard"
+    """AA-979 clean-up: /tenant-login on the agency host is a 308 to the CRM web's sign-in (the merged web since
+    AA-1036)."""
+    want = "/auth/refresh?next=%2Fportal%2Fdashboard"
 
     def evaluate(status: int, body: bytes, ctype: str, location: str = "") -> Result:
-        if status == 308 and location == want:
-            return True, f"status=308 -> {location} (Content studio answers, API-key sign-in off)"
+        # AA-1036: the merged web answers a relative Location (same host); the old studio sent an absolute one.
+        if status == 308 and _same_origin_path(agency_host, location, want):
+            return True, f"status=308 -> {location} (API-key sign-in gone)"
         if status == 503 and _json(body) is None:
-            return True, "status=503 (rule matched, aa-crm-dev-portal has no healthy task: desired 0?)"
+            return True, "status=503 (rule matched, aa-crm-dev-web has no healthy task: desired 0?)"
         return False, f"status={status} location={location or '-'} (expected 308 -> {want})"
 
     return evaluate
@@ -214,10 +270,12 @@ def build_checks(args: argparse.Namespace) -> dict[str, Callable[[], Result]]:
             return lambda: evaluate(*get_via(args.agency_cf_domain, args.agency_host, path))
 
         checks.update({
-            "agency-root": agency(eval_web_default, "/"),
+            "agency-root": agency(content_home(args.agency_host), "/"),
             "agency-healthz": agency(eval_web_healthz, "/healthz"),
             "agency-studio": agency(studio_sign_in_gone(args.agency_host), "/tenant-login"),
-            "agency-legal": agency(eval_studio_page, "/terms"),
+            "agency-studio-api": agency(eval_studio_api_health, "/api/healthz"),
+            "agency-legal": agency(legal_moved(args.agency_host, "/terms", "/legal/partner-terms"), "/terms"),
+            "agency-studio-page": agency(eval_studio_page, "/legal/partner-terms"),
             "agency-crm": agency(eval_crm_health, "/crm/health"),
             "agency-raw-cf": run(eval_raw_cf, args.agency_cf_domain, "/"),
         })
