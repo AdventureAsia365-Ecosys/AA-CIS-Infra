@@ -146,6 +146,48 @@ resource "aws_iam_role_policy" "bedrock_invoker_policy" {
           "arn:aws:bedrock:::foundation-model/cohere.embed-v4:0"
         ]
       },
+      # AA-1026 (S267) — the availability matrix candidates (AA-CIS-App migration 367: disabled catalog +
+      # deployment rows on acc3, called only by the availability sweep until a route uses them). The acc3
+      # profiles these candidates have in us-west-1 (bedrock list-inference-profiles, 04/11/2026; quota applied
+      # = default > 0): Claude Sonnet 4.5 / Opus 4.5 / Opus 4.6, GPT-6 Sol, GPT-6.1 Sol / Terra, Kimi K3 (global.)
+      # and Llama 4 Maverick (us.; no global profile). A cross-region profile authorizes InvokeModel against the
+      # foundation-model ARN in whichever member region serves the call, hence the region wildcard (same shape as
+      # InvokeCohereEmbedV4 above), plus the region-empty form. Separate statement so the existing ones stay
+      # untouched.
+      {
+        Sid    = "InvokeAvailabilityCandidates"
+        Effect = "Allow"
+        Action = [
+          "bedrock:InvokeModel",
+          "bedrock:InvokeModelWithResponseStream"
+        ]
+        Resource = [
+          "arn:aws:bedrock:us-west-1:786888028788:inference-profile/global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+          "arn:aws:bedrock:*::foundation-model/anthropic.claude-sonnet-4-5-20250929-v1:0",
+          "arn:aws:bedrock:::foundation-model/anthropic.claude-sonnet-4-5-20250929-v1:0",
+          "arn:aws:bedrock:us-west-1:786888028788:inference-profile/global.anthropic.claude-opus-4-5-20251101-v1:0",
+          "arn:aws:bedrock:*::foundation-model/anthropic.claude-opus-4-5-20251101-v1:0",
+          "arn:aws:bedrock:::foundation-model/anthropic.claude-opus-4-5-20251101-v1:0",
+          "arn:aws:bedrock:us-west-1:786888028788:inference-profile/global.anthropic.claude-opus-4-6-v1",
+          "arn:aws:bedrock:*::foundation-model/anthropic.claude-opus-4-6-v1",
+          "arn:aws:bedrock:::foundation-model/anthropic.claude-opus-4-6-v1",
+          "arn:aws:bedrock:us-west-1:786888028788:inference-profile/global.openai.gpt-6-sol",
+          "arn:aws:bedrock:*::foundation-model/openai.gpt-6-sol",
+          "arn:aws:bedrock:::foundation-model/openai.gpt-6-sol",
+          "arn:aws:bedrock:us-west-1:786888028788:inference-profile/global.openai.gpt-6.1-sol",
+          "arn:aws:bedrock:*::foundation-model/openai.gpt-6.1-sol",
+          "arn:aws:bedrock:::foundation-model/openai.gpt-6.1-sol",
+          "arn:aws:bedrock:us-west-1:786888028788:inference-profile/global.openai.gpt-6.1-terra",
+          "arn:aws:bedrock:*::foundation-model/openai.gpt-6.1-terra",
+          "arn:aws:bedrock:::foundation-model/openai.gpt-6.1-terra",
+          "arn:aws:bedrock:us-west-1:786888028788:inference-profile/global.moonshotai.kimi-k3",
+          "arn:aws:bedrock:*::foundation-model/moonshotai.kimi-k3",
+          "arn:aws:bedrock:::foundation-model/moonshotai.kimi-k3",
+          "arn:aws:bedrock:us-west-1:786888028788:inference-profile/us.meta.llama4-maverick-17b-instruct-v1:0",
+          "arn:aws:bedrock:*::foundation-model/meta.llama4-maverick-17b-instruct-v1:0",
+          "arn:aws:bedrock:::foundation-model/meta.llama4-maverick-17b-instruct-v1:0"
+        ]
+      },
       # AA-399 — Bedrock Batch job creation (model-scoped, same resource shape
       # as InvokeModel above, plus the model-invocation-job/* ARN that
       # CreateModelInvocationJob needs live, AA-303).
