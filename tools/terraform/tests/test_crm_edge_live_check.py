@@ -129,12 +129,34 @@ def _agency_rule(name: str) -> str:
     return AGENCY_TF.split(f'resource "aws_lb_listener_rule" "{name}"', 1)[1].split("\nresource ", 1)[0]
 
 
+def _forward_target(rule: str) -> str:
+    """The target group expression of a rule's forward action (comments ignored)."""
+    m = re.search(r"^\s*target_group_arn\s*=\s*(\S+)", rule, re.M)
+    assert m, "the rule has no forward target"
+    return m.group(1)
+
+
 def test_agency_rules_forward_to_the_expected_target_groups():
-    assert "module.environment.crm_api_target_group_arn" in _agency_rule("crm_agency_api")
-    assert "module.environment.crm_portal_target_group_arn" in _agency_rule("crm_agency_studio")
-    assert "module.environment.crm_portal_target_group_arn" in _agency_rule("crm_agency_studio_x")
-    assert "module.environment.crm_web_target_group_arn" in _agency_rule("crm_agency_default")
-    assert '"/portal*"' in _agency_rule("crm_agency_studio")  # also the /portal-assets/ prefix
+    assert _forward_target(_agency_rule("crm_agency_api")) == "module.environment.crm_api_target_group_arn"
+    # AA-1036 cut-over (root ADR 0019 d6): the studio paths are served by the merged agency web.
+    assert _forward_target(_agency_rule("crm_agency_studio")) == "module.environment.crm_web_target_group_arn"
+    assert _forward_target(_agency_rule("crm_agency_studio_x")) == "module.environment.crm_web_target_group_arn"
+    assert _forward_target(_agency_rule("crm_agency_default")) == "module.environment.crm_web_target_group_arn"
+    assert '"/portal*"' in _agency_rule("crm_agency_studio")
+
+
+def test_no_agency_rule_sends_traffic_to_the_old_studio():
+    """AA-1036: after the cut-over no listener rule forwards to the retiring studio's target group."""
+    code = "\n".join(line for line in AGENCY_TF.splitlines() if not line.lstrip().startswith("#"))
+    assert "crm_portal_target_group_arn" not in code
+    rules = (REPO / "accounts" / "aa365" / "alb_rules.tf").read_text(encoding="utf-8")
+    assert "crm_portal_target_group_arn" not in rules
+
+
+def test_web_task_lands_on_content():
+    """AA-1036 (root ADR 0019 d7): the web task gets WEB_CONTENT_HOME=true with the cut-over."""
+    web = (REPO / "modules" / "environment" / "crm_web.tf").read_text(encoding="utf-8")
+    assert '{ name = "WEB_CONTENT_HOME", value = "true" }' in web
 
 
 def test_agency_cname_points_at_its_distribution_after_the_clean_up():
@@ -150,6 +172,40 @@ def test_agency_cname_points_at_its_distribution_after_the_clean_up():
     assert 'from = aws_route53_record.vercel_frontend["portal"]' in AGENCY_TF
     # The certificate is the wildcard (CAA of the Vercel CNAME target does not allow Amazon before the flip).
     assert "domain_name       = local.crm_agency_wildcard" in AGENCY_TF
+
+
+def test_studio_api_health_pass_and_fail():
+    merged = json.dumps({"ok": True, "service": "aa-crm-web", "studio": "merged", "sha": "abc"}).encode()
+    assert chk.eval_studio_api_health(200, merged, "application/json")[0]
+    assert chk.eval_studio_api_health(503, b"<html>503</html>", "text/html")[0]
+    old = json.dumps({"ok": True, "service": "aa-partner-portal"}).encode()
+    ok, detail = chk.eval_studio_api_health(200, old, "application/json")
+    assert not ok and "OLD studio" in detail
+    assert not chk.eval_studio_api_health(200, json.dumps({"service": "aa-crm-web"}).encode(), "application/json")[0]
+    assert not chk.eval_studio_api_health(404, b"<html>404</html>", "text/html")[0]
+    assert not chk.eval_studio_api_health(503, b'{"status":"not_ready"}', "application/json")[0]
+
+
+def test_content_home():
+    ok = chk.content_home("portal.example")
+    assert ok(307, b"", "text/plain", "https://portal.example/portal/dashboard")[0]
+    assert ok(307, b"", "text/plain", "/portal/dashboard")[0]
+    assert ok(503, b"<html>503</html>", "text/html")[0]
+    off, detail = ok(307, b"", "text/plain", "https://portal.example/auth/refresh?next=%2F")
+    assert not off and "WEB_CONTENT_HOME off" in detail
+    assert not ok(307, b"", "text/plain", "https://evil.example/portal/dashboard")[0]
+    assert not ok(308, b"", "text/plain", "/portal/dashboard")[0]
+
+
+def test_legal_moved():
+    ok = chk.legal_moved("portal.example", "/terms", "/legal/partner-terms")
+    assert ok(308, b"", "text/plain", "/legal/partner-terms")[0]
+    assert ok(308, b"", "text/plain", "https://portal.example/legal/partner-terms")[0]
+    assert ok(503, b"<html>503</html>", "text/html")[0]
+    old, detail = ok(200, b"<html>Terms</html>", "text/html")
+    assert not old and "OLD studio" in detail
+    assert not ok(308, b"", "text/plain", "/legal/terms")[0]  # the CRM's own terms, not the studio's
+    assert not ok(307, b"", "text/plain", "/legal/partner-terms")[0]
 
 
 def test_studio_page_pass_and_fail():
@@ -174,9 +230,10 @@ def test_agency_checks_only_with_the_flag():
                                 agency_host="portal.example", agency_cf_domain="", agency_direct=False)
     assert not any(k.startswith("agency-") for k in chk.build_checks(ns))
     ns.agency_cf_domain = "d111.cloudfront.net"
-    assert {"agency-root", "agency-healthz", "agency-studio", "agency-legal", "agency-crm", "agency-raw-cf"} <= set(
-        chk.build_checks(ns)
-    )
+    assert {
+        "agency-root", "agency-healthz", "agency-studio", "agency-studio-api", "agency-legal", "agency-studio-page",
+        "agency-crm", "agency-raw-cf",
+    } <= set(chk.build_checks(ns))
 
 
 # ── AA-979 clean-up: the partner host's CloudFront Function (301 to the agency host except /crm, /crm/*) ────────────
