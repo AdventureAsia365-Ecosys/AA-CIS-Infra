@@ -267,7 +267,8 @@ resource "aws_ecs_task_definition" "crm_portal" {
 }
 
 # -----------------------------------------------------------------------------
-# ALB target group. The listener rules in front of it are crm_agency_edge.tf crm_agency_studio(_x).
+# ALB target group. Since the AA-1036 cut-over no listener rule forwards here (crm_agency_studio(_x) forward to the web
+# target group); rollback = point those two rules back at this group. Retired with this file in the next step.
 # -----------------------------------------------------------------------------
 resource "aws_lb_target_group" "crm_portal" {
   name                 = "${local.crm_portal_service}-tg"

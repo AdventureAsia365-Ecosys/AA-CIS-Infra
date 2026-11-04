@@ -5,13 +5,16 @@
 #   viewer -> CloudFront portal.<zone>  (+ X-AA-Origin: <the crm_edge.tf secret>)
 #          -> the same VPC origin on the internal NLB (crm_edge.tf) -> ALB :80 (alb_rules.tf order)
 #             crm_agency_api       (Host + secret + /crm, /crm/*)                       -> AA-Partner API
-#             crm_agency_studio    (Host + secret + /portal*, /api/*, /tenant-login*)   -> Content studio (crm_portal.tf)
-#             crm_agency_studio_x  (Host + secret + /terms, /privacy, /assets/*)        -> Content studio
+#             crm_agency_studio    (Host + secret + /portal*, /api/*, /tenant-login*)   -> AA-Partner web (AA-1036)
+#             crm_agency_studio_x  (Host + secret + /terms, /privacy, /assets/*)        -> AA-Partner web (AA-1036)
 #             crm_agency_default   (Host + secret, any other path)                      -> AA-Partner web
 #             crm_origin_deny      (crm_edge.tf)                                        -> 403 for anything else
 #
-# `/portal*` (no slash) also matches the studio's asset prefix `/portal-assets/...` (Next assetPrefix), so the
-# studio needs two rules within the ALB limit of 5 condition values per rule (host 1 + header 1 + 3 paths).
+# AA-1036 (R3 slice 2, root ADR 0019 d6, cut-over): the Content studio is part of the AA-Partner web (AA-Partner #210,
+# web/app/(studio)), so the two studio rules forward to the WEB target group, like the default rule. They stay as
+# rules for one step only: rollback of the cut-over = point them back at module.environment.crm_portal_target_group_arn
+# (the old studio service aa-crm-<env>-portal keeps running, it just receives no traffic). The retire step removes
+# both rules (the default rule then serves the same paths) together with crm_portal.tf.
 #
 # The portal. CNAME points at this distribution. P2b phase 2 (S253, 27/10/2026) flipped it from the Vercel project
 # aa-cis-portal with a one-off cutover switch; the P2b clean-up (runbook 4.5, S256) removed the switch, the
@@ -195,9 +198,10 @@ resource "aws_lb_listener_rule" "crm_agency_studio" {
   listener_arn = module.alb.http_listener_arn
   priority     = local.alb_http_rule_priorities.crm_agency_studio
 
+  # AA-1036 cut-over: the merged agency web (was crm_portal_target_group_arn, the retiring studio).
   action {
     type             = "forward"
-    target_group_arn = module.environment.crm_portal_target_group_arn
+    target_group_arn = module.environment.crm_web_target_group_arn
   }
 
   condition {
@@ -215,7 +219,7 @@ resource "aws_lb_listener_rule" "crm_agency_studio" {
 
   condition {
     path_pattern {
-      # /portal* also covers the studio's Next assets under /portal-assets/ (assetPrefix).
+      # /portal* also covered the old studio's Next assets under /portal-assets/ (assetPrefix); the web serves /_next/.
       values = ["/portal*", "/api/*", "/tenant-login*"]
     }
   }
@@ -229,9 +233,10 @@ resource "aws_lb_listener_rule" "crm_agency_studio_x" {
   listener_arn = module.alb.http_listener_arn
   priority     = local.alb_http_rule_priorities.crm_agency_studio_x
 
+  # AA-1036 cut-over: the merged agency web (was crm_portal_target_group_arn, the retiring studio).
   action {
     type             = "forward"
-    target_group_arn = module.environment.crm_portal_target_group_arn
+    target_group_arn = module.environment.crm_web_target_group_arn
   }
 
   condition {
