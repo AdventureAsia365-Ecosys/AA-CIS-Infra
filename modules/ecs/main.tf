@@ -314,18 +314,8 @@ resource "aws_iam_role_policy" "ecs_task_policy" {
         ]
         Resource = "arn:aws:secretsmanager:${var.aws_region}:005097885195:secret:acp/social/*"
       },
-      # S237 — a tenant key rotation (POST /admin/tenants/{id}/generate-key, /restore) keeps the E2E test
-      # tenants' key copies in sync (AA-CIS-App services/acp_shared/e2e_tenant_key_sync.py). Describe +
-      # PutSecretValue only, never CreateSecret: the app overwrites a copy that already exists, so a real
-      # tenant (no such secret) is never written and its key exists only on the admin's screen.
-      {
-        Effect = "Allow"
-        Action = [
-          "secretsmanager:DescribeSecret",
-          "secretsmanager:PutSecretValue"
-        ]
-        Resource = "arn:aws:secretsmanager:${var.aws_region}:005097885195:secret:aa-cis/dev/e2e-tenant/*"
-      },
+      # AA-1036 R3 slice 3 (root ADR 0019 d6): the S237 grant on aa-cis/dev/e2e-tenant/* (DescribeSecret +
+      # PutSecretValue, the E2E test tenants' key copies) went with the tenant API keys; nothing writes them now.
       # Deny-list for other owners' secrets (AA-860, AA-873). Secrets Manager ARNs end in "-" plus 6 random
       # characters, so `rds-??????` matches only aa-cis/<env>/rds, never rds-app-user or rds-cis-app; likewise
       # db-migrator-??????.
