@@ -43,6 +43,12 @@ A10c (AA-1019, S262, root ADR 0006a A10c): a fourth address in the same Dev-only
     directory: created by an admin with AdminCreateUser + SUPPRESS (tools/identity/crm_dev_identity.py e2e-staff), like
     A10a. Its codes land in the A10b mailbox prefix inbound-admin/ (rule e2e-cognito-admin), readable by the MFA admin
     role only.
+A10d (AA-1035, S270, root ADR 0006a A10d): a fifth address in the same Dev-only map:
+  - E2E_CIS_CS_TEST_STAFF_EMAIL (live proof of the AA-1035 tenant-book scoping with a real Cognito session by the
+    orchestrating agent), exactly cis-customer_success, no Booking / CRM group. The CIS directory (migration 378,
+    staff_directory._E2E_TEST_STAFF_ROLES) holds the same rule, refuses it unless the API's ENVIRONMENT is exactly
+    "dev", caps its session at reads with NO write allow-list, and assigns it synthetic tenants only. Its codes land in
+    the A10b mailbox prefix inbound-admin/ (rule e2e-cognito-admin), readable by the MFA admin role only.
 The map is consulted only while the Lambda env E2E_DEV_ONLY_STAFF_ENABLED is exactly the string "true" (read per call,
 no strip / lower; missing or anything else = off, fail closed). identity.tf sets it to "true" only when
 var.environment == "dev" and a precondition refuses "true" anywhere else. The flag can only switch ON an entry whose
@@ -86,9 +92,14 @@ E2E_CIS_ADMIN_TEST_STAFF_GROUPS = ("cis-admin",)
 # A10c (AA-1019, S262): Dev-only AA-Partner staff E2E address; must equal AA-Partner e2e_staff.E2E_CRM_STAFF_EMAIL.
 E2E_CRM_STAFF_TEST_STAFF_EMAIL = "e2e-crm-staff@e2e-mail.lumiguides.it.com"
 E2E_CRM_STAFF_TEST_STAFF_GROUPS = ("crm-ops", "crm-support")
+# A10d (AA-1035, S270): Dev-only CIS customer_success E2E address, read-only in CIS (no write allow-list); must equal
+# AA-CIS-App e2e_staff.E2E_CIS_CS_TEST_STAFF_EMAIL and AA-Partner e2e_staff.E2E_CIS_CS_EMAIL.
+E2E_CIS_CS_TEST_STAFF_EMAIL = "e2e-cis-cs@e2e-mail.lumiguides.it.com"
+E2E_CIS_CS_TEST_STAFF_GROUPS = ("cis-customer_success",)
 E2E_DEV_ONLY_TEST_STAFF = MappingProxyType({
     E2E_CIS_ADMIN_TEST_STAFF_EMAIL: E2E_CIS_ADMIN_TEST_STAFF_GROUPS,
     E2E_CRM_STAFF_TEST_STAFF_EMAIL: E2E_CRM_STAFF_TEST_STAFF_GROUPS,
+    E2E_CIS_CS_TEST_STAFF_EMAIL: E2E_CIS_CS_TEST_STAFF_GROUPS,
 })
 # The Lambda env switch for E2E_DEV_ONLY_TEST_STAFF and the one value that turns it on (compared exactly).
 DEV_ONLY_E2E_FLAG = "E2E_DEV_ONLY_STAFF_ENABLED"
