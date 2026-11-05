@@ -180,8 +180,7 @@ CONSUMER_GRANTS = (
     ("cis_app", ("USAGE", "SELECT"), "tripplanner.v_ops_data_totals", "tp-020"),
     ("cis_app", ("USAGE", "SELECT"), "tripplanner.v_ops_pin_components", "tp-020"),
     ("cis_app", ("USAGE", "SELECT"), "tripplanner.v_ops_component_id_map", "tp-020"),
-    ("cis_app", ("USAGE", "SELECT"), "booking.v_ops_inquiry_inbox", "bk-035"),     # AA-1003 TP-03 key views
-    ("cis_app", ("USAGE", "SELECT"), "tripplanner.v_ops_inquiry_keys", "tp-022"),
+    ("cis_app", ("USAGE", "SELECT"), "tripplanner.v_ops_inquiry_keys", "tp-022"),    # AA-1003 TP-03 key view
     ("tripplanner", ("USAGE", "SELECT"), "booking.v_from_prices", "bk-039"),       # AA-1029 price.from.v1
     ("cis_app", ("USAGE", "SELECT"), "booking.v_from_prices", "bk-040"),           # AA-1029 studio Marketplace
     ("cis_app", ("USAGE", "SELECT"), "booking.v_tenant_billing_status", "bk-042"), # AA-1037 billing tick
@@ -256,16 +255,16 @@ LOGIN_KEYS = {CIS_APP: CIS_APP_LOGIN_KEYS, CRM_APP: CRM_APP_LOGIN_KEYS}
 CROSS_APP = (
     ("booking", "tripplanner.sessions", ()),
     ("booking", "shared.tenants", ()),
-    ("tripplanner", "booking.customers", ()),
-    ("aa_app_user", "booking.customers", ()),
+    ("tripplanner", "booking.trip_cases", ()),
+    ("aa_app_user", "booking.trip_cases", ()),
     ("aa_app_user", "tripplanner.sessions", ()),
-    (CIS_APP, "booking.customers", ("cis_app_secret_ready", "cis_app_password_set")),
+    (CIS_APP, "booking.trip_cases", ("cis_app_secret_ready", "cis_app_password_set")),
     (CIS_APP, "tripplanner.sessions", ("cis_app_secret_ready", "cis_app_password_set")),
-    (CIS_RUNTIME, "booking.customers", ("cis_runtime_on_cis_app",)),
+    (CIS_RUNTIME, "booking.trip_cases", ("cis_runtime_on_cis_app",)),
     (CIS_RUNTIME, "tripplanner.sessions", ("cis_runtime_on_cis_app",)),
     # AA-932 (ADR 0008a decision 1, design N5): no cross-schema grant in either direction. crm_app reads nothing
     # outside crm; no AA app role reads crm.* (crm.job exists from crm-001).
-    (CRM_APP, "booking.customers", CRM_APP_LOGIN_KEYS),
+    (CRM_APP, "booking.trip_cases", CRM_APP_LOGIN_KEYS),
     (CRM_APP, "tripplanner.sessions", CRM_APP_LOGIN_KEYS),
     (CRM_APP, "shared.tenants", CRM_APP_LOGIN_KEYS),
     ("booking", "crm.job", ("crm-001",)),

@@ -541,7 +541,7 @@ statement in a savepoint (locks released at once), counts and names only, tenant
   `pg_read_all_data`,
   `pg_write_all_data`, master, `*_owner`), owned objects, connection limit; owner roles NOLOGIN;
   logins; cross-app reads raise 42501 (`booking` → `tripplanner.sessions`, `shared.tenants`;
-  `tripplanner` → `booking.customers`; `aa_app_user`, `cis_app`, CIS runtime → `booking.customers`,
+  `tripplanner` → `booking.trip_cases`; `aa_app_user`, `cis_app`, CIS runtime → `booking.trip_cases`,
   `tripplanner.sessions`); every object of each owner's schemas owned by its `owner_role` (view owners
   on views only); **runtime grants** — each runtime role (`runtime_privileges`) has USAGE on its
   schemas, SELECT on every relation, USAGE on every non-identity sequence, EXECUTE on every non-trigger
