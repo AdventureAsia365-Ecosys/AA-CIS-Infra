@@ -32,6 +32,26 @@ migration in its owner repo, not a script.
   in the bronze bucket: a script cannot call Bedrock, read other secrets or write elsewhere.
 - Print aggregate counts, ids and statuses only: no secret, DSN, password or customer row values (the
   task log is readable in the Actions run). A line prefix such as `SCRIPT ` keeps the output easy to grep.
+- **Personal data (AA-969, root ADR 0019 d16; enforced since the pilot protections):** `main(conn)` gets a guarded
+  connection. Before a statement that returns rows runs (`fetch`, `fetchrow`, `fetchval`, `fetchmany`, `cursor`,
+  `prepare`, `copy_from_query`, `copy_from_table`), the runner plans it with `EXPLAIN (VERBOSE, FORMAT JSON)` in a
+  savepoint and refuses it (`PiiReadRefused`, exit 13) when its result would carry a value of a personal-data column
+  of a tenant table:
+  - *personal-data column* = a column whose comment starts with a DM-6.1 `pii:` tag (the ` · pii:<class>` suffix in
+    `docs/architecture/db-schema-reference.md`), read live from the catalogue, in schemas `crm`, `booking`,
+    `tripplanner` and in the `shared` tables that have a `tenant_id` column, and the same columns of their partitions;
+  - *carries a value* = the plan's top-level output (or a subquery, CTE, InitPlan or SubPlan feeding it) names the
+    column or a whole row of its table (`t.*`, `row_to_json(t)`), in any expression except `count(...)` (with its
+    `FILTER`) and `IS [NOT] NULL`. `lower(email)`, `min(name)`, `string_agg(...)` are reads; using the column in
+    `WHERE`, `JOIN`, `GROUP BY` or `ORDER BY` is not (only the value leaves the database, not the filter);
+  - a statement the planner cannot explain is refused (fail closed), except `SHOW` / `SET` / `RESET`;
+    `add_log_listener` is refused; `execute` / `executemany` return no rows and run as they are.
+    Known limit: rows of a set-returning function over a tagged column in `FROM` (`jsonb_array_elements(col) e`)
+    are not followed; the review checks that form (the tour liveness probe reads one itinerary key that way).
+  So count, group and check, never print a row: `SELECT count(*) FILTER (WHERE email IS NULL)` passes,
+  `SELECT email FROM crm.traveler WHERE …` does not. A script that truly needs the values is app code or a migration,
+  not a run-script. The root repo's Claude Code hook `.claude/hooks/pilot-pii-guard.sh` refuses the same reads before
+  an agent dispatches a run-script or an ECS exec script.
 - Destructive data changes follow the DRY RUN procedure (`skill/aa-cis-schema/references/destructive-ops.md`):
   a dry-run script first (counts only), then the change as a separate reviewed script or a flag in the
   same PR. `run-script` takes **no RDS snapshot**; take one by hand before an irreversible change.

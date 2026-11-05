@@ -2445,6 +2445,242 @@ def script_is_read_only(source: str) -> bool:
     return _read_only_decl(ast.parse(source)) is True
 
 
+# ── AA-969 part 2 (root ADR 0019 d16): run-script never reads row-level personal data ──
+# The pilot runs on Dev with one real agency, and the task log of a run-script is public (this repo's Actions run). A
+# script may count, aggregate and check personal data, but no statement it sends may return a value of a personal-data
+# column of a tenant table. How the guard decides (db/scripts/README.md "Personal data"):
+#   1. Protected columns = every column whose comment starts with a DM-6.1 tag `pii:` (the convention
+#      docs/architecture/db-schema-reference.md shows as ` · pii:<class>`) in the tenant schemas crm, booking and
+#      tripplanner, and in the shared tables that have a tenant_id column; plus the same columns of every partition of
+#      such a table. Read live from the catalogue (PII_COLUMNS_SQL) before main(conn) runs.
+#   2. Every statement that returns rows to the script (fetch, fetchrow, fetchval, fetchmany, cursor, prepare,
+#      copy_from_query, copy_from_table) is planned first with EXPLAIN (VERBOSE, FORMAT JSON) in a savepoint (nothing
+#      runs). A plan's top-level output (and any InitPlan / SubPlan it uses, and any subquery / CTE it reads from) that
+#      references a protected column of a relation the plan scans, or a whole row of such a relation (`t.*`), is a
+#      read of personal data; the statement is refused before it runs (PiiReadRefused, the script fails with exit 13).
+#   3. Allowed: the protected column inside count(...) (count(DISTINCT ...), count(...) FILTER (...)) and in an
+#      IS [NOT] NULL test; and anything in WHERE / JOIN / GROUP BY / ORDER BY (filters and groups do not return the
+#      value). Every other function of the value (lower(), min(), string_agg(), length()) counts as a read.
+#   4. A statement the planner cannot explain is refused (fail closed), except SHOW. add_log_listener is refused (a
+#      notice could carry a value). execute / executemany return no rows and run as they are.
+# Not a sandbox: the script still logs in as the master and the review still reads it. The guard stops a reviewed
+# script from printing a traveller's or an agency's personal data into a public log by mistake.
+PII_TENANT_SCHEMAS = ("crm", "booking", "tripplanner")
+PII_COLUMNS_SQL = """
+WITH RECURSIVE tagged AS (
+    SELECT c.oid AS relid, n.nspname::text AS schema_name, c.relname::text AS rel_name, a.attname::text AS col
+      FROM pg_catalog.pg_description d
+      JOIN pg_catalog.pg_class c ON c.oid = d.objoid AND d.classoid = 'pg_catalog.pg_class'::regclass
+      JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+      JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid AND a.attnum = d.objsubid AND NOT a.attisdropped
+     WHERE d.objsubid > 0 AND d.description LIKE 'pii:%'
+       AND (n.nspname = ANY($1::text[])
+            OR (n.nspname = 'shared' AND EXISTS (
+                    SELECT 1 FROM pg_catalog.pg_attribute t
+                     WHERE t.attrelid = c.oid AND t.attname = 'tenant_id' AND NOT t.attisdropped)))
+), parts AS (
+    SELECT relid, schema_name, rel_name, col FROM tagged
+    UNION
+    SELECT i.inhrelid, pn.nspname::text, pc.relname::text, p.col
+      FROM parts p
+      JOIN pg_catalog.pg_inherits i ON i.inhparent = p.relid
+      JOIN pg_catalog.pg_class pc ON pc.oid = i.inhrelid
+      JOIN pg_catalog.pg_namespace pn ON pn.oid = pc.relnamespace
+)
+SELECT schema_name, rel_name, col FROM parts ORDER BY 1, 2, 3
+"""
+_IDENT = r'(?:"(?:[^"]|"")+"|[A-Za-z_][A-Za-z0-9_$]*)'
+PII_REF_RE = re.compile(rf'({_IDENT})\.({_IDENT}|\*)')
+PII_NULL_TEST_RE = re.compile(rf'(?:{_IDENT}\.)?{_IDENT}\s+IS\s+(?:NOT\s+)?NULL', re.I)
+PII_LITERAL_RE = re.compile(r"'(?:[^']|'')*'")
+# A bare name: EXPLAIN VERBOSE leaves the table off a column when the query reads one table only.
+PII_BARE_RE = re.compile(rf'(?<![\w."$])({_IDENT})(?![\w"$]|\s*\(|\.)')
+PII_SUBPLAN_RE = re.compile(r'\((?:SubPlan|InitPlan) \d+\)(?:\.col\d+)?|\$\d+')
+
+
+class PiiReadRefused(Exception):
+    """A run-script statement would return a value of a personal-data column (AA-969 d16)."""
+
+
+def _unquote(name: str) -> str:
+    return name[1:-1].replace('""', '"') if name.startswith('"') else name
+
+
+def _strip_allowed(expr: str) -> str:
+    """The output expression without its allowed uses of a column: count(...) (with a FILTER (...) after it) and
+    IS [NOT] NULL tests."""
+    expr = PII_LITERAL_RE.sub("''", expr)
+    out, i, low = [], 0, expr.lower()
+    while i < len(expr):
+        if low.startswith("count(", i) and (i == 0 or not (expr[i - 1].isalnum() or expr[i - 1] in "_.")):
+            depth, j = 0, i + len("count")
+            while j < len(expr):
+                depth += {"(": 1, ")": -1}.get(expr[j], 0)
+                j += 1
+                if depth == 0:
+                    break
+            rest = expr[j:]
+            m = re.match(r"\s*FILTER\s*\(", rest, re.I)
+            if m:
+                depth, k = 1, j + m.end()
+                while k < len(expr) and depth:
+                    depth += {"(": 1, ")": -1}.get(expr[k], 0)
+                    k += 1
+                j = k
+            out.append(" 0 ")
+            i = j
+            continue
+        out.append(expr[i])
+        i += 1
+    return PII_NULL_TEST_RE.sub(" true ", "".join(out))
+
+
+def _walk(node: dict):
+    yield node
+    for child in node.get("Plans") or ():
+        yield from _walk(child)
+
+
+def pii_plan_reads(plan: dict, protected: dict) -> list:
+    """The protected columns (``schema.table.column``, ``schema.table.*``) whose values the plan's result carries.
+    ``plan`` is the "Plan" object of EXPLAIN (VERBOSE, FORMAT JSON); ``protected`` maps (schema, table) to the set of
+    protected column names. Pure."""
+    nodes = list(_walk(plan))
+    aliases = {}
+    for n in nodes:
+        if "Relation Name" in n:
+            aliases[n.get("Alias") or n["Relation Name"]] = (n.get("Schema"), n["Relation Name"])
+    ctes = {n["Subplan Name"][4:]: n for n in nodes
+            if n.get("Parent Relationship") == "InitPlan" and str(n.get("Subplan Name", "")).startswith("CTE ")}
+    memo = {}
+
+    def reads(node: dict) -> list:
+        key = id(node)
+        if key in memo:
+            return memo[key]
+        memo[key] = []                              # a recursive CTE refers to itself: no loop
+        derived, subplans = {}, set()
+        for n in _walk(node):
+            if n.get("Node Type") == "Subquery Scan" and n.get("Alias"):
+                derived[n["Alias"]] = any(reads(c) for c in n.get("Plans") or ())
+            elif n.get("Node Type") in ("CTE Scan", "WorkTable Scan") and n.get("Alias"):
+                cte = ctes.get(n.get("CTE Name"))
+                derived[n["Alias"]] = bool(cte is not None and cte is not node and reads(cte))
+            if n is not node and n.get("Parent Relationship") in ("InitPlan", "SubPlan") and not str(
+                    n.get("Subplan Name", "")).startswith("CTE ") and reads(n):
+                subplans.add(n.get("Subplan Name", ""))
+        scanned = {r for n in _walk(node) if (r := aliases.get(n.get("Alias") or n.get("Relation Name", ""))) and
+                   "Relation Name" in n}
+        bare_cols = {c: rel for rel in scanned for c in protected.get(rel, ())}
+        found = []
+        for expr in node.get("Output") or ():
+            text = _strip_allowed(str(expr))
+            for name in PII_BARE_RE.findall(PII_REF_RE.sub(" ", text)):
+                rel = bare_cols.get(_unquote(name))
+                if rel is not None:
+                    found.append(f"{rel[0]}.{rel[1]}.{_unquote(name)}")
+            for alias, col in PII_REF_RE.findall(text):
+                alias, col = _unquote(alias), _unquote(col)
+                rel = aliases.get(alias)
+                if rel is not None:
+                    cols = protected.get(rel, ())
+                    if cols and (col == "*" or col in cols):
+                        found.append(f"{rel[0]}.{rel[1]}.{col}")
+                elif derived.get(alias):
+                    found.append(f"{alias}.{col} (from a subquery reading personal data)")
+            if subplans and PII_SUBPLAN_RE.search(text):
+                found.append(f"{', '.join(sorted(s for s in subplans if s))} (a subplan reading personal data)")
+        memo[key] = found
+        return found
+
+    return reads(plan)
+
+
+class PiiGuardedConnection:
+    """The connection a run-script's main(conn) gets (AA-969 d16): every row-returning call is planned first and
+    refused when its result would carry a personal-data value. Everything else is passed through."""
+
+    _GUARDED = ("fetch", "fetchrow", "fetchval", "copy_from_query")
+
+    def __init__(self, conn, protected: dict):
+        self._conn = conn
+        self._protected = protected
+
+    async def check(self, query: str, args: tuple = ()) -> None:
+        if not self._protected:
+            return
+        stripped = query.lstrip().lstrip("(").lstrip()
+        if re.match(r"(?is)(SHOW|SET|RESET)\b", stripped):
+            return
+        try:
+            async with self._conn.transaction():    # a savepoint inside a transaction: a failed EXPLAIN aborts nothing
+                raw = await self._conn.fetchval("EXPLAIN (VERBOSE, FORMAT JSON) " + query, *args)
+        except Exception as e:                      # noqa: BLE001 — fail closed, never echo the statement
+            raise PiiReadRefused(f"run-script: the PII guard could not plan a statement ({type(e).__name__}); "
+                                 f"refused (AA-969 d16)") from None
+        doc = json.loads(raw) if isinstance(raw, str) else raw
+        found = pii_plan_reads(doc[0]["Plan"], self._protected)
+        if found:
+            raise PiiReadRefused("run-script: a statement would return personal data ("
+                                 + ", ".join(sorted(set(found))[:5])
+                                 + "); counts and aggregates only (AA-969 d16, db/scripts/README.md)")
+
+    def __getattr__(self, name):
+        attr = getattr(self._conn, name)
+        if name in self._GUARDED:
+            async def guarded(query, *args, **kw):
+                await self.check(query, args)
+                return await attr(query, *args, **kw)
+            return guarded
+        return attr
+
+    async def fetchmany(self, query, args, **kw):
+        if args:                                    # one plan covers every argument set of the same statement
+            await self.check(query, tuple(args[0]))
+        return await self._conn.fetchmany(query, args, **kw)
+
+    async def prepare(self, query, **kw):
+        await self.check(query)
+        return await self._conn.prepare(query, **kw)
+
+    def cursor(self, query, *args, **kw):
+        guard, factory = self, self._conn.cursor(query, *args, **kw)
+
+        class _GuardedCursorFactory:
+            def __aiter__(self):
+                async def rows():
+                    await guard.check(query, args)
+                    async for row in factory:
+                        yield row
+                return rows()
+
+            def __await__(self):
+                async def opened():
+                    await guard.check(query, args)
+                    return await factory
+                return opened().__await__()
+
+        return _GuardedCursorFactory()
+
+    async def copy_from_table(self, table_name, *, columns=None, schema_name=None, **kw):
+        cols = ", ".join(_quote_ident(c) for c in columns) if columns else "*"
+        qualified = (_quote_ident(schema_name) + "." if schema_name else "") + _quote_ident(table_name)
+        await self.check(f"SELECT {cols} FROM {qualified}")
+        return await self._conn.copy_from_table(table_name, columns=columns, schema_name=schema_name, **kw)
+
+    def add_log_listener(self, callback):
+        raise PiiReadRefused("run-script: add_log_listener is refused (a server notice could carry personal data; "
+                             "AA-969 d16)")
+
+
+async def load_pii_columns(conn) -> dict:
+    """(schema, table) -> the protected column names, read live (PII_COLUMNS_SQL)."""
+    protected: dict = {}
+    for r in await conn.fetch(PII_COLUMNS_SQL, list(PII_TENANT_SCHEMAS)):
+        protected.setdefault((r["schema_name"], r["rel_name"]), set()).add(r["col"])
+    return protected
+
+
 async def run_script(env, path: str, fetch, connect, sleep, get_secret=_get_secret) -> int:
     """XD5 / S19: a reviewed db/scripts/ file runs as the master, after the same idle check as apply
     (exit 7 while busy, MIGRATION_IDLE_OVERRIDE applies). A script that declares `READ_ONLY = True` runs
@@ -2504,11 +2740,18 @@ async def run_script(env, path: str, fetch, connect, sleep, get_secret=_get_secr
                 log(f"ERROR: refusing run-script — busy: {busy_summary(report)}. Wait until every job table is "
                     f"idle, or re-dispatch with override_busy_jobs=<reason> (Nghiệp only)")
                 return 7
+        try:
+            protected = await load_pii_columns(conn)
+        except Exception as e:                  # fail closed: no script without the guard
+            log(f"ERROR: run-script: the PII guard could not read the catalogue ({type(e).__name__}). Nothing ran")
+            return 13
+        log(f"run-script: PII guard on: {sum(len(c) for c in protected.values())} personal-data columns in "
+            f"{len(protected)} tenant tables; statements that return them are refused (AA-969 d16)")
         log("run-script: main(conn) starts; its output follows")
         try:
             ns = {"__name__": "db_script", "__file__": path}
             exec(code, ns)                      # reviewed file on main, sha256-checked above
-            result = await ns["main"](conn)
+            result = await ns["main"](PiiGuardedConnection(conn, protected))
         except Exception as e:                  # a script's error text could carry the master DSN: redacted
             state = getattr(e, "sqlstate", "") or ""
             log(_redact(f"ERROR: script raised {type(e).__name__} {state} {e}".rstrip(), hide))

@@ -243,6 +243,8 @@ class FakeConn:
         return self.states[min(self.checks, len(self.states)) - 1]
 
     async def fetch(self, query, *args):
+        if query == rm.PII_COLUMNS_SQL:             # AA-969 d16: the run-script guard's catalogue read
+            return list(getattr(self, "pii_columns", []))
         if query == rm.EXPAND_SNAPSHOT_SQL:         # AA-993 M2b: expand_before on the first read, then expand_after
             self.expand_reads = getattr(self, "expand_reads", 0) + 1
             first = self.expand_reads == 1
