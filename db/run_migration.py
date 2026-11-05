@@ -164,6 +164,7 @@ prints {"errors": [...]} for a run-script file and exits 1 on any.
 import ast
 import asyncio
 import base64
+import contextlib
 import hashlib
 import hmac
 import json
@@ -2445,6 +2446,524 @@ def script_is_read_only(source: str) -> bool:
     return _read_only_decl(ast.parse(source)) is True
 
 
+# ── AA-969 part 2 (root ADR 0019 d16): run-script never reads row-level personal data ──
+# The pilot runs on Dev with one real agency, and the task log of a run-script is public (this repo's Actions run). A
+# script may count, aggregate and check personal data, but no statement it sends may return a value of a personal-data
+# column of a tenant table, or copy one where a later statement could read it. How the guard decides
+# (db/scripts/README.md "Personal data"):
+#   1. Protected columns = every column whose comment starts with a DM-6.1 tag `pii:` (the convention
+#      docs/architecture/db-schema-reference.md shows as ` · pii:<class>`) in the tenant schemas crm, booking and
+#      tripplanner, and in the shared tables that have a tenant_id column; plus the same columns of every partition of
+#      such a table; not the AA staff directory booking.staff_users (staff identities: seeds link created_by through
+#      it). Read live from the catalogue (PII_COLUMNS_SQL) before main(conn) runs.
+#   2. Every statement the script sends (fetch, fetchrow, fetchval, fetchmany, cursor, prepare, copy_from_query,
+#      copy_from_table, execute, executemany) is planned first with EXPLAIN (VERBOSE, FORMAT JSON) in a savepoint
+#      (nothing runs). The statement is refused before it runs (PiiReadRefused, the script fails with exit 13) when
+#      a. its result carries a protected value: the plan's top-level output (through Append / Merge Append /
+#         Recursive Union members, subqueries, CTEs, InitPlans and SubPlans, partitions) names a protected column or
+#         a whole row of its table (`t.*`);
+#      b. it writes a protected value into a table that has no protected column (INSERT … SELECT, UPDATE … SET,
+#         MERGE, CREATE TABLE AS, SELECT INTO, also inside a CTE): the copy could be read back unguarded;
+#      c. it calls set_config() while reading a protected table, or a function that runs SQL text the planner never
+#         sees (query_to_xml and the other *_to_xml, ts_stat, dblink).
+#   3. Allowed: the protected column inside count(...) (count(DISTINCT ...), count(...) FILTER (...)) and in an
+#      IS [NOT] NULL test; anything in WHERE / JOIN / GROUP BY / ORDER BY (filters and groups do not return the
+#      value); rewriting a protected table in place (UPDATE crm.x SET col = jsonb_set(col, …)). Every other function
+#      of the value (lower(), min(), string_agg(), length()) counts as a read.
+#   4. Statements the planner cannot explain: SHOW / SET / RESET pass; through execute() also transaction control,
+#      LOCK, ANALYZE, VACUUM, PREPARE (its EXECUTE is planned), NOTIFY, and DDL without a query (ALTER, DROP,
+#      TRUNCATE, GRANT, REVOKE, COMMENT, CREATE INDEX / VIEW / TABLE (columns) / ROLE …). Refused: DO, CALL, COPY,
+#      IMPORT, LOAD and CREATE FUNCTION / PROCEDURE / TRIGGER / RULE / EVENT TRIGGER / AGGREGATE / OPERATOR / CAST /
+#      TRANSFORM / LANGUAGE / EXTENSION / SERVER / FOREIGN … / USER MAPPING / SUBSCRIPTION (code the guard cannot
+#      plan). Anything else that fails to plan is refused (fail closed). A multi-statement execute() runs one
+#      statement at a time, each checked, in one transaction.
+#   5. add_log_listener / add_listener / add_query_logger are refused (a notice or payload could carry a value); so is
+#      any attribute whose name starts with "_" (the wrapped connection is private). A failed statement's error text
+#      never reaches the log (a cast or constraint error quotes the row value): only its class and SQLSTATE do.
+# Not a sandbox: the script still logs in as the master and the review still reads it. The guard stops a reviewed
+# script from printing a traveller's or an agency's personal data into a public log by mistake.
+PII_TENANT_SCHEMAS = ("crm", "booking", "tripplanner")
+# The guard fails closed when the live catalogue tags fewer personal-data columns than this (Dev had 165 in 67 tenant
+# tables on 05/11/2026): an empty or near-empty read means the DM-6.1 comments were lost, not that nothing is personal.
+PII_MIN_COLUMNS = 20
+PII_COLUMNS_SQL = """
+WITH RECURSIVE tagged AS (
+    SELECT c.oid AS relid, n.nspname::text AS schema_name, c.relname::text AS rel_name, a.attname::text AS col
+      FROM pg_catalog.pg_description d
+      JOIN pg_catalog.pg_class c ON c.oid = d.objoid AND d.classoid = 'pg_catalog.pg_class'::regclass
+      JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+      JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid AND a.attnum = d.objsubid AND NOT a.attisdropped
+     WHERE d.objsubid > 0 AND d.description LIKE 'pii:%'
+       AND NOT (n.nspname = 'booking' AND c.relname = 'staff_users')
+       AND (n.nspname = ANY($1::text[])
+            OR (n.nspname = 'shared' AND EXISTS (
+                    SELECT 1 FROM pg_catalog.pg_attribute t
+                     WHERE t.attrelid = c.oid AND t.attname = 'tenant_id' AND NOT t.attisdropped)))
+), parts AS (
+    SELECT relid, schema_name, rel_name, col FROM tagged
+    UNION
+    SELECT i.inhrelid, pn.nspname::text, pc.relname::text, p.col
+      FROM parts p
+      JOIN pg_catalog.pg_inherits i ON i.inhparent = p.relid
+      JOIN pg_catalog.pg_class pc ON pc.oid = i.inhrelid
+      JOIN pg_catalog.pg_namespace pn ON pn.oid = pc.relnamespace
+)
+SELECT schema_name, rel_name, col FROM parts ORDER BY 1, 2, 3
+"""
+_IDENT = r'(?:"(?:[^"]|"")+"|[A-Za-z_][A-Za-z0-9_$]*)'
+PII_REF_RE = re.compile(rf'({_IDENT})\.({_IDENT}|\*)')
+PII_NULL_TEST_RE = re.compile(rf'(?:{_IDENT}\.)?{_IDENT}\s+IS\s+(?:NOT\s+)?NULL', re.I)
+PII_LITERAL_RE = re.compile(r"'(?:[^']|'')*'")
+# A bare name: EXPLAIN VERBOSE leaves the table off a column when the query reads one table only.
+PII_BARE_RE = re.compile(rf'(?<![\w."$])({_IDENT})(?![\w"$]|\s*\(|\.)')
+PII_SUBPLAN_RE = re.compile(r'\((?:SubPlan|InitPlan) \d+\)(?:\.col\d+)?|\$\d+')
+# EXPLAIN prints no Output for these: their members' outputs are the node's output (explain.c show_plan_tlist).
+PII_UNION_NODES = ("Append", "Merge Append", "Recursive Union")
+# The partitions of a partitioned table are scanned as <alias>_1, <alias>_2, …; the nodes above name <alias>.
+PII_PARTITION_ALIAS_RE = re.compile(r'(.+)_\d+')
+# Functions that run SQL text the planner never sees, so their reads cannot be checked.
+PII_SQL_TEXT_FUNCS_RE = re.compile(r'\b(?:(?:query|cursor|table|schema|database)_to_xml\w*|ts_stat|dblink\w*)\s*\(',
+                                   re.I)
+PII_SET_CONFIG_RE = re.compile(r'\bset_config\s*\(', re.I)
+# First keyword(s) of a statement that cannot be planned: what passes unplanned and what is refused.
+PII_ROWS_UNPLANNED = frozenset({"SHOW", "SET", "RESET"})
+PII_EXEC_UNPLANNED = PII_ROWS_UNPLANNED | frozenset({
+    "BEGIN", "START", "COMMIT", "END", "ROLLBACK", "ABORT", "SAVEPOINT", "RELEASE", "LOCK", "ANALYZE", "ANALYSE",
+    "VACUUM", "CHECKPOINT", "DISCARD", "DEALLOCATE", "PREPARE", "NOTIFY", "LISTEN", "UNLISTEN", "ALTER", "DROP",
+    "TRUNCATE", "GRANT", "REVOKE", "COMMENT", "CLUSTER", "REINDEX", "REFRESH", "SECURITY", "CREATE"})
+PII_TXN_HEADS = frozenset({"BEGIN", "START", "COMMIT", "END", "ROLLBACK", "ABORT", "SAVEPOINT", "RELEASE"})
+PII_REFUSED_HEADS = frozenset({"DO", "CALL", "COPY", "IMPORT", "LOAD"})
+PII_CODE_OBJECT_RE = re.compile(
+    r'CREATE\s+(?:OR\s+REPLACE\s+)?(?:(?:CONSTRAINT|TRUSTED|PROCEDURAL|DEFAULT)\s+)*'
+    r'(?:FUNCTION|PROCEDURE|TRIGGER|RULE|EVENT|AGGREGATE|OPERATOR|CAST|TRANSFORM|LANGUAGE|EXTENSION|SERVER|FOREIGN'
+    r'|USER\s+MAPPING|SUBSCRIPTION)\b', re.I)
+PII_CREATE_AS_RE = re.compile(
+    r'CREATE\s+(?:(?:GLOBAL|LOCAL|TEMP|TEMPORARY|UNLOGGED)\s+)*TABLE\b.*\bAS\s*\(?\s*(?:SELECT|WITH|VALUES|TABLE|EXECUTE)\b'
+    r'|CREATE\s+(?:OR\s+REPLACE\s+)?MATERIALIZED\s+VIEW\b', re.I | re.S)
+_DOLLAR_TAG_RE = re.compile(r'\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$')
+
+
+class PiiReadRefused(Exception):
+    """A run-script statement would return or copy a value of a personal-data column (AA-969 d16)."""
+
+
+def _unquote(name: str) -> str:
+    return name[1:-1].replace('""', '"') if name.startswith('"') else name
+
+
+def _strip_allowed(expr: str) -> str:
+    """The output expression without its allowed uses of a column: count(...) (with a FILTER (...) after it) and
+    IS [NOT] NULL tests."""
+    expr = PII_LITERAL_RE.sub("''", expr)
+    out, i, low = [], 0, expr.lower()
+    while i < len(expr):
+        if low.startswith("count(", i) and (i == 0 or not (expr[i - 1].isalnum() or expr[i - 1] in "_.")):
+            depth, j = 0, i + len("count")
+            while j < len(expr):
+                depth += {"(": 1, ")": -1}.get(expr[j], 0)
+                j += 1
+                if depth == 0:
+                    break
+            rest = expr[j:]
+            m = re.match(r"\s*FILTER\s*\(", rest, re.I)
+            if m:
+                depth, k = 1, j + m.end()
+                while k < len(expr) and depth:
+                    depth += {"(": 1, ")": -1}.get(expr[k], 0)
+                    k += 1
+                j = k
+            out.append(" 0 ")
+            i = j
+            continue
+        out.append(expr[i])
+        i += 1
+    return PII_NULL_TEST_RE.sub(" true ", "".join(out))
+
+
+def _walk(node: dict):
+    yield node
+    for child in node.get("Plans") or ():
+        yield from _walk(child)
+
+
+def _is_subplan(node: dict) -> bool:
+    return node.get("Parent Relationship") in ("InitPlan", "SubPlan")
+
+
+class _PlanReader:
+    """Which protected values a node of one EXPLAIN (VERBOSE, FORMAT JSON) plan returns. Pure."""
+
+    def __init__(self, plan: dict, protected: dict):
+        self.protected, nodes = protected, list(_walk(plan))
+        self.aliases = {}
+        for n in nodes:
+            if "Relation Name" in n:
+                self.aliases[n.get("Alias") or n["Relation Name"]] = (n.get("Schema"), n["Relation Name"])
+        self.partitions = {}
+        for alias, rel in self.aliases.items():
+            m = PII_PARTITION_ALIAS_RE.fullmatch(alias)
+            if m:
+                self.partitions.setdefault(m.group(1), []).append(rel)
+        self.ctes = {n["Subplan Name"][4:]: n for n in nodes
+                     if n.get("Parent Relationship") == "InitPlan" and str(n.get("Subplan Name", "")).startswith("CTE ")}
+        self.memo = {}
+
+    def rels(self, alias: str) -> list:
+        if alias in self.aliases:
+            return [self.aliases[alias]]
+        return self.partitions.get(alias, [])
+
+    def reads(self, node: dict) -> list:
+        key = id(node)
+        if key in self.memo:
+            return self.memo[key]
+        self.memo[key] = []                         # a recursive CTE refers to itself: no loop
+        if node.get("Node Type") in PII_UNION_NODES and "Output" not in node:
+            found = [f for c in node.get("Plans") or () if not _is_subplan(c) for f in self.reads(c)]
+            self.memo[key] = found
+            return found
+        derived, subplans = {}, set()
+        for n in _walk(node):
+            if n.get("Node Type") == "Subquery Scan" and n.get("Alias"):
+                derived[n["Alias"]] = any(self.reads(c) for c in n.get("Plans") or () if not _is_subplan(c))
+            elif n.get("Node Type") in ("CTE Scan", "WorkTable Scan") and n.get("Alias"):
+                cte = self.ctes.get(n.get("CTE Name"))
+                derived[n["Alias"]] = bool(cte is not None and cte is not node and self.reads(cte))
+            if n is not node and _is_subplan(n) and not str(
+                    n.get("Subplan Name", "")).startswith("CTE ") and self.reads(n):
+                subplans.add(n.get("Subplan Name", ""))
+        scanned = {r for n in _walk(node) if "Relation Name" in n and (r := self.aliases.get(n.get("Alias")
+                                                                                              or n["Relation Name"]))}
+        bare_cols = {c: rel for rel in scanned for c in self.protected.get(rel, ())}
+        found = []
+        for expr in node.get("Output") or ():
+            text = _strip_allowed(str(expr))
+            for name in PII_BARE_RE.findall(PII_REF_RE.sub(" ", text)):
+                rel = bare_cols.get(_unquote(name))
+                if rel is not None:
+                    found.append(f"{rel[0]}.{rel[1]}.{_unquote(name)}")
+            for alias, col in PII_REF_RE.findall(text):
+                alias, col = _unquote(alias), _unquote(col)
+                rels = self.rels(alias)
+                for rel in rels:
+                    cols = self.protected.get(rel, ())
+                    if cols and (col == "*" or col in cols):
+                        found.append(f"{rel[0]}.{rel[1]}.{col}")
+                if not rels and derived.get(alias):
+                    found.append(f"{alias}.{col} (from a subquery reading personal data)")
+            if subplans and PII_SUBPLAN_RE.search(text):
+                found.append(f"{', '.join(sorted(s for s in subplans if s))} (a subplan reading personal data)")
+        self.memo[key] = found
+        return found
+
+
+def pii_plan_reads(plan: dict, protected: dict) -> list:
+    """The protected columns (``schema.table.column``, ``schema.table.*``) whose values the plan's result carries.
+    ``plan`` is the "Plan" object of EXPLAIN (VERBOSE, FORMAT JSON); ``protected`` maps (schema, table) to the set of
+    protected column names. Pure."""
+    return _PlanReader(plan, protected).reads(plan)
+
+
+def pii_plan_writes(plan: dict, protected: dict) -> list:
+    """The protected values the plan writes into a table that has no protected column (INSERT … SELECT, UPDATE … SET,
+    MERGE, in a CTE too): a later statement could read the copy unguarded. Rewriting a protected table in place
+    passes. Pure."""
+    reader, found = _PlanReader(plan, protected), []
+    for n in _walk(plan):
+        if n.get("Node Type") != "ModifyTable":
+            continue
+        target = (n.get("Schema"), n.get("Relation Name"))
+        if target in protected:
+            continue
+        sources = [c for c in n.get("Plans") or () if not _is_subplan(c)]
+        values = {"Node Type": "Result", "Plans": n.get("Plans") or [],
+                  "Output": [o for c in sources for o in c.get("Output") or ()]}
+        hits = reader.reads(values) + [f for c in sources if "Output" not in c for f in reader.reads(c)]
+        if hits:
+            found.append(f"{', '.join(sorted(set(hits)))} written into {target[0]}.{target[1]}")
+    return found
+
+
+def pii_plan_side_channels(plan: dict, protected: dict) -> list:
+    """Calls that move a value past the plan's output: SQL text run by a function the planner never sees, and
+    set_config() in a statement that reads a protected table. Pure."""
+    text, found = json.dumps(plan), []
+    m = PII_SQL_TEXT_FUNCS_RE.search(text)
+    if m:
+        found.append(f"{m.group(0).rstrip('( ')}() runs SQL text the guard cannot plan")
+    if PII_SET_CONFIG_RE.search(text) and any((n.get("Schema"), n.get("Relation Name")) in protected
+                                              for n in _walk(plan)):
+        found.append("set_config() in a statement that reads a personal-data table")
+    return found
+
+
+def pii_plan_findings(plan: dict, protected: dict) -> list:
+    return pii_plan_reads(plan, protected) + pii_plan_writes(plan, protected) + pii_plan_side_channels(plan, protected)
+
+
+def sql_statements(sql: str) -> list:
+    """[(raw, code)] per statement of ``sql``, split on top-level ';'. ``code`` is the statement without comments and
+    with every string literal (quoted, E'…', $tag$…$tag$) replaced by ''. Empty statements are dropped."""
+    out, start, code, i, n = [], 0, [], 0, len(sql)
+    while i < n:
+        ch = sql[i]
+        if sql.startswith("--", i):
+            j = sql.find("\n", i)
+            i = n if j < 0 else j
+            code.append(" ")
+            continue
+        if sql.startswith("/*", i):
+            depth, j = 1, i + 2
+            while j < n and depth:
+                if sql.startswith("/*", j):
+                    depth, j = depth + 1, j + 2
+                elif sql.startswith("*/", j):
+                    depth, j = depth - 1, j + 2
+                else:
+                    j += 1
+            i = j
+            code.append(" ")
+            continue
+        if ch == "'":
+            esc = i > 0 and sql[i - 1] in "eE" and (i < 2 or not (sql[i - 2].isalnum() or sql[i - 2] in "_$"))
+            j = i + 1
+            while j < n:
+                if esc and sql[j] == "\\":
+                    j += 2
+                elif sql.startswith("''", j):
+                    j += 2
+                elif sql[j] == "'":
+                    j += 1
+                    break
+                else:
+                    j += 1
+            i = min(j, n)
+            code.append("''")
+            continue
+        if ch == '"':
+            j = i + 1
+            while j < n:
+                if sql.startswith('""', j):
+                    j += 2
+                elif sql[j] == '"':
+                    j += 1
+                    break
+                else:
+                    j += 1
+            code.append(sql[i:j])
+            i = j
+            continue
+        if ch == "$" and not (i > 0 and (sql[i - 1].isalnum() or sql[i - 1] in "_$")):
+            m = _DOLLAR_TAG_RE.match(sql, i)
+            if m:
+                end = sql.find(m.group(0), m.end())
+                i = n if end < 0 else end + len(m.group(0))
+                code.append("''")
+                continue
+        if ch == ";":
+            out.append((sql[start:i], "".join(code)))
+            code, start = [], i + 1
+            i += 1
+            continue
+        code.append(ch)
+        i += 1
+    out.append((sql[start:], "".join(code)))
+    return [(raw, c) for raw, c in out if c.strip()]
+
+
+def _sql_head(code: str) -> str:
+    m = re.match(r"[\s(]*([A-Za-z]+)", code)
+    return m.group(1).upper() if m else ""
+
+
+async def _pii_plan(conn, protected: dict, stmt: str, args: tuple) -> None:
+    try:
+        async with conn.transaction():              # a savepoint inside a transaction: a failed EXPLAIN aborts nothing
+            raw = await conn.fetchval("EXPLAIN (VERBOSE, FORMAT JSON) " + stmt, *args)
+    except Exception as e:                          # noqa: BLE001 — fail closed, never echo the statement
+        raise PiiReadRefused(f"run-script: the PII guard could not plan a statement ({type(e).__name__}); "
+                             f"refused (AA-969 d16)") from None
+    doc = json.loads(raw) if isinstance(raw, str) else raw
+    found = pii_plan_findings(doc[0]["Plan"], protected)
+    if found:
+        raise PiiReadRefused("run-script: a statement would return or copy personal data ("
+                             + "; ".join(sorted(set(found))[:5])
+                             + "); counts and aggregates only (AA-969 d16, db/scripts/README.md)")
+
+
+def pii_catalogue_short(protected: dict) -> bool:
+    """True when the catalogue read names fewer personal-data columns than PII_MIN_COLUMNS (the guard fails closed)."""
+    return sum(len(c) for c in protected.values()) < PII_MIN_COLUMNS
+
+
+async def pii_check_statement(conn, protected: dict, query: str, args: tuple = (), rows: bool = True) -> None:
+    """Refuses ``query`` (PiiReadRefused) before it runs when it would return or copy a protected value. ``rows``:
+    the call returns rows (fetch and the like: one statement, only SHOW / SET / RESET pass unplanned); otherwise it
+    is an execute() of one statement."""
+    if pii_catalogue_short(protected):
+        raise PiiReadRefused("run-script: the PII guard's catalogue is empty or implausibly small; refused "
+                             "(AA-969 d16)")
+    if not protected:                               # only with PII_MIN_COLUMNS = 0 (unit tests without a catalogue)
+        return
+    stmts = sql_statements(query)
+    if len(stmts) > 1:
+        raise PiiReadRefused("run-script: one statement per call (the PII guard plans each statement; AA-969 d16)")
+    code = stmts[0][1].strip() if stmts else ""
+    head = _sql_head(code)
+    if rows:
+        if head in PII_ROWS_UNPLANNED:
+            return
+    else:
+        if head in PII_REFUSED_HEADS or PII_CODE_OBJECT_RE.match(code):
+            what = head if head in PII_REFUSED_HEADS else "CREATE FUNCTION / PROCEDURE / TRIGGER / RULE / EXTENSION …"
+            raise PiiReadRefused(f"run-script: {what} is refused: the PII guard cannot plan the code it runs "
+                                 f"(AA-969 d16, db/scripts/README.md)")
+        if head in PII_EXEC_UNPLANNED and not PII_CREATE_AS_RE.match(code):
+            return
+    await _pii_plan(conn, protected, query, args)
+
+
+def _guard_state(g) -> tuple:
+    return object.__getattribute__(g, "_PiiGuardedConnection__conn"), \
+        object.__getattribute__(g, "_PiiGuardedConnection__protected")
+
+
+class PiiGuardedConnection:
+    """The connection a run-script's main(conn) gets (AA-969 d16): every statement is planned first and refused when
+    it would return or copy a personal-data value. The wrapped connection is private; other public methods
+    (transaction, copy_records_to_table, …) pass through."""
+
+    __slots__ = ("_PiiGuardedConnection__conn", "_PiiGuardedConnection__protected")
+    _REFUSED_ATTRS = ("add_log_listener", "add_listener", "add_query_logger")
+
+    def __init__(self, conn, protected: dict):
+        object.__setattr__(self, "_PiiGuardedConnection__conn", conn)
+        object.__setattr__(self, "_PiiGuardedConnection__protected", protected)
+
+    def __getattribute__(self, name):
+        if name.startswith("_") and not (name.startswith("__") and name.endswith("__")):
+            raise PiiReadRefused(f"run-script: {name} is private to the PII guard (AA-969 d16)")
+        return object.__getattribute__(self, name)
+
+    def __getattr__(self, name):
+        if name.startswith("_"):                    # never the wrapped connection's internals (or its __dict__)
+            raise AttributeError(name)
+        if name in PiiGuardedConnection._REFUSED_ATTRS:
+            raise PiiReadRefused(f"run-script: {name} is refused (a server notice or payload could carry personal "
+                                 f"data; AA-969 d16)")
+        return getattr(_guard_state(self)[0], name)
+
+    def __setattr__(self, name, value):
+        raise PiiReadRefused("run-script: the guarded connection is read-only (AA-969 d16)")
+
+    async def check(self, query: str, args: tuple = (), rows: bool = True) -> None:
+        conn, protected = _guard_state(self)
+        await pii_check_statement(conn, protected, query, tuple(args), rows)
+
+    async def fetch(self, query, *args, **kw):
+        await self.check(query, args)
+        return await _guard_state(self)[0].fetch(query, *args, **kw)
+
+    async def fetchrow(self, query, *args, **kw):
+        await self.check(query, args)
+        return await _guard_state(self)[0].fetchrow(query, *args, **kw)
+
+    async def fetchval(self, query, *args, **kw):
+        await self.check(query, args)
+        return await _guard_state(self)[0].fetchval(query, *args, **kw)
+
+    async def copy_from_query(self, query, *args, **kw):
+        await self.check(query, args)
+        return await _guard_state(self)[0].copy_from_query(query, *args, **kw)
+
+    async def fetchmany(self, query, args, **kw):
+        if args:                                    # one plan covers every argument set of the same statement
+            await self.check(query, tuple(args[0]))
+        return await _guard_state(self)[0].fetchmany(query, args, **kw)
+
+    async def prepare(self, query, **kw):
+        await self.check(query)
+        return await _guard_state(self)[0].prepare(query, **kw)
+
+    async def execute(self, query, *args, **kw):
+        conn, protected = _guard_state(self)
+        stmts = sql_statements(query) if protected and not args else []
+        if len(stmts) <= 1:
+            await pii_check_statement(conn, protected, query, args, rows=False)
+            return await conn.execute(query, *args, **kw)
+        # Several statements in one string (simple protocol): each is checked right before it runs, so a statement
+        # sees the tables the one before it created; one transaction keeps the all-or-nothing of a single string.
+        own_txn = not any(_sql_head(code) in PII_TXN_HEADS for _raw, code in stmts)
+        status = None
+        async with (conn.transaction() if own_txn else contextlib.nullcontext()):
+            for raw, _code in stmts:
+                await pii_check_statement(conn, protected, raw, (), rows=False)
+                status = await conn.execute(raw, **kw)
+        return status
+
+    async def executemany(self, command, args, **kw):
+        conn, protected = _guard_state(self)
+        args = list(args)
+        if args:                                    # one plan covers every argument set of the same statement
+            await pii_check_statement(conn, protected, command, tuple(args[0]), rows=False)
+        return await conn.executemany(command, args, **kw)
+
+    def cursor(self, query, *args, **kw):
+        guard, factory = self, _guard_state(self)[0].cursor(query, *args, **kw)
+
+        class _GuardedCursorFactory:
+            def __aiter__(self):
+                async def rows():
+                    await guard.check(query, args)
+                    async for row in factory:
+                        yield row
+                return rows()
+
+            def __await__(self):
+                async def opened():
+                    await guard.check(query, args)
+                    return await factory
+                return opened().__await__()
+
+        return _GuardedCursorFactory()
+
+    async def copy_from_table(self, table_name, *, columns=None, schema_name=None, **kw):
+        cols = ", ".join(_quote_ident(c) for c in columns) if columns else "*"
+        qualified = (_quote_ident(schema_name) + "." if schema_name else "") + _quote_ident(table_name)
+        await self.check(f"SELECT {cols} FROM {qualified}")
+        return await _guard_state(self)[0].copy_from_table(table_name, columns=columns, schema_name=schema_name, **kw)
+
+
+def script_error_text(e: BaseException) -> str:
+    """What the public task log may show of a script's exception (AA-969 d16). A database error (or a Python error
+    raised while handling one) shows its class, SQLSTATE and the names PostgreSQL attaches to it, never its message
+    or DETAIL: `invalid input syntax for type integer: "<value>"` and `Key (email)=(<value>)` quote the row."""
+    if isinstance(e, PiiReadRefused):
+        return f"PiiReadRefused {e}"
+    chain, cur = [], e
+    while cur is not None and len(chain) < 16:
+        chain.append(cur)
+        cur = cur.__cause__ or cur.__context__
+    db = next((x for x in chain if getattr(x, "sqlstate", None) or type(x).__module__.split(".")[0] == "asyncpg"),
+              None)
+    if db is None:
+        return f"{type(e).__name__} {e}"
+    names = ", ".join(f"{k}={getattr(db, k)}" for k in ("schema_name", "table_name", "column_name",
+                                                         "constraint_name", "data_type_name")
+                      if isinstance(getattr(db, k, None), str) and getattr(db, k))
+    state = getattr(db, "sqlstate", "") or ""
+    return (f"{type(e).__name__} {state} (message withheld: a database error can quote a row value; AA-969 d16)"
+            + (f" [{names}]" if names else "")).replace("  ", " ")
+
+
+async def load_pii_columns(conn) -> dict:
+    """(schema, table) -> the protected column names, read live (PII_COLUMNS_SQL)."""
+    protected: dict = {}
+    for r in await conn.fetch(PII_COLUMNS_SQL, list(PII_TENANT_SCHEMAS)):
+        protected.setdefault((r["schema_name"], r["rel_name"]), set()).add(r["col"])
+    return protected
+
+
 async def run_script(env, path: str, fetch, connect, sleep, get_secret=_get_secret) -> int:
     """XD5 / S19: a reviewed db/scripts/ file runs as the master, after the same idle check as apply
     (exit 7 while busy, MIGRATION_IDLE_OVERRIDE applies). A script that declares `READ_ONLY = True` runs
@@ -2504,14 +3023,25 @@ async def run_script(env, path: str, fetch, connect, sleep, get_secret=_get_secr
                 log(f"ERROR: refusing run-script — busy: {busy_summary(report)}. Wait until every job table is "
                     f"idle, or re-dispatch with override_busy_jobs=<reason> (Nghiệp only)")
                 return 7
+        try:
+            protected = await load_pii_columns(conn)
+        except Exception as e:                  # fail closed: no script without the guard
+            log(f"ERROR: run-script: the PII guard could not read the catalogue ({type(e).__name__}). Nothing ran")
+            return 13
+        if pii_catalogue_short(protected):      # fail closed: lost DM-6.1 comments must not switch the guard off
+            log(f"ERROR: run-script: the PII guard read only {sum(len(c) for c in protected.values())} personal-data "
+                f"columns (fewer than {PII_MIN_COLUMNS}): the pii: column comments look lost. Nothing ran")
+            return 13
+        log(f"run-script: PII guard on: {sum(len(c) for c in protected.values())} personal-data columns in "
+            f"{len(protected)} tenant tables; statements that return them are refused (AA-969 d16)")
         log("run-script: main(conn) starts; its output follows")
         try:
             ns = {"__name__": "db_script", "__file__": path}
             exec(code, ns)                      # reviewed file on main, sha256-checked above
-            result = await ns["main"](conn)
+            result = await ns["main"](PiiGuardedConnection(conn, protected))
         except Exception as e:                  # a script's error text could carry the master DSN: redacted
-            state = getattr(e, "sqlstate", "") or ""
-            log(_redact(f"ERROR: script raised {type(e).__name__} {state} {e}".rstrip(), hide))
+            state = getattr(e, "sqlstate", "") or ""        # and a database error's text a row value: withheld
+            log(_redact(f"ERROR: script raised {script_error_text(e)}".rstrip(), hide))
             if state == "55P03":
                 log("hint: lock_timeout (5s) hit — retry when the job tables are idle, or SET LOCAL lock_timeout "
                     "inside the script's own transaction")
