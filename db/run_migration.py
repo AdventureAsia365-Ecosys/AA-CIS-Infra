@@ -2483,6 +2483,9 @@ def script_is_read_only(source: str) -> bool:
 # Not a sandbox: the script still logs in as the master and the review still reads it. The guard stops a reviewed
 # script from printing a traveller's or an agency's personal data into a public log by mistake.
 PII_TENANT_SCHEMAS = ("crm", "booking", "tripplanner")
+# The guard fails closed when the live catalogue tags fewer personal-data columns than this (Dev had 165 in 67 tenant
+# tables on 05/11/2026): an empty or near-empty read means the DM-6.1 comments were lost, not that nothing is personal.
+PII_MIN_COLUMNS = 20
 PII_COLUMNS_SQL = """
 WITH RECURSIVE tagged AS (
     SELECT c.oid AS relid, n.nspname::text AS schema_name, c.relname::text AS rel_name, a.attname::text AS col
@@ -2788,11 +2791,19 @@ async def _pii_plan(conn, protected: dict, stmt: str, args: tuple) -> None:
                              + "); counts and aggregates only (AA-969 d16, db/scripts/README.md)")
 
 
+def pii_catalogue_short(protected: dict) -> bool:
+    """True when the catalogue read names fewer personal-data columns than PII_MIN_COLUMNS (the guard fails closed)."""
+    return sum(len(c) for c in protected.values()) < PII_MIN_COLUMNS
+
+
 async def pii_check_statement(conn, protected: dict, query: str, args: tuple = (), rows: bool = True) -> None:
     """Refuses ``query`` (PiiReadRefused) before it runs when it would return or copy a protected value. ``rows``:
     the call returns rows (fetch and the like: one statement, only SHOW / SET / RESET pass unplanned); otherwise it
     is an execute() of one statement."""
-    if not protected:
+    if pii_catalogue_short(protected):
+        raise PiiReadRefused("run-script: the PII guard's catalogue is empty or implausibly small; refused "
+                             "(AA-969 d16)")
+    if not protected:                               # only with PII_MIN_COLUMNS = 0 (unit tests without a catalogue)
         return
     stmts = sql_statements(query)
     if len(stmts) > 1:
@@ -3016,6 +3027,10 @@ async def run_script(env, path: str, fetch, connect, sleep, get_secret=_get_secr
             protected = await load_pii_columns(conn)
         except Exception as e:                  # fail closed: no script without the guard
             log(f"ERROR: run-script: the PII guard could not read the catalogue ({type(e).__name__}). Nothing ran")
+            return 13
+        if pii_catalogue_short(protected):      # fail closed: lost DM-6.1 comments must not switch the guard off
+            log(f"ERROR: run-script: the PII guard read only {sum(len(c) for c in protected.values())} personal-data "
+                f"columns (fewer than {PII_MIN_COLUMNS}): the pii: column comments look lost. Nothing ran")
             return 13
         log(f"run-script: PII guard on: {sum(len(c) for c in protected.values())} personal-data columns in "
             f"{len(protected)} tenant tables; statements that return them are refused (AA-969 d16)")

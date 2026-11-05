@@ -15,6 +15,7 @@ import io
 import json
 import sys
 import unittest
+from unittest import mock
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -398,6 +399,26 @@ class RunScriptGuardTest(unittest.TestCase):
         self.assertEqual(code, 13)
         self.assertIn("the PII guard could not read the catalogue (RuntimeError). Nothing ran", out)
         self.assertNotIn("SCRIPT who", out)
+
+    def test_an_empty_or_implausibly_small_catalogue_runs_nothing(self):
+        with mock.patch.object(rm, "PII_MIN_COLUMNS", 20):
+            for rows in ([], PII_ROWS):
+                with self.subTest(columns=len(rows)):
+                    code, out = run_script(READS, PiiFakeConn(pii_rows=rows))
+                    self.assertEqual(code, 13, out)
+                    self.assertIn(f"the PII guard read only {len(rows)} personal-data columns (fewer than 20)", out)
+                    self.assertNotIn("SCRIPT who", out)
+            many = [{"schema_name": "crm", "rel_name": f"t{i}", "col": "email"} for i in range(20)]
+            code, out = run_script(READS, PiiFakeConn(pii_rows=many))
+            self.assertIn("PII guard on: 20 personal-data columns in 20 tenant tables", out)
+
+    def test_the_guarded_connection_fails_closed_on_a_short_catalogue(self):
+        async def go():
+            with mock.patch.object(rm, "PII_MIN_COLUMNS", 20):
+                for protected in ({}, PROTECTED):
+                    with self.assertRaisesRegex(rm.PiiReadRefused, "catalogue is empty or implausibly small"):
+                        await rm.PiiGuardedConnection(ExplainConn({}), protected).fetch("SELECT 1")
+        asyncio.run(go())
 
     def test_the_sql_scopes_tenant_schemas_and_partitions(self):
         sql = " ".join(rm.PII_COLUMNS_SQL.split())

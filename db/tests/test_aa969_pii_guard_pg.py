@@ -19,6 +19,8 @@ sys.path.insert(0, str(HERE.parent))
 
 import run_migration as rm  # noqa: E402
 
+rm.PII_MIN_COLUMNS = 0              # the throw-away server seeds a handful of tagged columns, not a real catalogue
+
 DSN = os.environ.get("AA969_TEST_PG_DSN", "")
 try:
     import asyncpg
