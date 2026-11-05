@@ -91,6 +91,11 @@ locals {
     # identity (POST /tenant/membership/v1/invitations/{id}/activate). Granted to the CRM client only (m2m_crm below
     # takes every scope of this server; it is the pool's only client).
     activate = "Bind the partner-pool identity of an accepted Content studio invitation (CIS /tenant/membership/v1)"
+    # AA-1036 R3 (root contract tenant.addons.v1): the CRM reads an agency's add-ons and relays its CRM owner's add-on
+    # request to CIS (GET /tenant/v1/tenants/{id}/add-ons, POST /tenant/v1/tenants/{id}/add-on-requests), for an
+    # agency whose owner has no Content studio membership. Same client; an in-place update of the resource server and
+    # of the client's allowed scopes (re-plan after the apply: the client takes the new scope on the second apply).
+    addons = "Read an agency's add-ons and request one for its CRM owner (CIS /tenant/v1, tenant.addons.v1)"
   }
 }
 
