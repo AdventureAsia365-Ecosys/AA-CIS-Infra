@@ -153,8 +153,9 @@ resource "aws_db_instance" "main" {
   # false in a reviewed PR first.
   deletion_protection = true
 
-  # Backup
-  backup_retention_period = 7
+  # Backup. ADR 0019 d16 (S265, tech lead yes): 14 days for the pilot window; free up to the provisioned DB storage
+  # in the region, then 0.095 USD per GB-month (estimated under 1 USD a month). In-place modify, no reboot.
+  backup_retention_period = 14
   backup_window           = "03:00-04:00"
   maintenance_window      = "mon:04:00-mon:05:00"
 
