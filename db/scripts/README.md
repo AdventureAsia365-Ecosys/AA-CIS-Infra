@@ -40,7 +40,8 @@ migration in its owner repo, not a script.
   - *personal-data column* = a column whose comment starts with a DM-6.1 `pii:` tag (the ` · pii:<class>` suffix in
     `docs/architecture/db-schema-reference.md`), read live from the catalogue, in schemas `crm`, `booking`,
     `tripplanner` and in the `shared` tables that have a `tenant_id` column, and the same columns of their partitions
-    (not the AA staff directory `booking.staff_users`);
+    (not the AA staff directory `booking.staff_users`); a catalogue read that fails, or that names fewer than
+    `PII_MIN_COLUMNS` (20) columns, runs nothing (exit 13: the `pii:` comments look lost);
   - *returns a value* = the plan's top-level output (through `UNION` / `UNION ALL` members, partitions, subqueries,
     CTEs (recursive too), InitPlans and SubPlans) names the column or a whole row of its table (`t.*`,
     `row_to_json(t)`), in any expression except `count(...)` (with its `FILTER`) and `IS [NOT] NULL`.
