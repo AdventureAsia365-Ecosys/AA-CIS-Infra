@@ -38,6 +38,9 @@ CREATE TABLE crm.audit_event (tenant_id uuid NOT NULL, at timestamptz NOT NULL, 
 COMMENT ON COLUMN crm.audit_event.detail IS 'pii:free_text';
 CREATE TABLE crm.audit_event_2026_11 PARTITION OF crm.audit_event
     FOR VALUES FROM ('2026-11-01') TO ('2026-12-01');
+CREATE TABLE crm.audit_event_2026_12 PARTITION OF crm.audit_event
+    FOR VALUES FROM ('2026-12-01') TO ('2027-01-01');
+CREATE INDEX ON crm.audit_event (at);
 CREATE TABLE booking.customers (id uuid PRIMARY KEY, email text, created_at timestamptz NOT NULL DEFAULT now());
 COMMENT ON COLUMN booking.customers.email IS 'pii:contact';
 CREATE TABLE shared.tenants (tenant_id uuid PRIMARY KEY, name text, billing_email text, is_pilot boolean);
@@ -68,6 +71,45 @@ REFUSED = [
     "SELECT email FROM booking.v_customer_mail",                # through a view
     "SELECT billing_email FROM shared.tenants",                 # a shared table with tenant_id
     "SELECT email FROM crm.traveler WHERE traveler_id = $1",
+    # Append / Merge Append / Recursive Union print no Output: their members are read (2 partitions keep the Append)
+    "SELECT e.detail FROM crm.audit_event e ORDER BY e.at",
+    "SELECT detail FROM crm.audit_event UNION SELECT 'x' ORDER BY 1",
+    "SELECT email FROM crm.traveler UNION ALL SELECT 'x'",
+    "SELECT * FROM (SELECT email FROM crm.traveler UNION ALL SELECT 'x') s",
+    "WITH RECURSIVE r(e) AS (SELECT email FROM crm.traveler UNION ALL SELECT e FROM r WHERE false) SELECT e FROM r",
+    "SELECT email FROM crm.traveler EXCEPT SELECT 'x'",
+    # SQL text the planner never sees, and set_config() as a carrier
+    "SELECT query_to_xml('SELECT email FROM crm.traveler', true, false, '')",
+    "SELECT table_to_xml('crm.traveler'::regclass, true, false, '')",
+    "SELECT count(*) AS n FROM crm.traveler WHERE set_config('x.y', email, false) <> ''",
+]
+# execute(): statements that would copy a value where a later read is not guarded, or run code the guard cannot plan
+EXEC_REFUSED = [
+    "CREATE TEMP TABLE x1 AS SELECT email FROM crm.traveler",
+    "SELECT email INTO TEMP x2 FROM crm.traveler",
+    "CREATE MATERIALIZED VIEW crm.mv AS SELECT email FROM crm.traveler",
+    "INSERT INTO shared.admin_users SELECT gen_random_uuid(), email FROM crm.traveler",
+    "UPDATE shared.admin_users SET email = (SELECT email FROM crm.traveler LIMIT 1)",
+    "WITH i AS (INSERT INTO shared.admin_users SELECT gen_random_uuid(), email FROM crm.traveler RETURNING id) "
+    "SELECT count(*) FROM i",
+    "SELECT set_config('x.y', email, false) FROM crm.traveler",
+    "SET search_path = crm; CREATE TEMP TABLE x3 AS SELECT email FROM traveler",
+    "CREATE TEMP TABLE x4 (e text); INSERT INTO x4 SELECT display_name FROM crm.traveler",
+    "PREPARE p1 AS INSERT INTO shared.admin_users SELECT gen_random_uuid(), email FROM crm.traveler; EXECUTE p1",
+    "CREATE FUNCTION crm.f() RETURNS text LANGUAGE sql AS $$ SELECT email FROM crm.traveler $$",
+    "DO $$ BEGIN PERFORM 1; END $$",
+    "COPY (SELECT email FROM crm.traveler) TO STDOUT",
+]
+EXEC_ALLOWED = [
+    "UPDATE crm.traveler SET email = lower(email)",
+    "SET LOCAL lock_timeout = '5s'",
+    "CREATE TEMP TABLE y1 (n int)",
+    "INSERT INTO y1 SELECT count(*) FROM crm.traveler",
+    "CREATE TEMP TABLE y2 (n int); INSERT INTO y2 SELECT count(*) FROM crm.traveler",
+    "CREATE TEMP TABLE y3 AS SELECT count(*) AS n FROM crm.traveler",
+    "COMMENT ON TABLE crm.trip IS 'invented'",
+    "CREATE INDEX ON crm.trip (tenant_id)",
+    "SELECT pg_advisory_xact_lock(hashtext('invented'))",
 ]
 ALLOWED = [
     "SELECT count(*) AS n FROM crm.traveler",
@@ -162,6 +204,61 @@ class PiiGuardPgTest(unittest.TestCase):
             with self.assertRaises(rm.PiiReadRefused):
                 g.add_log_listener(lambda *a: None)
             self.assertEqual(await g.fetchval("SELECT count(*) FROM crm.audit_event"), 1)
+        self.run_in_guard(body)
+
+    def run_in_rw_txn(self, body):
+        """A read-write session whose work is rolled back: execute() runs writes for real."""
+        async def go():
+            conn = await asyncpg.connect(self.dsn())
+            try:
+                protected = await rm.load_pii_columns(conn)
+                tr = conn.transaction()
+                await tr.start()
+                try:
+                    return await body(rm.PiiGuardedConnection(conn, protected))
+                finally:
+                    await tr.rollback()
+            finally:
+                await conn.close()
+        return asyncio.run(go())
+
+    def test_execute_refuses_copies_and_code(self):
+        for query in EXEC_REFUSED:
+            with self.subTest(query=query):
+                async def body(g, q=query):
+                    with self.assertRaises(rm.PiiReadRefused):
+                        await g.execute(q)
+                    # nothing was copied: the guard refused before the statement ran
+                    return await g.fetchval("SELECT count(*) AS n FROM shared.admin_users")
+                self.assertEqual(self.run_in_rw_txn(body), 0)
+
+    def test_execute_runs_counts_utility_statements_and_in_place_rewrites(self):
+        async def body(g):
+            for query in EXEC_ALLOWED:
+                with self.subTest(query=query):
+                    await g.execute(query)
+            await g.execute("SELECT set_config('app.tenant_id', $1, true)", "invented")
+            await g.executemany("INSERT INTO y1 VALUES ($1)", [(1,), (2,)])
+            return await g.fetchval("SELECT count(*) AS n FROM crm.traveler WHERE email = 'invented@example.test'")
+        self.assertEqual(self.run_in_rw_txn(body), 1)
+
+    def test_a_cast_error_on_a_value_logs_no_value(self):
+        async def body(g):
+            try:
+                await g.fetchval("SELECT count(*) AS n FROM crm.traveler WHERE email::int > 0")
+            except Exception as e:                  # noqa: BLE001 — the runner's own except clause
+                return rm.script_error_text(e), str(e)
+            return None, None
+        logged, raw = self.run_in_guard(lambda g, _p: body(g))
+        self.assertIn("invented@example.test", raw)                   # what PostgreSQL said
+        self.assertNotIn("invented@example.test", logged)             # what the public log gets
+        self.assertIn("22P02", logged)
+
+    def test_the_raw_connection_is_out_of_reach(self):
+        async def body(g, _p):
+            for name in ("_conn", "_PiiGuardedConnection__conn"):
+                with self.assertRaises(rm.PiiReadRefused):
+                    getattr(g, name)
         self.run_in_guard(body)
 
     def test_a_statement_the_planner_cannot_explain_is_refused(self):

@@ -916,9 +916,9 @@ makes CI Terraform Plan fail with 403.
   (AA-860); the RDS master is break-glass plus three automated uses (`roles/` files, `set-password`,
   `run-script`), whose DSN the runner reads in the task (`db/README.md`, `db/owners.yaml` `master_secret`).
   A run-script never reads row-level personal data (AA-969, root ADR 0019 d16): the runner hands `main(conn)` a
-  guarded connection that plans every row-returning statement first and refuses one whose result carries a `pii:`
-  tagged column of a tenant table (counts and `IS NULL` tests only); the rules are in `db/scripts/README.md`
-  ("Personal data").
+  guarded connection that plans every statement first and refuses one that would return a `pii:` tagged column of a
+  tenant table (counts and `IS NULL` tests only) or copy one into an untagged table, and logs a failed statement's
+  class and SQLSTATE, never its text; the rules are in `db/scripts/README.md` ("Personal data").
   Every owner file runs as the live owner of its dir's anchor schema (`cis_owner`, `bk_owner`, `tp_owner`); the
   nightly DB Isolation Probe cell `sessions.master_break_glass_only` flags any other master session.
   **DB Tour Liveness Gate** (`db-tour-liveness-gate.yml`, AA-986 L7b, root ADR 0015 decision 6; nightly 04:43 UTC and
