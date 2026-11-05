@@ -209,6 +209,7 @@ owners:
       - {grantee: cis_app, privilege: "USAGE, SELECT", object: booking.v_ops_inquiry_inbox, status: contract, source: "bk-035 (AA-1003)", expected_from: bk-035}
       - {grantee: tripplanner, privilege: "USAGE, SELECT", object: booking.v_from_prices, status: contract, source: "bk-039 (AA-1029, price.from.v1)", expected_from: bk-039}
       - {grantee: cis_app, privilege: "USAGE, SELECT", object: booking.v_from_prices, status: contract, source: "bk-040 (AA-1029, price.from.v1, Content studio Marketplace)", expected_from: bk-040}
+      - {grantee: cis_app, privilege: "USAGE, SELECT", object: booking.v_tenant_billing_status, status: contract, source: "bk-042 (AA-1037, agency billing status for the CIS tenant_billing_tick)", expected_from: bk-042}
 
   tripplanner:
     repo: AA-TripPlanner-Web
