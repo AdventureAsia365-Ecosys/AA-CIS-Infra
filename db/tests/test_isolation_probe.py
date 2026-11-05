@@ -407,8 +407,9 @@ class BuildCellsTest(unittest.TestCase):
         # bk-023: AA-835 supply views; bk-025 / tp-020: AA-992 data coverage views; bk-035 / tp-022: AA-1003 TP-03 key
         # views.
         # bk-039 / bk-040: AA-1029 price.from.v1 (TripPlanner, then the CIS pool for the Content studio).
-        self.assertEqual(p.CONSUMER_GRANT_KEYS, ("bk-017", "bk-023", "bk-025", "bk-035", "bk-039", "bk-040", "tp-015",
-                                                 "tp-020", "tp-022"))
+        # bk-042: AA-1037 the agency billing status the CIS tenant_billing_tick reads.
+        self.assertEqual(p.CONSUMER_GRANT_KEYS, ("bk-017", "bk-023", "bk-025", "bk-035", "bk-039", "bk-040", "bk-042",
+                                                 "tp-015", "tp-020", "tp-022"))
         for k in p.CONSUMER_GRANT_KEYS:
             self.assertIn(k, p.VERSION_KEYS)
             self.assertIn(k, p.KEY_TEXT)
@@ -509,6 +510,21 @@ class BuildCellsTest(unittest.TestCase):
                 c["missing"] = []
         st, _ = statuses(f)
         self.assertEqual(st["consumer.contract_grants.bk-040"], "pass")
+
+    def test_billing_status_cis_reader_grant_is_its_own_cell(self):
+        # AA-1037 R4: CIS reads booking.v_tenant_billing_status (the hourly tenant_billing_tick); the grant comes with
+        # the contract file bk-042, so its cell waits for that apply and passes once bk-042 is registered.
+        objs = {c[2]: (c[0], c[3]) for c in p.CONSUMER_GRANTS if c[3] == "bk-042"}
+        self.assertEqual(objs, {"booking.v_tenant_billing_status": ("cis_app", "bk-042")})
+        f = today_facts()
+        st, _ = statuses(f)
+        self.assertEqual(st["consumer.contract_grants.bk-042"], "pending")
+        f["catalog"]["registered"] = ["bk-042"]
+        for c in f["consumer"]["grants"]:
+            if c["from"] == "bk-042":
+                c["missing"] = []
+        st, _ = statuses(f)
+        self.assertEqual(st["consumer.contract_grants.bk-042"], "pass")
 
     def test_cis_app_login_waits_for_set_password(self):
         f = today_facts()
