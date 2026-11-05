@@ -203,6 +203,7 @@ class RunScriptGuardTest(unittest.TestCase):
         self.assertIn("n.nspname = ANY($1::text[])", sql)
         self.assertIn("t.attname = 'tenant_id'", sql)
         self.assertIn("pg_catalog.pg_inherits", sql)
+        self.assertIn("NOT (n.nspname = 'booking' AND c.relname = 'staff_users')", sql)
         self.assertEqual(rm.PII_TENANT_SCHEMAS, ("crm", "booking", "tripplanner"))
 
 

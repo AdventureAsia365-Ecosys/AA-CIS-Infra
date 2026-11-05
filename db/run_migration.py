@@ -2452,7 +2452,8 @@ def script_is_read_only(source: str) -> bool:
 #   1. Protected columns = every column whose comment starts with a DM-6.1 tag `pii:` (the convention
 #      docs/architecture/db-schema-reference.md shows as ` · pii:<class>`) in the tenant schemas crm, booking and
 #      tripplanner, and in the shared tables that have a tenant_id column; plus the same columns of every partition of
-#      such a table. Read live from the catalogue (PII_COLUMNS_SQL) before main(conn) runs.
+#      such a table; not the AA staff directory booking.staff_users (staff identities: seeds link created_by through
+#      it). Read live from the catalogue (PII_COLUMNS_SQL) before main(conn) runs.
 #   2. Every statement that returns rows to the script (fetch, fetchrow, fetchval, fetchmany, cursor, prepare,
 #      copy_from_query, copy_from_table) is planned first with EXPLAIN (VERBOSE, FORMAT JSON) in a savepoint (nothing
 #      runs). A plan's top-level output (and any InitPlan / SubPlan it uses, and any subquery / CTE it reads from) that
@@ -2474,6 +2475,7 @@ WITH RECURSIVE tagged AS (
       JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
       JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid AND a.attnum = d.objsubid AND NOT a.attisdropped
      WHERE d.objsubid > 0 AND d.description LIKE 'pii:%'
+       AND NOT (n.nspname = 'booking' AND c.relname = 'staff_users')
        AND (n.nspname = ANY($1::text[])
             OR (n.nspname = 'shared' AND EXISTS (
                     SELECT 1 FROM pg_catalog.pg_attribute t

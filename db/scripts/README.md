@@ -39,7 +39,8 @@ migration in its owner repo, not a script.
   of a tenant table:
   - *personal-data column* = a column whose comment starts with a DM-6.1 `pii:` tag (the ` · pii:<class>` suffix in
     `docs/architecture/db-schema-reference.md`), read live from the catalogue, in schemas `crm`, `booking`,
-    `tripplanner` and in the `shared` tables that have a `tenant_id` column, and the same columns of their partitions;
+    `tripplanner` and in the `shared` tables that have a `tenant_id` column, and the same columns of their partitions
+    (not the AA staff directory `booking.staff_users`);
   - *carries a value* = the plan's top-level output (or a subquery, CTE, InitPlan or SubPlan feeding it) names the
     column or a whole row of its table (`t.*`, `row_to_json(t)`), in any expression except `count(...)` (with its
     `FILTER`) and `IS [NOT] NULL`. `lower(email)`, `min(name)`, `string_agg(...)` are reads; using the column in

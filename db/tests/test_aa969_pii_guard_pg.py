@@ -44,6 +44,8 @@ CREATE TABLE shared.tenants (tenant_id uuid PRIMARY KEY, name text, billing_emai
 COMMENT ON COLUMN shared.tenants.billing_email IS 'pii:contact';
 CREATE TABLE shared.admin_users (id uuid PRIMARY KEY, email text);
 COMMENT ON COLUMN shared.admin_users.email IS 'pii:contact';
+CREATE TABLE booking.staff_users (id uuid PRIMARY KEY, cis_user_id text);
+COMMENT ON COLUMN booking.staff_users.cis_user_id IS 'pii:online_id';
 CREATE VIEW booking.v_customer_mail AS SELECT id, email FROM booking.customers;
 INSERT INTO crm.traveler VALUES ('00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-0000000000a1',
                                  'invented@example.test', 'Invented Person', 'active');
@@ -76,6 +78,7 @@ ALLOWED = [
     "SELECT traveler_id FROM crm.traveler WHERE display_name = 'x'",
     "SELECT tenant_id, count(*) AS n FROM crm.trip GROUP BY tenant_id",
     "SELECT email FROM shared.admin_users",                     # staff table: no tenant_id
+    "SELECT cis_user_id FROM booking.staff_users",              # the AA staff directory
     "SELECT name, is_pilot FROM shared.tenants",
     "SELECT 1 AS ok",
     "SHOW server_version",
