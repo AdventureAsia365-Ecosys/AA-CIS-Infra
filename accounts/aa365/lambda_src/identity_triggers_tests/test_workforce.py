@@ -381,6 +381,8 @@ CIS_ADMIN_E2E_ATTRS = {"email": CIS_ADMIN_E2E, "email_verified": "true"}
 FLAG = "E2E_DEV_ONLY_STAFF_ENABLED"
 CRM_STAFF_E2E = "e2e-crm-staff@e2e-mail.lumiguides.it.com"
 CRM_STAFF_E2E_ATTRS = {"email": CRM_STAFF_E2E, "email_verified": "true"}
+CIS_CS_E2E = "e2e-cis-cs@e2e-mail.lumiguides.it.com"
+CIS_CS_E2E_ATTRS = {"email": CIS_CS_E2E, "email_verified": "true"}
 
 
 @pytest.fixture
@@ -396,7 +398,11 @@ def test_cis_admin_e2e_constants_and_dev_only_map():
     assert workforce.E2E_CIS_ADMIN_TEST_STAFF_EMAIL == CIS_ADMIN_E2E
     assert workforce.E2E_CIS_ADMIN_TEST_STAFF_GROUPS == ("cis-admin",)
     # Guard: the dev-only map is exactly the one address, and the always-on map did not gain it.
-    assert dict(workforce.E2E_DEV_ONLY_TEST_STAFF) == {CIS_ADMIN_E2E: ("cis-admin",), CRM_STAFF_E2E: ("crm-ops", "crm-support")}
+    assert dict(workforce.E2E_DEV_ONLY_TEST_STAFF) == {
+        CIS_ADMIN_E2E: ("cis-admin",),
+        CRM_STAFF_E2E: ("crm-ops", "crm-support"),
+        CIS_CS_E2E: ("cis-customer_success",),
+    }
     assert CIS_ADMIN_E2E not in workforce.E2E_TEST_STAFF
     assert set(workforce.E2E_TEST_STAFF) == {E2E, BOOKING_E2E}
     assert workforce.DEV_ONLY_E2E_FLAG == FLAG and workforce.DEV_ONLY_E2E_ON == "true"
@@ -574,9 +580,14 @@ def test_cis_admin_e2e_address_has_its_own_rule_and_prefix():
 
     admin = _resource_block(tf, "aws_ses_receipt_rule", "e2e_cognito_admin")
     assert "count         = local.e2e_admin_enabled ? 1 : 0" in admin
-    assert re.search(r"recipients\s*=\s*\[local\.e2e_mail_admin_recipient, local\.e2e_mail_crm_staff_recipient\]", admin)
+    assert re.search(r"recipients\s*=\s*\[local\.e2e_mail_admin_recipient, local\.e2e_mail_crm_staff_recipient, "
+                     r"local\.e2e_mail_cis_cs_recipient\]", admin)
     assert locals_["e2e_mail_crm_staff_recipient"] == "e2e-crm-staff@${local.e2e_mail_domain}"
     assert "crm_staff_recipient" not in recipients
+    # A10d (AA-1035): the cs address shares the admin rule and prefix, never e2e-cognito (CI-readable inbound/).
+    assert locals_["e2e_mail_cis_cs_recipient"] == "e2e-cis-cs@${local.e2e_mail_domain}"
+    assert workforce.E2E_CIS_CS_TEST_STAFF_EMAIL.split("@", 1)[0] == "e2e-cis-cs"
+    assert "cis_cs_recipient" not in recipients
     assert "object_key_prefix = local.e2e_mail_admin_prefix" in admin
     assert 'tls_policy    = "Require"' in admin and "scan_enabled  = true" in admin
     assert "after         = aws_ses_receipt_rule.crm_ingest.name" in admin
@@ -685,3 +696,80 @@ def test_look_alikes_of_the_crm_staff_address_are_denied(email, dev_flag_on):
 @pytest.mark.parametrize("attrs", [E2E_ATTRS, BOOKING_E2E_ATTRS, CIS_ADMIN_E2E_ATTRS])
 def test_the_other_e2e_accounts_cannot_borrow_the_crm_staff_groups(attrs, dev_flag_on):
     denied(workforce.pre_token_generation, token_event(attrs, ["crm-ops", "crm-support"]))
+
+
+# ------------------------------------------------------------------ A10d: Dev-only CIS customer_success E2E address (AA-1035, S270)
+def test_cis_cs_e2e_constants():
+    assert workforce.E2E_CIS_CS_TEST_STAFF_EMAIL == CIS_CS_E2E
+    assert workforce.E2E_CIS_CS_TEST_STAFF_GROUPS == ("cis-customer_success",)
+    assert CIS_CS_E2E not in workforce.E2E_TEST_STAFF
+    # The group is a staff group the trigger keeps (identity.tf local.id_staff_groups mirrors the default).
+    assert "cis-customer_success" in workforce.DEFAULT_STAFF_GROUPS.split(",")
+
+
+@pytest.mark.parametrize("source", ["TokenGeneration_HostedAuth", "TokenGeneration_RefreshTokens"])
+def test_cis_cs_e2e_gets_exactly_customer_success_with_the_flag(source, dev_flag_on, capsys):
+    assert workforce.pre_sign_up(admin_create(CIS_CS_E2E))["response"]["autoConfirmUser"] is False
+    out = workforce.pre_token_generation(
+        token_event(CIS_CS_E2E_ATTRS, ["cis-customer_success", "rogue"], source=source, client_id="cis"))
+    details = out["response"]["claimsAndScopeOverrideDetails"]
+    assert details["groupOverrideDetails"]["groupsToOverride"] == ["cis-customer_success"]
+    assert details["accessTokenGeneration"]["claimsToAddOrOverride"] == {"email": CIS_CS_E2E}
+    assert {"event": "workforce_e2e_test_token_issued", "trigger": source, "client_id": "cis",
+            "email": CIS_CS_E2E} in _events(capsys)
+
+
+@pytest.mark.parametrize("groups", [
+    ["cis-admin"],
+    ["cis-customer_success", "cis-admin"],
+    ["cis-customer_success", "cis-content"],
+    ["cis-customer_success", "cis-support"],
+    ["cis-customer_success", "booking-admin"],
+    ["cis-customer_success", "crm-ops"],
+    ["cis-customer_success", "crm-platform-admin"],
+    ["cis-content"],
+    ["crm-ops", "crm-support"],
+    [],
+])
+def test_cis_cs_e2e_with_any_other_group_set_is_denied(groups, dev_flag_on):
+    denied(workforce.pre_token_generation, token_event(CIS_CS_E2E_ATTRS, groups))
+
+
+@pytest.mark.parametrize("flag", [None, "false", "TRUE", "True", " true", "true ", "1", "yes", ""])
+def test_cis_cs_e2e_is_denied_unless_the_flag_is_exactly_true(flag, monkeypatch):
+    if flag is None:
+        monkeypatch.delenv(FLAG, raising=False)
+    else:
+        monkeypatch.setenv(FLAG, flag)
+    denied(workforce.pre_sign_up, admin_create(CIS_CS_E2E))
+    denied(workforce.pre_token_generation, token_event(CIS_CS_E2E_ATTRS, ["cis-customer_success"]))
+
+
+@pytest.mark.parametrize("email", [
+    "e2e-cis-cs2@e2e-mail.lumiguides.it.com",
+    "e2e-cis-cs@e2e-mail.lumiguides.it.com.evil.com",
+    "e2e-cis-cs@lumiguides.it.com",
+    "e2e-cis-cs@e2e-mail.lumiguides.it.com\u200b",
+    "e2e-cis-c\u0455@e2e-mail.lumiguides.it.com",
+])
+def test_look_alikes_of_the_cis_cs_address_are_denied(email, dev_flag_on):
+    denied(workforce.pre_sign_up, admin_create(email))
+    denied(workforce.pre_token_generation,
+           token_event({"email": email, "email_verified": "true"}, ["cis-customer_success"]))
+
+
+@pytest.mark.parametrize("attrs", [E2E_ATTRS, BOOKING_E2E_ATTRS, CIS_ADMIN_E2E_ATTRS, CRM_STAFF_E2E_ATTRS])
+def test_the_other_e2e_accounts_cannot_borrow_the_cis_cs_group(attrs, dev_flag_on):
+    denied(workforce.pre_token_generation, token_event(attrs, ["cis-customer_success"]))
+
+
+@pytest.mark.parametrize("groups", [["cis-admin"], ["crm-ops", "crm-support"], ["cis-content"], ["booking-admin"]])
+def test_the_cis_cs_account_cannot_borrow_another_e2e_group_set(groups, dev_flag_on):
+    denied(workforce.pre_token_generation, token_event(CIS_CS_E2E_ATTRS, groups))
+
+
+def test_every_e2e_address_maps_to_its_own_group_set():
+    # No address borrows another address's groups: the five tuples are pairwise distinct.
+    tuples = list(workforce.E2E_TEST_STAFF.values()) + list(workforce.E2E_DEV_ONLY_TEST_STAFF.values())
+    assert len(tuples) == len(set(tuples)) == 5
+    assert not set(workforce.E2E_TEST_STAFF) & set(workforce.E2E_DEV_ONLY_TEST_STAFF)
