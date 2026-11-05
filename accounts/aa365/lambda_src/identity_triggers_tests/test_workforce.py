@@ -155,13 +155,13 @@ BOOKING_E2E_ATTRS = {"email": BOOKING_E2E, "email_verified": "true"}
 
 def test_e2e_constant_is_the_one_test_address():
     assert workforce.E2E_TEST_STAFF_EMAIL == E2E
-    assert workforce.E2E_TEST_STAFF_GROUPS == ("cis-reviewer",)
+    assert workforce.E2E_TEST_STAFF_GROUPS == ("cis-content",)
 
 
 def test_e2e_allow_map_is_exactly_the_two_test_addresses():
     # Guard (AA-910): a new entry or a wider group set must be a reviewed change of this test too.
     assert dict(workforce.E2E_TEST_STAFF) == {
-        E2E: ("cis-reviewer",),
+        E2E: ("cis-content",),
         BOOKING_E2E: ("booking-admin",),
     }
     # Every key is already normalised (the lookup is on the lower-cased address).
@@ -188,7 +188,7 @@ def test_e2e_test_address_may_be_admin_created(email):
 ])
 def test_other_addresses_near_the_e2e_one_are_still_denied(email):
     denied(workforce.pre_sign_up, admin_create(email))
-    denied(workforce.pre_token_generation, token_event({"email": email, "email_verified": "true"}, ["cis-reviewer"]))
+    denied(workforce.pre_token_generation, token_event({"email": email, "email_verified": "true"}, ["cis-content"]))
 
 
 def test_e2e_self_sign_up_is_still_denied():
@@ -199,14 +199,14 @@ def test_e2e_self_sign_up_is_still_denied():
 def test_e2e_missing_domain_config_still_fails_closed(monkeypatch):
     monkeypatch.setenv("ALLOWED_EMAIL_DOMAIN", "")
     denied(workforce.pre_sign_up, admin_create(E2E))
-    denied(workforce.pre_token_generation, token_event(E2E_ATTRS, ["cis-reviewer"]))
+    denied(workforce.pre_token_generation, token_event(E2E_ATTRS, ["cis-content"]))
 
 
 @pytest.mark.parametrize("source", ["TokenGeneration_HostedAuth", "TokenGeneration_RefreshTokens"])
-def test_e2e_reviewer_gets_a_token(source, capsys):
-    out = workforce.pre_token_generation(token_event(E2E_ATTRS, ["cis-reviewer", "rogue"], source=source))
+def test_e2e_content_gets_a_token(source, capsys):
+    out = workforce.pre_token_generation(token_event(E2E_ATTRS, ["cis-content", "rogue"], source=source))
     details = out["response"]["claimsAndScopeOverrideDetails"]
-    assert details["groupOverrideDetails"]["groupsToOverride"] == ["cis-reviewer"]
+    assert details["groupOverrideDetails"]["groupsToOverride"] == ["cis-content"]
     assert details["accessTokenGeneration"]["claimsToAddOrOverride"] == {"email": E2E}
     lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     assert any(line["event"] == "workforce_e2e_test_token_issued" for line in lines)
@@ -214,9 +214,9 @@ def test_e2e_reviewer_gets_a_token(source, capsys):
 
 @pytest.mark.parametrize("groups", [
     ["cis-admin"],
-    ["cis-content"],
-    ["cis-reviewer", "cis-admin"],
-    ["cis-reviewer", "booking-sales"],
+    ["cis-reviewer"],             # AA-1035: the retired alias group is no staff group any more (stripped -> none)
+    ["cis-content", "cis-admin"],
+    ["cis-content", "booking-sales"],
     ["booking-admin"],
     [],
     ["rogue"],
@@ -225,12 +225,20 @@ def test_e2e_with_any_other_staff_group_is_denied(groups):
     denied(workforce.pre_token_generation, token_event(E2E_ATTRS, groups))
 
 
+def test_e2e_leftover_retired_group_is_stripped_not_kept(capsys):
+    # AA-1035: cis-reviewer is no longer in STAFF_GROUPS, so a leftover membership is stripped like any non-staff group;
+    # the token carries exactly cis-content.
+    out = workforce.pre_token_generation(token_event(E2E_ATTRS, ["cis-content", "cis-reviewer"]))
+    details = out["response"]["claimsAndScopeOverrideDetails"]
+    assert details["groupOverrideDetails"]["groupsToOverride"] == ["cis-content"]
+
+
 def test_e2e_unverified_email_is_denied():
-    denied(workforce.pre_token_generation, token_event({"email": E2E, "email_verified": "false"}, ["cis-reviewer"]))
+    denied(workforce.pre_token_generation, token_event({"email": E2E, "email_verified": "false"}, ["cis-content"]))
 
 
 def test_e2e_token_log_names_the_account(capsys):
-    workforce.pre_token_generation(token_event(E2E_ATTRS, ["cis-reviewer"], client_id="cis"))
+    workforce.pre_token_generation(token_event(E2E_ATTRS, ["cis-content"], client_id="cis"))
     lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     assert {"event": "workforce_e2e_test_token_issued", "trigger": "TokenGeneration_HostedAuth",
             "client_id": "cis", "email": E2E} in lines
@@ -287,7 +295,7 @@ def test_kelvin_sign_really_folds_to_the_booking_address():
 def test_booking_e2e_denied_when_staff_groups_override_drops_booking_admin(monkeypatch, capsys):
     # A STAFF_GROUPS override without booking-admin strips the only group, so the token is refused (never issued
     # with an empty or different group set).
-    monkeypatch.setenv("STAFF_GROUPS", "cis-admin,cis-reviewer,booking-sales")
+    monkeypatch.setenv("STAFF_GROUPS", "cis-admin,cis-content,booking-sales")
     denied(workforce.pre_token_generation, token_event(BOOKING_E2E_ATTRS, ["booking-admin"]))
     lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     assert any(line["event"] == "workforce_pre_token_denied" for line in lines)
@@ -325,9 +333,9 @@ def test_booking_e2e_admin_gets_a_token(source, capsys):
 
 
 @pytest.mark.parametrize("groups", [
-    ["cis-reviewer"],             # the CIS E2E account's set does not transfer
+    ["cis-content"],              # the CIS E2E account's set does not transfer
     ["cis-admin"],
-    ["booking-admin", "cis-reviewer"],
+    ["booking-admin", "cis-content"],
     ["booking-admin", "booking-sales"],
     ["booking-admin", "crm-platform-admin"],
     ["booking-sales"],
@@ -442,14 +450,14 @@ def test_the_flag_is_read_per_call(monkeypatch):
 def test_the_flag_does_not_change_the_always_on_entries(monkeypatch):
     for value in ("true", "false"):
         monkeypatch.setenv(FLAG, value)
-        assert workforce._e2e_groups(E2E, E2E) == ("cis-reviewer",)
+        assert workforce._e2e_groups(E2E, E2E) == ("cis-content",)
         assert workforce._e2e_groups(BOOKING_E2E, BOOKING_E2E) == ("booking-admin",)
 
 
 @pytest.mark.parametrize("groups", [
     ["cis-reviewer"],
     ["cis-content"],
-    ["cis-admin", "cis-reviewer"],
+    ["cis-admin", "cis-content"],
     ["cis-admin", "booking-admin"],
     ["cis-admin", "booking-sales"],
     ["cis-admin", "crm-platform-admin"],
@@ -467,7 +475,7 @@ def test_cis_admin_e2e_with_any_other_group_set_is_denied(groups, dev_flag_on, c
 
 
 def test_cis_admin_e2e_denied_when_staff_groups_override_drops_cis_admin(dev_flag_on, monkeypatch):
-    monkeypatch.setenv("STAFF_GROUPS", "cis-reviewer,booking-admin")
+    monkeypatch.setenv("STAFF_GROUPS", "cis-content,booking-admin")
     denied(workforce.pre_token_generation, token_event(CIS_ADMIN_E2E_ATTRS, ["cis-admin"]))
 
 

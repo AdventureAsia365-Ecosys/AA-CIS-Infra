@@ -78,7 +78,6 @@ STATE_DIR_NAME = "identity-spike"  # <AA-Ecosys>/.tmp-session/identity-spike (gi
 # identity.tf local.id_staff_groups (same list as the trigger's DEFAULT_STAFF_GROUPS).
 STAFF_GROUPS = (
     "cis-admin",
-    "cis-reviewer",
     "cis-content",
     # AA-1035 R2 / root ADR 0019 d3: the six new CIS staff groups (identity.tf, the trigger's DEFAULT_STAFF_GROUPS).
     "cis-content_lead",

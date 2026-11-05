@@ -213,8 +213,8 @@ def test_create_staff_with_name_still_suppressed(stubbed, ctx_factory):
         "MessageAction": "SUPPRESS",
     })
     idp_stub.add_response("admin_add_user_to_group", {},
-                          {"UserPoolId": POOL, "Username": STAFF_EMAIL, "GroupName": "cis-reviewer"})
-    assert wb.cmd_create_staff(ctx_factory(), STAFF_EMAIL, "cis-reviewer", "Pham Quoc Nghiep", BG_EMAIL) == 0
+                          {"UserPoolId": POOL, "Username": STAFF_EMAIL, "GroupName": "cis-content"})
+    assert wb.cmd_create_staff(ctx_factory(), STAFF_EMAIL, "cis-content", "Pham Quoc Nghiep", BG_EMAIL) == 0
     idp_stub.assert_no_pending_responses()
 
 

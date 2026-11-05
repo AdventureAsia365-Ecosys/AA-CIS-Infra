@@ -146,8 +146,8 @@ locals {
     "cis-ai_ops"           = { precedence = 14, description = "CIS AI operations (shared.admin_role = ai_ops)" }
     "cis-customer_success" = { precedence = 16, description = "CIS customer success (shared.admin_role = customer_success)" }
     "cis-finance"          = { precedence = 18, description = "CIS finance (shared.admin_role = finance)" }
-    # AA-1035: an alias of cis-content for one release (CIS 363 merged the reviewer rows into content).
-    "cis-reviewer"        = { precedence = 20, description = "CIS reviewer, alias of content for one release (AA-1035)" }
+    # AA-1035: cis-reviewer (rank 20, an alias of cis-content for one release after CIS 363) is retired: CIS 375
+    # moved its last member, the A10 E2E account, to content, and the CIS API maps no role to it.
     "cis-tenant_qa"       = { precedence = 24, description = "CIS tenant content QA (shared.admin_role = tenant_qa)" }
     "cis-support"         = { precedence = 26, description = "CIS support (shared.admin_role = support)" }
     "cis-content"         = { precedence = 30, description = "CIS content (shared.admin_role = content)" }

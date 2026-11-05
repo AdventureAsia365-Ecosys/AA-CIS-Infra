@@ -38,7 +38,7 @@
 #     same prefix; the CIS reader role can read them too, which is acceptable for synthetic Dev agency
 #     users (no real person, no real agency data). Spam/virus scan on; SES only tags the verdict, the reader must not
 #     trust the message beyond pulling a 6-8 digit code from it.
-#   - Messages hold one-time sign-in codes of a reviewer-role CIS staff user and (AA-910) of a booking-admin
+#   - Messages hold one-time sign-in codes of a content-role CIS staff user and (AA-910) of a booking-admin
 #     staff user, whose codes the CIS reader role can read too (same prefix; accepted for Dev, S250).
 #     1-day expiry, BPA, SSE-S3, TLS-only access, object reads denied to every principal except the reader role and the MFA
 #     admin role. SES may only PutObject from this account's rule (aws:SourceAccount + SourceArn).
