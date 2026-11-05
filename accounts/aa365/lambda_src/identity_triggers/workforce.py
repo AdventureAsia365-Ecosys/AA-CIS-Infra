@@ -17,8 +17,8 @@ fixed allow-map E2E_TEST_STAFF {address: exact staff groups} of addresses outsid
 mailbox of the SES inbound test domain the email-code E2E tests read their codes from. An address in the map
 may be admin-created and may get a token, and only while its staff groups are exactly the tuple it maps to;
 any other group set DENIES the token (logged), it is never stripped. Two entries:
-  - E2E_TEST_STAFF_EMAIL (CIS E2E, cis-reviewer only, no Booking group). The CIS directory (migration 250,
-    staff_directory.E2E_TEST_STAFF_EMAIL) holds the same rule.
+  - E2E_TEST_STAFF_EMAIL (CIS E2E, cis-content only, no Booking group; cis-reviewer until the AA-1035 alias removal,
+    CIS 375). The CIS directory (migrations 250 and 375, staff_directory.E2E_TEST_STAFF_EMAIL) holds the same rule.
   - E2E_BOOKING_TEST_STAFF_EMAIL (Booking staff admin E2E, booking-admin only, no CIS group). Not in the CIS
     directory (its CHECK refuses the address): created by an admin with AdminCreateUser + SUPPRESS, no password.
     CIS refuses its tokens (no cis-* group -> 403 no_cis_group).
@@ -69,7 +69,7 @@ from common import (
 # TEMPORARY (AA-816, AA-910): see the module docstring. Exact match after lower-casing, ASCII input only (_e2e_groups);
 # nothing else matches.
 E2E_TEST_STAFF_EMAIL = "e2e@e2e-mail.lumiguides.it.com"
-E2E_TEST_STAFF_GROUPS = ("cis-reviewer",)
+E2E_TEST_STAFF_GROUPS = ("cis-content",)
 # AA-910 (S250, Nghiep): Booking staff admin signed-in checks. booking-admin is the least-privileged Booking group
 # that reads every staff page, /staff and /audit-log included (AA-Booking backend/app/auth/staff.py PERMISSIONS).
 E2E_BOOKING_TEST_STAFF_EMAIL = "e2e-booking@e2e-mail.lumiguides.it.com"
@@ -95,7 +95,8 @@ DEV_ONLY_E2E_FLAG = "E2E_DEV_ONLY_STAFF_ENABLED"
 DEV_ONLY_E2E_ON = "true"
 
 DEFAULT_STAFF_GROUPS = (
-    "cis-admin,cis-reviewer,cis-content,"
+    # AA-1035 R2 close-out: cis-reviewer (alias of content) is retired with CIS 375; a leftover membership is stripped.
+    "cis-admin,cis-content,"
     # AA-1035 R2 / root ADR 0019 d3: the six new CIS staff groups and Booking finance (identity.tf local.id_staff_groups).
     "cis-content_lead,cis-ai_ops,cis-customer_success,cis-finance,cis-tenant_qa,cis-support,"
     "booking-admin,booking-sales,booking-contracting,booking-content_creator,booking-finance,"
