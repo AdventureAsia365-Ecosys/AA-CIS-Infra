@@ -20,6 +20,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import check_migration_files as files  # noqa: E402
 import run_migration as rm  # noqa: E402
 
+# FakeConn has no pii: catalogue (its PII_COLUMNS_SQL read is empty unless a test sets pii_columns): the run-script
+# guard's fail-closed floor is off for the runner tests that import it; test_aa969_pii_guard tests the floor itself.
+rm.PII_MIN_COLUMNS = 0
+
 PLAIN = """-- Migration 240: AA-1 — add a column.
 --
 BEGIN;
@@ -243,6 +247,8 @@ class FakeConn:
         return self.states[min(self.checks, len(self.states)) - 1]
 
     async def fetch(self, query, *args):
+        if query == rm.PII_COLUMNS_SQL:             # AA-969 d16: the run-script guard's catalogue read
+            return list(getattr(self, "pii_columns", []))
         if query == rm.EXPAND_SNAPSHOT_SQL:         # AA-993 M2b: expand_before on the first read, then expand_after
             self.expand_reads = getattr(self, "expand_reads", 0) + 1
             first = self.expand_reads == 1

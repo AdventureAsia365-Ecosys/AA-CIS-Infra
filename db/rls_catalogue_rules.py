@@ -124,6 +124,9 @@ ALLOWLIST: dict[str, dict[str, str]] = {
         # AA-1035 R2 (CIS 364): staff tables, read and written only by the staff API.
         "shared.staff_tenant_assignment": f"staff -> tenant assignment, staff API only (AA-1035, 364); {_CIS_ONLY}",
         "shared.staff_view_as_session": f"staff view-as access log, staff API only (AA-1035, 364); {_CIS_ONLY}",
+        # AA-1036 R3 (CIS 374): the agency's add-on requests, read and written only by the CIS API (tenant id from the
+        # verified token or the staff path).
+        "shared.tenant_addon_request": f"add-on requests and staff decisions (AA-1036, 374); {_CIS_ONLY}",
         "acp_shared.acp_output_rules": "RLS on with the X1 cis_app parity policy only (CIS 244); no tenant-pool grant",
         # AA-923 WM-34 (CIS 316): the same table quarantined in `retired` (no grant to any role), dropped after 14 days.
         # The acp_shared key above goes stale once 316 is applied on Dev (reported, not fatal); remove both with the

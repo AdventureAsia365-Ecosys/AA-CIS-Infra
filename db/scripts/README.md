@@ -32,6 +32,45 @@ migration in its owner repo, not a script.
   in the bronze bucket: a script cannot call Bedrock, read other secrets or write elsewhere.
 - Print aggregate counts, ids and statuses only: no secret, DSN, password or customer row values (the
   task log is readable in the Actions run). A line prefix such as `SCRIPT ` keeps the output easy to grep.
+- **Personal data (AA-969, root ADR 0019 d16; enforced since the pilot protections):** `main(conn)` gets a guarded
+  connection. Before any statement runs (`fetch`, `fetchrow`, `fetchval`, `fetchmany`, `cursor`, `prepare`,
+  `copy_from_query`, `copy_from_table`, `execute`, `executemany`), the runner plans it with
+  `EXPLAIN (VERBOSE, FORMAT JSON)` in a savepoint and refuses it (`PiiReadRefused`, exit 13) when it would **return**
+  or **copy** a value of a personal-data column of a tenant table:
+  - *personal-data column* = a column whose comment starts with a DM-6.1 `pii:` tag (the ` · pii:<class>` suffix in
+    `docs/architecture/db-schema-reference.md`), read live from the catalogue, in schemas `crm`, `booking`,
+    `tripplanner` and in the `shared` tables that have a `tenant_id` column, and the same columns of their partitions
+    (not the AA staff directory `booking.staff_users`); a catalogue read that fails, or that names fewer than
+    `PII_MIN_COLUMNS` (20) columns, runs nothing (exit 13: the `pii:` comments look lost);
+  - *returns a value* = the plan's top-level output (through `UNION` / `UNION ALL` members, partitions, subqueries,
+    CTEs (recursive too), InitPlans and SubPlans) names the column or a whole row of its table (`t.*`,
+    `row_to_json(t)`), in any expression except `count(...)` (with its `FILTER`) and `IS [NOT] NULL`.
+    `lower(email)`, `min(name)`, `string_agg(...)` are reads; using the column in `WHERE`, `JOIN`, `GROUP BY` or
+    `ORDER BY` is not (only the value leaves the database, not the filter);
+  - *copies a value* = `INSERT … SELECT`, `UPDATE … SET`, `MERGE` (also inside a CTE) writing it into a table that
+    has no personal-data column, `CREATE TABLE AS`, `SELECT INTO`, `CREATE MATERIALIZED VIEW`, `set_config()` in a
+    statement that reads a personal-data table, and any `*_to_xml`, `ts_stat` or `dblink` call (they run SQL text
+    the planner never sees). Rewriting a personal-data table in place passes (`UPDATE crm.x SET col = jsonb_set(col,
+    …)`);
+  - statements the planner cannot explain: `SHOW` / `SET` / `RESET` pass; through `execute()` also transaction
+    control, `LOCK`, `ANALYZE`, `VACUUM`, `PREPARE` (its `EXECUTE` is planned), `NOTIFY`, and DDL without a query
+    (`ALTER`, `DROP`, `TRUNCATE`, `GRANT`, `COMMENT`, `CREATE INDEX` / `VIEW` / `TABLE (…)` / `ROLE` …). `DO`, `CALL`,
+    `COPY`, `IMPORT`, `LOAD` and `CREATE FUNCTION` / `PROCEDURE` / `TRIGGER` / `RULE` / `EXTENSION` … are refused
+    (code the guard cannot plan); anything else that fails to plan is refused (fail closed). A multi-statement
+    `execute()` string runs one statement at a time, each checked first, in one transaction; a row-returning call
+    takes one statement;
+  - `add_log_listener`, `add_listener` and `add_query_logger` are refused, and so is any attribute whose name starts
+    with `_` (the wrapped connection is private);
+  - a failed statement's error text never reaches the log: a database error shows its class, SQLSTATE and the
+    table / column / constraint names only (`invalid input syntax for type integer: "<value>"` quotes the row). Do
+    not print a caught database error yourself either.
+  Known limits (the review covers them): rows of a set-returning function over a tagged column in `FROM`
+  (`jsonb_array_elements(col) e`) are not followed (the tour liveness probe reads one itinerary key that way), and a
+  value moved into an untagged column of the same tagged table (`UPDATE crm.x SET note = email`) is not tracked.
+  So count, group and check, never print a row: `SELECT count(*) FILTER (WHERE email IS NULL)` passes,
+  `SELECT email FROM crm.traveler WHERE …` does not. A script that truly needs the values is app code or a migration,
+  not a run-script. The root repo's Claude Code hook `.claude/hooks/pilot-pii-guard.sh` refuses the same reads before
+  an agent dispatches a run-script or an ECS exec script.
 - Destructive data changes follow the DRY RUN procedure (`skill/aa-cis-schema/references/destructive-ops.md`):
   a dry-run script first (counts only), then the change as a separate reviewed script or a flag in the
   same PR. `run-script` takes **no RDS snapshot**; take one by hand before an irreversible change.
