@@ -120,7 +120,7 @@ password / API key / token in `.tf` / `.tfvars` / `.hcl`; a credential-named key
   are transcoded to UTF-8; no path allowlist); an octopus merge or a git error
   fails the check. For a false positive prefer a narrow allowlist in `.gitleaks.toml`: a commit
   fingerprint does not survive the squash merge (header of `.gitleaksignore`).
-- **gitleaks full history** (`secret-scan-history.yml`: nightly, every push to `main`, on demand; AA-981): every commit of every
+- **gitleaks full history** (`secret-scan-history.yml`: nightly and on demand; a push to `main` scans its own commits only, S271; AA-981): every commit of every
   branch and tag, plus the head of every pull request (`refs/pull/*/head`, closed PRs included: GitHub
   keeps them public after the branch is deleted). Historical findings are pinned by commit fingerprint in
   `.gitleaksignore`; anything else turns the job red. A new real finding is rotated first, then pinned. On demand the job
