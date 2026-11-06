@@ -33,7 +33,9 @@ AA-CIS-App and AA-Booking `docs/implementation-notes/AA-911-staff-ecs.md`.
   reads the module's locals-only `staff_web_deploy_scope` output so it can be applied alone with `-target`.
 - **ECR:** `aa-booking-<env>-admin` is created by CI (BookingEcrRepoManage). `aa-cis-<env>-admin` is created by the
   bootstrap apply: CI may only configure `aa-cis-<env>-*` repos, and `CisEcrRepoConfigure` now lists the admin repo too.
-  No new statement: the apply role's inline policy is near its 10,240-character limit (cicd_sec.tf).
+  No new statement: the apply role's inline policy is near its 10,240-character limit (cicd_sec.tf). Same bootstrap
+  change: `BookingAlbListenerRuleManage` (listeners of the shared ALB only) also allows Add/RemoveListenerCertificates
+  for the staff certificate; no managed policy of the apply role grants them.
 - **Health:** `/api/healthz` on both apps (outside both apps' proxy matchers), same path in the container check and the
   target groups.
 

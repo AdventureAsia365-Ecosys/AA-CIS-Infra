@@ -361,6 +361,9 @@ locals {
         "elasticloadbalancing:DeleteRule",
         "elasticloadbalancing:ModifyRule",
         "elasticloadbalancing:SetRulePriorities",
+        # AA-911: the staff web certificate on the :443 listener (staff_web_edge.tf aws_lb_listener_certificate).
+        "elasticloadbalancing:AddListenerCertificates",
+        "elasticloadbalancing:RemoveListenerCertificates",
       ]
       Resource = [
         "arn:aws:elasticloadbalancing:${var.aws_region}:${var.account_id}:listener/app/${local.name_prefix}-alb/*",
