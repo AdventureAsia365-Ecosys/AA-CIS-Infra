@@ -81,7 +81,7 @@ resource "aws_secretsmanager_secret" "crm_db" {
   name                    = "crm/${var.environment}/database-url"
   description             = "AA-Partner (CRM) DB connection string (role crm_app, schema crm, shared RDS). Value set out-of-band (AA-932)."
   recovery_window_in_days = var.environment == "dev" ? 0 : 30
-  tags                    = merge(local.crm_tags, { Issue = "AA-932" })
+  tags                    = merge(local.crm_tags, { Issue = "AA-932", DataClassification = "restricted" })
 }
 
 # ── Key policies ─────────────────────────────────────────────────────────────────────────────────
@@ -345,7 +345,7 @@ resource "aws_kms_key" "crm_data" {
   enable_key_rotation      = true
   deletion_window_in_days  = 30
   policy                   = data.aws_iam_policy_document.crm_kms_data.json
-  tags                     = merge(local.crm_tags, { Name = "crm-${var.environment}-data", Issue = "AA-932" })
+  tags                     = merge(local.crm_tags, { Name = "crm-${var.environment}-data", Issue = "AA-932", Component = "encryption", DataClassification = "restricted" })
 }
 
 resource "aws_kms_key" "crm_ingest" {
@@ -355,7 +355,7 @@ resource "aws_kms_key" "crm_ingest" {
   enable_key_rotation      = true
   deletion_window_in_days  = 30
   policy                   = data.aws_iam_policy_document.crm_kms_ingest.json
-  tags                     = merge(local.crm_tags, { Name = "crm-${var.environment}-ingest", Issue = "AA-932" })
+  tags                     = merge(local.crm_tags, { Name = "crm-${var.environment}-ingest", Issue = "AA-932", Component = "encryption", DataClassification = "restricted" })
 }
 
 # Asymmetric keys cannot rotate automatically; a new seal key is a new key + alias move (UpdateAlias alarms).
@@ -365,7 +365,7 @@ resource "aws_kms_key" "crm_seal" {
   customer_master_key_spec = "RSA_3072"
   deletion_window_in_days  = 30
   policy                   = data.aws_iam_policy_document.crm_kms_seal.json
-  tags                     = merge(local.crm_tags, { Name = "crm-${var.environment}-seal", Issue = "AA-932" })
+  tags                     = merge(local.crm_tags, { Name = "crm-${var.environment}-seal", Issue = "AA-932", Component = "encryption", DataClassification = "restricted" })
 }
 
 resource "aws_kms_alias" "crm" {
@@ -418,7 +418,7 @@ resource "aws_cloudwatch_event_rule" "crm_kms_key_admin" {
     }
   })
 
-  tags = merge(local.crm_tags, { Issue = "AA-932" })
+  tags = merge(local.crm_tags, { Issue = "AA-932", Component = "security" })
 }
 
 resource "aws_cloudwatch_event_target" "crm_kms_key_admin" {
@@ -454,7 +454,7 @@ resource "aws_cloudwatch_event_rule" "crm_kms_foreign_use" {
     }
   })
 
-  tags = merge(local.crm_tags, { Issue = "AA-932" })
+  tags = merge(local.crm_tags, { Issue = "AA-932", Component = "security" })
 }
 
 resource "aws_cloudwatch_event_target" "crm_kms_foreign_use" {

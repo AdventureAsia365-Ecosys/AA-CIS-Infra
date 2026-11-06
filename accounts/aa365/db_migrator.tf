@@ -80,14 +80,14 @@ resource "aws_secretsmanager_secret" "rds_cis_app" {
   name                    = "${var.project}/${var.environment}/rds-cis-app"
   description             = "X1 (AA-852/AA-860): DSN of LOGIN role cis_app, the CIS api + worker runtime (S18). Value set by hand in the Console (S17), then DB Migrate mode=set-password."
   recovery_window_in_days = var.environment == "dev" ? 0 : 30
-  tags                    = local.common_tags
+  tags                    = merge(local.common_tags, { Component = "db", DataClassification = "restricted" })
 }
 
 resource "aws_secretsmanager_secret" "db_migrator" {
   name                    = "${var.project}/${var.environment}/db-migrator"
   description             = "X1 (AA-852): DSN of LOGIN role db_migrator, the DB Migrate login from S22. Value set by hand in the Console (S20/S22), then DB Migrate mode=set-password."
   recovery_window_in_days = var.environment == "dev" ? 0 : 30
-  tags                    = local.shared_tags
+  tags                    = merge(local.shared_tags, { Component = "db", DataClassification = "restricted" })
 }
 
 # -----------------------------------------------------------------------------
@@ -112,7 +112,7 @@ resource "aws_iam_role" "db_migrate_execution" {
   name                 = "${local.db_migrate_family}-execution-role"
   permissions_boundary = aws_iam_policy.workload_boundary.arn
   assume_role_policy   = data.aws_iam_policy_document.db_migrate_assume.json
-  tags                 = local.shared_tags
+  tags                 = merge(local.shared_tags, { Component = "db" })
 
   depends_on = [time_sleep.wait_for_iam_propagation]
 }
@@ -161,7 +161,7 @@ resource "aws_iam_role" "db_migrate_task" {
   name                 = "${local.db_migrate_family}-task-role"
   permissions_boundary = aws_iam_policy.workload_boundary.arn
   assume_role_policy   = data.aws_iam_policy_document.db_migrate_assume.json
-  tags                 = local.shared_tags
+  tags                 = merge(local.shared_tags, { Component = "db" })
 
   depends_on = [time_sleep.wait_for_iam_propagation]
 }
@@ -222,7 +222,7 @@ resource "aws_ecs_task_definition" "db_migrate" {
     }
   }])
 
-  tags = merge(local.shared_tags, { Name = "${local.db_migrate_family}-task" })
+  tags = merge(local.shared_tags, { Name = "${local.db_migrate_family}-task", Component = "db" })
 
   lifecycle {
     # Merge gate for the hand edit above: ECS accepts any env name, so without this an unedited

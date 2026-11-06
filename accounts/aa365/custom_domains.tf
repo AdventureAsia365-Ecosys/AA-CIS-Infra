@@ -34,7 +34,7 @@
 # =============================================================================
 
 locals {
-  cd_tags = merge(local.ecosys_tags, { App = "shared", Issue = "AA-818" })
+  cd_tags = merge(local.ecosys_tags, { App = "shared", Component = "edge", Issue = "AA-818" })
 
   cd_booking_api_host     = "api-booking.${var.dns_zone_name}"
   cd_tripplanner_api_host = "api-tripplanner.${var.dns_zone_name}"

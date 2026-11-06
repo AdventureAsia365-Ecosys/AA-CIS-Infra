@@ -26,6 +26,8 @@ resource "aws_iam_role" "cost_explorer_reader" {
       }
     ]
   })
+
+  tags = { Component = "billing" } # S271: tagging standard (FIN-03)
 }
 
 resource "aws_iam_role_policy" "cost_explorer_reader_policy" {

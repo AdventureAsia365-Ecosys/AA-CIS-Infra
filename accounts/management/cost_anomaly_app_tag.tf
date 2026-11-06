@@ -44,6 +44,8 @@ resource "aws_ce_anomaly_monitor" "app_tag" {
       Values       = [each.value]
     }
   })
+
+  tags = { Component = "billing" } # S271: tagging standard (FIN-03)
 }
 
 resource "aws_ce_anomaly_subscription" "app_tag" {
@@ -68,4 +70,6 @@ resource "aws_ce_anomaly_subscription" "app_tag" {
       values        = [tostring(var.anomaly_threshold_usd)]
     }
   }
+
+  tags = { Component = "billing" } # S271: tagging standard (FIN-03)
 }

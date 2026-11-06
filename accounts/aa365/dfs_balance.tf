@@ -138,7 +138,7 @@ resource "aws_iam_role" "dfs_balance_exec" {
   name                 = "${local.dfs_balance_fn_name}-exec"
   permissions_boundary = aws_iam_policy.workload_boundary.arn
   assume_role_policy   = data.aws_iam_policy_document.dfs_balance_assume.json
-  tags                 = local.common_tags
+  tags                 = merge(local.common_tags, { Component = "jobs" })
 }
 
 # VPC ENI management for a Lambda placed in the VPC (parity with the other app Lambdas).
@@ -173,7 +173,7 @@ resource "aws_iam_role_policy" "dfs_balance_perms" {
 resource "aws_cloudwatch_log_group" "dfs_balance" {
   name              = "/aws/lambda/${local.dfs_balance_fn_name}"
   retention_in_days = 30 # AA-872 (S241 D-09): app logs 30 days
-  tags              = local.common_tags
+  tags              = merge(local.common_tags, { Component = "jobs" })
 }
 
 # ── Lambda function ──────────────────────────────────────────────────────────
@@ -208,7 +208,7 @@ resource "aws_lambda_function" "dfs_balance_check" {
     aws_iam_role_policy_attachment.dfs_balance_vpc,
   ]
 
-  tags = merge(local.common_tags, { Function = "dfs-balance-check", Issue = "AA-627" })
+  tags = merge(local.common_tags, { Function = "dfs-balance-check", Issue = "AA-627", Component = "jobs" })
 }
 
 # ── EventBridge Scheduler → Lambda (dedicated invoke role) ───────────────────
@@ -233,7 +233,7 @@ resource "aws_iam_role" "dfs_balance_scheduler" {
   name                 = "${local.dfs_balance_fn_name}-scheduler"
   permissions_boundary = aws_iam_policy.workload_boundary.arn
   assume_role_policy   = data.aws_iam_policy_document.dfs_balance_scheduler_assume.json
-  tags                 = local.common_tags
+  tags                 = merge(local.common_tags, { Component = "jobs" })
 }
 
 resource "aws_iam_role_policy" "dfs_balance_scheduler_invoke" {

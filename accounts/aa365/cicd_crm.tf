@@ -262,6 +262,8 @@ resource "aws_iam_policy" "tf_apply_crm" {
   name        = "aa-cis-infra-tf-apply-crm"
   description = "AA-931: aa-cis-infra-tf-apply grants for the AA-Partner (CRM) stack (bootstrap, MFA apply)"
   policy      = data.aws_iam_policy_document.tf_apply_crm.json
+
+  tags = merge(local.shared_tags, { Component = "cicd" }) # S271: tagging standard (FIN-03)
 }
 
 # Takes the slot freed by AWSStepFunctionsFullAccess (cicd.tf), so the role stays at 10 managed policies.

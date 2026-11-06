@@ -118,7 +118,7 @@ resource "aws_cognito_user_pool" "m2m" {
 
   mfa_configuration = "OFF"
 
-  tags = local.idm2m_tags
+  tags = merge(local.idm2m_tags, { DataClassification = "restricted" })
 }
 
 resource "aws_cognito_resource_server" "booking_b2b" {
@@ -207,7 +207,7 @@ resource "aws_secretsmanager_secret" "m2m_crm_client" {
   name                    = "aa-crm/${var.environment}/m2m-booking-client"
   description             = "AA-Partner (CRM) client credentials of the aa-m2m pool (JSON: client_id, client_secret, token_url, scopes). Value set after apply, never by Terraform. AA-972."
   recovery_window_in_days = var.environment == "dev" ? 0 : 30
-  tags                    = merge(local.idm2m_tags, { App = "crm" })
+  tags                    = merge(local.idm2m_tags, { App = "crm", DataClassification = "restricted" })
 }
 
 output "identity_m2m_pool_id" {

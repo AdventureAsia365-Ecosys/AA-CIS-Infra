@@ -566,9 +566,17 @@ health / CPU / REST 5XX, TripPlanner Lambda errors + sustained throttles (AA-833
 5-minute periods), shared RDS storage + connections, job backlog per owner (AA-751),
 and 30-day retention (application class, S241 D-09 / AA-872; it was 14 days before AA-872) on the TripPlanner
 Lambda and CIS API Gateway execution log groups (imported).
-Its resources carry the blueprint tags (`Project = AA-Ecosys`, `App`); TripPlanner and Booking
-resources also carry `App`. Provider `default_tags` are unchanged (re-tagging every resource needs
-a wider CI-role grant). ECS runs the CIS API service
+**Tags (S271, root tagging standard FIN-03 `docs/architecture/tagging-standard.md`):** every taggable resource carries
+the eight mandatory keys. The provider `default_tags` of each root (`accounts/aa365/versions.tf` `local.tag_defaults`)
+give `Project = aa-ecosys`, `Environment`, `Owner = tech-lead`, `ManagedBy = terraform`, `CostCenter = technology` and
+`DataClassification = internal`; `App` and `Component` come from the module tag maps (`local.common_tags`,
+`local.shared_tags`, `bk_tags`, `crm_tags`, `tp_tags`, ...) and never from `default_tags` in this root (the management
+and acc3 roots, single-purpose, default them). Data stores override `DataClassification` (RDS, secrets, Cognito pools,
+CRM buckets and keys `restricted`). `Account` and `Service` are retired keys. The **Terraform Plan (dev)** check runs
+`tools/terraform/tag_guard.py` on the plan JSON against `tools/terraform/tag_policy.json` (keys, allowed values,
+forbidden spellings, `exempt_types`); `tools/finops/untagged_report.py` lists live resources that miss keys and the
+month's untagged spend for the C8 review. A `default_tags` change re-tags every resource, bootstrap IAM included, so it
+is applied locally with the MFA admin profile, not by the CI apply role. ECS runs the CIS API service
 (`aa-cis-dev-api` on cluster `aa-cis-dev-cluster`) with `stopTimeout = 90` so in-flight requests
 drain on deploy (AA-310, `modules/ecs/main.tf`). The CIS api and worker `DATABASE_URL` is the DSN of
 the runtime role `cis_app` (`secret_rds_arn` → `aws_secretsmanager_secret.rds_cis_app`, X1 S18), and the CIS task

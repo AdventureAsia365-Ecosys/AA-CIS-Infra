@@ -1,0 +1,109 @@
+{
+ "format_version": "1.2",
+ "terraform_version": "1.15.5",
+ "planned_values": {
+  "root_module": {}
+ },
+ "resource_changes": [
+  {
+   "address": "aws_lambda_function.example",
+   "mode": "managed",
+   "type": "aws_lambda_function",
+   "name": "example",
+   "provider_name": "registry.terraform.io/hashicorp/aws",
+   "change": {
+    "actions": [
+     "update"
+    ],
+    "before": {},
+    "after": {
+     "function_name": "example-fn",
+     "s3_key": "placeholder.zip",
+     "tags": {
+      "App": "booking",
+      "Component": "api"
+     },
+     "tags_all": {
+      "Environment": "dev",
+      "Project": "aa-ecosys",
+      "App": "booking",
+      "Component": "api",
+      "Owner": "tech-lead",
+      "ManagedBy": "terraform",
+      "CostCenter": "technology",
+      "DataClassification": "internal",
+      "Name": "example-fn"
+     }
+    },
+    "after_unknown": {}
+   }
+  },
+  {
+   "address": "aws_sqs_queue.example",
+   "mode": "managed",
+   "type": "aws_sqs_queue",
+   "name": "example",
+   "provider_name": "registry.terraform.io/hashicorp/aws",
+   "change": {
+    "actions": [
+     "create"
+    ],
+    "before": null,
+    "after": {
+     "name": "example-q",
+     "tags": {},
+     "tags_all": {
+      "Environment": "dev",
+      "Project": "aa-ecosys",
+      "App": "shared",
+      "Component": "jobs",
+      "Owner": "tech-lead",
+      "ManagedBy": "terraform",
+      "CostCenter": "technology",
+      "DataClassification": "internal"
+     }
+    },
+    "after_unknown": {
+     "arn": true
+    }
+   }
+  },
+  {
+   "address": "aws_iam_role_policy.example",
+   "mode": "managed",
+   "type": "aws_iam_role_policy",
+   "name": "example",
+   "provider_name": "registry.terraform.io/hashicorp/aws",
+   "change": {
+    "actions": [
+     "update"
+    ],
+    "before": {},
+    "after": {
+     "name": "example",
+     "policy": "{}"
+    },
+    "after_unknown": {}
+   }
+  },
+  {
+   "address": "aws_s3_object.zip",
+   "mode": "managed",
+   "type": "aws_s3_object",
+   "name": "zip",
+   "provider_name": "registry.terraform.io/hashicorp/aws",
+   "change": {
+    "actions": [
+     "update"
+    ],
+    "before": {},
+    "after": {
+     "key": "placeholder.zip",
+     "tags": {},
+     "tags_all": {}
+    },
+    "after_unknown": {}
+   }
+  }
+ ]
+}

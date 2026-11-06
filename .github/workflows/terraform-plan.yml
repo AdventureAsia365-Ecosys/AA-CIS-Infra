@@ -48,7 +48,24 @@ jobs:
       - name: Terraform Plan
         env:
           TF_VAR_db_password: ${{ secrets.TF_VAR_DB_PASSWORD }}
-        run: terraform plan
+        run: terraform plan -out=tfplan
+
+      # S271: tagging standard (root docs/architecture/tagging-standard.md, FIN-03). Fails this required check when a
+      # taggable resource the plan creates or updates lacks a mandatory tag or holds a value outside
+      # tools/terraform/tag_policy.json. terraform-bin is the real binary next to the setup-terraform wrapper (the wrapper
+      # adds a "[command]..." line to stdout, which is not JSON). The plan JSON holds sensitive values in clear text: it
+      # stays in RUNNER_TEMP, is never printed or uploaded, and is deleted right after the guard, like the apply's.
+      - name: Tag guard
+        run: |
+          umask 077
+          if ! command -v terraform-bin >/dev/null; then
+            echo "terraform-bin not found (setup-terraform wrapper layout changed?)" >&2
+            exit 1
+          fi
+          J="$RUNNER_TEMP/tfplan.json"
+          trap 'rm -f "$J" tfplan' EXIT
+          terraform-bin show -json tfplan > "$J"
+          python3 -B "$GITHUB_WORKSPACE/tools/terraform/tag_guard.py" "$J" --summary "$GITHUB_STEP_SUMMARY"
 
   # AA-1004: the management account root (accounts/management/README.md §11). Runs only when the PR touches that
   # root, this workflow or the report tool. Not a required check (the ruleset names "Terraform Plan (dev)" only).
@@ -85,7 +102,7 @@ jobs:
         run: |
           # A file, not a pipe: with pipefail, `grep -q` closing the pipe early could fail `git diff` (SIGPIPE).
           git diff --name-only "$BASE_SHA"...HEAD > "$RUNNER_TEMP/changed.txt"
-          if grep -qE '^(accounts/management/|\.github/workflows/terraform-plan\.yml$|tools/terraform/drift_report\.py$)' \
+          if grep -qE '^(accounts/management/|\.github/workflows/terraform-plan\.yml$|tools/terraform/(drift_report\.py|tag_guard\.py|tag_policy\.json)$)' \
               "$RUNNER_TEMP/changed.txt"; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
@@ -180,9 +197,20 @@ jobs:
           LOG="$RUNNER_TEMP/management-plan.jsonl"
           trap 'rm -f "$LOG"' EXIT
           set +e
-          terraform -chdir="$ROOT" plan -input=false -detailed-exitcode -json > "$LOG"
+          terraform -chdir="$ROOT" plan -input=false -detailed-exitcode -json -out="$RUNNER_TEMP/management.tfplan" > "$LOG"
           RC=$?
           set -e
           echo "terraform plan exit code: $RC"
           python3 -B tools/terraform/drift_report.py --mode plan --plan-log "$LOG" --exit-code "$RC" --root "$ROOT" \
             --summary "$GITHUB_STEP_SUMMARY"
+
+      # S271: the same tag guard as the dev plan (tagging standard FIN-03). Prints only addresses (identity-store keys
+      # redacted), keys and the offending tag values; the plan JSON stays in RUNNER_TEMP and is deleted.
+      - name: Tag guard (management)
+        if: steps.wiring.outputs.ok == 'true'
+        run: |
+          umask 077
+          J="$RUNNER_TEMP/management-plan.json"
+          trap 'rm -f "$J" "$RUNNER_TEMP/management.tfplan"' EXIT
+          terraform -chdir="$ROOT" show -json "$RUNNER_TEMP/management.tfplan" > "$J"
+          python3 -B tools/terraform/tag_guard.py "$J" --summary "$GITHUB_STEP_SUMMARY"

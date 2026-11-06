@@ -65,7 +65,8 @@ resource "aws_secretsmanager_secret" "redis_auth" {
   recovery_window_in_days = var.environment == "dev" ? 0 : 30
 
   tags = merge(var.tags, {
-    Name = "${var.project}/${var.environment}/redis-auth"
+    Name               = "${var.project}/${var.environment}/redis-auth"
+    DataClassification = "restricted" # S271: a credential (tagging standard FIN-03)
   })
 }
 

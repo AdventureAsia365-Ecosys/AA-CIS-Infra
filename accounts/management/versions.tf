@@ -48,14 +48,20 @@ provider "aws" {
   # wrong-account writes came from a default profile pointing at the wrong account).
   allowed_account_ids = [var.management_account_id]
 
+  # Tagging standard (root docs/architecture/tagging-standard.md, FIN-03; S271). This root holds only organization-level
+  # governance, so App and Component have a root-wide default here (unlike accounts/aa365); the trail, budget and CI
+  # resources set their own Component. Checked on every plan by tools/terraform/tag_guard.py.
   default_tags {
     tags = {
-      Project     = "AA-CIS"
-      Environment = "shared"
-      App         = "shared"
-      ManagedBy   = "Terraform"
-      Account     = "aa-management"
-      Issue       = "AA-1004"
+      Project            = "aa-ecosys"
+      Environment        = "shared"
+      App                = "ecosystem"
+      Component          = "governance"
+      Owner              = "tech-lead"
+      ManagedBy          = "terraform"
+      CostCenter         = "technology"
+      DataClassification = "internal"
+      Issue              = "AA-1004"
     }
   }
 }

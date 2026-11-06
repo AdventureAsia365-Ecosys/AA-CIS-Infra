@@ -51,7 +51,7 @@ variable "tripplanner_jobs_retention_override_enabled" {
 
 locals {
   tp_jobs_fn_name = "${local.tp_name_prefix}-jobs"
-  tp_jobs_tags    = merge(local.tp_tags, { Issue = "AA-861" })
+  tp_jobs_tags    = merge(local.tp_tags, { Component = "jobs", Issue = "AA-861" })
 }
 
 # ── Placeholder artifact (the app deploy replaces it; see tripplanner_browse_zip) ──

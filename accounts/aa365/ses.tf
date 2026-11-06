@@ -30,7 +30,7 @@ locals {
   # transactional: app mail (Booking quotes/OTP, TripPlanner advisor notifications, CIS).
   ses_streams = toset(["workforce", "external", "transactional"])
 
-  ses_tags = merge(local.ecosys_tags, { App = "shared", Issue = "AA-811" })
+  ses_tags = merge(local.ecosys_tags, { App = "shared", Component = "mail", Issue = "AA-811" })
 
   ses_dmarc = join("; ", compact([
     "v=DMARC1",

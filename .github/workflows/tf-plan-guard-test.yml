@@ -15,6 +15,9 @@ name: Terraform Plan Guard Tests
 # listed: other tests here check that the files they read are named).
 # S263 (AA-939 follow-up): plus the partner-pool AdminDeleteUser guards (test_partner_pool_delete_user.py reads
 # identity_partner.tf and identity_iam.tf), so those paths trigger it too.
+# S271: plus the tag guard (tools/terraform/tag_guard.py; test_tag_guard.py reads every root's versions.tf, so those
+# files trigger it too, accounts/management/** already does) and the monthly untagged report
+# (tools/finops/untagged_report.py, tools/finops/tests).
 # The guarded fixture must exit non-zero, the clean and no-op fixtures must exit 0, and the guard
 # must stay wired in front of the apply step in terraform-apply.yml. Offline, no AWS access.
 
@@ -23,6 +26,7 @@ on:
     branches: [main]
     paths:
       - "tools/terraform/**"
+      - "tools/finops/**" # S271: untagged_report.py (tagging standard FIN-03)
       - ".github/workflows/**"
       - ".github/workflows/terraform-apply.yml"
       - ".github/workflows/tf-plan-guard-test.yml"
@@ -39,10 +43,13 @@ on:
       - ".github/workflows/terraform-plan.yml"
       - "tools/docs/aws_mask.py"
       - "accounts/management/**"
+      - "accounts/aa365/versions.tf" # S271: provider default_tags (test_tag_guard.py)
+      - "accounts/acc3-bedrock/versions.tf"
   push:
     branches: [main]
     paths:
       - "tools/terraform/**"
+      - "tools/finops/**" # S271: untagged_report.py (tagging standard FIN-03)
       - ".github/workflows/**"
       - ".github/workflows/terraform-apply.yml"
       - ".github/workflows/tf-plan-guard-test.yml"
@@ -59,6 +66,8 @@ on:
       - ".github/workflows/terraform-plan.yml"
       - "tools/docs/aws_mask.py"
       - "accounts/management/**"
+      - "accounts/aa365/versions.tf" # S271: provider default_tags (test_tag_guard.py)
+      - "accounts/acc3-bedrock/versions.tf"
 
 permissions:
   contents: read
@@ -81,7 +90,7 @@ jobs:
         run: python -m pip install "pytest>=8,<10" pyyaml==6.0.2
 
       - name: Run guard tests
-        run: python -m pytest -p no:cacheprovider -q tools/terraform/tests
+        run: python -m pytest -p no:cacheprovider -q tools/terraform/tests tools/finops/tests
 
       # The same command the apply workflow's self-test runs; it must refuse.
       - name: Guarded fixture is refused
