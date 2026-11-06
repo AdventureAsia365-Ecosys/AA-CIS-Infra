@@ -193,6 +193,10 @@ owners:
         schemas: [booking]
         objects: {relation: [SELECT], sequence: [USAGE], function: [EXECUTE]}
         default_acl: {tables: [DELETE, INSERT, SELECT, UPDATE], sequences: [SELECT, USAGE], functions: [EXECUTE]}
+        # Optional: relations the owner keeps from the runtime role on purpose. Left out of runtime_grants.<owner>;
+        # cell owner_only.<owner> asserts the role holds NO privilege on them (absent = nothing held). bk-045
+        # (AA-1046): the archive of the retired customer money rows (accounting exception, DM-7.1).
+        owner_only_relations: [booking.retired_b2c_record]
     job_table: booking.job
     job_kind_prefix: bk_
     idle_exempt_kinds: [bk_inquiry_pull] # always queued at +60 s (bk-002 intake, Booking intake.RECURRING)

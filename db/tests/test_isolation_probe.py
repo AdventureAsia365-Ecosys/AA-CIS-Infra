@@ -367,6 +367,49 @@ class BuildCellsTest(unittest.TestCase):
         st, _ = statuses(f)
         self.assertEqual(st["runtime_grants.booking"], "FAIL")
 
+    def test_owner_only_relation_is_exempt_from_the_runtime_baseline(self):
+        # AA-1046 (bk-045): booking.retired_b2c_record is owner-only (REVOKE ALL ... FROM booking). The baseline SQL
+        # leaves the owner-only relations ($6) out of its relation branch, and only them.
+        relation = re.search(r"SELECT 'relation'.*?UNION ALL", p.RUNTIME_MISSING_SQL, re.S).group(0)
+        self.assertIn("AND NOT (s.nspname || '.' || c.relname) = ANY($6::text[])", relation)
+        self.assertEqual(p.RUNTIME_MISSING_SQL.count("$6"), 1)
+        self.assertEqual(p.OWNERS["booking"].runtime_privileges[0].owner_only, ("booking.retired_b2c_record",))
+        for name in ("cis", "tripplanner", "crm"):
+            self.assertEqual(p.OWNERS[name].runtime_privileges[0].owner_only, (), name)
+
+    def test_owner_only_cell(self):
+        f = today_facts()
+        f["catalog"]["registered"] = ["rl-001", "243", "bk-014"]
+        f["catalog"]["anchor_owner"]["booking"] = "bk_owner"
+        f["ownership"]["booking"] = {"offenders": []}
+        f["default_acl"]["booking"]["booking"]["rows"] = defacl("booking", "bk_owner", BK_DEFACL)
+        rel = "booking.retired_b2c_record"
+        # before bk-045: the archive is absent, nothing is held
+        f["owner_only"] = {"booking": {"booking": {"relations": [{"name": rel, "present": False, "held": None}]}}}
+        st, _ = statuses(f)
+        self.assertEqual((st["owner_only.booking"], st["runtime_grants.booking"]), ("pass", "pass"))
+        # after bk-045 as written: present, nothing held; runtime_grants does not ask SELECT on it (exempt in SQL)
+        f["owner_only"]["booking"]["booking"]["relations"] = [{"name": rel, "present": True, "held": None}]
+        st, _ = statuses(f)
+        self.assertEqual((st["owner_only.booking"], st["runtime_grants.booking"]), ("pass", "pass"))
+        # the runtime role got a privilege on it back (a default privilege, a later GRANT): the cell fails
+        f["owner_only"]["booking"]["booking"]["relations"] = [{"name": rel, "present": True, "held": "SELECT"}]
+        st, _ = statuses(f)
+        self.assertEqual(st["owner_only.booking"], "FAIL")
+        # any other relation without SELECT still fails runtime_grants
+        f["owner_only"]["booking"]["booking"]["relations"] = [{"name": rel, "present": True, "held": None}]
+        f["runtime_grants"]["booking"]["booking"] = {"missing": [{"kind": "relation", "name": "booking.other_t",
+                                                                 "missing": "SELECT"}]}
+        st, _ = statuses(f)
+        self.assertEqual((st["owner_only.booking"], st["runtime_grants.booking"]), ("pass", "FAIL"))
+        # could not evaluate: not ok
+        f["owner_only"]["booking"]["booking"] = {"error": "42501 InsufficientPrivilegeError: x"}
+        st, _ = statuses(f)
+        self.assertEqual(st["owner_only.booking"], "FAIL")
+        # only owners with owner-only relations get the cell
+        self.assertNotIn("owner_only.tripplanner", st)
+        self.assertNotIn("owner_only.cis", st)
+
     def test_default_acl_findings(self):
         bk = p.OWNERS["booking"]
         rp = bk.runtime_privileges[0]
