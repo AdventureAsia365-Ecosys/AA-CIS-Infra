@@ -31,9 +31,17 @@ name: Migration Copy Guard
 # scoped dir has a copy; with no such copy it passes without minting a token. The job also runs on pull_request, so
 # it never asks for a write permission. The existing owners' tables are grandfathered (DM-7.1).
 # AA-993 I1 (S255): no `paths` filter on pull_request any more. The jobs below are required checks of the ruleset on
-# main (tools/github/infra-main-ruleset.json), and a required check whose workflow never starts blocks the PR. The job
-# `scope` decides instead (tools/github/pr_paths.py, the path list that used to be the filter): when the PR touches
-# none of those paths, guard, lint and retention-rows are skipped, and a skipped job counts as passed.
+# main (tools/github/infra-main-ruleset.json), and a required check whose workflow never starts blocks the PR. The
+# scope step decides instead (db/migration_guard_scope.py, the path list that used to be the filter): when the PR
+# touches none of those paths, the guard's own checks are skipped (the job ends green) and lint, retention-rows and
+# classify are skipped (a skipped job counts as passed).
+# S271 (CI minutes): four jobs instead of five. The scope (was job `scope`) is a step of `guard`, and lint, retention-rows
+# and classify need `guard` for the scope. A PR outside the paths costs one short job, as before; a PR inside them four
+# instead of five (each job is billed by the started minute). The retention rows stay a job of their own and stay OUT of
+# the ruleset (review S271): the check reads a file of another repo (root master) and every crm table, so a root-side
+# gap must show as a red advisory check, never block the required "Copies match owner main" that the copy bot's merge
+# check (db/migration_sync.py merge-check) reads. Wall time: lint, retention-rows and classify start after `guard`
+# (~30 s later).
 on:
   pull_request:
     branches: [main]
@@ -52,24 +60,27 @@ permissions:
   contents: read
 
 jobs:
-  # AA-993 I1: replaces the old pull_request `paths` filter (see the comment above `on:`). Schedule and manual runs
-  # always check everything.
-  scope:
-    name: Migration paths touched?
+  # AA-993 I1 + S271: the scope (the old pull_request `paths` filter, see the comment above `on:`) and the copy compare
+  # in one job. Schedule and manual runs always check everything.
+  guard:
+    name: Copies match owner main
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: read
+      pull-requests: read    # the scope step lists the PR's files
     outputs:
       relevant: ${{ steps.scope.outputs.relevant }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          sparse-checkout: db/migration_guard_scope.py
-          sparse-checkout-cone-mode: false
+          fetch-depth: 0
 
+      # Fail closed (review S255): every later step and the three jobs that need this one run unless this step said
+      # relevant=false explicitly. A failed step (API error, script error) leaves the output empty and the job goes on
+      # (continue-on-error), so a broken scope means the full check, never a silent skip.
       - name: Changed files vs the guard's path list
         id: scope
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           EVENT: ${{ github.event_name }}
@@ -80,39 +91,31 @@ jobs:
           fi
           # Both names of a rename count (moving a file out of db/migrations/ is relevant too).
           gh api --paginate "repos/${{ github.repository }}/pulls/$PR/files" \
-            --jq '.[] | .filename, (.previous_filename // empty)' > changed.txt
+            --jq '.[] | .filename, (.previous_filename // empty)' > "$RUNNER_TEMP/changed-paths.txt"
           # The files API lists at most 3000 files: a PR at that cap may hide a migration path, so it is relevant.
           N=$(gh api "repos/${{ github.repository }}/pulls/$PR" --jq .changed_files)
           if [ "${N:-0}" -ge 3000 ]; then
             echo "relevant=true" >> "$GITHUB_OUTPUT"; echo "$N changed files (>= 3000, the files API cap): every job runs"; exit 0
           fi
-          python3 db/migration_guard_scope.py < changed.txt | tee -a "$GITHUB_OUTPUT"
-          echo "$(wc -l < changed.txt) changed path(s)"
-
-  guard:
-    name: Copies match owner main
-    needs: scope
-    # Fail closed (review S255): skip only on an explicit relevant=false. A failed or cancelled `scope` (API error,
-    # script error) leaves the output empty and this job runs the full check; a skipped job would count as passed.
-    if: ${{ !cancelled() && needs.scope.outputs.relevant != 'false' }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
+          python3 db/migration_guard_scope.py < "$RUNNER_TEMP/changed-paths.txt" | tee -a "$GITHUB_OUTPUT"
+          echo "$(wc -l < "$RUNNER_TEMP/changed-paths.txt") changed path(s)"
 
       # PyYAML only for the registry test (db/tests/test_owners_registry.py reads db/owners.yaml and
       # the workflow); the guards and the runner stay standard-library only.
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        if: steps.scope.outputs.relevant != 'false'
         with:
           python-version: "3.12"
 
       - name: Guard unit tests
+        if: steps.scope.outputs.relevant != 'false'
         run: |
           python -m pip install --quiet pyyaml==6.0.2
           python -m unittest discover -s db/tests -v
 
       - name: Compare copies with owner main
+        id: compare
+        if: steps.scope.outputs.relevant != 'false'
         env:
           GITHUB_TOKEN: ${{ github.token }}
           EVENT: ${{ github.event_name }}
@@ -143,12 +146,17 @@ jobs:
           { echo '### Migration copy guard'; echo '```'; grep -v '^::' guard.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           exit "$status"
 
+      - name: Nothing in the guard's paths
+        if: steps.scope.outputs.relevant == 'false'
+        run: |
+          echo "### Migration copy guard - the PR touches none of the guard's paths (checks skipped)" >> "$GITHUB_STEP_SUMMARY"
+
   lint:
     name: Migration lint and unique numbers
-    needs: scope
-    # Fail closed (review S255): skip only on an explicit relevant=false. A failed or cancelled `scope` (API error,
-    # script error) leaves the output empty and this job runs the full check; a skipped job would count as passed.
-    if: ${{ !cancelled() && needs.scope.outputs.relevant != 'false' }}
+    needs: guard
+    # Fail closed (review S255): skip only on an explicit relevant=false. A failed scope step leaves the output empty and
+    # this job runs the full check (a skipped job would count as passed); it runs when the guard's checks failed too.
+    if: ${{ !cancelled() && needs.guard.outputs.relevant != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -179,10 +187,10 @@ jobs:
 
   retention-rows:
     name: Retention rows for new-app tables
-    needs: scope
-    # Fail closed (review S255): skip only on an explicit relevant=false. A failed or cancelled `scope` (API error,
-    # script error) leaves the output empty and this job runs the full check; a skipped job would count as passed.
-    if: ${{ !cancelled() && needs.scope.outputs.relevant != 'false' }}
+    needs: guard
+    # Not a required check (review S271, see the header). Fail closed like lint: skip only on an explicit
+    # relevant=false; it runs when the guard's checks failed too, so one run shows every reason.
+    if: ${{ !cancelled() && needs.guard.outputs.relevant != 'false' }}
     runs-on: ubuntu-latest
     env:
       ROOT_REPO: AdventureAsia365-Ecosys/AA-Ecosys
@@ -246,9 +254,9 @@ jobs:
   # A required check of the ruleset on main (tools/github/infra-main-ruleset.json, context "Expand classify").
   classify:
     name: Expand classify
-    needs: scope
-    # Fail closed (review S255): skip only on an explicit relevant=false.
-    if: ${{ !cancelled() && needs.scope.outputs.relevant != 'false' }}
+    needs: guard
+    # Fail closed (review S255): skip only on an explicit relevant=false (see lint).
+    if: ${{ !cancelled() && needs.guard.outputs.relevant != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     permissions:
