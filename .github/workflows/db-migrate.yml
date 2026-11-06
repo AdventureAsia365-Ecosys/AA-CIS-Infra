@@ -302,7 +302,8 @@ jobs:
       # every destructive apply dispatch (also when the version turns out to be applied already).
       # AA-869: tagged aa:retain-until = today + 30 days (UTC); the daily rds-snapshot-expiry Lambda
       # (accounts/aa365/rds_snapshot_expiry.tf) deletes it after that date. To keep it longer, move the
-      # tag forward or set aa:retain=keep.
+      # tag forward or set aa:retain=keep. S271: plus the mandatory keys of the tagging standard (root FIN-03), so the
+      # snapshot's storage is billed to App=shared / Component=db instead of showing as untagged spend.
       - name: Snapshot RDS before a destructive migration
         id: snapshot
         if: steps.file.outputs.destructive == 'true' && inputs.mode == 'apply'
@@ -316,6 +317,9 @@ jobs:
             --tags Key=purpose,Value=db-migrate-destructive Key=migration,Value="$MIGRATION" Key=run,Value="${{ github.run_id }}" \
               Key=aa:retain-until,Value="$RETAIN_UNTIL" Key=aa:purpose,Value="db-migrate pre-apply $MIGRATION" \
               Key=aa:source,Value=db-migrate \
+              Key=Project,Value=aa-ecosys Key=Environment,Value="${{ inputs.environment }}" Key=App,Value=shared \
+              Key=Component,Value=db Key=Owner,Value=tech-lead Key=ManagedBy,Value=ci Key=CostCenter,Value=technology \
+              Key=DataClassification,Value=restricted \
             --query 'DBSnapshot.Status' --output text
           aws rds wait db-snapshot-available --db-snapshot-identifier "$SNAP"
           echo "id=$SNAP" >> "$GITHUB_OUTPUT"
