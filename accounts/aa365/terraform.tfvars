@@ -98,3 +98,9 @@ crm_mail_oauth_enabled = true
 # cut-over (staff_web_dns_on_ecs) and its rollback reach every resolver within a minute. Back to false at the Vercel
 # retirement (root runbook staff-web-ecs-cutover.md section 4).
 staff_web_dns_switch_window = true
+
+# AA-911 cut-over (root ADR 0019 d23, runbook docs/ops/runbooks/staff-web-ecs-cutover.md): aa-cis. and booking. point
+# at the shared ALB (the two staff web services on ECS) instead of Vercel. Merge only after the runbook's step 2
+# (verified through the ALB without DNS) and at least 30 minutes after the switch window above was applied.
+# Rollback: false (60 s TTL while the window is on), or the runbook's one-line Route 53 rollback when CI cannot wait.
+staff_web_dns_on_ecs = true
