@@ -59,16 +59,16 @@ class AgreementTests(unittest.TestCase):
 
     def test_guard_jobs_fail_closed_when_scope_fails(self):
         """Review S255: a job that needs a failed job is skipped, and a skipped job passes a required check. Since S271
-        the scope is a step of `guard` (continue-on-error): lint and classify need `guard` and run unless its scope
-        said relevant=false explicitly, also when the guard's own checks failed."""
+        the scope is a step of `guard` (continue-on-error): lint, retention-rows and classify need `guard` and run
+        unless its scope said relevant=false explicitly, also when the guard's own checks failed."""
         wf = (ROOT / ".github" / "workflows" / "migration-copy-guard.yml").read_text(encoding="utf-8")
         conds = re.findall(r"^    needs: guard\n(?:    #.*\n)*    if: (.+)$", wf, re.M)
-        self.assertEqual(len(conds), 2, "lint and classify (AA-993 M2b) each need guard")
+        self.assertEqual(len(conds), 3, "lint, retention-rows and classify (AA-993 M2b) each need guard")
         for c in conds:
             self.assertIn("!cancelled()", c)
             self.assertIn("needs.guard.outputs.relevant != 'false'", c)
         jobs = re.findall(r"^  ([a-z-]+):\n", wf.split("\njobs:\n", 1)[1], re.M)
-        self.assertEqual(jobs, ["guard", "lint", "classify"])
+        self.assertEqual(jobs, ["guard", "lint", "retention-rows", "classify"])
         guard = wf.split("\n  guard:\n", 1)[1].split("\n  lint:\n", 1)[0]
         self.assertNotIn("\n    needs:", guard)
         self.assertNotIn("\n    if:", guard)
@@ -78,14 +78,24 @@ class AgreementTests(unittest.TestCase):
         self.assertIn("continue-on-error: true", scope)
         self.assertIn("db/migration_guard_scope.py", scope)
         # Every check step is skipped only on an explicit relevant=false.
-        for step in ("Guard unit tests", "Compare copies with owner main", "Is any new-app dir in scope?",
-                     "Every scoped table has a DM-7 row"):
+        for step in ("Guard unit tests", "Compare copies with owner main"):
             block = guard.split(f"- name: {step}\n", 1)[1].split("\n      - ", 1)[0]
             self.assertIn("steps.scope.outputs.relevant != 'false'", block, step)
-        # The retention rows (DM-7.1) run when the compare failed too (one run shows every reason).
-        for step in ("Is any new-app dir in scope?", "Every scoped table has a DM-7 row"):
-            block = guard.split(f"- name: {step}\n", 1)[1].split("\n      - ", 1)[0]
-            self.assertIn("!cancelled()", block, step)
+
+    def test_retention_rows_stay_out_of_the_required_check(self):
+        """Review S271: the DM-7.1 check reads the root repo's master and every crm table, so it must not gate the
+        required "Copies match owner main" (the copy bot's merge check reads it) and must not be a required context."""
+        wf = (ROOT / ".github" / "workflows" / "migration-copy-guard.yml").read_text(encoding="utf-8")
+        guard = wf.split("\n  guard:\n", 1)[1].split("\n  lint:\n", 1)[0]
+        self.assertNotIn("check_retention_rows", guard)
+        self.assertNotIn("AA_CI_BOT_PRIVATE_KEY", guard)
+        job = wf.split("\n  retention-rows:\n", 1)[1].split("\n  classify:\n", 1)[0]
+        self.assertIn("    name: Retention rows for new-app tables\n", job)
+        self.assertIn("check_retention_rows.py", job)
+        rules = json.loads((ROOT / "tools" / "github" / "infra-main-ruleset.json").read_text(encoding="utf-8"))
+        contexts = {c["context"] for r in rules["rules"] if r["type"] == "required_status_checks"
+                    for c in r["parameters"]["required_status_checks"]}
+        self.assertNotIn("Retention rows for new-app tables", contexts)
 
     def test_required_checks_are_job_names_of_always_run_workflows(self):
         rules = json.loads((ROOT / "tools" / "github" / "infra-main-ruleset.json").read_text(encoding="utf-8"))

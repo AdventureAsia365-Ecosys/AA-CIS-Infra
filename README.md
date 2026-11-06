@@ -87,7 +87,7 @@ Names only. GitHub secrets: `AWS_ROLE_ARN` (OIDC role assumed by CI), `AWS_REGIO
 `TF_STATE_BUCKET`, `TF_VAR_DB_PASSWORD`, `AA_CI_BOT_PRIVATE_KEY` with the variable `AA_CI_BOT_APP_ID` (GitHub
 App `aa-ecosys-ci-bot`, root ADR 0011: DB Schema Dump and Docs Gen mint a short-lived token on
 AdventureAsia365-Ecosys/AA-Ecosys only, Contents + Pull requests write, in jobs that run on `main` only; the Migration
-Copy Guard `guard` job mints a Contents-read token for its retention-rows steps). Terraform inputs for `accounts/aa365` are in
+Copy Guard retention-rows job mints a Contents-read token). Terraform inputs for `accounts/aa365` are in
 `variables.tf` / `tripplanner_variables.tf` / `booking_variables.tf` and `terraform.tfvars` (no secret values in git —
 secrets are referenced by ARN).
 
