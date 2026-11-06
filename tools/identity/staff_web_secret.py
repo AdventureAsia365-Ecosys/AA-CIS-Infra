@@ -15,8 +15,9 @@ JSON line per secret with its name, the keys that would change / changed and the
 secret are kept. A re-run with nothing to change writes nothing.
 
 Run it AFTER the Terraform apply that creates the shells and BEFORE the first task starts (a task whose secret lacks a
-mapped key fails to start): apply -> this tool --apply -> the first deploy of each app -> scale the service to 1.
-After a client secret rotation, run it again and force a new deployment of the staff web service.
+mapped key fails to start): apply -> this tool --apply -> the first deploy of each app -> scale each app's service
+(aa-cis-<env>-admin, aa-booking-<env>-admin) to 1. After a client secret rotation, run it again and force a new
+deployment of that app's service.
 
 Account guard: refuses to run unless the credentials are for --expect-account. The pool and clients are found by NAME
 (aa-workforce-<env>, aa-workforce-<env>-<client>), never by a pasted id.

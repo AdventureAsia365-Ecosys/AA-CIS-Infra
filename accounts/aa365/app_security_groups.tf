@@ -153,13 +153,13 @@ resource "aws_security_group" "crm_web" {
   tags = merge(local.crm_web_tags, { Name = "${local.name_prefix}-sg-crm-web" })
 }
 
-# ── Staff frontends (ECS service aa-staff-dev-web, modules/environment/staff_web.tf, AA-911): Next.js standalone ──
-# One task, two containers: CIS admin on 3000, Booking admin on 3001. Ingress only from the ALB on those ports (the
+# ── Staff frontends (ECS services aa-cis-dev-admin + aa-booking-dev-admin, modules/environment/staff_web.tf, AA-911) ─
+# Next.js standalone, one service per app: CIS admin on 3000, Booking admin on 3001. Ingress only from the ALB on those ports (the
 # HTTPS host rules of alb_rules.tf). Not in rds_ingress_sg_ids: neither app has database access (both reach data only
 # through their public API hosts).
 resource "aws_security_group" "staff_web" {
   name        = "${local.name_prefix}-sg-staff-web"
-  description = "Staff frontends web task: CIS admin and Booking admin (ADR 0004b, AA-911)"
+  description = "Staff frontends web tasks: CIS admin and Booking admin (ADR 0004b, AA-911)"
   vpc_id      = module.vpc.vpc_id
 
   dynamic "ingress" {

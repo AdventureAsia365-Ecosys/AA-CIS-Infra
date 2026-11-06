@@ -39,8 +39,9 @@ locals {
   # only; the listener's default answers 404 (modules/alb), so no other host reaches any target group. No origin
   # header is involved on this listener (no CloudFront), so alb_rule_order.py's HTTP invariants do not apply to it.
   alb_https_rule_priorities = {
-    staff_cis_admin     = 10 # aa-cis. host -> staff web, container cis-admin (modules/environment staff_web.tf)
-    staff_booking_admin = 11 # booking. host -> staff web, container booking-admin
+    staff_cis_admin     = 10 # aa-cis. host -> CIS admin service (modules/environment staff_web.tf)
+    staff_booking_admin = 11 # booking. host -> Booking admin service
+    staff_apex_redirect = 12 # the apex -> 301 https://aa-cis.<zone>/ (reached once staff_web_apex_on_alb is on)
   }
 }
 
@@ -144,6 +145,36 @@ resource "aws_lb_listener_rule" "staff_booking_admin" {
   condition {
     host_header {
       values = [local.staff_web_hosts.booking]
+    }
+  }
+
+  tags = local.staff_web_tags
+
+  depends_on = [aws_lb_listener_certificate.staff_web]
+}
+
+# AA-911: the apex redirect (dns.tf apex, staff_web_edge.tf var.staff_web_apex_on_alb). Replaces the Vercel domain
+# redirect of aa-cis-frontend; harmless while the apex still points at Vercel (no request reaches it).
+resource "aws_lb_listener_rule" "staff_apex_redirect" {
+  listener_arn = module.alb.https_listener_arn
+  priority     = local.alb_https_rule_priorities.staff_apex_redirect
+
+  action {
+    type = "redirect"
+
+    redirect {
+      host        = local.staff_web_hosts.cis
+      path        = "/"
+      query       = ""
+      protocol    = "HTTPS"
+      port        = "443"
+      status_code = "HTTP_301"
+    }
+  }
+
+  condition {
+    host_header {
+      values = [var.dns_zone_name]
     }
   }
 

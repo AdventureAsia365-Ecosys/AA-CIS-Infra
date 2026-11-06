@@ -117,8 +117,9 @@ values kept in memory, never printed): `aa-cis/<env>/admin-web` {`cis_admin_clie
 and `booking/<env>/admin-web` {`booking_staff_client_secret`}. DRY RUN unless `--apply`; `--only cis|booking` for one
 app; other keys of a secret are kept; a re-run with nothing to change writes nothing.
 
-Order: Terraform apply (creates the shells) -> this tool `--apply` -> the first deploy of each app -> scale the
-service `aa-staff-<env>-web` to 1. After a client-secret rotation: run it again, then force a new deployment.
+Order: Terraform apply (creates the shells) -> this tool `--apply` -> the first deploy of each app -> scale each
+app's service (`aa-cis-<env>-admin`, `aa-booking-<env>-admin`) to 1. After a client-secret rotation: run it again,
+then force a new deployment of that app's service.
 
 ```bash
 python3 tools/identity/staff_web_secret.py            # dry run: which keys would change

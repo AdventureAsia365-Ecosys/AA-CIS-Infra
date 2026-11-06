@@ -92,7 +92,8 @@ resource "aws_route53_record" "parity" {
   zone_id = aws_route53_zone.lumiguides.zone_id
   name    = each.value.name == "" ? var.dns_zone_name : "${each.value.name}.${var.dns_zone_name}"
   type    = each.value.type
-  ttl     = 1800
+  # AA-911: aa-cis. drops to 60 s while the staff web cut-over window is open (staff_web_edge.tf).
+  ttl     = each.key == "aa-cis|CNAME" ? coalesce(local.staff_web_switch_ttl, 1800) : 1800
   records = each.value.records
 }
 
@@ -112,12 +113,27 @@ resource "aws_route53_record" "parity" {
 # Rejected: alias to the CIS ALB (internet-exposed ALB, bypasses the API GW WAF); S3 website
 # redirect (HTTP only, :443 refused); CloudFront + new apex cert (5 more resources for a redirect).
 # -----------------------------------------------------------------------------
+#
+# AA-911 (staff_web_edge.tf var.staff_web_apex_on_alb): the staff admin leaves Vercel, so before the aa-cis-frontend
+# project (which claims the apex) is retired, the apex becomes an alias to the shared ALB, whose :443 listener now
+# serves browsers behind its own web ACL and redirects the apex to aa-cis. (alb_rules.tf staff_apex_redirect, the
+# staff web certificate covers the apex). The "Rejected: alias to the CIS ALB" reason above no longer holds: the
+# listener answers only host rules and the API stays behind API Gateway. Same record, changed in place.
 resource "aws_route53_record" "apex" {
   zone_id = aws_route53_zone.lumiguides.zone_id
   name    = var.dns_zone_name
   type    = "A"
-  ttl     = 300
-  records = var.dns_apex_a_records
+  ttl     = var.staff_web_apex_on_alb ? null : 300
+  records = var.staff_web_apex_on_alb ? null : var.dns_apex_a_records
+
+  dynamic "alias" {
+    for_each = var.staff_web_apex_on_alb ? [1] : []
+    content {
+      name                   = module.alb.alb_dns_name
+      zone_id                = module.alb.alb_zone_id
+      evaluate_target_health = false
+    }
+  }
 }
 
 output "lumiguides_zone_id" {

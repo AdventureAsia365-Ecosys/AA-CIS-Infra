@@ -302,6 +302,10 @@ module "waf" {
   rate_limit     = 1000
   vpc_allow_cidr = var.vpc_cidr
 
+  # AA-911 (staff_web_edge.tf): the staff hosts get their own rate rule instead of RateLimit1000.
+  staff_web_hosts      = values(local.staff_web_hosts)
+  staff_web_rate_limit = var.staff_web_rate_limit
+
   # S263 alert diet (AA-1025): Dev keeps the WAF log 30 days and only the requests a rule acted on.
   log_retention_days = 30
   log_only_acted_on  = true

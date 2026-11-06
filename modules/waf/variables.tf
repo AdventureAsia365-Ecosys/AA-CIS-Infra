@@ -77,3 +77,15 @@ variable "log_only_acted_on" {
   type        = bool
   default     = false
 }
+
+variable "staff_web_hosts" {
+  description = "AA-911: host names of the staff frontends served by the ALB :443 (aa-cis.<zone>, booking.<zone>). Scoped out of RateLimit1000 and counted by StaffWebRateLimit. Empty = neither (the ACL as before AA-911)."
+  type        = list(string)
+  default     = []
+}
+
+variable "staff_web_rate_limit" {
+  description = "AA-911: requests per 5 minutes per client IP on the staff hosts (rule StaffWebRateLimit)."
+  type        = number
+  default     = 5000
+}

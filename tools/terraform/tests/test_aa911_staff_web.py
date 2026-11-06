@@ -3,14 +3,20 @@
 1. The ALB's HTTPS listener answers 404 by default (modules/alb): opening :443 to browsers must never expose the CIS
    API target group directly (the API stays behind API Gateway).
 2. The ALB group opens :443 only through the gated dynamic block (modules/vpc); :80 stays VPC-only.
-3. Every rule on the HTTPS listener takes its priority from local.alb_https_rule_priorities, is a host rule and
-   forwards to a staff web target group (alb_rules.tf).
-4. The staff web stack (modules/environment/staff_web.tf): one Fargate ARM64 task, two containers on distinct ports,
-   FARGATE_SPOT only, desired 0 at create with desired_count / task_definition ignored, health path shared by the
-   container check and the target groups, secret shells without a Terraform version, and the task's security group
-   not admitted by RDS.
-5. Both deploy grants (Booking in the module, CIS in cicd_split.tf) are scoped to the staff family and service.
-6. The DNS cut-over changes the two existing records in place, behind var.staff_web_dns_on_ecs (default false).
+3. Every rule on the HTTPS listener takes its priority from local.alb_https_rule_priorities and is a host rule; each
+   forwards to a staff web target group, except the apex redirect (alb_rules.tf).
+4. The staff web stack (modules/environment/staff_web.tf, S271 amendment of ADR 0019 d23): one service, task
+   definition family and execution role PER APP, Fargate ARM64 256/512, FARGATE_SPOT only, desired 0 at create with
+   desired_count / task_definition ignored, ECS Exec off, no task role, health path shared by the container check
+   and the target groups, secret shells without a Terraform version, each execution role reading only its own app's
+   secrets, and the security group not admitted by RDS.
+5. Each deploy grant (Booking in the module, CIS in cicd_split.tf) is scoped to its OWN app's family, service and
+   execution role.
+6. The DNS cut-over changes the two existing records in place, behind var.staff_web_dns_on_ecs (default false); the
+   switch window gives both records a 60 s TTL; the apex alias is behind its own switch.
+7. The certificate never names a host that CNAMEs off-zone (CAA follows the CNAME, critic C1): wildcard + apex only,
+   validated through the existing wildcard validation record.
+8. The WAF scopes the staff hosts out of RateLimit1000 and rate-limits them in their own rule.
 
 Offline: reads the .tf files; no Terraform, no AWS. Run from the repo root:
     python3 -m pytest -p no:cacheprovider -q tools/terraform/tests/test_aa911_staff_web.py
@@ -31,6 +37,11 @@ SGS = (AA365 / "app_security_groups.tf").read_text(encoding="utf-8")
 CICD_SPLIT = (AA365 / "cicd_split.tf").read_text(encoding="utf-8")
 DNS = (AA365 / "dns.tf").read_text(encoding="utf-8")
 CUSTOM = (AA365 / "custom_domains.tf").read_text(encoding="utf-8")
+CRM_AGENCY = (AA365 / "crm_agency_edge.tf").read_text(encoding="utf-8")
+MAIN = (AA365 / "main.tf").read_text(encoding="utf-8")
+TFVARS = (AA365 / "terraform.tfvars").read_text(encoding="utf-8")
+VERCEL_VARS = (AA365 / "custom_domains_variables.tf").read_text(encoding="utf-8")
+WAF = (ROOT / "modules" / "waf" / "main.tf").read_text(encoding="utf-8")
 
 
 def _block_after(text: str, start: int) -> str:
@@ -89,27 +100,56 @@ def test_every_https_rule_is_a_mapped_host_rule_to_a_staff_target_group():
         found.append(m.group(1))
         assert f"local.alb_https_rule_priorities.{m.group(1)}" in body, f"{m.group(1)}: priority not from the map"
         assert "host_header" in body, f"{m.group(1)}: not a host rule"
-        assert "module.environment.staff_web_target_group_arns[" in body
+        if m.group(1) == "staff_apex_redirect":
+            code = _code(body)
+            assert 'type = "redirect"' in code and "target_group_arn" not in code
+            assert "values = [var.dns_zone_name]" in code and "host        = local.staff_web_hosts.cis" in code
+        else:
+            assert "module.environment.staff_web_target_group_arns[" in body
     assert sorted(found) == sorted(k for k, _ in keys)
 
 
-def test_staff_task_is_one_arm64_spot_task_with_two_containers():
+def test_one_arm64_spot_service_family_and_execution_role_per_app():
     apps = _block_after(STAFF, STAFF.index("staff_web_apps = {"))
-    ports = re.findall(r"port\s*=\s*(\d+)", apps)
+    services = re.findall(r'service\s*=\s*"([^"]+)"', apps)
     containers = re.findall(r'container = "([a-z-]+)"', apps)
     assert sorted(containers) == ["booking-admin", "cis-admin"]
-    assert len(ports) == 2 and len(set(ports)) == 2, "one network namespace: the ports must differ"
+    assert sorted(services) == ["aa-booking-${var.environment}-admin", "aa-cis-${var.environment}-admin"]
 
     td = _resource(STAFF, "aws_ecs_task_definition", "staff_web")
-    assert 'cpu                      = "512"' in td and 'memory                   = "1024"' in td
+    assert "for_each = local.staff_web_apps" in td
+    assert "family                   = each.value.service" in td
+    assert 'cpu                      = "256"' in td and 'memory                   = "512"' in td
     assert 'cpu_architecture        = "ARM64"' in td
+    assert "execution_role_arn       = aws_iam_role.staff_web_ecs_execution[each.key].arn" in td
+    assert "task_role_arn" not in _code(td), "no task role: the apps call no AWS API"
     assert ":bootstrap" in td and ":latest" not in td
+    assert "secrets      = local.staff_web_secrets[each.key]" in td
 
     svc = _code(_resource(STAFF, "aws_ecs_service", "staff_web"))
+    assert "for_each = local.staff_web_apps" in svc
     assert re.findall(r'capacity_provider = "([A-Z_]+)"', svc) == ["FARGATE_SPOT"]
     assert "desired_count   = 0" in svc
     assert "ignore_changes = [desired_count, task_definition]" in svc
-    assert 'dynamic "load_balancer"' in svc and "for_each = local.staff_web_apps" in svc
+    assert "enable_execute_command = false" in svc
+    assert svc.count("load_balancer {") == 1 and 'dynamic "load_balancer"' not in svc
+    # No task role anywhere in the stack (nothing for ECS Exec to use).
+    assert 'resource "aws_iam_role" "staff_web_ecs_task"' not in STAFF
+
+
+def test_each_execution_role_reads_only_its_own_app_secrets():
+    arns = _block_after(STAFF, STAFF.index("staff_web_secret_arns = {"))
+    cis = re.search(r"cis\s*=\s*\[([^\]]*)\]", arns).group(1)
+    booking = re.search(r"booking\s*=\s*\[([^\]]*)\]", arns).group(1)
+    assert "var.cis_admin_secret_arn" in cis and "staff_web_cis" in cis and "staff_web_booking" not in cis
+    assert "staff_web_booking" in booking and "cis" not in booking
+    pol = _code(_resource(STAFF, "aws_iam_role_policy", "staff_web_ecs_execution"))
+    assert "Resource = local.staff_web_secret_arns[each.key]" in pol
+    assert "Resource = aws_ecr_repository.staff_web[each.key].arn" in pol
+    # The container secrets of each app reference only that app's ARNs.
+    secrets = _block_after(STAFF, STAFF.index("staff_web_secrets = {"))
+    booking_secrets = secrets[secrets.index("booking = [") :]
+    assert "cis_admin_secret_arn" not in booking_secrets and "staff_web_cis" not in booking_secrets
 
 
 def test_health_path_is_shared_by_the_container_check_and_the_target_groups():
@@ -132,17 +172,30 @@ def _statement(policy: str, sid: str) -> str:
     return policy[policy.rindex("{", 0, i) : policy.index("},\n", i)]
 
 
-def test_deploy_grants_are_scoped_to_the_staff_family_and_service():
+def test_each_deploy_grant_is_scoped_to_its_own_app():
     booking = _resource(STAFF, "aws_iam_role_policy", "booking_app_deploy_staff_web")
     cis = _resource(CICD_SPLIT, "aws_iam_role_policy", "cis_app_deploy_staff_web")
-    for policy, family in ((booking, "local.staff_web_task_def_pattern"), (cis, "local.staff_web_task_def_arn_pattern")):
-        assert '"*"' not in _code(policy), "no wildcard resource in a staff deploy grant"
-        assert family in _statement(policy, "EcsRegisterStaffWebTaskDefinition")
+    for policy, scope, other in (
+        (booking, "local.staff_web_deploy_scope.booking", "cis"),
+        (cis, "local.cis_staff_web_scope", "booking"),
+    ):
+        code = _code(policy)
+        assert '"*"' not in code, "no wildcard resource in a staff deploy grant"
+        assert f"{scope}.task_def_pattern" in _statement(policy, "EcsRegisterStaffWebTaskDefinition")
         update = _statement(policy, "EcsUpdateStaffWebService")
-        assert "StringLikeIfExists" in update and family in update
-        assert "ecs-tasks.amazonaws.com" in _statement(policy, "PassStaffWebTaskRoles")
+        assert "StringLikeIfExists" in update and f"{scope}.task_def_pattern" in update
+        assert f"{scope}.service_arn" in update
+        pass_role = _statement(policy, "PassStaffWebTaskRoles")
+        assert "ecs-tasks.amazonaws.com" in pass_role
+        assert f'"{other}"' not in code and f".{other}." not in code, f"grant names the {other} app"
+    assert 'aws_iam_role.staff_web_ecs_execution["booking"].arn' in _statement(booking, "PassStaffWebTaskRoles")
+    assert "local.cis_staff_web_scope.execution_role_arn" in _statement(cis, "PassStaffWebTaskRoles")
+    assert 'cis_staff_web_scope = module.environment.staff_web_deploy_scope["cis"]' in CICD_SPLIT
     # The Booking deploy role pushes the Booking admin repo only.
     assert 'aws_ecr_repository.staff_web["booking"].arn' in booking
+    # The scope output is built from locals only (the CIS grant is applied alone with -target).
+    scope = _block_after(STAFF, STAFF.index("staff_web_deploy_scope = {"))
+    assert not re.search(r"\baws_[a-z0-9_]+\.", scope), "no resource attribute in the scope"
 
 
 def test_dns_cutover_is_in_place_and_off_by_default():
@@ -153,3 +206,73 @@ def test_dns_cutover_is_in_place_and_off_by_default():
     assert "var.staff_web_dns_on_ecs ? local.staff_web_alb_dns_name" in aa_cis
     vercel = _resource(CUSTOM, "aws_route53_record", "vercel_frontend")
     assert 'var.staff_web_dns_on_ecs && each.key == "booking" ? local.staff_web_alb_dns_name : each.value' in vercel
+
+
+def test_switch_window_gives_both_staff_records_a_60s_ttl():
+    var = _block_after(EDGE, EDGE.index('variable "staff_web_dns_switch_window"'))
+    assert "default     = false" in var
+    assert "staff_web_switch_ttl = var.staff_web_dns_switch_window ? 60 : null" in EDGE
+    parity = _resource(DNS, "aws_route53_record", "parity")
+    assert 'each.key == "aa-cis|CNAME" ? coalesce(local.staff_web_switch_ttl, 1800) : 1800' in parity
+    vercel = _resource(CUSTOM, "aws_route53_record", "vercel_frontend")
+    assert 'each.key == "booking" ? coalesce(local.staff_web_switch_ttl, 300) : 300' in vercel
+    # On from the first apply, long before the flip.
+    assert re.search(r"^staff_web_dns_switch_window\s*=\s*true", TFVARS, re.M)
+
+
+def test_apex_alias_is_behind_its_own_switch():
+    var = _block_after(EDGE, EDGE.index('variable "staff_web_apex_on_alb"'))
+    assert "default     = false" in var
+    apex = _code(_resource(DNS, "aws_route53_record", "apex"))
+    assert "records = var.staff_web_apex_on_alb ? null : var.dns_apex_a_records" in apex
+    assert 'dynamic "alias"' in apex and "module.alb.alb_zone_id" in apex
+
+
+def _vercel_cname_labels() -> set[str]:
+    labels = set(re.findall(r'^\s*([a-z0-9-]+)\s*=\s*"[^"]*vercel-dns[^"]*"', VERCEL_VARS, re.M))
+    for m in re.finditer(r'"([a-z0-9-]+)\|CNAME" = \{', DNS):
+        if "vercel" in _block_after(DNS, m.start()):
+            labels.add(m.group(1))
+    return labels
+
+
+def test_certificate_never_names_a_host_that_cnames_off_zone():
+    cert = _code(_resource(EDGE, "aws_acm_certificate", "staff_web"))
+    assert "domain_name               = local.staff_web_cert_domain" in cert
+    assert "subject_alternative_names = local.staff_web_cert_sans" in cert
+    assert 'staff_web_cert_domain = "*.${var.dns_zone_name}"' in EDGE
+    assert "staff_web_cert_sans   = [var.dns_zone_name]" in EDGE
+    assert "staff_web_hosts" not in cert
+    labels = _vercel_cname_labels()
+    assert {"aa-cis", "booking"} <= labels, labels
+    names = re.findall(r'staff_web_cert_(?:domain|sans)\s*=\s*(.+)', EDGE)
+    for label in labels:
+        assert all(f'"{label}.' not in n for n in names), f"certificate names {label}. (a CNAME to Vercel)"
+
+
+def test_certificate_validates_through_the_existing_wildcard_record():
+    validation = _code(_resource(EDGE, "aws_acm_certificate_validation", "staff_web"))
+    assert "aws_route53_record.crm_agency_acm_validation[local.crm_agency_wildcard].fqdn" in validation
+    assert 'crm_agency_wildcard = "*.${var.dns_zone_name}"' in CRM_AGENCY
+    # No second record of the same name (Route 53 CREATE would fail "already exists").
+    assert 'resource "aws_route53_record" "staff_web_acm_validation"' not in EDGE
+
+
+def _waf_rule(name: str) -> str:
+    """Text of one WAF rule, from its name to its visibility_config."""
+    i = WAF.index(f'name     = "{name}"')
+    return WAF[i : WAF.index("visibility_config", i)]
+
+
+def test_waf_scopes_staff_hosts_out_of_the_api_rate_rule():
+    rate = _waf_rule("RateLimit1000")
+    assert 'dynamic "scope_down_statement"' in rate and "not_statement" in rate
+    assert "regex_string = local.staff_host_regex" in rate
+    staff = _waf_rule("StaffWebRateLimit")
+    assert "limit              = var.staff_web_rate_limit" in staff
+    assert "scope_down_statement" in staff and "regex_string = local.staff_host_regex" in staff
+    assert "not_statement" not in staff
+    assert "staff_web_hosts      = values(local.staff_web_hosts)" in MAIN
+    # Geo still applies to the staff hosts: no scope-down on the geo rule.
+    geo = _waf_rule("GeoBlockNonAllowed")
+    assert "staff" not in geo
