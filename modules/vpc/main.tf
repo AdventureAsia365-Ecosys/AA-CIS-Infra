@@ -296,13 +296,28 @@ resource "aws_security_group" "alb" {
   # NLB's private IPs inside this VPC (PrivateLink traffic is source-NATed to the NLB). Nothing calls
   # the ALB DNS name directly (no DNS record, no app config points at it; checked 14/10/2026), so the
   # previous 0.0.0.0/0 on :80 and :443 only let the internet skip API Gateway and the gateway WAF.
-  # :443 is closed entirely: the HTTPS listener has no caller (the NLB forwards :80 only).
+  # :443 was closed entirely until AA-911 (below): the NLB forwards :80 only.
   ingress {
     description = "HTTP from the VPC (VPC-link NLB traffic + NLB health checks)"
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
     cidr_blocks = [var.vpc_cidr]
+  }
+
+  # AA-911 (root ADR 0019 d23): the staff frontends (CIS admin, Booking admin) are served by the ALB's HTTPS listener
+  # to browsers directly, behind the ALB's REGIONAL web ACL (modules/waf). Only :443, only when the root passes CIDRs.
+  # The HTTPS listener answers 404 to every host without a staff host rule (modules/alb), so the API target group is
+  # still reached only through API Gateway.
+  dynamic "ingress" {
+    for_each = length(var.alb_public_https_cidrs) > 0 ? [1] : []
+    content {
+      description = "HTTPS from viewers (staff frontends; host rules on the :443 listener, AA-911)"
+      from_port   = 443
+      to_port     = 443
+      protocol    = "tcp"
+      cidr_blocks = var.alb_public_https_cidrs
+    }
   }
 
   egress {

@@ -153,6 +153,37 @@ resource "aws_security_group" "crm_web" {
   tags = merge(local.crm_web_tags, { Name = "${local.name_prefix}-sg-crm-web" })
 }
 
+# ── Staff frontends (ECS services aa-cis-dev-admin + aa-booking-dev-admin, modules/environment/staff_web.tf, AA-911) ─
+# Next.js standalone, one service per app: CIS admin on 3000, Booking admin on 3001. Ingress only from the ALB on those ports (the
+# HTTPS host rules of alb_rules.tf). Not in rds_ingress_sg_ids: neither app has database access (both reach data only
+# through their public API hosts).
+resource "aws_security_group" "staff_web" {
+  name        = "${local.name_prefix}-sg-staff-web"
+  description = "Staff frontends web tasks: CIS admin and Booking admin (ADR 0004b, AA-911)"
+  vpc_id      = module.vpc.vpc_id
+
+  dynamic "ingress" {
+    for_each = module.environment.staff_web_ports
+    content {
+      description     = "Staff web ${ingress.key} port from the ALB (HTTPS host rule)"
+      from_port       = ingress.value
+      to_port         = ingress.value
+      protocol        = "tcp"
+      security_groups = [module.vpc.sg_alb_id]
+    }
+  }
+
+  egress {
+    description = "All outbound (NAT: Cognito token endpoint, the CIS and Booking API hosts)"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = merge(local.staff_web_tags, { Name = "${local.name_prefix}-sg-staff-web" })
+}
+
 # ── TripPlanner Lambdas (browse + assembly + jobs, modules/environment/tripplanner*.tf): no ingress ─────────
 resource "aws_security_group" "tp_lambda" {
   name        = "${local.name_prefix}-sg-tp-lambda"

@@ -109,3 +109,21 @@ Expected alerts: none from creating the user (SUPPRESS, no password). Every toke
 
 Removal (with A10 / A10a / A10b): `aws cognito-idp admin-delete-user` of the address, drop the trigger entry, the mailbox
 recipient, the AA-Partner `E2E_CRM_STAFF_EMAIL` rule and the `e2e-staff` command; Terraform Apply.
+
+## staff_web_secret.py — staff frontends on ECS (AA-911, root ADR 0019 d23)
+
+Fills the two secret shells of `modules/environment/staff_web.tf` from the WORKFORCE app clients (DescribeUserPoolClient,
+values kept in memory, never printed): `aa-cis/<env>/admin-web` {`cis_admin_client_secret`, `breakglass_client_secret`}
+and `booking/<env>/admin-web` {`booking_staff_client_secret`}. DRY RUN unless `--apply`; `--only cis|booking` for one
+app; other keys of a secret are kept; a re-run with nothing to change writes nothing.
+
+Order: Terraform apply (creates the shells) -> this tool `--apply` -> the first deploy of each app -> scale each
+app's service (`aa-cis-<env>-admin`, `aa-booking-<env>-admin`) to 1. After a client-secret rotation: run it again,
+then force a new deployment of that app's service.
+
+```bash
+python3 tools/identity/staff_web_secret.py            # dry run: which keys would change
+python3 tools/identity/staff_web_secret.py --apply
+```
+
+Tests: `tools/identity/tests/test_staff_web_secret.py` (fakes, no AWS).

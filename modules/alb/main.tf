@@ -98,9 +98,18 @@ resource "aws_lb_listener" "https" {
   ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
   certificate_arn   = var.acm_certificate_arn
 
+  # AA-911 (root ADR 0019 d23): browsers reach this listener directly for the staff frontends (host rules in
+  # accounts/aa365 alb_rules.tf). Every other host gets a plain 404, never the CIS API target group: the API is
+  # reached only through API Gateway (its WAF stage, throttles and custom domain). Before AA-911 this forwarded to the
+  # API group, but the ALB security group admitted no :443 traffic at all.
   default_action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.api.arn
+    type = "fixed-response"
+
+    fixed_response {
+      content_type = "text/plain"
+      message_body = "Not found"
+      status_code  = "404"
+    }
   }
 
   tags = var.tags

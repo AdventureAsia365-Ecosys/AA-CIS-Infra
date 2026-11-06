@@ -547,6 +547,71 @@ resource "aws_iam_role_policy" "cis_app_deploy" {
   })
 }
 
+# AA-911 (root ADR 0019 d23, S271 amendment): AA-CIS-App deploy-admin-dev.yml deploys the CIS admin service of the
+# staff web (modules/environment staff_web.tf): one more revision of family aa-cis-<env>-admin with the image swapped,
+# the service pointed at it. CIS family, service and execution role ONLY (the Booking admin has its own family, role
+# and grant). The image repo aa-cis-<env>-admin is already inside EcrPushCisRepos. Own policy, so the statements above
+# stay as they are. BOOTSTRAP: this role is denied to the CI apply role (tf_apply_protected_role_arns), so this policy
+# is applied locally with the MFA admin profile (Infra docs/implementation-notes/AA-911-staff-ecs.md, apply order).
+resource "aws_iam_role_policy" "cis_app_deploy_staff_web" {
+  name = "${local.app_deploy_role_name}-staff-web"
+  role = aws_iam_role.cis_app_deploy.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "EcsRegisterStaffWebTaskDefinition"
+        Effect   = "Allow"
+        Action   = ["ecs:RegisterTaskDefinition"]
+        Resource = local.cis_staff_web_scope.task_def_pattern
+      },
+      {
+        Sid      = "EcsTagOnRegisterStaffWeb"
+        Effect   = "Allow"
+        Action   = ["ecs:TagResource"]
+        Resource = local.cis_staff_web_scope.task_def_pattern
+        Condition = {
+          StringEquals = { "ecs:CreateAction" = "RegisterTaskDefinition" }
+        }
+      },
+      {
+        Sid      = "EcsDescribeStaffWebService"
+        Effect   = "Allow"
+        Action   = ["ecs:DescribeServices"]
+        Resource = local.cis_staff_web_scope.service_arn
+      },
+      {
+        # Only a CIS admin revision; IfExists: a desired-count-only call carries no task definition.
+        Sid      = "EcsUpdateStaffWebService"
+        Effect   = "Allow"
+        Action   = ["ecs:UpdateService"]
+        Resource = local.cis_staff_web_scope.service_arn
+        Condition = {
+          StringLikeIfExists = {
+            "ecs:task-definition" = [local.cis_staff_web_scope.task_def_pattern, "${local.cis_staff_web_scope.family}:*"]
+          }
+        }
+      },
+      {
+        Sid      = "PassStaffWebTaskRoles"
+        Effect   = "Allow"
+        Action   = ["iam:PassRole"]
+        Resource = local.cis_staff_web_scope.execution_role_arn
+        Condition = {
+          StringEquals = { "iam:PassedToService" = "ecs-tasks.amazonaws.com" }
+        }
+      },
+    ]
+  })
+}
+
+locals {
+  # From the module's locals-only scope output: `-target=aws_iam_role_policy.cis_app_deploy_staff_web` applies this
+  # grant alone, before the staff web stack exists (bootstrap order, Infra docs/implementation-notes/AA-911-staff-ecs.md).
+  cis_staff_web_scope = module.environment.staff_web_deploy_scope["cis"]
+}
+
 # -----------------------------------------------------------------------------
 # aa-cis-infra-tf-plan — AA-CIS-Infra terraform-plan.yml on pull requests
 # -----------------------------------------------------------------------------

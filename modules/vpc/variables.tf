@@ -60,3 +60,9 @@ variable "rds_ingress_sg_ids" {
     error_message = "rds_ingress_sg_ids: pass null (old single source) or a non-empty list; an empty list would make an ingress rule with no source."
   }
 }
+
+variable "alb_public_https_cidrs" {
+  description = "AA-911: source CIDRs admitted on the ALB's :443 (the staff frontends' HTTPS listener). Empty = :443 closed, as before AA-911."
+  type        = list(string)
+  default     = []
+}

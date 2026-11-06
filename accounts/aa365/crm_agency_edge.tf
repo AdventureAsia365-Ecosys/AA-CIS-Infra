@@ -54,7 +54,9 @@ resource "aws_acm_certificate" "crm_agency" {
   }
 }
 
-# The wildcard's validation record is _<token>.<zone> (never the live portal. CNAME).
+# The wildcard's validation record is _<token>.<zone> (never the live portal. CNAME). AA-911: it also validates the
+# staff web certificate (*.<zone> + <zone> in us-west-1, staff_web_edge.tf; ACM uses one record per name per account):
+# keep it while either certificate exists.
 resource "aws_route53_record" "crm_agency_acm_validation" {
   for_each = { for dvo in aws_acm_certificate.crm_agency.domain_validation_options : dvo.domain_name => dvo }
 

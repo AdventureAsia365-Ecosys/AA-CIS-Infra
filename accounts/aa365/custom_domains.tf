@@ -204,8 +204,10 @@ resource "aws_route53_record" "vercel_frontend" {
   zone_id = aws_route53_zone.lumiguides.zone_id
   name    = "${each.key}.${var.dns_zone_name}"
   type    = "CNAME"
-  ttl     = 300
-  records = [each.value]
+  # AA-911: booking. drops to 60 s while the staff web cut-over window is open (staff_web_edge.tf).
+  ttl = each.key == "booking" ? coalesce(local.staff_web_switch_ttl, 300) : 300
+  # AA-911 cut-over (staff_web_edge.tf): booking. (the staff admin) moves from Vercel to the shared ALB in place.
+  records = [var.staff_web_dns_on_ecs && each.key == "booking" ? local.staff_web_alb_dns_name : each.value]
 }
 
 # -----------------------------------------------------------------------------

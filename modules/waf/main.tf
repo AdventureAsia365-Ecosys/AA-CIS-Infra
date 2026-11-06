@@ -8,6 +8,10 @@
 
 locals {
   name_prefix = "${var.project}-${var.environment}"
+
+  # AA-911: one anchored, case-insensitive regex for the staff hosts (Host header, optional :443). Empty list = no
+  # staff rule and no scope-down on RateLimit1000 (the ACL as before AA-911).
+  staff_host_regex = length(var.staff_web_hosts) > 0 ? "^(${join("|", [for h in var.staff_web_hosts : replace(lower(h), ".", "\\.")])})(:443)?$" : null
 }
 
 # Optional ip_set for internal VPC Link traffic (AA-272) — only created when
@@ -44,6 +48,7 @@ resource "aws_wafv2_web_acl" "main" {
   #   3 CloudFrontOriginAllow         (ALB only, AA-931) CloudFront VPC-origin traffic stops here
   #   4 RateLimit1000                 per source IP (was 3 before AA-931)
   #   5 GeoBlockNonAllowed            per source IP (was 4 before AA-931)
+  #   6 StaffWebRateLimit             (AA-911, only with var.staff_web_hosts) per client IP on the staff hosts
   #
   # Before S235 the VPC allow rule was priority 0, so every request that came through API Gateway
   # (it reaches the ALB from the NLB's private IPs, i.e. inside the VPC CIDR) skipped ALL rules.
@@ -178,7 +183,9 @@ resource "aws_wafv2_web_acl" "main" {
     }
   }
 
-  # Rule 4 — Rate limit (per real client IP on the REST API stages)
+  # Rule 4 — Rate limit (per real client IP on the REST API stages, and on the ALB :443 for any host that is not a
+  # staff host). AA-911: the staff hosts (browsers on the ALB :443 directly) are scoped out and counted by rule 6 with
+  # their own limit: a Next.js page with its static chunks, RSC navigations and prefetches is many requests.
   rule {
     name     = "RateLimit1000"
     priority = 4
@@ -191,6 +198,30 @@ resource "aws_wafv2_web_acl" "main" {
       rate_based_statement {
         limit              = var.rate_limit
         aggregate_key_type = "IP"
+
+        dynamic "scope_down_statement" {
+          for_each = local.staff_host_regex != null ? [1] : []
+          content {
+            not_statement {
+              statement {
+                regex_match_statement {
+                  regex_string = local.staff_host_regex
+
+                  field_to_match {
+                    single_header {
+                      name = "host"
+                    }
+                  }
+
+                  text_transformation {
+                    priority = 0
+                    type     = "LOWERCASE"
+                  }
+                }
+              }
+            }
+          }
+        }
       }
     }
 
@@ -225,6 +256,51 @@ resource "aws_wafv2_web_acl" "main" {
       cloudwatch_metrics_enabled = true
       metric_name                = "GeoBlockNonAllowed"
       sampled_requests_enabled   = true
+    }
+  }
+
+  # Rule 6 — AA-911: rate limit of the staff hosts (CIS admin, Booking admin on the ALB :443), per real client IP.
+  # After the geo rule, which applies to the staff hosts as to everyone.
+  dynamic "rule" {
+    for_each = local.staff_host_regex != null ? [1] : []
+
+    content {
+      name     = "StaffWebRateLimit"
+      priority = 6
+
+      action {
+        block {}
+      }
+
+      statement {
+        rate_based_statement {
+          limit              = var.staff_web_rate_limit
+          aggregate_key_type = "IP"
+
+          scope_down_statement {
+            regex_match_statement {
+              regex_string = local.staff_host_regex
+
+              field_to_match {
+                single_header {
+                  name = "host"
+                }
+              }
+
+              text_transformation {
+                priority = 0
+                type     = "LOWERCASE"
+              }
+            }
+          }
+        }
+      }
+
+      visibility_config {
+        cloudwatch_metrics_enabled = true
+        metric_name                = "StaffWebRateLimit"
+        sampled_requests_enabled   = true
+      }
     }
   }
 

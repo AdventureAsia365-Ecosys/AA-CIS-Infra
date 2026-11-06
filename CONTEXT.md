@@ -7,7 +7,7 @@ status: active
 owner: nghiep
 audience: [engineer, devops, agent]
 applies_to: [aa-cis-infra, ecosystem]
-last_reviewed: 2026-11-03
+last_reviewed: 2026-11-06
 review_every_days: 90
 related: [ARCH-01, ARCH-05, ARCH-08, docs/adr/README.md]
 ---
@@ -437,6 +437,20 @@ accounts/
                                    client lists only the partner host's /auth/callback and /signed-out
                                    (identity_variables.tf; the portal. placeholders went at the AA-979 clean-up);
                                    the e2e mailbox rule takes the CRM e2e users of tools/identity/crm_e2e_users.json)
+    staff_web.tf                  (AA-911, root ADR 0019 d23 + S271 amendment: the two staff frontends on
+                                   ECS, ONE SERVICE PER APP. Per app key cis / booking: ECR, family and service aa-cis-<env>-admin /
+                                   aa-booking-<env>-admin (IMMUTABLE ECR, git-SHA tags; Fargate ARM64 256/512, one container cis-admin :3000 /
+                                   booking-admin :3001, placeholder tag bootstrap, FARGATE_SPOT, desired 0, ECS Exec off, no task role), log group
+                                   /ecs/<service> (30 d), own execution role (its repo, its log group, its secrets only), target group
+                                   (/api/healthz), no-healthy-target alarm. Secret shells aa-cis/<env>/admin-web and booking/<env>/admin-web (the
+                                   WORKFORCE client secrets, written by tools/identity/staff_web_secret.py, never by Terraform); ADMIN_SECRET maps
+                                   aa-cis/<env>/admin-secret (CIS role only). Extra policy on the Booking deploy role for the Booking family only.
+                                   Edge in the root: staff_web_edge.tf (wildcard *.<zone> + apex cert on the ALB :443 listener, validated through
+                                   the crm_agency wildcard record; DNS cut-over var.staff_web_dns_on_ecs, 60 s TTL window
+                                   var.staff_web_dns_switch_window, apex alias var.staff_web_apex_on_alb), alb_rules.tf alb_https_rule_priorities
+                                   (two host rules + the apex redirect; the :443 default is a fixed 404), modules/waf StaffWebRateLimit (staff hosts
+                                   out of RateLimit1000), sg-staff-web (ALB -> 3000/3001, not admitted by RDS), cicd_split.tf
+                                   cis_app_deploy_staff_web (bootstrap, CIS family only))
     crm_scrub.tf                  (AA-938 CRM-10, AA-Partner F3 scrubber pass 3, all behind
                                    var.crm_scrub_guardrail_enabled (default false): Bedrock guardrail aa-crm-<env>-scrub
                                    in acc2 (every PII entity on action NONE = detect only; no URL / AGE, no regex, no
