@@ -66,6 +66,10 @@ SELF_EXPR = re.compile(
 )
 # The GitHub Actions OIDC provider, as the roots reference it.
 GITHUB_EXPR = re.compile(r"\b(aws_iam_openid_connect_provider\.github_actions\.arn|var\.github_oidc_provider_arn)\b")
+# Acknowledgements: never for these kinds; an AWS principal glob names one role / user (account may be a wildcard,
+# the name may not), so it can never cover `*`, an account root or a new outside principal.
+NEVER_ACK_KINDS = frozenset({"*", "NotPrincipal", "unresolved"})
+AWS_ACK_GLOB = re.compile(r"arn:[a-z*-]+:(?:iam|sts)::[0-9*]*:(?:role|user|assumed-role)/(?:[\w+=,.@-]+/)*[\w+=,.@-]+")
 SERVICE_LINKED_PATH = "/aws-service-role/"
 RESERVED_SSO_PATH = "/aws-reserved/sso.amazonaws.com/"
 
@@ -96,12 +100,49 @@ class Trust:
 
 # --- allowlist and accounts ------------------------------------------------------------------------------------------
 
+def _principal_globs(entry: dict) -> list:
+    globs = entry.get("principal")
+    return [globs] if isinstance(globs, str) else list(globs or [])
+
+
+def _principal_re(glob: str) -> re.Pattern:
+    """A principal glob as a regex: `*` and `?` only, and neither crosses a ':' or '/' (one ARN segment)."""
+    return re.compile("".join("[^:/]*" if c == "*" else "[^:/]" if c == "?" else re.escape(c) for c in glob))
+
+
+def principal_matches(principal: str, glob: str) -> bool:
+    return bool(_principal_re(glob).fullmatch(principal.strip()))
+
+
+def _glob_problem(kind: str, glob: str) -> Optional[str]:
+    """Why a principal glob of an acknowledgement is too broad or not supported (None = fine)."""
+    if not isinstance(glob, str) or not glob.strip():
+        return "an empty principal glob"
+    if "[" in glob or "]" in glob:
+        return f"principal glob {glob!r}: only * and ? are supported"
+    if not re.sub(r"[*?:/]", "", glob):
+        return f"principal glob {glob!r} matches any principal"
+    if kind == "AWS" and not AWS_ACK_GLOB.fullmatch(glob):
+        return (f"AWS principal glob {glob!r} must name one role or user, e.g. "
+                "arn:*:iam::*:role/<name> (no wildcard in the name, never :root)")
+    return None
+
+
 def load_allowlist(path: str) -> dict:
     with open(path, encoding="utf-8") as fh:
         data = json.load(fh)
     for entry in data.get("acknowledged", []):
         if not entry.get("match") or not entry.get("kind") or not str(entry.get("reason", "")).strip():
-            raise ValueError(f"{path}: every acknowledged entry needs match, kind and a reason: {entry}")
+            raise ValueError(f"{path}: every acknowledged entry needs match, kind, principal and a reason: {entry}")
+        if entry["kind"] in NEVER_ACK_KINDS:
+            raise ValueError(f"{path}: a {entry['kind']} trust is never acknowledged: {entry['match']}")
+        globs = _principal_globs(entry)
+        if not globs:
+            raise ValueError(f"{path}: acknowledged entry {entry['match']} needs a principal glob (one or a list)")
+        for glob in globs:
+            problem = _glob_problem(entry["kind"], glob)
+            if problem:
+                raise ValueError(f"{path}: acknowledged entry {entry['match']}: {problem}")
     if ACCOUNT_IN.search(json.dumps(data)):
         raise ValueError(f"{path}: no account id in the allowlist (public repo); name accounts in {ACCOUNTS_ENV}")
     return data
@@ -199,10 +240,16 @@ def _classify_account(acct: str, ctx: Context) -> tuple[str, str]:
 
 
 def acknowledge(trust: Trust, ctx: Context) -> Trust:
-    if trust.verdict != FLAG:
+    """An acknowledgement covers one role (match), one kind AND the reviewed principals (principal globs) only: a new
+    principal of the same kind on an acknowledged role stays FLAG. `*`, NotPrincipal and unresolved never match."""
+    if trust.verdict != FLAG or trust.kind in NEVER_ACK_KINDS or trust.principal.strip() == "*":
         return trust
     for entry in ctx.acknowledged:
-        if entry["kind"] == trust.kind and fnmatch.fnmatchcase(trust.key, entry["match"]):
+        if entry.get("kind") in NEVER_ACK_KINDS:
+            continue
+        globs = [g for g in _principal_globs(entry) if _glob_problem(entry["kind"], g) is None]
+        if (entry["kind"] == trust.kind and fnmatch.fnmatchcase(trust.key, entry["match"])
+                and any(principal_matches(trust.principal, g) for g in globs)):
             trust.verdict = ACK
             trust.note = f"{trust.note}; acknowledged: {entry['reason']}"
             break

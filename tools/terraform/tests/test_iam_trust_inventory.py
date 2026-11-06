@@ -115,8 +115,10 @@ def test_deny_statements_are_skipped_and_url_encoded_policies_read():
 
 
 def test_acknowledgement_keeps_the_row_visible():
-    ctx = _ctx(acknowledged=[{"match": "live:demo-vendor-*", "kind": "AWS", "reason": "reviewed vendor audit"}])
-    doc = {"Statement": [{"Effect": "Allow", "Principal": {"AWS": f"arn:aws:iam::{EXT}:root"}, "Action": "sts:AssumeRole"}]}
+    ctx = _ctx(acknowledged=[{"match": "live:demo-vendor-*", "kind": "AWS", "principal": "arn:*:iam::*:role/demo-auditor",
+                              "reason": "reviewed vendor audit"}])
+    doc = {"Statement": [{"Effect": "Allow", "Principal": {"AWS": f"arn:aws:iam::{EXT}:role/demo-auditor"},
+                          "Action": "sts:AssumeRole"}]}
     (t,) = inv.trusts_from_policy("live", "live:demo-vendor-audit", "demo-vendor-audit", doc, ctx)
     assert t.verdict == inv.ACK and "reviewed vendor audit" in t.note
     (u,) = inv.trusts_from_policy("live", "live:demo-other", "demo-other", doc, ctx)
@@ -320,13 +322,112 @@ def test_static_reads_jsonencode_and_policy_documents(tf_repo):
     assert _by(trusts, "deploy")[0].actions == "sts:AssumeRoleWithWebIdentity"
 
 
-def test_static_acknowledgement_by_dir_and_address(tf_repo):
+def test_static_acknowledgement_by_dir_address_and_principal(tf_repo):
+    ack = {"match": "accounts/demo:aws_iam_role.partner", "kind": "AWS", "reason": "demo partner"}
+    ctx = _ctx(static=True, self_accounts=[], accounts_env="", acknowledged=[dict(ack, principal="arn:*:iam::*:root")])
+    with pytest.raises(ValueError):  # an account root is never a reviewed principal glob
+        inv.load_allowlist(_write_allow(tf_repo, ctx.acknowledged))
+    # The partner trusts the outside account root: a role-level glob does not cover it, so it stays FLAG.
     ctx = _ctx(static=True, self_accounts=[], accounts_env="",
-               acknowledged=[{"match": "accounts/demo:aws_iam_role.partner", "kind": "AWS", "reason": "demo partner"}])
+               acknowledged=[dict(ack, principal="arn:*:iam::*:role/demo-partner-caller")])
     trusts = inv.static_trusts(ctx, str(tf_repo))
     partner_aws = [t for t in _by(trusts, "partner", "AWS") if "999999999999" in t.principal][0]
-    assert partner_aws.verdict == inv.ACK
+    assert partner_aws.verdict == inv.FLAG
     assert _by(trusts, "sso")[0].verdict == inv.FLAG  # another kind / role is not covered
+
+
+ACK_TF = textwrap.dedent('''
+    resource "aws_iam_role" "bedrock_invoker" {
+      name = "demo-invoker"
+      assume_role_policy = jsonencode({
+        Version = "2012-10-17"
+        Statement = [
+          {
+            Effect    = "Allow"
+            Principal = { AWS = "arn:aws:iam::222222222222:role/aa-cis-dev-ecs-task-role" }
+            Action    = "sts:AssumeRole"
+          },
+          {
+            Effect    = "Allow"
+            Principal = { AWS = ["*", "arn:aws:iam::999999999999:root", "arn:aws:iam::999999999999:role/demo-intruder"] }
+            Action    = "sts:AssumeRole"
+          },
+          {
+            Effect    = "Allow"
+            Principal = { AWS = "arn:aws:iam::999999999999:role/demo/aa-cis-dev-ecs-task-role" }
+            Action    = "sts:AssumeRole"
+          }
+        ]
+      })
+    }
+''')
+
+
+def _write_allow(tmp, acknowledged) -> str:
+    path = os.path.join(str(tmp), "allow.json")
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(dict(ALLOW, acknowledged=acknowledged), fh)
+    return path
+
+
+def test_shipped_acknowledgement_covers_only_the_reviewed_principals(tmp_path):
+    """Review finding (S271): an acknowledgement used to cover every principal of its kind on the role, so opening
+    the acc3 Bedrock invoker to `*` or to a new outside account stayed green. Now only the reviewed role globs match."""
+    root = tmp_path / "accounts" / "acc3-bedrock"
+    root.mkdir(parents=True)
+    (root / "main.tf").write_text(ACK_TF, encoding="utf-8")
+    allow = inv.load_allowlist(inv.DEFAULT_ALLOWLIST)  # the shipped entries
+    trusts = inv.static_trusts(inv.make_context(allow, static=True, accounts_env=""), str(tmp_path))
+    got = {t.principal: t.verdict for t in trusts}
+    assert got == {
+        "arn:aws:iam::222222222222:role/aa-cis-dev-ecs-task-role": inv.ACK,
+        "*": inv.FLAG,
+        "arn:aws:iam::999999999999:root": inv.FLAG,
+        "arn:aws:iam::999999999999:role/demo-intruder": inv.FLAG,
+        "arn:aws:iam::999999999999:role/demo/aa-cis-dev-ecs-task-role": inv.FLAG,  # a wildcard never crosses '/'
+    }
+    assert inv.main(["static", "--repo-root", str(tmp_path)]) == 1
+
+
+def test_star_and_not_principal_are_never_acknowledged():
+    ack = [{"match": "live:demo-*", "kind": "AWS", "principal": "arn:*:iam::*:role/demo-worker", "reason": "x"}]
+    ctx = _ctx(acknowledged=ack)
+    doc = {"Statement": [{"Effect": "Allow", "Principal": "*", "Action": "sts:AssumeRole"},
+                         {"Effect": "Allow", "Principal": {"AWS": "*"}, "Action": "sts:AssumeRole"},
+                         {"Effect": "Allow", "NotPrincipal": {"AWS": "arn:aws:iam::999999999999:role/demo-worker"},
+                          "Action": "sts:AssumeRole"},
+                         {"Effect": "Allow", "Principal": {"AWS": f"arn:aws:iam::{EXT}:role/demo-worker"},
+                          "Action": "sts:AssumeRole"}]}
+    verdicts = [(t.kind, t.verdict) for t in inv.trusts_from_policy("live", "live:demo-x", "demo-x", doc, ctx)]
+    assert verdicts == [("*", inv.FLAG), ("AWS", inv.FLAG), ("NotPrincipal", inv.FLAG), ("AWS", inv.ACK)]
+
+
+@pytest.mark.parametrize("entry", [
+    {"match": "live:r", "kind": "AWS", "reason": "no principal glob"},
+    {"match": "live:r", "kind": "AWS", "principal": [], "reason": "empty list"},
+    {"match": "live:r", "kind": "AWS", "principal": "*", "reason": "any principal"},
+    {"match": "live:r", "kind": "AWS", "principal": "arn:*:*::*:*", "reason": "wildcards only"},
+    {"match": "live:r", "kind": "AWS", "principal": "arn:*:iam::*:root", "reason": "an account root"},
+    {"match": "live:r", "kind": "AWS", "principal": "arn:*:iam::*:role/*", "reason": "any role"},
+    {"match": "live:r", "kind": "AWS", "principal": "arn:*:iam::*:role/demo-[ab]", "reason": "class"},
+    {"match": "live:r", "kind": "Federated", "principal": "*", "reason": "any provider"},
+    {"match": "live:r", "kind": "NotPrincipal", "principal": "arn:*:iam::*:role/demo", "reason": "never"},
+    {"match": "live:r", "kind": "*", "principal": "arn:*:iam::*:role/demo", "reason": "never"},
+    {"match": "live:r", "kind": "unresolved", "principal": "file(x)", "reason": "never"},
+])
+def test_allowlist_refuses_a_broad_or_never_acknowledged_entry(tmp_path, entry):
+    with pytest.raises(ValueError):
+        inv.load_allowlist(_write_allow(tmp_path, [entry]))
+    assert inv.main(["static", "--allowlist", _write_allow(tmp_path, [entry]), "--repo-root", str(tmp_path)]) == 2
+
+
+def test_allowlist_accepts_one_role_or_a_list(tmp_path):
+    for principal in ("arn:*:iam::*:role/demo-worker", ["arn:*:iam::*:role/demo-a", "arn:aws:sts::*:assumed-role/demo-b/x"]):
+        entry = {"match": "live:r", "kind": "AWS", "principal": principal, "reason": "ok"}
+        assert all(inv._glob_problem("AWS", g) is None for g in inv._principal_globs(entry))
+        inv.load_allowlist(_write_allow(tmp_path, [entry]))
+    assert inv.principal_matches(" arn:aws:iam::222222222222:role/demo-worker", "arn:*:iam::*:role/demo-worker")
+    assert not inv.principal_matches("arn:aws:iam::222222222222:role/demo-worker-2", "arn:*:iam::*:role/demo-worker")
 
 
 def test_this_repo_has_no_unreviewed_trust(capsys):
@@ -355,6 +456,8 @@ def test_allowlist_holds_no_account_id_and_every_ack_has_a_reason():
     assert not inv.ACCOUNT_IN.search(text)
     data = json.loads(text)
     assert all(e["reason"].strip() for e in data["acknowledged"])
+    assert all(e.get("principal") for e in data["acknowledged"])  # never a whole role / kind
+    inv.load_allowlist(inv.DEFAULT_ALLOWLIST)  # every glob passes the breadth checks
     assert not any("AWSReservedSSO" in e["match"] for e in data["acknowledged"])  # must stay visible
 
 
