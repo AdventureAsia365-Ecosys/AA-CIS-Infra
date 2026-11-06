@@ -108,7 +108,9 @@ def test_pr_plan_job_for_management_is_read_only_and_summary_only():
     plan = steps["Terraform Plan (summary only)"]["run"]
     for flag in ("-json", "--mode plan", "umask 077", "trap 'rm -f", "tools/terraform/drift_report.py"):
         assert flag in plan, flag
-    assert "accounts/management/" in steps["Changed paths"]["run"]
+    # S271 (G9): the path filter is its own job, so the plan job joins its concurrency group only when it plans.
+    assert job["needs"] == "management-paths"
+    assert "accounts/management/" in _steps(wf["jobs"]["management-paths"])["Changed paths"]["run"]
 
 
 def test_apply_job_for_management_runs_in_org_with_the_guard_before_the_apply():

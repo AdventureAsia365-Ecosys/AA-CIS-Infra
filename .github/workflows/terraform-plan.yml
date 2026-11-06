@@ -12,6 +12,15 @@ jobs:
   terraform-plan:
     name: Terraform Plan (dev)
     runs-on: ubuntu-latest
+    # S271 (lessons guard G9): two PR plans of one root never race the S3 state lock ("Error acquiring the state
+    # lock"): every plan of a root waits in that root's group; a pending job holds no lock and no runner. Not shared
+    # with terraform-apply.yml: GitHub keeps one PENDING job per group and cancels the older one, so a PR plan could
+    # cancel a dispatched apply. Plan versus apply (and the drift run, a local MFA plan) is covered by -lock-timeout
+    # below instead. With three PR plans at once the middle pending one is cancelled: rerun it.
+    # tools/terraform/tests/test_workflow_tf_locking.py checks both on every Terraform workflow.
+    concurrency:
+      group: tf-state-aa365-plan
+      cancel-in-progress: false
 
     defaults:
       run:
@@ -48,7 +57,7 @@ jobs:
       - name: Terraform Plan
         env:
           TF_VAR_db_password: ${{ secrets.TF_VAR_DB_PASSWORD }}
-        run: terraform plan -out=tfplan
+        run: terraform plan -lock-timeout=10m -out=tfplan
 
       # S271: tagging standard (root docs/architecture/tagging-standard.md, FIN-03). Fails this required check when a
       # taggable resource the plan creates or updates lacks a mandatory tag or holds a value outside
@@ -79,14 +88,16 @@ jobs:
   # JSON into RUNNER_TEMP and tools/terraform/drift_report.py --mode plan writes only addresses and actions, masked, to
   # the job summary. Before the one-time local bootstrap (README §11) the secrets do not exist: the job then warns and
   # skips, so this very PR does not go red; once the repo variable MGMT_CI_LIVE is `true`, a missing secret fails.
-  terraform-plan-management:
-    name: Terraform Plan (management)
+  #
+  # S271 (G9): the path filter is its own job so that the plan job below joins the management root's concurrency group
+  # only when it really plans (a PR that does not touch the root skips the plan job instead of queueing in the group).
+  management-paths:
+    name: Management root changed?
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 5
 
-    env:
-      ROOT: accounts/management
-      TF_IN_AUTOMATION: "1"
+    outputs:
+      run: ${{ steps.paths.outputs.run }}
 
     steps:
       - name: Checkout
@@ -110,9 +121,29 @@ jobs:
             echo "accounts/management not touched: no management plan." >> "$GITHUB_STEP_SUMMARY"
           fi
 
+  terraform-plan-management:
+    name: Terraform Plan (management)
+    needs: management-paths
+    if: needs.management-paths.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # S271 (G9): same rule as the dev plan, one group per root.
+    concurrency:
+      group: tf-state-management-plan
+      cancel-in-progress: false
+
+    env:
+      ROOT: accounts/management
+      TF_IN_AUTOMATION: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
       - name: Check CI wiring
         id: wiring
-        if: steps.paths.outputs.run == 'true'
         env:
           MGMT_ACCOUNT_ID: ${{ secrets.MGMT_ACCOUNT_ID }}
           MGMT_TFVARS: ${{ secrets.MGMT_TFVARS }}
@@ -197,7 +228,7 @@ jobs:
           LOG="$RUNNER_TEMP/management-plan.jsonl"
           trap 'rm -f "$LOG"' EXIT
           set +e
-          terraform -chdir="$ROOT" plan -input=false -detailed-exitcode -json -out="$RUNNER_TEMP/management.tfplan" > "$LOG"
+          terraform -chdir="$ROOT" plan -input=false -lock-timeout=10m -detailed-exitcode -json -out="$RUNNER_TEMP/management.tfplan" > "$LOG"
           RC=$?
           set -e
           echo "terraform plan exit code: $RC"

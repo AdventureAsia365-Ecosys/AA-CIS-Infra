@@ -310,4 +310,5 @@ def test_plan_workflow_runs_the_tag_guard_in_the_required_dev_check():
     mgmt = {s.get("name", ""): s for s in wf["jobs"]["terraform-plan-management"]["steps"]}
     assert "-out=" in mgmt["Terraform Plan (summary only)"]["run"]
     assert "tools/terraform/tag_guard.py" in mgmt["Tag guard (management)"]["run"]
-    assert "tag_policy" in mgmt["Changed paths"]["run"]
+    paths = {s.get("name", ""): s for s in wf["jobs"]["management-paths"]["steps"]}  # S271 G9: own job
+    assert "tag_policy" in paths["Changed paths"]["run"]

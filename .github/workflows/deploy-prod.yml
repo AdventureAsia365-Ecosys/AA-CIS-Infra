@@ -40,6 +40,7 @@ on:
         default: ""
 
 # One prod Terraform run at a time; never shares the Dev apply's group (terraform-apply.yml).
+# S271 (G9): its plan and apply wait for a held state lock (-lock-timeout=10m) instead of failing at once.
 concurrency:
   group: deploy-prod
   cancel-in-progress: false
@@ -172,7 +173,7 @@ jobs:
           umask 077
           LOG="$RUNNER_TEMP/prod-plan.jsonl"
           set +e
-          terraform -chdir="$ROOT" plan -input=false -detailed-exitcode -json -out="$RUNNER_TEMP/tfplan" > "$LOG"
+          terraform -chdir="$ROOT" plan -input=false -lock-timeout=10m -detailed-exitcode -json -out="$RUNNER_TEMP/tfplan" > "$LOG"
           RC=$?
           set -e
           echo "exitcode=$RC" >> "$GITHUB_OUTPUT"
@@ -200,7 +201,7 @@ jobs:
           LOG="$RUNNER_TEMP/prod-apply.jsonl"
           trap 'rm -f "$LOG"' EXIT
           set +e
-          terraform -chdir="$ROOT" apply -input=false -auto-approve -json "$RUNNER_TEMP/tfplan" > "$LOG"
+          terraform -chdir="$ROOT" apply -input=false -lock-timeout=10m -auto-approve -json "$RUNNER_TEMP/tfplan" > "$LOG"
           RC=$?
           set -e
           echo "terraform apply exit code: $RC"
