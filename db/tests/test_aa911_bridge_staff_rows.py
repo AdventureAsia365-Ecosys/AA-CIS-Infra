@@ -87,8 +87,9 @@ class ShapeTest(unittest.TestCase):
     def test_runner_accepts_the_file_and_it_is_a_dry_run_as_merged(self):
         source = (ROOT / PATH).read_text()
         self.assertEqual(rm.script_errors(source, PATH), [])
-        self.assertTrue(rm.script_is_read_only(source))
-        self.assertIs(script.READ_ONLY, True)
+        # S271: the one-time apply PR flips READ_ONLY to False after the reviewed DRY RUN; both states are valid.
+        self.assertIn(script.READ_ONLY, (True, False))
+        self.assertEqual(rm.script_is_read_only(source), script.READ_ONLY)
 
 
 class ClassifyTest(unittest.TestCase):
@@ -132,7 +133,7 @@ class GuardTest(unittest.TestCase):
 
     def test_dry_run_with_an_unknown_user_fails_and_writes_nothing(self):
         conn = FakeConn([row(in_cis=False)], active_unlinked=1)
-        rc, out = run(script.main(conn))
+        rc, out = run(script.run(conn, apply=False))
         self.assertEqual(rc, 1)
         self.assertEqual(conn.executed, [])
         self.assertIn("SCRIPT ERROR active unlinked bridge-era rows", out)
@@ -152,7 +153,7 @@ class RunTest(unittest.TestCase):
 
     def test_dry_run_prints_the_plan_and_writes_nothing(self):
         conn = FakeConn(self.rows(), active_unlinked=3)
-        rc, out = run(script.main(conn))
+        rc, out = run(script.run(conn, apply=False))
         self.assertEqual(rc, 0)
         self.assertEqual(conn.executed, [])
         self.assertEqual(conn.transactions, 0)
@@ -211,7 +212,7 @@ class RunTest(unittest.TestCase):
 
     def test_refuses_before_bk016(self):
         conn = FakeConn([row()], columns=0)
-        rc, out = run(script.main(conn))
+        rc, out = run(script.run(conn, apply=False))
         self.assertEqual(rc, 1)
         self.assertIn("apply AA-Booking bk-016 first", out)
         self.assertEqual(conn.fetched, [])
