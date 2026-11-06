@@ -212,7 +212,8 @@ class MirrorsAgreeTest(unittest.TestCase):
                                             "default_acl": {k: list(v) for k, v in rp.default_acl}}
                                   for rp in p.runtime_privileges}, o["runtime_privileges"])
         # Contract consumer grants on one named object (wildcards such as catalog.* are left to the dump).
-        single = re.compile(r"^[a-z_]+\.[a-z_]+(\([a-z, ]*\))?$")
+        # AA-1038: digits allowed after the first letter (catalog.v_tenant_tripplanner_v1).
+        single = re.compile(r"^[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*(\([a-z, ]*\))?$")
         expected = {(g["grantee"], tuple(x.strip() for x in g["privilege"].split(",")), g["object"],
                      str(g.get("expected_from", "")))
                     for o in SCHEMA_OWNERS.values() for g in o["consumer_grants"]

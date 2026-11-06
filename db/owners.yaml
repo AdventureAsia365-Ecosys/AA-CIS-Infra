@@ -147,6 +147,9 @@ owners:
       - {grantee: booking,     privilege: EXECUTE,         object: "geo.name_norm(text)",                status: contract,      source: "228"}
       - {grantee: tripplanner, privilege: EXECUTE,         object: "geo.name_norm(text)",                status: contract,      source: "228"}
       - {grantee: tripplanner, privilege: INSERT,          object: shared.llm_call_log,                  status: contract,      source: "173 (standing write exception)"}
+      # AA-1038 R5 slice 2: TripPlanner's tenant read (contract tenant.entitlements.v1 1.4), named so the probe checks
+      # it in its own cell once CIS 379 (a contract file) is applied; the catalog.* row above already covers rule g.
+      - {grantee: tripplanner, privilege: "USAGE, SELECT", object: catalog.v_tenant_tripplanner_v1,      status: contract,      source: "379 (AA-1038)", expected_from: "379"}
       - {grantee: tripplanner, privilege: SELECT,          object: "shared.llm_role_config, shared.llm_model_catalog", status: grandfathered, source: "173"}
       - {grantee: tripplanner, privilege: SELECT,          object: "silver_aa_internal.raw_tours (tour_id, country)",  status: grandfathered, source: "179; revoked by CIS 254 (AA-847)"}
       - {grantee: tripplanner, privilege: SELECT,          object: "acp_contract.tour_atoms, acp_contract.v_active_tour_atoms (columns)", status: grandfathered, source: "180 (revoked by CIS 254, AA-847), 216 (revoked by CIS 270, AA-712)"}
