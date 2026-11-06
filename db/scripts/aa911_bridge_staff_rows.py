@@ -34,7 +34,7 @@ reports the current state). Prints no e-mail, password, DSN or token; subs are c
 import json
 import uuid
 
-READ_ONLY = True
+READ_ONLY = False
 
 SCRIPT_NAME = "aa911_bridge_staff_rows"
 COGNITO_KEY_PREFIX = "cog:"
