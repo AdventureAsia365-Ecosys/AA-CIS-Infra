@@ -76,7 +76,7 @@ locals {
   # S271 two-step apply (independent review M1): module.alb depends on module.vpc, so the SG would open :443 before the
   # listener default turns into the fixed 404. First apply keeps :443 closed ([]); after describe-listeners shows the
   # 404 default, a one-line follow-up sets ["0.0.0.0/0"].
-  staff_web_public_https_cidrs = []
+  staff_web_public_https_cidrs = ["0.0.0.0/0"]
 
   # DNS cut-over: the CNAME target of the two staff hosts once var.staff_web_dns_on_ecs is on.
   staff_web_alb_dns_name = module.alb.alb_dns_name
