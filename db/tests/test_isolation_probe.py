@@ -107,15 +107,15 @@ def today_facts():
         "logins": {
             "aa_app_user": {"secret": "aa-cis/dev/rds-app-user", "secret_user": "aa_app_user",
                             "current_user": "aa_app_user",
-                            "cross": {"booking.customers": denied("booking"), "tripplanner.sessions": denied("tp")}},
+                            "cross": {"booking.trip_cases": denied("booking"), "tripplanner.sessions": denied("tp")}},
             "booking": {"secret": "booking/dev/database-url", "secret_user": "booking", "current_user": "booking",
                         "cross": {"tripplanner.sessions": denied("tp"), "shared.tenants": denied("shared")}},
             "tripplanner": {"secret": "tripplanner/dev/database-url", "secret_user": "tripplanner",
-                            "current_user": "tripplanner", "cross": {"booking.customers": denied("booking")}},
+                            "current_user": "tripplanner", "cross": {"booking.trip_cases": denied("booking")}},
             "cis_app": {"secret": "aa-cis/dev/rds-cis-app",
                         "error": "secret aa-cis/dev/rds-cis-app: ClientError ResourceNotFoundException"},
             "cis_runtime": {"secret": "aa-cis/dev/rds", "secret_user": "aa_cis_admin", "current_user": "aa_cis_admin",
-                            "cross": {"booking.customers": {"readable": True, "sqlstate": None},
+                            "cross": {"booking.trip_cases": {"readable": True, "sqlstate": None},
                                       "tripplanner.sessions": {"readable": True, "sqlstate": None}}}},
         "cis_runtime": {"value_from": API_ARN, "secret": "aa-cis/dev/rds", "user": "aa_cis_admin"},
     }
@@ -281,11 +281,11 @@ class BuildCellsTest(unittest.TestCase):
         self.assertNotIn("FAIL", st.values(), {k: v for k, v in st.items() if v == "FAIL"})
         self.assertFalse(any(keys[k] for k in p.VERSION_KEYS))
         for cid in ("cross.booking.tripplanner.sessions", "cross.booking.shared.tenants",
-                    "cross.tripplanner.booking.customers", "cross.aa_app_user.booking.customers",
+                    "cross.tripplanner.booking.trip_cases", "cross.aa_app_user.booking.trip_cases",
                     "role.booking.membership", "role.tripplanner.connection_limit", "login.aa_app_user",
                     "tenant.aa_app_user_isolation", "tenant.cis_runtime_sees_all_ttv"):
             self.assertEqual(st[cid], "pass", cid)
-        for cid in ("cross.cis_runtime.booking.customers", "role.cis_runtime.membership", "ownership.booking",
+        for cid in ("cross.cis_runtime.booking.trip_cases", "role.cis_runtime.membership", "ownership.booking",
                     "ownership.cis", "registry.bk_owner", "role.cis_app.attributes", "login.cis_app",
                     "rls.enable_only_has_cis_app_policy", "sessions.master_break_glass_only",
                     "sessions.db_migrator_below_limit", "owner_role.cis_owner"):
@@ -367,6 +367,49 @@ class BuildCellsTest(unittest.TestCase):
         st, _ = statuses(f)
         self.assertEqual(st["runtime_grants.booking"], "FAIL")
 
+    def test_owner_only_relation_is_exempt_from_the_runtime_baseline(self):
+        # AA-1046 (bk-045): booking.retired_b2c_record is owner-only (REVOKE ALL ... FROM booking). The baseline SQL
+        # leaves the owner-only relations ($6) out of its relation branch, and only them.
+        relation = re.search(r"SELECT 'relation'.*?UNION ALL", p.RUNTIME_MISSING_SQL, re.S).group(0)
+        self.assertIn("AND NOT (s.nspname || '.' || c.relname) = ANY($6::text[])", relation)
+        self.assertEqual(p.RUNTIME_MISSING_SQL.count("$6"), 1)
+        self.assertEqual(p.OWNERS["booking"].runtime_privileges[0].owner_only, ("booking.retired_b2c_record",))
+        for name in ("cis", "tripplanner", "crm"):
+            self.assertEqual(p.OWNERS[name].runtime_privileges[0].owner_only, (), name)
+
+    def test_owner_only_cell(self):
+        f = today_facts()
+        f["catalog"]["registered"] = ["rl-001", "243", "bk-014"]
+        f["catalog"]["anchor_owner"]["booking"] = "bk_owner"
+        f["ownership"]["booking"] = {"offenders": []}
+        f["default_acl"]["booking"]["booking"]["rows"] = defacl("booking", "bk_owner", BK_DEFACL)
+        rel = "booking.retired_b2c_record"
+        # before bk-045: the archive is absent, nothing is held
+        f["owner_only"] = {"booking": {"booking": {"relations": [{"name": rel, "present": False, "held": None}]}}}
+        st, _ = statuses(f)
+        self.assertEqual((st["owner_only.booking"], st["runtime_grants.booking"]), ("pass", "pass"))
+        # after bk-045 as written: present, nothing held; runtime_grants does not ask SELECT on it (exempt in SQL)
+        f["owner_only"]["booking"]["booking"]["relations"] = [{"name": rel, "present": True, "held": None}]
+        st, _ = statuses(f)
+        self.assertEqual((st["owner_only.booking"], st["runtime_grants.booking"]), ("pass", "pass"))
+        # the runtime role got a privilege on it back (a default privilege, a later GRANT): the cell fails
+        f["owner_only"]["booking"]["booking"]["relations"] = [{"name": rel, "present": True, "held": "SELECT"}]
+        st, _ = statuses(f)
+        self.assertEqual(st["owner_only.booking"], "FAIL")
+        # any other relation without SELECT still fails runtime_grants
+        f["owner_only"]["booking"]["booking"]["relations"] = [{"name": rel, "present": True, "held": None}]
+        f["runtime_grants"]["booking"]["booking"] = {"missing": [{"kind": "relation", "name": "booking.other_t",
+                                                                 "missing": "SELECT"}]}
+        st, _ = statuses(f)
+        self.assertEqual((st["owner_only.booking"], st["runtime_grants.booking"]), ("pass", "FAIL"))
+        # could not evaluate: not ok
+        f["owner_only"]["booking"]["booking"] = {"error": "42501 InsufficientPrivilegeError: x"}
+        st, _ = statuses(f)
+        self.assertEqual(st["owner_only.booking"], "FAIL")
+        # only owners with owner-only relations get the cell
+        self.assertNotIn("owner_only.tripplanner", st)
+        self.assertNotIn("owner_only.cis", st)
+
     def test_default_acl_findings(self):
         bk = p.OWNERS["booking"]
         rp = bk.runtime_privileges[0]
@@ -404,13 +447,13 @@ class BuildCellsTest(unittest.TestCase):
         # AA-858: cis_app reads booking.v_ops_* (bk-017) and tripplanner.v_ops_traffic_daily (tp-015). Merged into
         # the registry before the DB Migrate apply, the views are absent: pending, never FAIL, and the always-expected
         # cell is unaffected.
-        # bk-023: AA-835 supply views; bk-025 / tp-020: AA-992 data coverage views; bk-035 / tp-022: AA-1003 TP-03 key
-        # views.
+        # bk-023: AA-835 supply views; bk-025 / tp-020: AA-992 data coverage views; tp-022: AA-1003 TP-03 key
+        # view (bk-035's view retires with the Booking B2C drop, AA-1046).
         # bk-039 / bk-040: AA-1029 price.from.v1 (TripPlanner, then the CIS pool for the Content studio).
         # bk-042: AA-1037 the agency billing status the CIS tenant_billing_tick reads.
         # 379: AA-1038 R5 slice 2, TripPlanner's tenant view (a CIS key, plain NNN).
-        self.assertEqual(p.CONSUMER_GRANT_KEYS, ("379", "bk-017", "bk-023", "bk-025", "bk-035", "bk-039", "bk-040",
-                                                 "bk-042", "tp-015", "tp-020", "tp-022"))
+        self.assertEqual(p.CONSUMER_GRANT_KEYS, ("379", "bk-017", "bk-023", "bk-025", "bk-039", "bk-040", "bk-042",
+                                                 "tp-015", "tp-020", "tp-022"))
         for k in p.CONSUMER_GRANT_KEYS:
             self.assertIn(k, p.VERSION_KEYS)
             self.assertIn(k, p.KEY_TEXT)
@@ -469,10 +512,12 @@ class BuildCellsTest(unittest.TestCase):
         self.assertEqual(st["consumer.contract_grants.bk-017"], "pending")
 
     def test_inquiry_key_view_grants_are_their_own_cells(self):
-        # AA-1003 R2: the TP-03 key views wait for tp-022 / bk-035 (contract files, applied by hand); registering
-        # tp-022 with its view granted passes its cell and leaves bk-035 pending until that apply.
+        # AA-1003 R2: the TP-03 key view waits for tp-022 (contract file, applied by hand); registering tp-022 with
+        # its view granted passes its cell. AA-1046: booking.v_ops_inquiry_inbox (bk-035) has no cell any more: Booking
+        # bk-045 drops the view with the B2C half, so its grant to cis_app goes with it.
         objs = {c[2]: c[3] for c in p.CONSUMER_GRANTS if c[3] in ("bk-035", "tp-022")}
-        self.assertEqual(objs, {"booking.v_ops_inquiry_inbox": "bk-035", "tripplanner.v_ops_inquiry_keys": "tp-022"})
+        self.assertEqual(objs, {"tripplanner.v_ops_inquiry_keys": "tp-022"})
+        self.assertNotIn("booking.v_ops_inquiry_inbox", {c[2] for c in p.CONSUMER_GRANTS})
         f = today_facts()
         f["catalog"]["registered"] = ["tp-022"]
         for c in f["consumer"]["grants"]:
@@ -480,7 +525,14 @@ class BuildCellsTest(unittest.TestCase):
                 c["missing"] = []
         st, _ = statuses(f)
         self.assertEqual(st["consumer.contract_grants.tp-022"], "pass")
-        self.assertEqual(st["consumer.contract_grants.bk-035"], "pending")
+        self.assertNotIn("consumer.contract_grants.bk-035", st)
+
+    def test_cross_app_cells_name_no_dropped_b2c_table(self):
+        # AA-1046: Booking bk-045 drops booking.customers; a cross-app read of a missing table raises 42P01, not
+        # 42501, so the cells read booking.trip_cases (kept; granted to role booking only).
+        targets = {t for _r, t, _w in p.CROSS_APP}
+        self.assertNotIn("booking.customers", targets)
+        self.assertIn("booking.trip_cases", targets)
 
     def test_from_price_view_grant_is_its_own_cell(self):
         # AA-1029: TripPlanner reads booking.v_from_prices (price.from.v1), created by the contract file bk-039; the
@@ -557,20 +609,20 @@ class BuildCellsTest(unittest.TestCase):
         self.assertEqual(st["login.cis_app"], "FAIL")                      # marked, still refused: a real failure
         f["logins"]["cis_app"] = {"secret": "aa-cis/dev/rds-cis-app", "secret_user": "cis_app",
                                   "current_user": "cis_app",
-                                  "cross": {"booking.customers": denied("b"), "tripplanner.sessions": denied("t")}}
+                                  "cross": {"booking.trip_cases": denied("b"), "tripplanner.sessions": denied("t")}}
         st, _ = statuses(f)
-        self.assertEqual((st["login.cis_app"], st["cross.cis_app.booking.customers"]), ("pass", "pass"))
+        self.assertEqual((st["login.cis_app"], st["cross.cis_app.booking.trip_cases"]), ("pass", "pass"))
 
     def test_cis_runtime_switch(self):
         f = today_facts()
         f["cis_runtime"] = {"value_from": CIS_APP_ARN, "secret": "aa-cis/dev/rds-cis-app", "user": "cis_app"}
         f["roles"]["cis_app"] = role("cis_app", connlimit=90)
         f["logins"]["cis_runtime"] = {"secret": "aa-cis/dev/rds-cis-app", "current_user": "cis_app",
-                                      "cross": {"booking.customers": denied("b"), "tripplanner.sessions": denied("t")}}
+                                      "cross": {"booking.trip_cases": denied("b"), "tripplanner.sessions": denied("t")}}
         f["ttv"] = {"reference": [48, 49], "runtime": 0}             # ENABLE-only table, no policy TO cis_app
         st, keys = statuses(f)
         self.assertTrue(keys["cis_runtime_on_cis_app"])
-        self.assertEqual(st["cross.cis_runtime.booking.customers"], "pass")
+        self.assertEqual(st["cross.cis_runtime.booking.trip_cases"], "pass")
         self.assertEqual(st["role.cis_runtime.membership"], "pass")
         self.assertEqual(st["tenant.cis_runtime_sees_all_ttv"], "FAIL")
         f["ttv"]["runtime"] = 49                                     # a row arrived between the counts
@@ -619,7 +671,7 @@ class BuildCellsTest(unittest.TestCase):
                                      comment=f"{p.PASSWORD_MARKER} 2026-10-20T08:00:00Z by DB Migrate set-password")
         f["logins"]["cis_app"] = {"secret": "aa-cis/dev/rds-cis-app", "secret_user": "cis_app",
                                   "current_user": "cis_app",
-                                  "cross": {"booking.customers": denied("b"), "tripplanner.sessions": denied("t")}}
+                                  "cross": {"booking.trip_cases": denied("b"), "tripplanner.sessions": denied("t")}}
         f["force_parity"] = {"reference": {t: [10, 11] for t in p.RLS_PARITY_TABLES},
                              "cis_app": {t: {"plain": 10, "forged": 11} for t in p.RLS_PARITY_TABLES}}
         st, keys = statuses(f)
@@ -678,7 +730,7 @@ def crm_live_facts():
     crm_defacl = {"r": ["DELETE", "INSERT", "SELECT", "UPDATE"], "S": ["SELECT", "USAGE"]}
     f["default_acl"]["crm"] = {"crm_app": {"rows": defacl("crm", "crm_owner", crm_defacl)}}
     f["logins"]["crm_app"] = {"secret": "crm/dev/database-url", "secret_user": "crm_app", "current_user": "crm_app",
-                              "cross": {t: denied(t) for t in ("booking.customers", "tripplanner.sessions",
+                              "cross": {t: denied(t) for t in ("booking.trip_cases", "tripplanner.sessions",
                                                                "shared.tenants")}}
     for r in ("booking", "tripplanner", "aa_app_user", "cis_runtime"):
         f["logins"][r].setdefault("cross", {})["crm.job"] = denied("crm")
@@ -693,7 +745,7 @@ class CrmOwnerCellsTest(unittest.TestCase):
         self.assertFalse(keys["crm_transferred"])
         for cid in ("role.crm_app.attributes", "role.crm_app.noinherit", "owner_role.crm_owner",
                     "nologin.crm_ai_reader", "registry.crm_owner", "cross.booking.crm.job",
-                    "cross.crm_app.booking.customers", "default_acl.crm"):
+                    "cross.crm_app.booking.trip_cases", "default_acl.crm"):
             self.assertIn(st[cid], ("pending", "ready"), cid)
 
     def test_after_the_train_every_crm_cell_passes(self):
@@ -763,7 +815,7 @@ class CrmOwnerCellsTest(unittest.TestCase):
         cells = {c.id: c for c in p.build_cells(f, keys)}
         self.assertEqual(cells["login.crm_app"].status(keys), "pending")
         self.assertTrue(cells["login.crm_app"].as_json(keys)["warn"])
-        self.assertEqual(cells["cross.crm_app.booking.customers"].status(keys), "pending")
+        self.assertEqual(cells["cross.crm_app.booking.trip_cases"].status(keys), "pending")
 
     def test_crm_app_needs_no_schema_wide_execute(self):
         rp = p.OWNERS["crm"].runtime_privileges[0]

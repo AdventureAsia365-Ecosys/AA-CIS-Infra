@@ -90,8 +90,15 @@ class RegistryShapeTest(unittest.TestCase):
                 self.assertEqual(set(o["runtime_secrets"]), set(o["runtime_roles"]))   # the probe logs in as each
                 self.assertLessEqual(set(o["runtime_privileges"]), set(o["runtime_roles"]))
                 for role, rp in o["runtime_privileges"].items():
-                    self.assertEqual(set(rp), {"schemas", "objects", "default_acl"}, role)
+                    self.assertLessEqual({"schemas", "objects", "default_acl"}, set(rp), role)
+                    self.assertLessEqual(set(rp), {"schemas", "objects", "default_acl", "owner_only_relations"}, role)
                     self.assertLessEqual(set(rp["schemas"]), set(o["schemas"]), role)
+                    # owner-only relations (AA-1046): sorted, distinct, each in one of the role's schemas
+                    only = rp.get("owner_only_relations", [])
+                    self.assertEqual(only, sorted(set(only)), role)
+                    for rel in only:
+                        self.assertRegex(rel, r"^[a-z_]+\.[a-z_0-9]+$")
+                        self.assertIn(rel.split(".")[0], rp["schemas"], rel)
                     self.assertEqual(set(rp["objects"]), set(probe.OBJECT_KINDS), role)
                     self.assertLessEqual(set(rp["default_acl"]), set(probe.DEFACL_OBJTYPE), role)
                 if "runtime_privileges_from" in o:
@@ -209,7 +216,9 @@ class MirrorsAgreeTest(unittest.TestCase):
                 self.assertEqual(p.runtime_privileges_from, str(o.get("runtime_privileges_from", "")))
                 self.assertEqual({rp.role: {"schemas": list(rp.schemas),
                                             "objects": {k: list(v) for k, v in rp.objects},
-                                            "default_acl": {k: list(v) for k, v in rp.default_acl}}
+                                            "default_acl": {k: list(v) for k, v in rp.default_acl},
+                                            **({"owner_only_relations": list(rp.owner_only)} if rp.owner_only
+                                               else {})}
                                   for rp in p.runtime_privileges}, o["runtime_privileges"])
         # Contract consumer grants on one named object (wildcards such as catalog.* are left to the dump).
         # AA-1038: digits allowed after the first letter (catalog.v_tenant_tripplanner_v1).

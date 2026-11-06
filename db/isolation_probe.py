@@ -107,6 +107,9 @@ class RuntimePrivileges:
     schemas: tuple                     # the schemas the role works in (cis_app: every CIS schema but catalog)
     objects: tuple                     # ((kind, (privilege, …)), …) on every existing object, kind in OBJECT_KINDS
     default_acl: tuple                 # ((objects word, (privilege, …)), …) FOR ROLE <live owner> IN SCHEMA s
+    # Relations ("schema.name") the owner keeps from this role on purpose (owners.yaml owner_only_relations): left
+    # out of the baseline check, and cell owner_only.<owner> asserts the role holds NO privilege on them.
+    owner_only: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -140,7 +143,9 @@ OWNERS = {
     "booking": ProbeOwner(("booking",), "booking", "bk_owner", "bk-014", (("booking", "booking/dev/database-url"),),
                           runtime_privileges=(RuntimePrivileges(
                               "booking", ("booking",), BASELINE,
-                              (("tables", DML), ("sequences", ("SELECT", "USAGE")), ("functions", ("EXECUTE",)))),)),
+                              (("tables", DML), ("sequences", ("SELECT", "USAGE")), ("functions", ("EXECUTE",))),
+                              # AA-1046 (bk-045): the archive of the retired customer money rows, owner-only.
+                              ("booking.retired_b2c_record",)),)),
     "tripplanner": ProbeOwner(("tripplanner",), "tripplanner", "tp_owner", "tp-013",
                               (("tripplanner", "tripplanner/dev/database-url"),),
                               runtime_privileges=(RuntimePrivileges(
@@ -180,8 +185,7 @@ CONSUMER_GRANTS = (
     ("cis_app", ("USAGE", "SELECT"), "tripplanner.v_ops_data_totals", "tp-020"),
     ("cis_app", ("USAGE", "SELECT"), "tripplanner.v_ops_pin_components", "tp-020"),
     ("cis_app", ("USAGE", "SELECT"), "tripplanner.v_ops_component_id_map", "tp-020"),
-    ("cis_app", ("USAGE", "SELECT"), "booking.v_ops_inquiry_inbox", "bk-035"),     # AA-1003 TP-03 key views
-    ("cis_app", ("USAGE", "SELECT"), "tripplanner.v_ops_inquiry_keys", "tp-022"),
+    ("cis_app", ("USAGE", "SELECT"), "tripplanner.v_ops_inquiry_keys", "tp-022"),    # AA-1003 TP-03 key view
     ("tripplanner", ("USAGE", "SELECT"), "booking.v_from_prices", "bk-039"),       # AA-1029 price.from.v1
     ("cis_app", ("USAGE", "SELECT"), "booking.v_from_prices", "bk-040"),           # AA-1029 studio Marketplace
     ("cis_app", ("USAGE", "SELECT"), "booking.v_tenant_billing_status", "bk-042"), # AA-1037 billing tick
@@ -256,16 +260,16 @@ LOGIN_KEYS = {CIS_APP: CIS_APP_LOGIN_KEYS, CRM_APP: CRM_APP_LOGIN_KEYS}
 CROSS_APP = (
     ("booking", "tripplanner.sessions", ()),
     ("booking", "shared.tenants", ()),
-    ("tripplanner", "booking.customers", ()),
-    ("aa_app_user", "booking.customers", ()),
+    ("tripplanner", "booking.trip_cases", ()),
+    ("aa_app_user", "booking.trip_cases", ()),
     ("aa_app_user", "tripplanner.sessions", ()),
-    (CIS_APP, "booking.customers", ("cis_app_secret_ready", "cis_app_password_set")),
+    (CIS_APP, "booking.trip_cases", ("cis_app_secret_ready", "cis_app_password_set")),
     (CIS_APP, "tripplanner.sessions", ("cis_app_secret_ready", "cis_app_password_set")),
-    (CIS_RUNTIME, "booking.customers", ("cis_runtime_on_cis_app",)),
+    (CIS_RUNTIME, "booking.trip_cases", ("cis_runtime_on_cis_app",)),
     (CIS_RUNTIME, "tripplanner.sessions", ("cis_runtime_on_cis_app",)),
     # AA-932 (ADR 0008a decision 1, design N5): no cross-schema grant in either direction. crm_app reads nothing
     # outside crm; no AA app role reads crm.* (crm.job exists from crm-001).
-    (CRM_APP, "booking.customers", CRM_APP_LOGIN_KEYS),
+    (CRM_APP, "booking.trip_cases", CRM_APP_LOGIN_KEYS),
     (CRM_APP, "tripplanner.sessions", CRM_APP_LOGIN_KEYS),
     (CRM_APP, "shared.tenants", CRM_APP_LOGIN_KEYS),
     ("booking", "crm.job", ("crm-001",)),
@@ -352,7 +356,9 @@ SELECT nspname::text AS schema, pg_catalog.pg_get_userbyid(nspowner)::text AS ow
 # ignores it). Extension members are left out. Partitions are left out too: a query through the parent
 # checks the parent's privileges only, and an owner may revoke the runtime role's rights on each
 # partition on purpose (crm-007, AA-940: crm.audit_event's monthly partitions are reached through the
-# parent only, and a new one is made every month). Catalog facts: nothing runs as $1.
+# parent only, and a new one is made every month). The relations $6 (the owner-only relations of
+# owners.yaml) are left out too: OWNER_ONLY_HELD_SQL checks the opposite on them. Catalog facts: nothing
+# runs as $1.
 RUNTIME_MISSING_SQL = """
 WITH s AS (SELECT n.oid, n.nspname FROM pg_catalog.pg_namespace n WHERE n.nspname = ANY($2::text[])),
 ext AS (SELECT d.classid, d.objid FROM pg_catalog.pg_depend d WHERE d.deptype = 'e')
@@ -366,6 +372,7 @@ SELECT kind, name, missing FROM (
              WHERE NOT pg_catalog.has_table_privilege($1, c.oid, x))
       FROM pg_catalog.pg_class c JOIN s ON s.oid = c.relnamespace
      WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f') AND NOT c.relispartition
+       AND NOT (s.nspname || '.' || c.relname) = ANY($6::text[])
        AND NOT EXISTS (SELECT 1 FROM ext WHERE ext.classid = 'pg_catalog.pg_class'::regclass AND ext.objid = c.oid)
     UNION ALL
     SELECT 'sequence', s.nspname || '.' || c.relname,
@@ -386,6 +393,17 @@ SELECT kind, name, missing FROM (
 ) o
 WHERE missing IS NOT NULL
 ORDER BY 1, 2"""
+# Owner-only relations $2 ("schema.name"): whether each exists and which table privileges role $1 holds
+# on it (none expected; an absent relation holds nothing, e.g. before the migration that creates it).
+OWNER_ONLY_HELD_SQL = """
+SELECT x.name, c.oid IS NOT NULL AS present,
+       (SELECT pg_catalog.string_agg(pr, ',' ORDER BY pr)
+          FROM pg_catalog.unnest(ARRAY['DELETE', 'INSERT', 'REFERENCES', 'SELECT', 'TRIGGER', 'TRUNCATE',
+                                       'UPDATE']) AS pr
+         WHERE c.oid IS NOT NULL AND pg_catalog.has_table_privilege($1, c.oid, pr)) AS held
+  FROM pg_catalog.unnest($2::text[]) AS x(name)
+  LEFT JOIN pg_catalog.pg_class c ON c.oid = pg_catalog.to_regclass(x.name)
+ ORDER BY 1"""
 # Default privileges in the schemas $1: per row FOR ROLE, object type and what it grants role $2.
 DEFAULT_ACL_SQL = """
 SELECT n.nspname::text AS schema, d.defaclobjtype::text AS objtype,
@@ -882,6 +900,16 @@ def build_cells(facts: dict, keys: dict) -> list:
                               detail={"missing": len(missing),
                                       "sample": [f"{m['kind']} {m['name']}: {m['missing']}"
                                                  for m in missing[:SAMPLE]]}))
+            if rp.owner_only:
+                o = facts.get("owner_only", {}).get(name, {}).get(rp.role, {})
+                held = [r for r in o.get("relations", []) if r.get("held")]
+                cells.append(Cell(f"owner_only.{name}{suffix}", "runtime grants",
+                                  f"{rp.role}: no privilege on the owner-only relation(s) "
+                                  f"{', '.join(rp.owner_only)} (absent: nothing to hold)", (key,),
+                                  ok=not o.get("error") and not held, error=o.get("error", ""),
+                                  detail={"held": [f"{r['name']}: {r['held']}" for r in held[:SAMPLE]],
+                                          "present": [r["name"] for r in o.get("relations", [])
+                                                      if r.get("present")]}))
             d = facts["default_acl"].get(name, {}).get(rp.role, {})
             found = [] if d.get("error") else default_acl_findings(d.get("rows", []), rp, owner, live or "?")
             cells.append(Cell(f"default_acl.{name}{suffix}", "runtime grants",
@@ -1087,13 +1115,20 @@ async def collect_catalog(conn, cfg: dict, facts: dict, runtime_user) -> list:
                 err = {"error": f"role {rp.role} does not exist"}
                 facts["runtime_grants"].setdefault(name, {})[rp.role] = err
                 facts["default_acl"].setdefault(name, {})[rp.role] = err
+                if rp.owner_only:
+                    facts["owner_only"].setdefault(name, {})[rp.role] = err
                 continue
             kinds = dict(rp.objects)
             v, e = await _savepoint(conn, lambda rp=rp, kinds=kinds: conn.fetch(
                 RUNTIME_MISSING_SQL, rp.role, list(rp.schemas), list(kinds.get("relation", ())),
-                list(kinds.get("sequence", ())), list(kinds.get("function", ()))))
+                list(kinds.get("sequence", ())), list(kinds.get("function", ())), list(rp.owner_only)))
             facts["runtime_grants"].setdefault(name, {})[rp.role] = (
                 {"error": safe_err(e)} if e else {"missing": [dict(r) for r in v]})
+            if rp.owner_only:
+                v, e = await _savepoint(conn, lambda rp=rp: conn.fetch(OWNER_ONLY_HELD_SQL, rp.role,
+                                                                       list(rp.owner_only)))
+                facts["owner_only"].setdefault(name, {})[rp.role] = (
+                    {"error": safe_err(e)} if e else {"relations": [dict(r) for r in v]})
             v, e = await _savepoint(conn, lambda o=owner, rp=rp: conn.fetch(DEFAULT_ACL_SQL, list(o.schemas), rp.role))
             facts["default_acl"].setdefault(name, {})[rp.role] = (
                 {"error": safe_err(e)} if e else {"rows": [dict(r) for r in v]})
@@ -1329,7 +1364,7 @@ async def collect(cfg: dict, facts: dict) -> int:
 
 def empty_facts() -> dict:
     return {"catalog": {"login": None, "registered": [], "anchor_owner": {}}, "roles": {}, "ownership": {},
-            "owner_grants": {}, "runtime_grants": {}, "default_acl": {}, "consumer": {},
+            "owner_grants": {}, "runtime_grants": {}, "owner_only": {}, "default_acl": {}, "consumer": {},
             "registry_writes": {}, "rls_enable_only": {}, "tenant_matrix": {}, "ttv": {}, "force_parity": {},
             "sessions": {}, "logins": {}, "cis_runtime": {}, "crm_readers": {}}
 
