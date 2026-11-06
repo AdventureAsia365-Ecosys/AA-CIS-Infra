@@ -15,6 +15,10 @@ name: Terraform Plan Guard Tests
 # listed: other tests here check that the files they read are named).
 # S263 (AA-939 follow-up): plus the partner-pool AdminDeleteUser guards (test_partner_pool_delete_user.py reads
 # identity_partner.tf and identity_iam.tf), so those paths trigger it too.
+# S271 lessons guards: G9 test_workflow_tf_locking.py (every Terraform run waits for the state lock and is serialised),
+# G13 test_iam_trust_inventory.py (tools/terraform/iam_trust_inventory.py; a .tf change does not need to trigger this
+# workflow: the required Terraform Plan (dev) check runs the same static scan on every PR), G15 test_workflow_lint.py
+# (.github/scripts/workflow_lint.py).
 # S271: plus the tag guard (tools/terraform/tag_guard.py; test_tag_guard.py reads every root's versions.tf, so those
 # files trigger it too, accounts/management/** already does) and the monthly untagged report
 # (tools/finops/untagged_report.py, tools/finops/tests).
@@ -45,6 +49,7 @@ on:
       - "accounts/management/**"
       - "accounts/aa365/versions.tf" # S271: provider default_tags (test_tag_guard.py)
       - "accounts/acc3-bedrock/versions.tf"
+      - ".github/scripts/workflow_lint.py" # S271 G15: test_workflow_lint.py
   push:
     branches: [main]
     paths:
@@ -68,6 +73,7 @@ on:
       - "accounts/management/**"
       - "accounts/aa365/versions.tf" # S271: provider default_tags (test_tag_guard.py)
       - "accounts/acc3-bedrock/versions.tf"
+      - ".github/scripts/workflow_lint.py" # S271 G15: test_workflow_lint.py
 
 permissions:
   contents: read
