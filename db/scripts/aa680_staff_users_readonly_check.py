@@ -15,7 +15,9 @@ Output (DB Migrate mode=run-script; db/scripts/README.md):
 - `SCRIPT row {...}`: one line per booking.staff_users row: key kind (`cis` / `cog`), id (a CIS uuid, or `cog:` and
   the first 8 characters of the sub), Booking role, active, linked (cognito_sub set), CIS username and active flag
   for `cis` rows, last_seen_at date.
-- `SCRIPT counts {...}` and `SCRIPT verdict e2e_has_no_booking_row=<true|false>`.
+- `SCRIPT counts {...}`, `SCRIPT verdict e2e_has_no_booking_row=<true|false>` and (AA-911 Done-when line 4)
+  `SCRIPT verdict active_unlinked=<n>`: active rows with no Cognito identity (expected 0 once the bridge is retired
+  and db/scripts/aa911_bridge_staff_rows.py has been applied). It is reported, never a failure.
 
 Returns 1 (run fails, exit 13) only when a Booking row matches the E2E identity: then the refusal evidence is
 contradicted and must be looked at. A missing E2E user (e.g. disabled and removed later, AA-816 A10) is reported,
@@ -111,6 +113,7 @@ async def run(conn) -> int:
 
     ok = booking_rows == 0
     print(f"SCRIPT verdict e2e_has_no_booking_row={'true' if ok else 'false'}", flush=True)
+    print(f"SCRIPT verdict active_unlinked={counts(rows)['unlinked_active']}", flush=True)
     return 0 if ok else 1
 
 
