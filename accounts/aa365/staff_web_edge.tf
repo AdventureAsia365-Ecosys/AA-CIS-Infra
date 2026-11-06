@@ -63,7 +63,7 @@ variable "staff_web_rate_limit" {
 }
 
 locals {
-  staff_web_tags = merge(local.ecosys_tags, { App = "shared", Issue = "AA-911" })
+  staff_web_tags = merge(local.ecosys_tags, { App = "shared", Component = "admin", Issue = "AA-911" })
 
   # App key (modules/environment staff_web.tf local.staff_web_apps) -> public host.
   staff_web_hosts = {

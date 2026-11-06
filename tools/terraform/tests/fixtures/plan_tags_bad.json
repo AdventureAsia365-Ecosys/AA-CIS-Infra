@@ -1,0 +1,65 @@
+{
+ "format_version": "1.2",
+ "terraform_version": "1.15.5",
+ "planned_values": {
+  "root_module": {}
+ },
+ "resource_changes": [
+  {
+   "address": "aws_lambda_function.example",
+   "mode": "managed",
+   "type": "aws_lambda_function",
+   "name": "example",
+   "provider_name": "registry.terraform.io/hashicorp/aws",
+   "change": {
+    "actions": [
+     "update"
+    ],
+    "before": {},
+    "after": {
+     "function_name": "example-fn",
+     "s3_bucket": "s3://example-artifacts",
+     "s3_key": "placeholder.zip",
+     "tags_all": {
+      "Environment": "dev",
+      "Project": "AA-CIS",
+      "App": "booking",
+      "Owner": "tech-lead",
+      "ManagedBy": "terraform",
+      "CostCenter": "technology",
+      "DataClassification": "internal",
+      "Env": "dev"
+     }
+    },
+    "after_unknown": {}
+   }
+  },
+  {
+   "address": "aws_sqs_queue.example",
+   "mode": "managed",
+   "type": "aws_sqs_queue",
+   "name": "example",
+   "provider_name": "registry.terraform.io/hashicorp/aws",
+   "change": {
+    "actions": [
+     "create"
+    ],
+    "before": null,
+    "after": {
+     "name": "example-q",
+     "tags_all": {
+      "Environment": "dev",
+      "Project": "aa-ecosys",
+      "App": "booking",
+      "Component": "api",
+      "Owner": "tech-lead",
+      "ManagedBy": "terraform",
+      "CostCenter": "technology",
+      "DataClassification": "internal"
+     }
+    },
+    "after_unknown": {}
+   }
+  }
+ ]
+}

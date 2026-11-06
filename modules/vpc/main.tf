@@ -146,6 +146,8 @@ resource "aws_iam_role_policy_attachment" "nat_instance_ssm" {
 resource "aws_iam_instance_profile" "nat_instance" {
   name = "aa-cis-nat-instance-profile"
   role = aws_iam_role.nat_instance.name
+
+  tags = merge(var.tags, { Role = "nat" }) # S271: tagging standard (FIN-03)
 }
 
 resource "aws_instance" "nat" {
@@ -170,14 +172,14 @@ resource "aws_instance" "nat" {
   EOT
 
   tags = merge(var.tags, {
-    Name    = "${local.name_prefix}-nat-instance"
-    Project = "AA-CIS"
-    Role    = "nat"
+    Name = "${local.name_prefix}-nat-instance"
+    Role = "nat"
   })
 
   # AA-828: the root EBS volume is billed on its own line; volume_tags is in-place (CreateTags on the
-  # attached volume), never a replacement. default_tags do not reach volume_tags, so it is explicit.
-  volume_tags = merge(var.tags, {
+  # attached volume), never a replacement. default_tags do not reach volume_tags, so it is explicit, and the root
+  # passes its default tags in var.volume_default_tags (S271).
+  volume_tags = merge(var.volume_default_tags, var.tags, {
     Name = "${local.name_prefix}-nat-instance-root"
   })
 

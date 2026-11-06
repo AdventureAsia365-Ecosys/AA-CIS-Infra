@@ -95,7 +95,7 @@ locals {
   e2e_mail_rule_arn     = "arn:aws:ses:${var.aws_region}:${var.account_id}:receipt-rule-set/${local.e2e_mail_rule_set}:receipt-rule/${local.e2e_mail_rule}"
   e2e_mail_reader_name  = "${local.name_prefix}-e2e-mail-reader"
   e2e_mail_reader_arn   = "arn:aws:iam::${var.account_id}:role/${local.e2e_mail_reader_name}"
-  e2e_mail_tags         = merge(local.ecosys_tags, { App = "cis", Issue = "AA-816" })
+  e2e_mail_tags         = merge(local.ecosys_tags, { App = "cis", Component = "mail", DataClassification = "confidential", Issue = "AA-816" })
   e2e_mail_reader_sub   = "${local.oidc_sub_cis_app}:environment:e2e"
   e2e_mail_object_reads = ["s3:GetObject", "s3:GetObjectVersion", "s3:GetObjectAttributes"]
 

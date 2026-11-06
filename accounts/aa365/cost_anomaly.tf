@@ -43,7 +43,7 @@ resource "aws_ce_anomaly_monitor" "services" {
   monitor_type      = "DIMENSIONAL"
   monitor_dimension = "SERVICE"
 
-  tags = merge(local.shared_tags, { Issue = "AA-896" })
+  tags = merge(local.shared_tags, { Issue = "AA-896", Component = "billing" })
 }
 
 resource "aws_ce_anomaly_subscription" "alerts_sns" {
@@ -64,7 +64,7 @@ resource "aws_ce_anomaly_subscription" "alerts_sns" {
     }
   }
 
-  tags = merge(local.shared_tags, { Issue = "AA-896" })
+  tags = merge(local.shared_tags, { Issue = "AA-896", Component = "billing" })
 
   # The service checks that it may publish when the subscription is created.
   depends_on = [aws_sns_topic_policy.alerts]

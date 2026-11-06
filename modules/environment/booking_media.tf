@@ -37,7 +37,7 @@ resource "aws_s3_bucket" "booking_supply_media" {
   # Never force_destroy: supplier photos are referenced by booking.entity_media rows and by CIS content.
   force_destroy = false
 
-  tags = merge(local.bk_tags, { Name = local.bk_supply_media_bucket, Issue = "AA-835" })
+  tags = merge(local.bk_tags, { Name = local.bk_supply_media_bucket, Issue = "AA-835", Component = "storage" })
 }
 
 resource "aws_s3_bucket_public_access_block" "booking_supply_media" {

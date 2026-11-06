@@ -56,7 +56,7 @@ locals {
   ]
   crm_scrub_config_hash = substr(sha256(jsonencode(local.crm_scrub_pii_types)), 0, 12)
 
-  crm_scrub_tags = merge(local.crm_tags, { Service = "crm", Issue = "AA-938" })
+  crm_scrub_tags = merge(local.crm_tags, { Component = "llm", Issue = "AA-938" })
 
   crm_scrub_guardrail_arns = local.crm_scrub_enabled ? [
     aws_bedrock_guardrail.crm_scrub[0].guardrail_arn,

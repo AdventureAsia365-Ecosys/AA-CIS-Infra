@@ -50,6 +50,8 @@ resource "aws_budgets_budget" "organization" {
       subscriber_email_addresses = var.budget_alert_emails
     }
   }
+
+  tags = { Component = "billing" } # S271: tagging standard (FIN-03)
 }
 
 resource "aws_budgets_budget" "account" {
@@ -81,6 +83,8 @@ resource "aws_budgets_budget" "account" {
       subscriber_email_addresses = var.budget_alert_emails
     }
   }
+
+  tags = { Component = "billing" } # S271: tagging standard (FIN-03)
 }
 
 resource "aws_ce_anomaly_monitor" "account" {
@@ -104,6 +108,8 @@ resource "aws_ce_anomaly_monitor" "account" {
     ProductAttributes = null # AWS returns this key; without it every plan replaces the monitor
     Tags              = null
   })
+
+  tags = { Component = "billing" } # S271: tagging standard (FIN-03)
 }
 
 resource "aws_ce_anomaly_subscription" "account" {
@@ -128,4 +134,6 @@ resource "aws_ce_anomaly_subscription" "account" {
       values        = [tostring(var.anomaly_threshold_usd)]
     }
   }
+
+  tags = { Component = "billing" } # S271: tagging standard (FIN-03)
 }

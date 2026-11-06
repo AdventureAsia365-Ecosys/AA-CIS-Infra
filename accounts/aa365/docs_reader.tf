@@ -56,7 +56,7 @@ resource "aws_iam_role" "docs_sync" {
     }]
   })
 
-  tags = merge(local.common_tags, { Issue = "AA-898" })
+  tags = merge(local.common_tags, { Issue = "AA-898", Component = "cicd" })
 
   depends_on = [time_sleep.wait_for_iam_propagation]
 }

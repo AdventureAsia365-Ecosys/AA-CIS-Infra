@@ -68,7 +68,7 @@ locals {
   photos_cdn_host   = "${var.photos_cdn_subdomain}.${var.dns_zone_name}"
   photos_cdn_on     = var.photos_cdn_enabled && var.custom_domains_enabled ? 1 : 0
   photos_cdn_prefix = "photos" # S3 prefix photo_sync writes under; also the origin_path
-  photos_cdn_tags   = merge(local.cis_app_tags, { Issue = "AA-844" })
+  photos_cdn_tags   = merge(local.cis_app_tags, { Component = "cdn", DataClassification = "public", Issue = "AA-844" })
 }
 
 # -----------------------------------------------------------------------------

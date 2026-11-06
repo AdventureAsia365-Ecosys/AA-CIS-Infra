@@ -6,6 +6,8 @@ resource "aws_iam_openid_connect_provider" "github_actions" {
   url             = "https://token.actions.githubusercontent.com"
   client_id_list  = ["sts.amazonaws.com"]
   thumbprint_list = [data.tls_certificate.github_actions.certificates[0].sha1_fingerprint]
+
+  tags = merge(local.shared_tags, { Component = "cicd" }) # S271: tagging standard (FIN-03)
 }
 
 # AA-806 step 3 (S239): the legacy shared CI role aa-cis-dev-role (aws_iam_role.cicd, its 10

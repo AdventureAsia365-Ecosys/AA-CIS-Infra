@@ -18,7 +18,8 @@ resource "aws_cloudwatch_log_group" "diag_flow_logs" {
   retention_in_days = 30 # S263 (AA-1025): Dev diagnostic log, 30 days (was 365, AA-872)
 
   tags = merge(local.shared_tags, {
-    Purpose = "AA-272-diagnostic-only"
+    Component = "observability"
+    Purpose   = "AA-272-diagnostic-only"
   })
 }
 
@@ -36,7 +37,8 @@ resource "aws_iam_role" "diag_flow_logs" {
   })
 
   tags = merge(local.shared_tags, {
-    Purpose = "AA-272-diagnostic-only"
+    Component = "observability"
+    Purpose   = "AA-272-diagnostic-only"
   })
 }
 
@@ -71,8 +73,9 @@ resource "aws_flow_log" "diag_nlb" {
   iam_role_arn         = aws_iam_role.diag_flow_logs.arn
 
   tags = merge(local.shared_tags, {
-    Name    = "${local.name_prefix}-diag-flowlog-nlb-${each.value}"
-    Purpose = "AA-272-diagnostic-only"
+    Component = "observability"
+    Name      = "${local.name_prefix}-diag-flowlog-nlb-${each.value}"
+    Purpose   = "AA-272-diagnostic-only"
   })
 }
 
@@ -87,8 +90,9 @@ resource "aws_flow_log" "diag_alb" {
   iam_role_arn         = aws_iam_role.diag_flow_logs.arn
 
   tags = merge(local.shared_tags, {
-    Name    = "${local.name_prefix}-diag-flowlog-alb-${each.value}"
-    Purpose = "AA-272-diagnostic-only"
+    Component = "observability"
+    Name      = "${local.name_prefix}-diag-flowlog-alb-${each.value}"
+    Purpose   = "AA-272-diagnostic-only"
   })
 }
 
@@ -104,7 +108,9 @@ resource "aws_s3_bucket" "diag_alb_logs" {
   force_destroy = true
 
   tags = merge(local.shared_tags, {
-    Purpose = "AA-272-diagnostic-only"
+    Component          = "observability"
+    DataClassification = "confidential"
+    Purpose            = "AA-272-diagnostic-only"
   })
 }
 
@@ -181,7 +187,8 @@ resource "aws_iam_role" "diag_apigw_cloudwatch" {
   })
 
   tags = merge(local.shared_tags, {
-    Purpose = "AA-272-diagnostic-only"
+    Component = "observability"
+    Purpose   = "AA-272-diagnostic-only"
   })
 }
 

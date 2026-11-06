@@ -56,7 +56,7 @@ resource "aws_security_group" "cis_api" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = merge(local.common_tags, { Name = "${local.name_prefix}-sg-cis-api" })
+  tags = merge(local.common_tags, { Name = "${local.name_prefix}-sg-cis-api", Component = "api" })
 }
 
 # ── CIS worker (ECS service aa-cis-dev-worker): serves no traffic ─────────────
@@ -73,7 +73,7 @@ resource "aws_security_group" "cis_worker" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = merge(local.common_tags, { Name = "${local.name_prefix}-sg-cis-worker" })
+  tags = merge(local.common_tags, { Name = "${local.name_prefix}-sg-cis-worker", Component = "worker" })
 }
 
 # ── Booking api (ECS service aa-booking-dev-api, booking.tf) ──
@@ -215,7 +215,7 @@ resource "aws_security_group" "db_migrate" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = merge(local.shared_tags, { Name = "${local.name_prefix}-sg-db-migrate" })
+  tags = merge(local.shared_tags, { Name = "${local.name_prefix}-sg-db-migrate", Component = "db" })
 }
 
 # ── Ops Lambdas (dfs-balance check, dfs_balance.tf): reach the CIS API through the NAT, no data store ──
@@ -232,5 +232,5 @@ resource "aws_security_group" "ops_lambda" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = merge(local.common_tags, { Name = "${local.name_prefix}-sg-ops-lambda" })
+  tags = merge(local.common_tags, { Name = "${local.name_prefix}-sg-ops-lambda", Component = "jobs" })
 }

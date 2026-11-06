@@ -105,11 +105,9 @@ locals {
   id_traveller_ip_header  = "X-AA-Traveller-IP"
 
   id_tags = {
-    Project     = "AA-Ecosys"
-    Environment = var.environment
-    ManagedBy   = "terraform"
-    App         = "identity"
-    Issue       = "AA-703"
+    App       = "identity"
+    Component = "auth"
+    Issue     = "AA-703"
   }
 
   id_ses_enabled   = var.identity_ses_enabled
@@ -481,7 +479,7 @@ resource "aws_cognito_user_pool" "workforce" {
 
   # No custom attributes (ADR 0006 decision 1: they can never be changed or removed).
 
-  tags = merge(local.id_tags, { Pool = "workforce" })
+  tags = merge(local.id_tags, { Pool = "workforce", DataClassification = "restricted" })
 
   lifecycle {
     precondition {
@@ -554,7 +552,7 @@ resource "aws_cognito_user_pool" "external" {
     }
   }
 
-  tags = merge(local.id_tags, { Pool = "external" })
+  tags = merge(local.id_tags, { Pool = "external", DataClassification = "restricted" })
 
   # The native sign-up gate is enforced, not a silent AND (AA-854 review): public self sign-up on
   # booking-customer / tripplanner without the WAF rate rules would let a script burn MAU and the
@@ -1261,7 +1259,7 @@ resource "aws_secretsmanager_secret" "identity_traveller_bff" {
   name                    = "tripplanner/${var.environment}/cognito-bff-key"
   description             = "AA-908: header value (x-aa-traveller-bff) that marks the TripPlanner BFF's Cognito API calls for the per-traveller WAF rule. Copied into the Vercel env TP_COGNITO_BFF_KEY."
   recovery_window_in_days = var.environment == "dev" ? 0 : 30
-  tags                    = local.id_tags
+  tags                    = merge(local.id_tags, { DataClassification = "restricted" })
 }
 
 resource "aws_secretsmanager_secret_version" "identity_traveller_bff" {
@@ -1294,7 +1292,7 @@ resource "aws_secretsmanager_secret" "identity_traveller_signup_proof" {
   name                    = "tripplanner/${var.environment}/cognito-signup-proof-key"
   description             = "AA-908: HMAC key of the TripPlanner BFF's sign-up proof (ValidationData bff_proof), checked by the EXTERNAL pre sign-up trigger. Copied into the Vercel env TP_COGNITO_SIGNUP_PROOF_KEY."
   recovery_window_in_days = var.environment == "dev" ? 0 : 30
-  tags                    = local.id_tags
+  tags                    = merge(local.id_tags, { DataClassification = "restricted" })
 }
 
 resource "aws_secretsmanager_secret_version" "identity_traveller_signup_proof" {
@@ -1317,7 +1315,7 @@ resource "aws_secretsmanager_secret" "identity_breakglass" {
   name                    = "aa-identity/${var.environment}/breakglass"
   description             = "WORKFORCE break-glass credentials (password + TOTP seed). Value set out-of-band. AA-703."
   recovery_window_in_days = var.environment == "dev" ? 0 : 30
-  tags                    = local.id_tags
+  tags                    = merge(local.id_tags, { DataClassification = "restricted" })
 }
 
 # =============================================================================

@@ -47,7 +47,7 @@ resource "aws_s3_bucket" "booking_ops_docs" {
   # Never force_destroy: the objects are referenced by booking.ops_files rows, some under the accounting exception.
   force_destroy = false
 
-  tags = merge(local.bk_tags, { Name = local.bk_ops_docs_bucket, Issue = "AA-682" })
+  tags = merge(local.bk_tags, { Name = local.bk_ops_docs_bucket, Issue = "AA-682", Component = "storage", DataClassification = "confidential" })
 }
 
 resource "aws_s3_bucket_public_access_block" "booking_ops_docs" {

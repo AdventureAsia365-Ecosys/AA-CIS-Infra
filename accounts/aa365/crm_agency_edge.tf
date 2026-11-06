@@ -37,7 +37,7 @@ variable "crm_agency_subdomain" {
 locals {
   crm_agency_host     = "${var.crm_agency_subdomain}.${var.dns_zone_name}"
   crm_agency_wildcard = "*.${var.dns_zone_name}"
-  crm_agency_tags     = merge(local.crm_tags, { Issue = "AA-979" })
+  crm_agency_tags     = merge(local.crm_tags, { Component = "edge", Issue = "AA-979" })
 }
 
 resource "aws_acm_certificate" "crm_agency" {

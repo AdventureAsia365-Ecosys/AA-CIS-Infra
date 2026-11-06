@@ -101,7 +101,7 @@ locals {
   crm_container = "api"
   crm_port      = 8000
 
-  crm_app_tags = merge(local.crm_tags, { Service = "crm", Issue = "AA-933" })
+  crm_app_tags = merge(local.crm_tags, { Component = "api", Issue = "AA-933" })
 
   crm_cluster_arn      = var.ecs_cluster_arn
   crm_service_arn      = "arn:aws:ecs:${var.aws_region}:${var.account_id}:service/${var.ecs_cluster_name}/${local.crm_service}"
@@ -196,7 +196,7 @@ resource "aws_secretsmanager_secret" "crm_sentry_dsn" {
   name                    = "crm/${var.environment}/sentry-dsn"
   description             = "AA-Partner Sentry DSN (project aa-partner-api), SENTRY_DSN of the api + crm.job worker. Value set out-of-band."
   recovery_window_in_days = var.environment == "dev" ? 0 : 30
-  tags                    = local.crm_app_tags
+  tags                    = merge(local.crm_app_tags, { DataClassification = "restricted" })
 }
 
 # -----------------------------------------------------------------------------

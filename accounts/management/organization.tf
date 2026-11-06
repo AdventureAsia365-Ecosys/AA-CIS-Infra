@@ -60,6 +60,10 @@ resource "aws_organizations_organizational_unit" "suspended" {
 }
 
 locals {
+  # S271: Environment tag of each member account (tagging standard FIN-03). The nonprod account holds Dev (and staging
+  # on demand); the AI account serves every environment.
+  member_account_environment = { nonprod = "dev", ai = "shared", prod = "prod" }
+
   ou_parent_ids = {
     root      = local.root_id
     nonprod   = aws_organizations_organizational_unit.nonprod.id
@@ -93,6 +97,9 @@ resource "aws_organizations_account" "member" {
     # iam_user_access_to_billing back, so without this every plan after an import would want to replace it.
     ignore_changes = [name, email, role_name, iam_user_access_to_billing]
   }
+
+  # S271 (tagging standard FIN-03): the account's own environment; the provider default says shared.
+  tags = { Environment = local.member_account_environment[each.key] }
 }
 
 # Centralized root access: root credentials of member accounts can be removed and root-only tasks run from here

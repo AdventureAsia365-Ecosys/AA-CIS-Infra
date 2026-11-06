@@ -41,7 +41,7 @@ resource "aws_route53_zone" "private" {
     vpc_id = module.vpc.vpc_id
   }
 
-  tags = merge(local.shared_tags, { Issue = "AA-829" })
+  tags = merge(local.shared_tags, { Issue = "AA-829", Component = "dns" })
 }
 
 resource "aws_route53_record" "db" {

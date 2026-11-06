@@ -44,12 +44,10 @@ resource "random_password" "tripplanner_api_key" {
 locals {
   tp_name_prefix = "aa-tripplanner-${var.environment}"
 
+  # S271 (tagging standard FIN-03): Project / Environment / ManagedBy come from default_tags; Component replaces Service.
   tp_tags = {
-    Project     = "AA-TripPlanner"
-    Environment = var.environment
-    ManagedBy   = "terraform"
-    Service     = "tripplanner"
-    App         = "tripplanner" # S235 Phase 0: per-app cost allocation tag (additive)
+    App       = "tripplanner" # S235 Phase 0: per-app cost allocation tag (additive)
+    Component = "api"
   }
 
   # Cohere Embed v4 inference profile in acc2 (direct-invoke, verified live).
@@ -97,7 +95,7 @@ resource "aws_secretsmanager_secret" "tripplanner_db" {
   name                    = "tripplanner/${var.environment}/database-url"
   description             = "AA-TripPlanner DB connection string (tripplanner schema, shared RDS)"
   recovery_window_in_days = var.environment == "dev" ? 0 : 30
-  tags                    = local.tp_tags
+  tags                    = merge(local.tp_tags, { DataClassification = "restricted" })
 }
 
 resource "aws_secretsmanager_secret_version" "tripplanner_db" {
@@ -121,7 +119,7 @@ resource "aws_secretsmanager_secret" "tripplanner_api_key" {
   name                    = "tripplanner/${var.environment}/api-key"
   description             = "AA-TripPlanner edge shared secret (X-TripPlanner-Key header)"
   recovery_window_in_days = var.environment == "dev" ? 0 : 30
-  tags                    = local.tp_tags
+  tags                    = merge(local.tp_tags, { DataClassification = "restricted" })
 }
 
 resource "aws_secretsmanager_secret_version" "tripplanner_api_key" {
@@ -143,7 +141,7 @@ resource "aws_secretsmanager_secret" "tripplanner_sentry_dsn" {
   name                    = "tripplanner/${var.environment}/sentry-dsn"
   description             = "AA-TripPlanner Sentry DSN (project aa-tripplanner-lambdas), read by name at cold start by browse + assembly. Value set out-of-band."
   recovery_window_in_days = var.environment == "dev" ? 0 : 30
-  tags                    = merge(local.tp_tags, { Issue = "AA-871" })
+  tags                    = merge(local.tp_tags, { Issue = "AA-871", DataClassification = "restricted" })
 }
 
 # AA-878 (S243): the Mapbox geocoding token secret and its version are forgotten by two `removed` blocks; they name
@@ -167,7 +165,7 @@ resource "aws_secretsmanager_secret" "tripplanner_sentry_dsn" {
 # -----------------------------------------------------------------------------
 resource "aws_s3_bucket" "tripplanner_artifacts" {
   bucket = "${local.tp_name_prefix}-lambda-artifacts-${var.account_id}"
-  tags   = local.tp_tags
+  tags   = merge(local.tp_tags, { Component = "storage" })
 }
 
 resource "aws_s3_bucket_versioning" "tripplanner_artifacts" {

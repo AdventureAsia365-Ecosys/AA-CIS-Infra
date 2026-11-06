@@ -20,7 +20,7 @@ resource "aws_route53_zone" "lumiguides" {
   name    = var.dns_zone_name
   comment = "AA-811: lumiguides.it.com (moved from Namecheap DNS, S237). Managed by AA-CIS-Infra."
 
-  tags = merge(local.ecosys_tags, { App = "shared", Issue = "AA-811" })
+  tags = merge(local.ecosys_tags, { App = "shared", Component = "dns", Issue = "AA-811" })
 
   # Deleting the zone after the NS switch takes every *.lumiguides.it.com name and the Zoho mail
   # offline. The CI apply role is also not granted route53:DeleteHostedZone (cicd_split.tf).

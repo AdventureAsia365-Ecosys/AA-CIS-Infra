@@ -71,7 +71,7 @@ resource "aws_iam_role" "db_auto_apply" {
     }]
   })
 
-  tags = local.shared_tags
+  tags = merge(local.shared_tags, { Component = "cicd" })
 }
 
 resource "aws_iam_role_policy" "db_auto_apply" {

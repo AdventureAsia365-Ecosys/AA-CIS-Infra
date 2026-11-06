@@ -41,16 +41,27 @@ terraform {
   }
 }
 
+# Tagging standard (root docs/architecture/tagging-standard.md, FIN-03; S271): the mandatory keys every resource of
+# this root shares. App and Component are set per resource or module (main.tf, local.common_tags), never here. The values
+# are checked on every plan by tools/terraform/tag_guard.py against tools/terraform/tag_policy.json. Changing one
+# re-tags every resource of the root: a tag-only plan, applied locally with the MFA admin profile (bootstrap IAM
+# objects included), not by the CI apply role.
+locals {
+  tag_defaults = {
+    Project            = "aa-ecosys"
+    Environment        = var.environment
+    Owner              = "tech-lead"
+    ManagedBy          = "terraform"
+    CostCenter         = "technology"
+    DataClassification = "internal"
+  }
+}
+
 provider "aws" {
   region = var.aws_region
 
   default_tags {
-    tags = {
-      Project     = "AA-CIS"
-      Environment = var.environment
-      ManagedBy   = "Terraform"
-      Account     = "aa365"
-    }
+    tags = local.tag_defaults
   }
 }
 
@@ -62,11 +73,6 @@ provider "aws" {
   region = "us-east-1"
 
   default_tags {
-    tags = {
-      Project     = "AA-CIS"
-      Environment = var.environment
-      ManagedBy   = "Terraform"
-      Account     = "aa365"
-    }
+    tags = local.tag_defaults
   }
 }

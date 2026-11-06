@@ -45,7 +45,7 @@
 
 locals {
   sec_prefix = "aa-sec-${var.environment}"
-  sec_tags   = merge(local.shared_tags, { Issue = "AA-873" })
+  sec_tags   = merge(local.shared_tags, { Component = "security", Issue = "AA-873" })
 
   # Principals whose IAM / security-group changes are expected (Terraform CI apply). Every other assumed role (the
   # MFA admin role included: a local bootstrap apply also alerts, which is fine) and every IAM user alerts.

@@ -85,7 +85,7 @@ resource "aws_budgets_budget" "acc3_monthly" {
     subscriber_email_addresses = [var.acc3_cost_alert_email]
   }
 
-  tags = { Issue = "AA-896" }
+  tags = { Component = "billing", Issue = "AA-896" }
 }
 
 resource "aws_ce_anomaly_subscription" "acc3_daily" {
@@ -106,5 +106,5 @@ resource "aws_ce_anomaly_subscription" "acc3_daily" {
     }
   }
 
-  tags = { Issue = "AA-896" }
+  tags = { Component = "billing", Issue = "AA-896" }
 }

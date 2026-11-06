@@ -107,7 +107,7 @@ variable "rds_backup_copy_max_age_days" {
 
 locals {
   rds_snapshot_expiry_fn_name = "${local.name_prefix}-rds-snapshot-expiry"
-  rds_snapshot_expiry_tags    = merge(local.shared_tags, { Issue = "AA-869" })
+  rds_snapshot_expiry_tags    = merge(local.shared_tags, { Component = "db", Issue = "AA-869" })
   rds_snapshot_arn_prefix     = "arn:aws:rds:${var.aws_region}:${var.account_id}:snapshot:"
 }
 

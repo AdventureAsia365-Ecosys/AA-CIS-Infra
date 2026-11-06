@@ -73,7 +73,10 @@ placeholder (services ignore `task_definition`); never push or deploy `:latest`.
 - State the monthly cost of any new AWS resource in the PR before applying it (D-19); prefer zero-cost options.
 - Every new CloudWatch log group sets `retention_in_days`: **365** for security/audit logs, **30** for
   application logs (S241 D-09, AA-872, data standards Part B §7).
-- Tags: use the existing `Environment` / `App` tags; do not add an `Env` tag.
+- Tags (S271): follow the root tagging standard (`docs/architecture/tagging-standard.md`, FIN-03). Mandatory keys
+  Environment, Project, App, Component, Owner, ManagedBy, CostCenter, DataClassification; the provider `default_tags`
+  give six, every new resource or module sets `App` and `Component` (allowed values: `tools/terraform/tag_policy.json`).
+  The Terraform Plan check fails otherwise (`tools/terraform/tag_guard.py`). Never add `Env`, `Service` or `Account`.
 - Do not start, stop or scale ECS, RDS or the NAT instance unless Nghiệp asks.
 
 ## Access

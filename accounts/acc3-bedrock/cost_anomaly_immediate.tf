@@ -25,7 +25,7 @@ variable "acc3_anomaly_immediate_usd" {
 
 resource "aws_sns_topic" "acc3_cost_alerts" {
   name = "aa3-cost-alerts"
-  tags = { Issue = "AA-896" }
+  tags = { Component = "billing", Issue = "AA-896" }
 }
 
 resource "aws_sns_topic_subscription" "acc3_cost_alerts_email" {
@@ -103,7 +103,7 @@ resource "aws_ce_anomaly_subscription" "acc3_immediate" {
     }
   }
 
-  tags = { Issue = "AA-896" }
+  tags = { Component = "billing", Issue = "AA-896" }
 
   # Cost Anomaly Detection checks its publish right on the topic when the subscription is created.
   depends_on = [aws_sns_topic_policy.acc3_cost_alerts]

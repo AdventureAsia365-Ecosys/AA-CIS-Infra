@@ -1,0 +1,3 @@
+ecsx: run started
+FINOPS_BUNDLE {"kind":"finops_bundle","version":1,"part":"cis","generated_at":"2099-02-03T00:00:00+00:00","months":{"2099-01":{"platform_cost":{"month":"2099-01","aws":{"has_data":true,"total_usd":200.0,"covered_from":"2099-01-01","covered_to":"2099-01-31","untagged_usd":50.0},"apps":[{"app":"cis","kind":"app","aws_usd":150.0,"services":[{"service":"Amazon Elastic Container Service","amount_usd":150.0}]},{"app":"untagged","kind":"untagged","aws_usd":50.0,"services":[{"service":"AWS Data Transfer","amount_usd":10.0},{"service":"Amazon Example Queue","amount_usd":40.0}]}]}},"2098-12":{"platform_cost":{"aws":{"has_data":true,"total_usd":100.0},"apps":[]}}}}
+ecsx: exit 0

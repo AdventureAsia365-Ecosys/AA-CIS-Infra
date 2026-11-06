@@ -67,6 +67,8 @@ locals {
 resource "aws_iam_openid_connect_provider" "github_actions" {
   url            = "https://token.actions.githubusercontent.com"
   client_id_list = ["sts.amazonaws.com"]
+
+  tags = { Component = "cicd" } # S271: tagging standard (FIN-03)
 }
 
 # -----------------------------------------------------------------------------
@@ -96,6 +98,8 @@ resource "aws_iam_role" "ci_plan" {
       }
     }]
   })
+
+  tags = { Component = "cicd" } # S271: tagging standard (FIN-03)
 }
 
 resource "aws_iam_role_policy_attachment" "ci_plan_readonly" {
@@ -254,6 +258,8 @@ resource "aws_iam_policy" "ci_apply_boundary" {
   name        = local.ci_boundary_name
   description = "AA-1004: permissions boundary of the management account Terraform apply role"
   policy      = data.aws_iam_policy_document.ci_apply_boundary.json
+
+  tags = { Component = "cicd" } # S271: tagging standard (FIN-03)
 }
 
 # -----------------------------------------------------------------------------
@@ -283,6 +289,8 @@ resource "aws_iam_role" "ci_apply" {
       }
     }]
   })
+
+  tags = { Component = "cicd" } # S271: tagging standard (FIN-03)
 }
 
 # Refresh reads (every Describe/Get/List this root needs) and Identity Center administration (sso:* for permission

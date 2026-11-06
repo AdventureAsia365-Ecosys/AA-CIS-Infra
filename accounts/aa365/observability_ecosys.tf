@@ -22,21 +22,15 @@
 # The per-role connection limits that used to be listed here are read live by the CIS check (pg_roles); the
 # limits themselves live in the AA-CIS-Infra roles/ files and data standard C2.2.
 #
-# TAGS: every resource here carries the blueprint tag set (Project = AA-Ecosys, App, Environment,
-# ManagedBy = terraform). These resource-level tags override the provider default_tags keys of the
-# same name (versions.tf); `Account = aa365` still comes from default_tags. The provider
-# default_tags themselves are NOT changed in this PR: changing a value there re-tags every resource
-# in the root, and the CI role (cicd.tf) can only iam:TagRole a few role-name patterns, so a CI
-# apply would fail with AccessDenied part-way through. Flip default_tags in the follow-up that
-# reworks the CI role.
+# TAGS (tagging standard FIN-03, S271): every resource here carries App and Component = observability (the maps
+# derived from local.ecosys_tags set their own Component); the other mandatory keys come from the provider
+# default_tags (versions.tf). A change of default_tags re-tags every resource in the root, and the CI role (cicd.tf) can
+# only iam:TagRole a few role-name patterns, so such a change is applied locally with the MFA admin profile.
 # =============================================================================
 
 locals {
-  ecosys_tags = {
-    Project     = "AA-Ecosys"
-    Environment = var.environment
-    ManagedBy   = "terraform"
-  }
+  # S271: Project / Environment / ManagedBy come from default_tags; each user adds App (and its own Component).
+  ecosys_tags = { Component = "observability" }
 
   # TripPlanner functions, keyed by short name (aws_lambda_function.tripplanner_* in modules/environment/tripplanner.tf,
   # AA-1004 slice 3).

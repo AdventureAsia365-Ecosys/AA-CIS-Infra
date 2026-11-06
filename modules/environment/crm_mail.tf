@@ -85,7 +85,7 @@ locals {
   crm_ingest_raw      = "raw/"
   crm_ingest_imports  = "imports/"
   crm_ingest_bucket   = aws_s3_bucket.crm["ingest"]
-  crm_mail_tags       = merge(local.crm_tags, { Service = "crm", Issue = "AA-945" })
+  crm_mail_tags       = merge(local.crm_tags, { Component = "mail", Issue = "AA-945" })
   crm_mail_oauth_name = "crm/${var.environment}/mail-oauth"
   # AA-979 clean-up: the agency host (the web's /connect/mail/callback). The Google (and later Microsoft) OAuth client
   # must list https://portal.<zone>/connect/mail/callback as a redirect URI BEFORE the API runs with this value.
@@ -159,7 +159,7 @@ resource "aws_secretsmanager_secret" "crm_mail_oauth" {
   name                    = local.crm_mail_oauth_name
   description             = "AA-945: AA's own OAuth clients for the agencies' send-as (JSON google_client_id, google_client_secret, ms_client_id, ms_client_secret); MAIL_OAUTH of the AA-Partner task once crm_mail_oauth_enabled. Value set out-of-band."
   recovery_window_in_days = var.environment == "dev" ? 0 : 30
-  tags                    = local.crm_mail_tags
+  tags                    = merge(local.crm_mail_tags, { DataClassification = "restricted" })
 }
 
 output "crm_mail_ingest" {

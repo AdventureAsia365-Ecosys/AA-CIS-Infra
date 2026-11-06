@@ -72,6 +72,8 @@ resource "aws_kms_key" "trail" {
   enable_key_rotation     = true
   deletion_window_in_days = 30
   policy                  = data.aws_iam_policy_document.trail_kms.json
+
+  tags = { Component = "security", DataClassification = "confidential" } # S271: tagging standard (FIN-03)
 }
 
 resource "aws_kms_alias" "trail" {
@@ -88,6 +90,8 @@ resource "aws_s3_bucket" "trail" {
   lifecycle {
     prevent_destroy = true
   }
+
+  tags = { Component = "security", DataClassification = "confidential" } # S271: tagging standard (FIN-03)
 }
 
 resource "aws_s3_bucket_public_access_block" "trail" {
@@ -250,4 +254,6 @@ resource "aws_cloudtrail" "organization" {
     aws_s3_bucket_policy.trail,
     aws_s3_bucket_server_side_encryption_configuration.trail,
   ]
+
+  tags = { Component = "security" } # S271: tagging standard (FIN-03)
 }

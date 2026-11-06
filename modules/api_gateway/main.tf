@@ -721,6 +721,7 @@ resource "aws_api_gateway_method_settings" "content_throttle" {
 
 resource "aws_api_gateway_usage_plan" "starter" {
   name = "${var.project}-${var.environment}-starter"
+  tags = var.tags # S271: tagging standard (App and Component from the root)
   api_stages {
     api_id = aws_api_gateway_rest_api.this.id
     stage  = aws_api_gateway_stage.dev.stage_name
@@ -737,6 +738,7 @@ resource "aws_api_gateway_usage_plan" "starter" {
 
 resource "aws_api_gateway_usage_plan" "growth" {
   name = "${var.project}-${var.environment}-growth"
+  tags = var.tags # S271: tagging standard (App and Component from the root)
   api_stages {
     api_id = aws_api_gateway_rest_api.this.id
     stage  = aws_api_gateway_stage.dev.stage_name
@@ -753,6 +755,7 @@ resource "aws_api_gateway_usage_plan" "growth" {
 
 resource "aws_api_gateway_usage_plan" "business" {
   name = "${var.project}-${var.environment}-business"
+  tags = var.tags # S271: tagging standard (App and Component from the root)
   api_stages {
     api_id = aws_api_gateway_rest_api.this.id
     stage  = aws_api_gateway_stage.dev.stage_name
@@ -769,6 +772,7 @@ resource "aws_api_gateway_usage_plan" "business" {
 
 resource "aws_api_gateway_usage_plan" "internal" {
   name = "${var.project}-${var.environment}-internal"
+  tags = var.tags # S271: tagging standard (App and Component from the root)
   api_stages {
     api_id = aws_api_gateway_rest_api.this.id
     stage  = aws_api_gateway_stage.dev.stage_name

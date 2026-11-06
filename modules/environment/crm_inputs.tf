@@ -19,11 +19,10 @@ locals {
   # role grants and the boundary denies key on them): resources aa-crm-<env>-*, tag App = "crm".
   crm_name_prefix = "aa-crm-${var.environment}"
 
+  # S271 (tagging standard FIN-03): Project / Environment / ManagedBy come from the provider default_tags.
   crm_tags = {
-    Project     = "AA-Partner"
-    Environment = var.environment
-    ManagedBy   = "terraform"
-    App         = "crm" # DM-10.1 cost allocation; the KMS grants and boundary denies key on it
+    App       = "crm" # DM-10.1 cost allocation; the KMS grants and boundary denies key on it
+    Component = "api" # derived maps and the data, storage, edge and security resources set their own
   }
 }
 

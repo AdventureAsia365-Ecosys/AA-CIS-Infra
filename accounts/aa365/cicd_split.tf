@@ -186,6 +186,8 @@ resource "aws_iam_policy" "workload_boundary" {
   name        = "aa-workload-boundary"
   description = "AA-806: permissions boundary for workload and app-deploy roles (no IAM writes)"
   policy      = data.aws_iam_policy_document.workload_boundary.json
+
+  tags = merge(local.shared_tags, { Component = "security" }) # S271: tagging standard (FIN-03)
 }
 
 # Boundary of the Terraform apply role. Its identity policy keeps the broad service grants of
@@ -397,6 +399,8 @@ resource "aws_iam_policy" "tf_apply_boundary" {
   name        = "aa-cis-infra-tf-apply-boundary"
   description = "AA-806: permissions boundary of the AA-CIS-Infra Terraform apply role"
   policy      = data.aws_iam_policy_document.tf_apply_boundary.json
+
+  tags = merge(local.shared_tags, { Component = "cicd" }) # S271: tagging standard (FIN-03)
 }
 
 # -----------------------------------------------------------------------------
@@ -429,6 +433,8 @@ resource "aws_iam_role" "cis_app_deploy" {
       }
     }]
   })
+
+  tags = merge(local.common_tags, { Component = "cicd" }) # S271: tagging standard (FIN-03)
 }
 
 resource "aws_iam_role_policy" "cis_app_deploy" {
@@ -641,6 +647,8 @@ resource "aws_iam_role" "tf_plan" {
       }
     }]
   })
+
+  tags = merge(local.shared_tags, { Component = "cicd" }) # S271: tagging standard (FIN-03)
 }
 
 resource "aws_iam_role_policy_attachment" "tf_plan_readonly" {
@@ -718,6 +726,8 @@ resource "aws_iam_role" "tf_apply" {
       }
     }]
   })
+
+  tags = merge(local.shared_tags, { Component = "cicd" }) # S271: tagging standard (FIN-03)
 }
 
 # The managed policies of the retired aa-cis-dev-role minus AWSStepFunctionsFullAccess (AA-931), plus
