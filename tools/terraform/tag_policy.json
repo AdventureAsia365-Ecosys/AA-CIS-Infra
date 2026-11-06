@@ -1,0 +1,62 @@
+{
+  "_about": "Machine copy of the AA-Ecosys tagging standard (root docs/architecture/tagging-standard.md, FIN-03). The root page is the source: change it first, then this file in the Infra PR that needs the value. Read by tools/terraform/tag_guard.py (Terraform plan check) and tools/finops/untagged_report.py (monthly C8 review). The future AWS Organizations tag policy is generated from the same keys and values (tagging standard, section Prod).",
+  "version": 1,
+  "mandatory": {
+    "Environment": {
+      "values": ["dev", "staging", "prod", "shared"],
+      "note": "shared = organization-level resources that serve every environment (the management account)"
+    },
+    "Project": {
+      "values": ["aa-ecosys"]
+    },
+    "App": {
+      "values": ["cis", "booking", "tripplanner", "crm", "identity", "shared", "ecosystem"],
+      "note": "who pays; shared = runtime platform used by several apps in one environment, ecosystem = organization-level governance"
+    },
+    "Component": {
+      "values": [
+        "api", "worker", "web", "admin", "jobs",
+        "compute", "db", "cache", "storage", "cdn",
+        "network", "edge", "dns",
+        "auth", "mail", "llm", "encryption",
+        "observability", "security", "cicd", "billing", "governance"
+      ]
+    },
+    "Owner": {
+      "values": ["tech-lead"],
+      "note": "a role, never a person"
+    },
+    "ManagedBy": {
+      "values": ["terraform", "ci", "manual", "aws"],
+      "plan_value": "terraform",
+      "note": "a resource in a Terraform plan must say terraform"
+    },
+    "CostCenter": {
+      "values": ["technology"]
+    },
+    "DataClassification": {
+      "values": ["public", "internal", "confidential", "restricted"]
+    }
+  },
+  "optional": {
+    "Issue": {
+      "pattern": "^AA-[0-9]+$"
+    }
+  },
+  "forbidden_keys": {
+    "_note": "Lower-case spellings that duplicate a mandatory key or a retired key. A key that matches a mandatory key only when case is ignored (env, ENVIRONMENT, app) is refused as well.",
+    "keys": [
+      "env", "stage", "stack", "application", "app-name", "appname", "service", "component-name",
+      "team", "owner-email", "account", "costcentre", "cost-center", "cost_center",
+      "managed-by", "managed_by", "project-name", "data-classification", "data_classification", "classification"
+    ]
+  },
+  "exempt_types": {
+    "_note": "Resource types that expose a tags argument in the AWS provider but cannot carry the mandatory keys. Each entry: type -> reason and the issue that accepted it. Types without a tags argument are skipped automatically and are not listed here.",
+    "aws_s3_object": "Object tags are not cost allocation tags (storage bills to the bucket, which is tagged), at most 10 per object, and an app deploy that overwrites the object (aws s3 cp) drops them, so the TripPlanner placeholder zips carry none on purpose (override_provider, AA-846). S271."
+  },
+  "max_tags": {
+    "_default": 50
+  },
+  "cost_allocation_tags": ["App", "Environment", "Component", "Project", "CostCenter"]
+}
