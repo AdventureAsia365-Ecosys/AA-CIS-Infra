@@ -34,6 +34,14 @@ locals {
     crm_origin_deny     = 20  # crm_edge.tf: any X-AA-Origin -> 403 (AA-931)
     booking             = 100 # below: /booking, /booking/* (AA-678)
   }
+
+  # AA-911 (root ADR 0019 d23): the HTTPS (:443) listener, reached by browsers directly (staff_web_edge.tf). Host rules
+  # only; the listener's default answers 404 (modules/alb), so no other host reaches any target group. No origin
+  # header is involved on this listener (no CloudFront), so alb_rule_order.py's HTTP invariants do not apply to it.
+  alb_https_rule_priorities = {
+    staff_cis_admin     = 10 # aa-cis. host -> staff web, container cis-admin (modules/environment staff_web.tf)
+    staff_booking_admin = 11 # booking. host -> staff web, container booking-admin
+  }
 }
 
 # AA-678: the Booking API path rule. Its target group belongs to the Booking stack in modules/environment (AA-1004 P0
@@ -99,4 +107,47 @@ resource "aws_lb_listener_rule" "crm_api" {
   tags = local.crm_app_tags
 
   depends_on = [time_sleep.wait_for_iam_propagation]
+}
+
+# AA-911: the staff frontends on the HTTPS listener, one host rule per app. The ECS service waits for both through
+# module input staff_web_listener_rule_gate. CreateRule on this listener is granted by cicd.tf
+# BookingAlbListenerRuleManage (every listener of the aa-cis-<env>-alb load balancer).
+resource "aws_lb_listener_rule" "staff_cis_admin" {
+  listener_arn = module.alb.https_listener_arn
+  priority     = local.alb_https_rule_priorities.staff_cis_admin
+
+  action {
+    type             = "forward"
+    target_group_arn = module.environment.staff_web_target_group_arns["cis"]
+  }
+
+  condition {
+    host_header {
+      values = [local.staff_web_hosts.cis]
+    }
+  }
+
+  tags = local.staff_web_tags
+
+  depends_on = [aws_lb_listener_certificate.staff_web]
+}
+
+resource "aws_lb_listener_rule" "staff_booking_admin" {
+  listener_arn = module.alb.https_listener_arn
+  priority     = local.alb_https_rule_priorities.staff_booking_admin
+
+  action {
+    type             = "forward"
+    target_group_arn = module.environment.staff_web_target_group_arns["booking"]
+  }
+
+  condition {
+    host_header {
+      values = [local.staff_web_hosts.booking]
+    }
+  }
+
+  tags = local.staff_web_tags
+
+  depends_on = [aws_lb_listener_certificate.staff_web]
 }

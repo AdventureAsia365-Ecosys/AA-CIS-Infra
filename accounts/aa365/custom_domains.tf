@@ -205,7 +205,8 @@ resource "aws_route53_record" "vercel_frontend" {
   name    = "${each.key}.${var.dns_zone_name}"
   type    = "CNAME"
   ttl     = 300
-  records = [each.value]
+  # AA-911 cut-over (staff_web_edge.tf): booking. (the staff admin) moves from Vercel to the shared ALB in place.
+  records = [var.staff_web_dns_on_ecs && each.key == "booking" ? local.staff_web_alb_dns_name : each.value]
 }
 
 # -----------------------------------------------------------------------------

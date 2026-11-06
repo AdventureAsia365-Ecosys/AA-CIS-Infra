@@ -7,7 +7,7 @@ status: active
 owner: nghiep
 audience: [engineer, devops, agent]
 applies_to: [aa-cis-infra, ecosystem]
-last_reviewed: 2026-11-03
+last_reviewed: 2026-11-06
 review_every_days: 90
 related: [ARCH-01, ARCH-05, ARCH-08, docs/adr/README.md]
 ---
@@ -437,6 +437,21 @@ accounts/
                                    client lists only the partner host's /auth/callback and /signed-out
                                    (identity_variables.tf; the portal. placeholders went at the AA-979 clean-up);
                                    the e2e mailbox rule takes the CRM e2e users of tools/identity/crm_e2e_users.json)
+    staff_web.tf                  (AA-911, root ADR 0019 d23: the two staff frontends on ECS, ONE task. ECR
+                                   aa-cis-<env>-admin + aa-booking-<env>-admin (IMMUTABLE, git-SHA tags), secret shells
+                                   aa-cis/<env>/admin-web and booking/<env>/admin-web (the WORKFORCE client secrets,
+                                   written by tools/identity/staff_web_secret.py, never by Terraform; ADMIN_SECRET maps
+                                   aa-cis/<env>/admin-secret), log group /ecs/aa-staff-<env>-web (30 d), own execution
+                                   role (both repos, that log group, those secrets) and task role (ECS Exec only), task
+                                   definition aa-staff-<env>-web (Fargate ARM64 512/1024, containers cis-admin :3000 and
+                                   booking-admin :3001, placeholder tag bootstrap), two target groups (/api/healthz),
+                                   service aa-staff-<env>-web (desired 0, FARGATE_SPOT, two load_balancer blocks), one
+                                   no-healthy-target alarm per group, and an extra policy on the Booking deploy role for
+                                   its container. Each app's deploy swaps only its own container. Edge in the root:
+                                   staff_web_edge.tf (ACM cert for aa-cis. + booking. on the ALB :443 listener, DNS
+                                   cut-over var.staff_web_dns_on_ecs), alb_rules.tf alb_https_rule_priorities (host
+                                   rules; the :443 default is a fixed 404), sg-staff-web (ALB -> 3000/3001, not admitted
+                                   by RDS), cicd_split.tf cis_app_deploy_staff_web (bootstrap))
     crm_scrub.tf                  (AA-938 CRM-10, AA-Partner F3 scrubber pass 3, all behind
                                    var.crm_scrub_guardrail_enabled (default false): Bedrock guardrail aa-crm-<env>-scrub
                                    in acc2 (every PII entity on action NONE = detect only; no URL / AGE, no regex, no

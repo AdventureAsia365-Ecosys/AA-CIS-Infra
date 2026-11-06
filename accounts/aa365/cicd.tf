@@ -341,7 +341,12 @@ locals {
         "ecr:TagResource",
         "ecr:UntagResource",
       ]
-      Resource = "arn:aws:ecr:${var.aws_region}:${var.account_id}:repository/${local.name_prefix}-api"
+      # AA-911: also the CIS admin image repo of the staff web (modules/environment staff_web.tf), created by the
+      # bootstrap apply for the same reason (no CreateRepository for CI on aa-cis-<env>-*).
+      Resource = [
+        "arn:aws:ecr:${var.aws_region}:${var.account_id}:repository/${local.name_prefix}-api",
+        "arn:aws:ecr:${var.aws_region}:${var.account_id}:repository/${local.name_prefix}-admin",
+      ]
     },
     {
       # AA-678 — booking.tf adds an aws_lb_listener_rule (/booking/*) on the CIS ALB's HTTP

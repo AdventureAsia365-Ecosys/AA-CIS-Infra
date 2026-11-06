@@ -82,6 +82,9 @@ module "vpc" {
   # ADR 0004b (X1 S11): one source group per DB caller (app_security_groups.tf).
   rds_ingress_sg_ids = local.rds_ingress_sg_ids
 
+  # AA-911 (staff_web_edge.tf): browsers reach the ALB's :443 for the staff frontends.
+  alb_public_https_cidrs = local.staff_web_public_https_cidrs
+
   tags = local.shared_app_tags # AA-828: VPC, subnets, NAT instance + EIP, route tables, SGs
 }
 

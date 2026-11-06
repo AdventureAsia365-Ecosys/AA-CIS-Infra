@@ -55,11 +55,12 @@ locals {
       records = ["v=DKIM1; k=rsa; p=MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCRUfeh2HiNAjL8S3BM/504yuZp5PX26R8zInoJDzySIjJ4B6aORZYP2o3FZpE0wGGJ+5M6XDgwVk83nNy5HV3VVXQ+QEibpelTenSNu7XOPKs2hzDV1/kfCXwzv5hslYbQirihzK1A7+XlQBpqqdGExmV5rm7snvcUBXHDQ8lZuwIDAQAB"]
     }
 
-    # CIS admin/portal frontend on Vercel.
+    # CIS admin frontend: Vercel project aa-cis-frontend until the AA-911 cut-over (staff_web_edge.tf
+    # var.staff_web_dns_on_ecs), then the shared ALB (staff web on ECS). Same record, value changed in place.
     "aa-cis|CNAME" = {
       name    = "aa-cis"
       type    = "CNAME"
-      records = ["91b6470228dd7980.vercel-dns-017.com"]
+      records = [var.staff_web_dns_on_ecs ? local.staff_web_alb_dns_name : "91b6470228dd7980.vercel-dns-017.com"]
     }
 
     # CIS REST API custom domain (API GW 4ylo382khg, hand-made domain + cert, not in Terraform
