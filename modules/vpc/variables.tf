@@ -45,7 +45,13 @@ variable "permissions_boundary_arn" {
 }
 
 variable "tags" {
-  description = "AA-828: tags merged into every taggable resource of this module (the root passes App = \"shared\", DM-10.1). Provider default_tags still add Project/Environment/ManagedBy/Account."
+  description = "AA-828: tags merged into every taggable resource of this module (the root passes App = \"shared\", Component = \"network\"; tagging standard FIN-03). Provider default_tags add the other mandatory keys."
+  type        = map(string)
+  default     = {}
+}
+
+variable "volume_default_tags" {
+  description = "S271 (tagging standard FIN-03): the root's provider default_tags, merged into the NAT instance volume_tags, which default_tags never reach."
   type        = map(string)
   default     = {}
 }

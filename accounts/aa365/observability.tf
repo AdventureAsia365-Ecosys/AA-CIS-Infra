@@ -53,7 +53,7 @@ resource "time_sleep" "wait_for_iam_propagation" {
 resource "aws_sns_topic" "alerts" {
   name = "${local.name_prefix}-acp-alerts"
 
-  tags = merge(local.shared_tags, { Issue = "AA-284" }) # AA-828: CIS, Booking, TripPlanner and shared alarms all publish here
+  tags = merge(local.shared_tags, { Issue = "AA-284", Component = "observability" }) # AA-828: CIS, Booking, TripPlanner and shared alarms all publish here
 }
 
 # The bootstrap recipient (AA-913): the one subscription Terraform manages. The
@@ -90,7 +90,7 @@ resource "aws_cloudwatch_metric_alarm" "rds_cpu_high" {
     DBInstanceIdentifier = "${local.name_prefix}-db"
   }
 
-  tags = merge(local.shared_tags, { Issue = "AA-284" })
+  tags = merge(local.shared_tags, { Issue = "AA-284", Component = "observability" })
 }
 
 # -----------------------------------------------------------------------------
@@ -169,6 +169,8 @@ resource "aws_budgets_budget" "total_monthly" {
 
   # AA-913: Budgets checks its publish right on the topic when the SNS subscriber is set.
   depends_on = [time_sleep.wait_for_iam_propagation, aws_sns_topic_policy.alerts]
+
+  tags = merge(local.shared_tags, { Component = "billing" }) # S271: tagging standard (FIN-03)
 }
 
 # -----------------------------------------------------------------------------
@@ -232,7 +234,7 @@ resource "aws_budgets_budget" "per_app_monthly" {
     subscriber_sns_topic_arns = [aws_sns_topic.alerts.arn]
   }
 
-  tags = merge(local.ecosys_tags, { App = each.key, Issue = "AA-828" })
+  tags = merge(local.ecosys_tags, { App = each.key, Component = "billing", Issue = "AA-828" })
 
   # AA-913: Budgets checks its publish right on the topic when the SNS subscriber is set.
   depends_on = [time_sleep.wait_for_iam_propagation, aws_sns_topic_policy.alerts]
@@ -256,7 +258,7 @@ locals {
 resource "aws_s3_bucket" "cloudtrail_logs" {
   bucket = "${local.name_prefix}-cloudtrail-logs-${var.account_id}"
 
-  tags = merge(local.shared_tags, { Issue = "AA-286" }) # AA-828: account-wide audit trail
+  tags = merge(local.shared_tags, { Issue = "AA-286", Component = "security", DataClassification = "confidential" }) # AA-828: account-wide audit trail
 }
 
 resource "aws_s3_bucket_public_access_block" "cloudtrail_logs" {
@@ -364,7 +366,7 @@ resource "aws_cloudtrail" "main" {
   enable_log_file_validation    = true
   kms_key_id                    = aws_kms_key.cloudtrail.arn # AA-873 PR 2 (S255): SSE-KMS, key in security_cloudtrail.tf
 
-  tags = merge(local.shared_tags, { Issue = "AA-286" })
+  tags = merge(local.shared_tags, { Issue = "AA-286", Component = "security" })
 
   depends_on = [aws_s3_bucket_policy.cloudtrail_logs, time_sleep.wait_for_iam_propagation]
 }

@@ -18,29 +18,20 @@
 # =============================================================================
 
 locals {
-  # AA-828 (DM-10.1): App is the cost allocation tag the per-App budgets filter on
-  # (observability.tf aws_budgets_budget.per_app_monthly). Everything in this root that is not
-  # TripPlanner (local.tp_tags), Booking (local.bk_tags) or shared is CIS, so common_tags carries
-  # App = "cis" and shared resources override it with local.shared_tags.
-  #
-  # Set here and in the module tag maps, NOT in the provider default_tags (versions.tf): a
-  # default_tags App would (1) silently bill every future resource that forgets its own App to
-  # "cis", including TripPlanner/Booking ones, and (2) re-tag every resource in the root at once,
-  # including the bootstrap IAM roles of cicd.tf / cicd_split.tf / agent_session.tf that only a
-  # human MFA apply may change. Resource-level tags win over default_tags for the same key.
-  common_tags = {
-    Project     = var.project
-    Environment = var.environment
-    ManagedBy   = "terraform"
-    App         = "cis"
-  }
+  # Tagging standard (root docs/architecture/tagging-standard.md, FIN-03; S271). The provider default_tags
+  # (versions.tf, local.tag_defaults) carry the keys every resource shares: Project, Environment, Owner, ManagedBy,
+  # CostCenter and DataClassification (internal unless a resource says otherwise). App and Component are set here and
+  # in the module tag maps, NOT in default_tags: a default App would silently bill every future resource that forgets
+  # its own App to one app, and the Terraform Plan tag guard (tools/terraform/tag_guard.py) refuses a resource that
+  # lacks either key. App is the cost allocation tag the per-App budgets filter on (observability.tf
+  # aws_budgets_budget.per_app_monthly, AA-828 / DM-10.1). Resource-level tags win over default_tags for the same key,
+  # so these maps never repeat Project, Environment or ManagedBy.
+  common_tags = { App = "cis" }
 
   # Infrastructure used by more than one app: VPC/NAT/subnets, RDS, ALB + VPC-link NLB, WAF, the ECS
   # cluster, the account alert topic, CloudTrail and the AA-272 network diagnostics.
-  shared_tags = merge(local.common_tags, { App = "shared" })
+  shared_tags = { App = "shared" }
 
-  # Modules that had no tags input before AA-828 get only the App key, so the Project/ManagedBy
-  # values they already carry from the provider default_tags do not change.
   cis_app_tags    = { App = "cis" }
   shared_app_tags = { App = "shared" }
 
@@ -85,7 +76,9 @@ module "vpc" {
   # AA-911 (staff_web_edge.tf): browsers reach the ALB's :443 for the staff frontends.
   alb_public_https_cidrs = local.staff_web_public_https_cidrs
 
-  tags = local.shared_app_tags # AA-828: VPC, subnets, NAT instance + EIP, route tables, SGs
+  tags = merge(local.shared_app_tags, { Component = "network" }) # AA-828: VPC, subnets, NAT instance + EIP, route tables, SGs
+  # S271: the NAT root volume takes volume_tags, which the provider default_tags never reach.
+  volume_default_tags = local.tag_defaults
 }
 
 module "rds" {
@@ -102,7 +95,7 @@ module "rds" {
   # AA-828 / DM-10.3: one instance for CIS + TripPlanner + Booking, owned by Infra. Tag change is
   # AddTagsToResource only (no ModifyDBInstance, no reboot); copy_tags_to_snapshot carries it to
   # new snapshots.
-  tags = local.shared_app_tags
+  tags = merge(local.shared_app_tags, { Component = "db", DataClassification = "restricted" })
 
   depends_on = [module.vpc]
 }
@@ -113,7 +106,7 @@ module "s3" {
   project           = var.project
   environment       = var.environment
   allowed_role_arns = var.s3_allowed_role_arns
-  tags              = local.common_tags
+  tags              = merge(local.common_tags, { Component = "storage", DataClassification = "confidential" })
 
   # AA-844 (photos_cdn.tf): one bucket-policy statement for the photos CDN's OAC, photos/* only.
   # null while the CDN is gated off. No cycle: bucket -> distribution -> this policy statement.
@@ -128,7 +121,7 @@ module "secrets" {
 
   project     = var.project
   environment = var.environment
-  tags        = local.cis_app_tags
+  tags        = merge(local.cis_app_tags, { Component = "api", DataClassification = "restricted" })
 }
 
 module "elasticache" {
@@ -139,8 +132,8 @@ module "elasticache" {
   vpc_id             = module.vpc.vpc_id
   private_subnet_ids = module.vpc.private_subnet_ids
   sg_app_id          = module.vpc.sg_app_id
-  ingress_sg_ids     = local.redis_ingress_sg_ids # ADR 0004b (X1 S11), app_security_groups.tf
-  tags               = local.cis_app_tags         # only the CIS api reads REDIS_HOST
+  ingress_sg_ids     = local.redis_ingress_sg_ids                                                              # ADR 0004b (X1 S11), app_security_groups.tf
+  tags               = merge(local.cis_app_tags, { Component = "cache", DataClassification = "confidential" }) # only the CIS api reads REDIS_HOST
 
   depends_on = [module.vpc]
 }
@@ -160,8 +153,8 @@ module "alb" {
   acm_certificate_arn = var.acm_certificate_arn
   private_subnet_ids  = module.vpc.private_subnet_ids
   vpc_cidr_block      = var.vpc_cidr
-  access_logs_bucket  = aws_s3_bucket.diag_alb_logs.id # AA-272 diagnostic only
-  tags                = local.shared_app_tags          # AA-828: CIS + Booking (/booking/* rule) behind it
+  access_logs_bucket  = aws_s3_bucket.diag_alb_logs.id                       # AA-272 diagnostic only
+  tags                = merge(local.shared_app_tags, { Component = "edge" }) # AA-828: CIS + Booking (/booking/* rule) behind it
 
   # AA-931 (crm_edge.tf): CloudFront VPC origin on the NLB -> prefix-list ingress on the NLB
   # group + a second ALB group admitting the NLB group. Plain bool from variables (no resource ref).
@@ -248,8 +241,8 @@ module "ecs" {
 
   # AA-828: App = "cis" on the api/worker services (propagated to their Fargate tasks), task
   # definitions, ECR repo, log group and roles; the cluster is shared with aws_ecs_service.booking.
-  tags         = local.cis_app_tags
-  cluster_tags = local.shared_app_tags
+  tags         = merge(local.cis_app_tags, { Component = "api" }) # the worker service and task definition say worker (module)
+  cluster_tags = merge(local.shared_app_tags, { Component = "compute" })
 
   # AA-828: operator alert e-mail env (api + worker). Send permission: aws_iam_role_policy
   # .cis_ecs_task_ses_send in ses.tf (only this From, only the transactional configuration set).
@@ -273,7 +266,7 @@ module "eventbridge" {
   environment = var.environment
   aws_region  = var.aws_region
   account_id  = var.account_id
-  tags        = local.common_tags
+  tags        = merge(local.common_tags, { Component = "jobs" })
 
   # AA-402: same IAM propagation race as AA-287 — this module's event bus,
   # scheduler role, and schedule group needed aa-cis-dev-role's (retired, AA-806) newly-added
@@ -316,7 +309,7 @@ module "waf" {
     name  = local.alb_origin_header_name
     value = random_password.crm_origin_verify[0].result
   } : null
-  tags = local.shared_tags # AA-828: on the ALB and on the CIS + Booking REST API stages
+  tags = merge(local.shared_tags, { Component = "edge" }) # AA-828: on the ALB and on the CIS + Booking REST API stages
 
   # S235 Phase 0: CommonRuleSet started in observe mode (whole group COUNT); enforced since
   # AA-806 S239 (var.waf_common_rules_count_only = false) after the count review + pre-flip test.
@@ -341,7 +334,7 @@ module "api_gateway" {
   environment = var.environment
   aws_region  = var.aws_region
   account_id  = var.account_id
-  tags        = local.common_tags
+  tags        = merge(local.common_tags, { Component = "edge" })
 
   alb_dns_name             = module.alb.alb_dns_name
   nlb_dns_name             = module.alb.nlb_dns_name

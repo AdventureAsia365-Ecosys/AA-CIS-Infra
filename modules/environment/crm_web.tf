@@ -64,7 +64,7 @@ locals {
   crm_web_container = "web"
   crm_web_port      = 3000
 
-  crm_web_tags = merge(local.crm_tags, { Service = "crm-web", Issue = "AA-935" })
+  crm_web_tags = merge(local.crm_tags, { Component = "web", Issue = "AA-935" })
 
   crm_web_service_arn      = "arn:aws:ecs:${var.aws_region}:${var.account_id}:service/${var.ecs_cluster_name}/${local.crm_web_service}"
   crm_web_task_def_pattern = "arn:aws:ecs:${var.aws_region}:${var.account_id}:task-definition/${local.crm_web_service}:*"
@@ -154,7 +154,7 @@ resource "aws_secretsmanager_secret" "crm_web" {
   name                    = "crm/${var.environment}/web"
   description             = "AA-Partner CRM web (AA-935, AA-1019): JSON {cognito_client_secret, session_secret, staff_cognito_client_secret, staff_session_secret}. Set by AA-CIS-Infra tools/identity/crm_dev_identity.py web-secret and staff-web-secret, never by Terraform."
   recovery_window_in_days = var.environment == "dev" ? 0 : 30
-  tags                    = local.crm_web_tags
+  tags                    = merge(local.crm_web_tags, { DataClassification = "restricted" })
 }
 
 # -----------------------------------------------------------------------------

@@ -86,12 +86,10 @@ locals {
 
   staff_web_health_path = "/api/healthz"
 
+  # S271 (tagging standard FIN-03): Component replaces the retired Service key; App is set per resource.
   staff_web_tags = {
-    Project     = "AA-Ecosys"
-    Environment = var.environment
-    ManagedBy   = "terraform"
-    Service     = "staff-web"
-    Issue       = "AA-911"
+    Component = "admin"
+    Issue     = "AA-911"
   }
 
   # WORKFORCE managed login (staff-auth. custom domain when on, else the prefix domain) and issuer; the same
@@ -194,14 +192,14 @@ resource "aws_secretsmanager_secret" "staff_web_cis" {
   name                    = "aa-cis/${var.environment}/admin-web"
   description             = "AA-911: CIS admin on ECS, JSON {cis_admin_client_secret, breakglass_client_secret} (WORKFORCE app clients). Set by AA-CIS-Infra tools/identity/staff_web_secret.py, never by Terraform."
   recovery_window_in_days = var.environment == "dev" ? 0 : 30
-  tags                    = merge(local.staff_web_tags, { App = "cis" })
+  tags                    = merge(local.staff_web_tags, { App = "cis", DataClassification = "restricted" })
 }
 
 resource "aws_secretsmanager_secret" "staff_web_booking" {
   name                    = "booking/${var.environment}/admin-web"
   description             = "AA-911: Booking admin on ECS, JSON {booking_staff_client_secret} (WORKFORCE booking-staff client). Set by AA-CIS-Infra tools/identity/staff_web_secret.py, never by Terraform."
   recovery_window_in_days = var.environment == "dev" ? 0 : 30
-  tags                    = merge(local.staff_web_tags, { App = "booking" })
+  tags                    = merge(local.staff_web_tags, { App = "booking", DataClassification = "restricted" })
 }
 
 # -----------------------------------------------------------------------------

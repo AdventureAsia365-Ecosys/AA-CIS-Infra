@@ -56,7 +56,7 @@ variable "crm_cdn_price_class" {
 locals {
   crm_edge_on      = var.crm_edge_enabled && var.custom_domains_enabled ? 1 : 0
   crm_partner_host = "${var.crm_partner_subdomain}.${var.dns_zone_name}"
-  crm_edge_tags    = merge(local.crm_tags, { Issue = "AA-931" })
+  crm_edge_tags    = merge(local.crm_tags, { Component = "edge", Issue = "AA-931" })
   crm_origin_id    = "crm-vpc-origin"
 }
 
@@ -155,6 +155,8 @@ resource "aws_cloudfront_function" "crm_partner_to_agency" {
   code = templatefile("${path.module}/cloudfront_functions/crm_partner_to_agency.js", {
     agency_origin = "https://${local.crm_agency_host}"
   })
+
+  tags = merge(local.crm_tags, { Component = "edge" }) # S271: tagging standard (FIN-03)
 }
 
 resource "aws_cloudfront_distribution" "crm_partner" {

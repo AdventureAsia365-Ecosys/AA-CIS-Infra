@@ -156,6 +156,8 @@ resource "aws_iam_policy" "tf_apply_sec" {
   name        = "aa-cis-infra-tf-apply-sec"
   description = "AA-873: aa-cis-infra-tf-apply grants for the account security baseline + SQS (bootstrap, MFA apply)"
   policy      = data.aws_iam_policy_document.tf_apply_sec.json
+
+  tags = merge(local.shared_tags, { Component = "cicd" }) # S271: tagging standard (FIN-03)
 }
 
 # Takes the slot freed by AmazonSQSFullAccess (cicd.tf), so the role stays at 10 managed policies.

@@ -116,7 +116,7 @@ resource "aws_cloudwatch_log_group" "exec_sessions" {
   name              = "/ecs/${local.name_prefix}/exec-sessions"
   retention_in_days = 365 # AA-872 (S241 D-09): security/audit logs 365 days
 
-  tags = var.tags
+  tags = merge(var.tags, { Component = "security" }) # S271: audit log of ECS Exec sessions (tagging standard FIN-03)
 }
 
 # ── ECS Cluster ───────────────────────────────────────────────
@@ -733,6 +733,8 @@ resource "aws_appautoscaling_target" "api" {
   resource_id        = "service/${aws_ecs_cluster.main.name}/${aws_ecs_service.api.name}"
   scalable_dimension = "ecs:service:DesiredCount"
   service_namespace  = "ecs"
+
+  tags = var.tags # S271: tagging standard (FIN-03)
 }
 
 # ============================================================
@@ -818,7 +820,7 @@ resource "aws_ecs_task_definition" "worker" {
     stopTimeout = 120
   }])
 
-  tags = merge(var.tags, { Name = "${local.name_prefix}-worker-task" })
+  tags = merge(var.tags, { Name = "${local.name_prefix}-worker-task", Component = "worker" })
 }
 
 resource "aws_ecs_service" "worker" {
@@ -869,7 +871,7 @@ resource "aws_ecs_service" "worker" {
 
   depends_on = [aws_iam_role_policy_attachment.ecs_execution]
 
-  tags = merge(var.tags, { Name = "${local.name_prefix}-worker-service" })
+  tags = merge(var.tags, { Name = "${local.name_prefix}-worker-service", Component = "worker" })
 }
 
 # Worker scalable target: min = desired, max = worker_max_count (default 3). S263 alert diet (AA-1025): no
@@ -883,4 +885,6 @@ resource "aws_appautoscaling_target" "worker" {
   resource_id        = "service/${aws_ecs_cluster.main.name}/${aws_ecs_service.worker.name}"
   scalable_dimension = "ecs:service:DesiredCount"
   service_namespace  = "ecs"
+
+  tags = merge(var.tags, { Component = "worker" }) # S271: tagging standard (FIN-03)
 }

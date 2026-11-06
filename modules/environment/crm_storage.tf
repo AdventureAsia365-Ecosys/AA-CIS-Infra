@@ -101,7 +101,7 @@ resource "aws_s3_bucket" "crm" {
   # Never force_destroy: audit versions are locked anyway, and documents are agency data.
   force_destroy = false
 
-  tags = merge(local.crm_tags, { Name = each.value, Issue = "AA-932" })
+  tags = merge(local.crm_tags, { Name = each.value, Issue = "AA-932", Component = "storage", DataClassification = "restricted" })
 }
 
 resource "aws_s3_bucket_public_access_block" "crm" {
@@ -363,7 +363,7 @@ resource "aws_s3_bucket_policy" "crm" {
 resource "aws_cloudwatch_log_group" "crm_kms_decrypt" {
   name              = local.crm_decrypt_log_group
   retention_in_days = 365 # security/audit class (CloudTrail-derived KMS events), DM-7 / S241 D-09
-  tags              = merge(local.crm_tags, { Issue = "AA-932" })
+  tags              = merge(local.crm_tags, { Issue = "AA-932", Component = "security" })
 }
 
 # EventBridge needs a CloudWatch Logs resource policy to deliver to a log group (one account-wide policy per name).
@@ -404,7 +404,7 @@ resource "aws_cloudwatch_event_rule" "crm_kms_decrypt" {
     }
   })
 
-  tags = merge(local.crm_tags, { Issue = "AA-932" })
+  tags = merge(local.crm_tags, { Issue = "AA-932", Component = "security" })
 }
 
 resource "aws_cloudwatch_event_target" "crm_kms_decrypt" {
@@ -456,7 +456,7 @@ resource "aws_cloudwatch_metric_alarm" "crm_kms_decrypt_anomaly" {
     }
   }
 
-  tags = merge(local.crm_tags, { Issue = "AA-932" })
+  tags = merge(local.crm_tags, { Issue = "AA-932", Component = "security" })
 }
 
 output "crm_bucket_names" {

@@ -58,13 +58,11 @@ locals {
   bk_container   = "api"
   bk_port        = 8000
 
+  # S271 (tagging standard FIN-03): Project / Environment / ManagedBy come from default_tags; Component replaces Service.
   bk_tags = {
-    Project     = "AA-Booking"
-    Environment = var.environment
-    ManagedBy   = "terraform"
-    Service     = "booking"
-    App         = "booking" # S235 Phase 0: per-app cost allocation tag (additive)
-    Issue       = "AA-678"
+    App       = "booking" # S235 Phase 0: per-app cost allocation tag (additive)
+    Component = "api"
+    Issue     = "AA-678"
   }
 
   bk_cluster_arn      = var.ecs_cluster_arn
@@ -149,7 +147,7 @@ resource "aws_secretsmanager_secret" "booking_db" {
   name                    = "booking/${var.environment}/database-url"
   description             = "AA-Booking DB connection string (role booking, schema booking, shared RDS). Value set out-of-band."
   recovery_window_in_days = var.environment == "dev" ? 0 : 30
-  tags                    = local.bk_tags
+  tags                    = merge(local.bk_tags, { DataClassification = "restricted" })
 }
 
 # -----------------------------------------------------------------------------
@@ -163,7 +161,7 @@ resource "aws_secretsmanager_secret" "booking_sentry_dsn" {
   name                    = "booking/${var.environment}/sentry-dsn"
   description             = "AA-Booking Sentry DSN (project aa-booking-api), SENTRY_DSN of the api + job worker. Value set out-of-band."
   recovery_window_in_days = var.environment == "dev" ? 0 : 30
-  tags                    = merge(local.bk_tags, { Issue = "AA-871" })
+  tags                    = merge(local.bk_tags, { Issue = "AA-871", DataClassification = "restricted" })
 }
 
 # -----------------------------------------------------------------------------

@@ -53,6 +53,8 @@ resource "aws_iam_role" "agent_session" {
   # role name in cicd.tf (AgentSessionRoleTagging). Wait for it to propagate, same as the
   # TripPlanner roles.
   depends_on = [time_sleep.wait_for_iam_propagation]
+
+  tags = merge(local.shared_tags, { Component = "cicd" }) # S271: tagging standard (FIN-03)
 }
 
 data "aws_iam_policy_document" "agent_session" {

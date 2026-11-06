@@ -31,7 +31,7 @@ variable "crm_client_subdomain" {
 
 locals {
   crm_client_host   = "${var.crm_client_subdomain}.${var.dns_zone_name}"
-  crm_client_tags   = merge(local.crm_tags, { Issue = "AA-936" })
+  crm_client_tags   = merge(local.crm_tags, { Component = "edge", Issue = "AA-936" })
   crm_client_hosts  = local.crm_edge_on == 1 ? [local.crm_client_host] : []
   crm_intake_origin = local.crm_edge_on == 1 ? "https://${local.crm_client_host}" : ""
 }

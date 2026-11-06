@@ -155,7 +155,7 @@ resource "aws_cognito_user_pool" "partner" {
   # No custom attributes (ADR 0006 decision 1) and no triggers: no self sign-up to gate, no group or claim to add
   # (roles live in crm.member, ADR 0006b decision 4).
 
-  tags = local.idpartner_tags
+  tags = merge(local.idpartner_tags, { DataClassification = "restricted" })
 
   lifecycle {
     precondition {
