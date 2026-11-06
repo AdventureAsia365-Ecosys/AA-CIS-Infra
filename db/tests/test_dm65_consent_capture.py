@@ -1,9 +1,10 @@
 """DM-6.5 (AA-886): db/scripts/dm65_consent_capture.py — read-only consent value / time / source check.
 
 No database, no asyncpg: a fake connection answers the script's four queries by identity and records them.
-The script itself was run against a local PostgreSQL 16 with the Dev columns of booking.customers,
-booking.inbox_events and tripplanner.customers, in a `default_transaction_read_only = on` session like the
-runner opens: all four queries ran, a write in the same session failed with SQLSTATE 25006.
+The script itself was run against a local PostgreSQL 16 with the Dev columns of booking.inbox_events and
+tripplanner.customers, in a `default_transaction_read_only = on` session like the runner opens: all four queries
+ran, a write in the same session failed with SQLSTATE 25006. AA-1046: since Booking bk-045 the script no longer
+reads booking.customers (dropped); the hand-off chain reads the unredacted inquiry.submitted inbox rows.
 Run: python3 -m unittest discover -s db/tests -v
 """
 import asyncio
@@ -42,20 +43,18 @@ class FakeConn:
         self.calls = []
         self.answers = {
             "coverage": [
-                {"app": "booking", "source": "tripplanner_lead", "contact_consent": True, "has_time": True, "n": 1},
                 {"app": "tripplanner", "source": "tripplanner_form", "contact_consent": True, "has_time": True,
                  "n": 1},
             ],
             "integrity": [
-                {"app": "booking", "consent_without_time": 0, "time_without_consent": 0},
                 {"app": "tripplanner", "consent_without_time": 0, "time_without_consent": 0},
             ],
-            "chain": {"tp_customers": 1, "tp_customers_in_booking": 1, "booking_leads": 1, "value_mismatch": 0,
+            "chain": {"tp_customers": 1, "tp_customers_handed_off": 1, "handoffs": 1, "value_mismatch": 0,
                       "time_mismatch": 0, "wrong_source": 0},
             "test_inquiry": test_rows if test_rows is not None else [
                 {"step": "tripplanner.customers", "id": str(TP_ID), "source": None, "consent": True,
                  "consent_at": AT, "at": AT},
-                {"step": "booking.customers", "id": str(BK_ID), "source": "tripplanner_lead", "consent": True,
+                {"step": "booking.inbox_events", "id": str(BK_ID), "source": "tripplanner", "consent": True,
                  "consent_at": AT, "at": AT},
             ],
         }
@@ -98,11 +97,14 @@ class ShapeTest(unittest.TestCase):
                              "SET", "COPY", "CALL", "LOCK"):
                     self.assertIsNone(re.search(rf"\b{word}\b", sql), word)
 
-    def test_queries_read_only_the_three_consent_tables(self):
+    def test_queries_read_only_the_two_consent_tables(self):
         tables = set()
         for name in ("Q1", "Q2", "Q3", "Q4"):
             tables |= set(re.findall(r"(?<!DISTINCT )\b(?:FROM|JOIN)\s+([a-z_]+\.[a-z_]+)", _norm(getattr(script, name))))
-        self.assertEqual(tables, {"booking.customers", "booking.inbox_events", "tripplanner.customers"})
+        self.assertEqual(tables, {"booking.inbox_events", "tripplanner.customers"})
+        # AA-1046: booking.customers is dropped by Booking bk-045; no query may name it
+        for name in ("Q1", "Q2", "Q3", "Q4"):
+            self.assertNotIn("booking.customers", getattr(script, name), name)
 
     def test_no_personal_column_is_read_except_the_q4_email_filter(self):
         for name in ("Q1", "Q2", "Q3", "Q4"):
@@ -113,15 +115,16 @@ class ShapeTest(unittest.TestCase):
                     self.assertNotIn("email", sql)
         # Q4: email only ever appears as `lower(<email>) LIKE $1`, once per branch
         q4 = _norm(script.Q4)
-        self.assertEqual(q4.count("email"), 3)
-        self.assertEqual(len(re.findall(r"lower\([^()]*email'?\) LIKE \$1", q4)), 3)
+        self.assertEqual(q4.count("email"), 2)
+        self.assertEqual(len(re.findall(r"lower\([^()]*email'?\) LIKE \$1", q4)), 2)
 
-    def test_soft_deleted_booking_rows_are_left_out(self):
-        for name in ("Q1", "Q2", "Q3", "Q4"):
+    def test_redacted_inbox_rows_are_left_out(self):
+        # DM-6.6 redacts the personal data of an inbox payload after 90 days: the chain reads unredacted rows only
+        for name in ("Q3", "Q4"):
             sql = _norm(getattr(script, name))
             with self.subTest(name):
-                self.assertEqual(len(re.findall(r"\b(?:FROM|JOIN) booking\.customers\b", sql)),
-                                 sql.count("deleted_at IS NULL"))
+                self.assertEqual(len(re.findall(r"\b(?:FROM|JOIN) booking\.inbox_events\b", sql)),
+                                 sql.count("redacted_at IS NULL"))
 
     def test_test_inquiry_pattern_only_matches_the_reserved_test_domain(self):
         self.assertTrue(script.TEST_EMAIL_PATTERN.endswith("@example.com"))
@@ -144,13 +147,13 @@ class RunTest(unittest.TestCase):
         _, out = run(FakeConn())
         lines = out.splitlines()
         self.assertTrue(all(line.startswith("SCRIPT ") for line in lines))
-        self.assertIn("SCRIPT coverage app=booking source=tripplanner_lead contact_consent=True has_time=True n=1",
+        self.assertIn("SCRIPT coverage app=tripplanner source=tripplanner_form contact_consent=True has_time=True n=1",
                       lines)
         self.assertIn("SCRIPT integrity app=tripplanner consent_without_time=0 time_without_consent=0", lines)
-        self.assertIn("SCRIPT chain tp_customers=1 tp_customers_in_booking=1 booking_leads=1 value_mismatch=0 "
+        self.assertIn("SCRIPT chain tp_customers=1 tp_customers_handed_off=1 handoffs=1 value_mismatch=0 "
                       "time_mismatch=0 wrong_source=0", lines)
         self.assertIn("SCRIPT test_inquiry rows=2", lines)
-        self.assertIn(f"SCRIPT test_inquiry step=booking.customers id={BK_ID} source=tripplanner_lead consent=True "
+        self.assertIn(f"SCRIPT test_inquiry step=booking.inbox_events id={BK_ID} source=tripplanner consent=True "
                       f"consent_at={AT} at={AT}", lines)
 
     def test_no_test_inquiry_yet_still_reports_zero_rows(self):

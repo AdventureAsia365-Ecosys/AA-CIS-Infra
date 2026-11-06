@@ -541,11 +541,13 @@ statement in a savepoint (locks released at once), counts and names only, tenant
   `pg_read_all_data`,
   `pg_write_all_data`, master, `*_owner`), owned objects, connection limit; owner roles NOLOGIN;
   logins; cross-app reads raise 42501 (`booking` → `tripplanner.sessions`, `shared.tenants`;
-  `tripplanner` → `booking.customers`; `aa_app_user`, `cis_app`, CIS runtime → `booking.customers`,
+  `tripplanner` → `booking.trip_cases`; `aa_app_user`, `cis_app`, CIS runtime → `booking.trip_cases`,
   `tripplanner.sessions`); every object of each owner's schemas owned by its `owner_role` (view owners
   on views only); **runtime grants** — each runtime role (`runtime_privileges`) has USAGE on its
   schemas, SELECT on every relation, USAGE on every non-identity sequence, EXECUTE on every non-trigger
-  function — and **default privileges** FOR ROLE <live owner of the anchor schema> in each schema
+  function (except the `owner_only_relations` the owner keeps from it on purpose, e.g.
+  `booking.retired_b2c_record` of bk-045: cell `owner_only.<owner>` asserts the role holds NO privilege
+  on those) — and **default privileges** FOR ROLE <live owner of the anchor schema> in each schema
   granting it the listed table / sequence / function privileges, with no FOR ROLE master row left once
   transferred (the failure an owner transfer most likely causes: a runtime role without a grant on the
   next object, 42501 after deploy); contract consumer grants on single objects (`booking` →
