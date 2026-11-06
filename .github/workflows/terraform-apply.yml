@@ -40,6 +40,9 @@ on:
         default: false
 
 # One apply at a time across both roots (one Terraform process; the plans never race a lock).
+# S271 (G9): a PR plan (terraform-plan.yml, no concurrency group) or the nightly drift run can still hold the state
+# lock when an apply starts: every plan / apply below waits for it with -lock-timeout instead of failing (20m on the
+# Dev root, where a burst of PR plans queues on the lock; 10m on the management root, whose PR plans are rare).
 concurrency:
   group: terraform-apply-prod
   cancel-in-progress: false
@@ -134,6 +137,7 @@ jobs:
         if: env.GUARD_SELFTEST != 'true'
         run: |
           terraform plan \
+            -lock-timeout=20m \
             -out=tfplan \
             -detailed-exitcode
         continue-on-error: true
@@ -216,6 +220,7 @@ jobs:
         if: env.GUARD_SELFTEST != 'true' && steps.plan.outputs.exitcode == '2'
         run: |
           terraform apply \
+            -lock-timeout=20m \
             -auto-approve \
             tfplan
 
@@ -351,7 +356,7 @@ jobs:
           DIGEST="$RUNNER_TEMP/plan-digest.txt"
           trap 'rm -f "$LOG"' EXIT
           set +e
-          terraform plan -input=false -detailed-exitcode -json > "$LOG"
+          terraform plan -input=false -lock-timeout=10m -detailed-exitcode -json > "$LOG"
           RC=$?
           set -e
           echo "terraform plan exit code: $RC"
@@ -491,7 +496,7 @@ jobs:
           DIGEST="$RUNNER_TEMP/plan-digest.txt"
           trap 'rm -f "$LOG"' EXIT
           set +e
-          terraform plan -input=false -detailed-exitcode -out="$RUNNER_TEMP/tfplan" -json > "$LOG"
+          terraform plan -input=false -lock-timeout=10m -detailed-exitcode -out="$RUNNER_TEMP/tfplan" -json > "$LOG"
           RC=$?
           set -e
           echo "exitcode=$RC" >> "$GITHUB_OUTPUT"
@@ -531,7 +536,7 @@ jobs:
           LOG="$RUNNER_TEMP/management-apply.jsonl"
           trap 'rm -f "$LOG" "$RUNNER_TEMP/tfplan"' EXIT
           set +e
-          terraform apply -input=false -auto-approve -json "$RUNNER_TEMP/tfplan" > "$LOG"
+          terraform apply -input=false -lock-timeout=10m -auto-approve -json "$RUNNER_TEMP/tfplan" > "$LOG"
           RC=$?
           set -e
           echo "terraform apply exit code: $RC"

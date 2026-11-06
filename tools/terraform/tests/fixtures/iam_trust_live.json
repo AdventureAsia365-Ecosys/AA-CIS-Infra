@@ -1,0 +1,286 @@
+{
+ "sts get-caller-identity": {
+  "Account": "111111111111",
+  "Arn": "arn:aws:sts::111111111111:assumed-role/demo-admin/s",
+  "UserId": "AROAEXAMPLE:s"
+ },
+ "iam list-roles": {
+  "Roles": [
+   {
+    "RoleName": "AWSReservedSSO_AdministratorAccess_0123456789abcdef",
+    "Path": "/aws-reserved/sso.amazonaws.com/",
+    "Arn": "arn:aws:iam::111111111111:role/aws-reserved/sso.amazonaws.com/AWSReservedSSO_AdministratorAccess_0123456789abcdef",
+    "AssumeRolePolicyDocument": {
+     "Version": "2012-10-17",
+     "Statement": [
+      {
+       "Effect": "Allow",
+       "Principal": {
+        "Federated": "arn:aws:iam::111111111111:saml-provider/AWSSSO_0000000000000000_DO_NOT_DELETE"
+       },
+       "Action": [
+        "sts:AssumeRoleWithSAML",
+        "sts:TagSession"
+       ],
+       "Condition": {
+        "StringEquals": {
+         "SAML:aud": "https://signin.aws.amazon.com/saml"
+        }
+       }
+      }
+     ]
+    }
+   },
+   {
+    "RoleName": "demo-vendor-audit",
+    "Path": "/",
+    "Arn": "arn:aws:iam::111111111111:role/demo-vendor-audit",
+    "AssumeRolePolicyDocument": {
+     "Version": "2012-10-17",
+     "Statement": [
+      {
+       "Effect": "Allow",
+       "Principal": {
+        "AWS": "arn:aws:iam::999999999999:root"
+       },
+       "Action": "sts:AssumeRole"
+      }
+     ]
+    }
+   },
+   {
+    "RoleName": "demo-satellite-caller",
+    "Path": "/",
+    "Arn": "arn:aws:iam::111111111111:role/demo-satellite-caller",
+    "AssumeRolePolicyDocument": {
+     "Version": "2012-10-17",
+     "Statement": [
+      {
+       "Effect": "Allow",
+       "Principal": {
+        "AWS": [
+         "arn:aws:iam::222222222222:role/demo-worker",
+         "111111111111"
+        ]
+       },
+       "Action": "sts:AssumeRole"
+      }
+     ]
+    }
+   },
+   {
+    "RoleName": "demo-api-task",
+    "Path": "/",
+    "Arn": "arn:aws:iam::111111111111:role/demo-api-task",
+    "AssumeRolePolicyDocument": {
+     "Version": "2012-10-17",
+     "Statement": [
+      {
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "ecs-tasks.amazonaws.com"
+       },
+       "Action": "sts:AssumeRole"
+      }
+     ]
+    }
+   },
+   {
+    "RoleName": "demo-glue-job",
+    "Path": "/",
+    "Arn": "arn:aws:iam::111111111111:role/demo-glue-job",
+    "AssumeRolePolicyDocument": {
+     "Version": "2012-10-17",
+     "Statement": [
+      {
+       "Effect": "Allow",
+       "Principal": {
+        "Service": [
+         "glue.amazonaws.com"
+        ]
+       },
+       "Action": "sts:AssumeRole"
+      }
+     ]
+    }
+   },
+   {
+    "RoleName": "demo-ci-deploy",
+    "Path": "/",
+    "Arn": "arn:aws:iam::111111111111:role/demo-ci-deploy",
+    "AssumeRolePolicyDocument": {
+     "Version": "2012-10-17",
+     "Statement": [
+      {
+       "Effect": "Allow",
+       "Principal": {
+        "Federated": "arn:aws:iam::111111111111:oidc-provider/token.actions.githubusercontent.com"
+       },
+       "Action": "sts:AssumeRoleWithWebIdentity",
+       "Condition": {
+        "StringEquals": {
+         "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+         "token.actions.githubusercontent.com:sub": "repo:example-org/example-repo:ref:refs/heads/main"
+        }
+       }
+      }
+     ]
+    }
+   },
+   {
+    "RoleName": "demo-ci-loose",
+    "Path": "/",
+    "Arn": "arn:aws:iam::111111111111:role/demo-ci-loose",
+    "AssumeRolePolicyDocument": {
+     "Version": "2012-10-17",
+     "Statement": [
+      {
+       "Effect": "Allow",
+       "Principal": {
+        "Federated": "arn:aws:iam::111111111111:oidc-provider/token.actions.githubusercontent.com"
+       },
+       "Action": "sts:AssumeRoleWithWebIdentity",
+       "Condition": {
+        "StringEquals": {
+         "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
+        }
+       }
+      }
+     ]
+    }
+   },
+   {
+    "RoleName": "AWSServiceRoleForSupport",
+    "Path": "/aws-service-role/support.amazonaws.com/",
+    "Arn": "arn:aws:iam::111111111111:role/aws-service-role/support.amazonaws.com/AWSServiceRoleForSupport",
+    "AssumeRolePolicyDocument": {
+     "Version": "2012-10-17",
+     "Statement": [
+      {
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "support.amazonaws.com"
+       },
+       "Action": "sts:AssumeRole"
+      }
+     ]
+    }
+   },
+   {
+    "RoleName": "demo-denied",
+    "Path": "/",
+    "Arn": "arn:aws:iam::111111111111:role/demo-denied",
+    "AssumeRolePolicyDocument": {
+     "Version": "2012-10-17",
+     "Statement": [
+      {
+       "Effect": "Deny",
+       "Principal": "*",
+       "Action": "sts:AssumeRole"
+      },
+      {
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       },
+       "Action": "sts:AssumeRole"
+      }
+     ]
+    }
+   }
+  ]
+ },
+ "get-role": {
+  "demo-api-task": {
+   "Role": {
+    "RoleName": "demo-api-task",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "terraform"
+     }
+    ]
+   }
+  },
+  "demo-ci-deploy": {
+   "Role": {
+    "RoleName": "demo-ci-deploy",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "terraform"
+     }
+    ]
+   }
+  },
+  "demo-ci-loose": {
+   "Role": {
+    "RoleName": "demo-ci-loose",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "terraform"
+     }
+    ]
+   }
+  },
+  "demo-satellite-caller": {
+   "Role": {
+    "RoleName": "demo-satellite-caller",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "terraform"
+     }
+    ]
+   }
+  },
+  "demo-vendor-audit": {
+   "Role": {
+    "RoleName": "demo-vendor-audit",
+    "Tags": []
+   }
+  },
+  "demo-glue-job": {
+   "Role": {
+    "RoleName": "demo-glue-job",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "manual"
+     }
+    ]
+   }
+  },
+  "demo-denied": {
+   "Role": {
+    "RoleName": "demo-denied",
+    "Tags": []
+   }
+  }
+ },
+ "accessanalyzer list-analyzers": {
+  "analyzers": [
+   {
+    "arn": "arn:aws:access-analyzer:us-west-1:111111111111:analyzer/demo-external",
+    "name": "demo-external",
+    "type": "ACCOUNT",
+    "status": "ACTIVE"
+   }
+  ]
+ },
+ "accessanalyzer list-findings-v2": {
+  "findings": [
+   {
+    "resource": "arn:aws:iam::111111111111:role/aws-reserved/sso.amazonaws.com/AWSReservedSSO_AdministratorAccess_0123456789abcdef",
+    "status": "ARCHIVED",
+    "resourceType": "AWS::IAM::Role"
+   },
+   {
+    "resource": "arn:aws:iam::111111111111:role/demo-vendor-audit",
+    "status": "ACTIVE",
+    "resourceType": "AWS::IAM::Role"
+   }
+  ]
+ }
+}

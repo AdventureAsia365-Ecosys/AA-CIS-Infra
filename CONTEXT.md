@@ -804,6 +804,24 @@ makes CI Terraform Plan fail with 403.
 ## How a change gets applied
 
 - **Plan** runs in CI on every PR (required check).
+  - **State lock (S271 lessons guard G9):** every CI plan / apply passes `-lock-timeout`, so a run that meets a held
+    lock (another PR plan, an apply, the drift run, a local MFA plan) waits instead of going red: 20m on the PR plans
+    and the Dev apply, 10m on the management and prod runs. The PR plans have no concurrency group on purpose: GitHub
+    keeps one pending job per group and cancels the older one, so a group would cancel the required check of most PRs
+    of a burst (bot migration copies). Dispatched applies keep their own groups (`cancel-in-progress: false`).
+    `tools/terraform/tests/test_workflow_tf_locking.py` holds every workflow to these rules.
+  - **IAM trust inventory (S271 lessons guard G13):** the same check runs `tools/terraform/iam_trust_inventory.py
+    static` before any credential: every `aws_iam_role` trust of `accounts/` and `modules/`, all principal kinds (AWS,
+    Federated SAML / OIDC, Service, `*`, NotPrincipal). A trust to an outside account, a SAML or unlisted OIDC
+    provider, a GitHub OIDC trust without a `sub` condition or a service outside `tools/terraform/iam_trust_allowlist.json`
+    fails until it is reviewed and acknowledged there: an acknowledgement names the role, the principal kind and the
+    reviewed principal globs (no account id in that file), so a new principal on an acknowledged role still fails;
+    `*`, NotPrincipal and unresolved trusts are never acknowledged. For an audit, the `live` mode
+    (read-only `iam list-roles` / `get-role`, optional Access Analyzer status) also lists roles Terraform does not
+    create, such as the Identity Center `AWSReservedSSO_*` roles, as unmanaged external trusts.
+  - **Workflow Lint (S271 lessons guard G15):** `workflow-lint.yml` runs a pinned, checksum-verified actionlint and
+    `.github/scripts/workflow_lint.py` (no sensitive `vars.*`, Playwright jobs on `ubuntu-24.04`, `npm ci` only with a
+    tracked lockfile) on every workflow change. Not a required check yet.
 - **Apply** is done deliberately, not on merge:
   - `terraform-apply.yml` is `workflow_dispatch` only (manual trigger), against the same
     `accounts/aa365` root and `dev/terraform.tfstate` state.
