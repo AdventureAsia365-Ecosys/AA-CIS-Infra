@@ -40,10 +40,9 @@ on:
         default: false
 
 # One apply at a time across both roots (one Terraform process; the plans never race a lock).
-# S271 (G9): a PR plan (terraform-plan.yml, group tf-state-<root>-plan) or the nightly drift run can still hold the
-# state lock when an apply starts: every plan / apply below waits for it with -lock-timeout=10m instead of failing.
-# Not the PR plans' group on purpose: GitHub cancels the older PENDING job of a group, so a PR plan queued behind a
-# running one would cancel a pending apply.
+# S271 (G9): a PR plan (terraform-plan.yml, no concurrency group) or the nightly drift run can still hold the state
+# lock when an apply starts: every plan / apply below waits for it with -lock-timeout instead of failing (20m on the
+# Dev root, where a burst of PR plans queues on the lock; 10m on the management root, whose PR plans are rare).
 concurrency:
   group: terraform-apply-prod
   cancel-in-progress: false
@@ -138,7 +137,7 @@ jobs:
         if: env.GUARD_SELFTEST != 'true'
         run: |
           terraform plan \
-            -lock-timeout=10m \
+            -lock-timeout=20m \
             -out=tfplan \
             -detailed-exitcode
         continue-on-error: true
@@ -221,7 +220,7 @@ jobs:
         if: env.GUARD_SELFTEST != 'true' && steps.plan.outputs.exitcode == '2'
         run: |
           terraform apply \
-            -lock-timeout=10m \
+            -lock-timeout=20m \
             -auto-approve \
             tfplan
 

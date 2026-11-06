@@ -7,18 +7,20 @@ public repo; a workflow must run once before it is called done).
 
 ## Decisions
 
-- **G9, a plan group per root, not shared with the apply.** The design asked for one group `tf-state-<root>` shared by
-  plan and apply. GitHub keeps one PENDING job per concurrency group and cancels the older pending one, so a PR plan
-  queued behind a running plan would cancel a dispatched apply waiting in the same group. The PR plans therefore use
-  `tf-state-aa365-plan` / `tf-state-management-plan` (job level, `cancel-in-progress: false`), the apply keeps its
-  workflow group `terraform-apply-prod` (name unchanged, AA-1023 note), and plan versus apply is covered by
-  `-lock-timeout=10m` on every CI plan and apply (Dev apply, management review plan, management apply, Deploy Prod).
-  `-lock-timeout` was rejected alone in S252 (I1) only because it does not serialise; here it is the second layer.
-- **10 minutes.** A Dev PR plan takes 1-2 minutes (AA-879 note), the apply a few minutes; 10 minutes covers a queue of
-  a few runs, and a really stale lock still fails, just later.
-- **Management plan path filter moved to its own job (`management-paths`).** Otherwise every PR, even one that does
-  not touch the root, would queue in `tf-state-management-plan` for its skip run. The plan job now `needs` it and is
-  skipped when the root is untouched (it was green-with-skipped-steps before; it is not a required check).
+- **G9, `-lock-timeout` on every CI plan / apply; no concurrency group on the PR plans** (changed in the review
+  pass, see Changed). The design asked for one group `tf-state-<root>` shared by plan and apply; the first version
+  used a job-level group per root for the PR plans. Both fail on GitHub's semantics: a group keeps one PENDING job and
+  cancels the older pending one, so a burst of N PRs (bot migration copies arrive 5-6 at a time) would leave N-2
+  required "Terraform Plan (dev)" checks cancelled, to rerun by hand. The lock wait alone lets every plan of the burst
+  pass one after the other, so the PR plans have no group. Dispatched applies keep their own group
+  (`terraform-apply-prod`, name unchanged, AA-1023 note), where one pending run at a time is intended.
+  `-lock-timeout` was rejected alone in S252 (I1) only because it does not serialise; the plans do not need to be
+  serialised, they need to not fail on the lock.
+- **20 minutes on the PR plans and the Dev apply, 10 minutes elsewhere.** A Dev PR plan takes 1-2 minutes (AA-879
+  note), the Dev apply a few minutes; 20 minutes covers an apply plus a burst of five or six plans queued on the lock,
+  and a really stale lock still fails, just later. The management and prod roots have rare PR plans and no bursts:
+  10 minutes there. The test refuses a PR plan below 20 minutes and a job whose `timeout-minutes` ends before its lock
+  wait (the management PR plan job went from 20 to 30 minutes).
 - **`-lock=false` stays exempt** (the nightly drift report, read only, AA-879).
 - **G13, three modes in one stdlib tool** (`tools/terraform/iam_trust_inventory.py`): `static` (Terraform source, no
   credentials), `plan` (resolved policies from `terraform show -json`), `live` (read-only `sts get-caller-identity`,
@@ -35,6 +37,11 @@ public repo; a workflow must run once before it is called done).
   satellite roles (Bedrock invoker, Cost Explorer reader) trust acc2 roles by literal ARN and are acknowledged. The
   allowlist test refuses an acknowledgement of an `AWSReservedSSO*` role: the reseller's Identity Center role must stay
   red in every live audit until acc2 is in our organization.
+- **An acknowledgement is per principal, not per role** (review pass). Each entry carries `principal`, one glob or a
+  list (`arn:*:iam::*:role/<name>`: the account is a wildcard because no account id may go in the file). `*` and `?`
+  never cross a ':' or '/', an AWS glob must name one role or user (never `:root`, no wildcard in the name), and
+  `*`, NotPrincipal and unresolved trusts are never acknowledged (the loader refuses such entries). So `AWS = "*"` or
+  a new outside account added to the acc3 Bedrock invoker stays FLAG and fails the required plan check.
 - **Live managed status**: `/aws-reserved/sso.amazonaws.com/` = Identity Center (not Terraform), `/aws-service-role/` =
   service-linked (its Service principals are not flagged), a name in `--managed-from` (plan/state JSON) = terraform,
   else the `ManagedBy=terraform` tag, else unmanaged. A flagged trust on a role not managed by Terraform is reported as
@@ -48,7 +55,10 @@ public repo; a workflow must run once before it is called done).
 
 ## Changed (vs. the design)
 
-- G9: per-root plan groups instead of one group shared with the apply (above).
+- G9: no PR-plan group at all, only the lock wait (review pass: the first version's per-root group would cancel
+  pending required checks in a burst of PRs; it also needed a separate `management-paths` job, now reverted to the
+  path filter step of `main`).
+- G13: acknowledgements match the principal too (review pass: role + kind alone covered any new principal).
 - G13: no root docs-lint keyword rule for `docs/audits` (the critique called it weak and rewording bypasses it); the
   static check in the required plan job is the guard, the live mode is the audit tool.
 - G15: in Infra only (other repos are other lanes); shellcheck and pyflakes inside actionlint are off for now, see
@@ -56,8 +66,12 @@ public repo; a workflow must run once before it is called done).
 
 ## Tradeoffs
 
-- Three PR plans of one root at once: the middle pending one is cancelled by GitHub (concurrency semantics) and must be
-  rerun. Still better than today (two of three fail on the lock); a pending job held no lock, so nothing is left stale.
+- Without a group, a burst of PR plans holds one runner each while they wait on the lock (free runners on this public
+  repo; a plan wait costs minutes, not money). A plan that waits longer than 20 minutes (a stuck apply or a stale
+  lock) still goes red, which is the signal to look at the lock.
+- Principal globs wildcard the account (no account id in the public file): a role of the same name in an outside
+  account would also match. A name change or a new principal fails; pinning the account would need the id at run
+  time (IAM_TRUST_ACCOUNTS), which the static CI step does not have.
 - The static parser is a heuristic over HCL (brace matching, `jsonencode` maps, `aws_iam_policy_document` principals).
   Anything it cannot read (a `file()` policy, a dynamic principals block, an unknown expression) is flagged as
   `unresolved` rather than passed. The plan mode reads resolved JSON when exactness matters.
@@ -67,7 +81,8 @@ public repo; a workflow must run once before it is called done).
 
 - Verified locally: `pytest tools/terraform/tests tools/finops/tests` green; actionlint 1.7.12 (`-shellcheck=
   -pyflakes=`) clean on all workflows; `workflow_lint.py` 0 findings; `iam_trust_inventory.py static` on this repo:
-  42 roles, 0 flagged, 3 acknowledged (the two acc3 satellite roles).
+  42 roles, 0 flagged, 3 acknowledged (the two acc3 satellite roles). Review pass: the same, plus a fixture with the
+  shipped allowlist where `AWS = ["*", "<outside>:root", "<outside>:role/x"]` on the Bedrock invoker stays FLAG.
 - Live mode was run read-only against acc2 on 07/11/2026 (output kept outside the repo): 61 roles, exactly one flag,
   the Identity Center `AWSReservedSSO_AdministratorAccess_*` role, reported as an unmanaged external trust with its
   Access Analyzer finding ARCHIVED.
