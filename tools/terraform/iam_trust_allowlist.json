@@ -1,0 +1,29 @@
+{
+  "_about": "Allowlist of tools/terraform/iam_trust_inventory.py (S271 lessons guard G13). No account id, ARN or provider id goes in here (public repo): accounts are named by alias at run time (env IAM_TRUST_ACCOUNTS). services: AWS service principals a role may trust without a flag. oidc_providers: OIDC issuer hosts that are listed but not flagged (a GitHub trust must still pin the sub claim). acknowledged: flagged trusts that were reviewed; each stays in the report as 'acknowledged' with its reason. match is a glob on '<dir>:<address>' (static mode), 'plan:<address>' (plan mode) or 'live:<role name>' (live mode); kind is AWS, Federated, Service, CanonicalUser, NotPrincipal, * or unresolved. Never acknowledge a live Identity Center (AWSReservedSSO_*) role: it must stay visible in every audit until the account is in our organization.",
+  "version": 1,
+  "services": [
+    "apigateway.amazonaws.com",
+    "bedrock.amazonaws.com",
+    "ec2.amazonaws.com",
+    "ecs-tasks.amazonaws.com",
+    "events.amazonaws.com",
+    "lambda.amazonaws.com",
+    "scheduler.amazonaws.com",
+    "vpc-flow-logs.amazonaws.com"
+  ],
+  "oidc_providers": [
+    "token.actions.githubusercontent.com"
+  ],
+  "acknowledged": [
+    {
+      "match": "accounts/acc3-bedrock:aws_iam_role.bedrock_invoker",
+      "kind": "AWS",
+      "reason": "LLM satellite: the acc2 CIS ECS task role and the TripPlanner Lambda role assume the acc3 Bedrock invoker (ExternalId pinned; CONTEXT.md account model)"
+    },
+    {
+      "match": "accounts/acc3-bedrock:aws_iam_role.cost_explorer_reader",
+      "kind": "AWS",
+      "reason": "AA-623: the acc2 CIS ECS task role reads acc3 Cost Explorer (ExternalId pinned)"
+    }
+  ]
+}

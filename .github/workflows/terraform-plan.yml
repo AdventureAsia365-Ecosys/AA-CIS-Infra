@@ -30,6 +30,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # S271 (lessons guard G13): every aws_iam_role trust of accounts/ and modules/, all principal kinds (AWS,
+      # Federated SAML / OIDC, Service, `*`, NotPrincipal). Fails on a new trust to an outside account, a SAML or
+      # non-allowlisted OIDC provider, a GitHub OIDC trust without a sub condition or a service outside
+      # tools/terraform/iam_trust_allowlist.json, until it is reviewed and acknowledged there. Static, stdlib only, before
+      # any credential; the summary table is masked (tools/docs/aws_mask.py). The live account (roles Terraform does not
+      # create, such as Identity Center ones) is read by the same tool's `live` mode in an audit, not here.
+      - name: IAM trust inventory (static)
+        working-directory: ${{ github.workspace }}
+        run: python3 -B tools/terraform/iam_trust_inventory.py static --summary "$GITHUB_STEP_SUMMARY"
+
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
