@@ -408,8 +408,9 @@ class BuildCellsTest(unittest.TestCase):
         # views.
         # bk-039 / bk-040: AA-1029 price.from.v1 (TripPlanner, then the CIS pool for the Content studio).
         # bk-042: AA-1037 the agency billing status the CIS tenant_billing_tick reads.
-        self.assertEqual(p.CONSUMER_GRANT_KEYS, ("bk-017", "bk-023", "bk-025", "bk-035", "bk-039", "bk-040", "bk-042",
-                                                 "tp-015", "tp-020", "tp-022"))
+        # 379: AA-1038 R5 slice 2, TripPlanner's tenant view (a CIS key, plain NNN).
+        self.assertEqual(p.CONSUMER_GRANT_KEYS, ("379", "bk-017", "bk-023", "bk-025", "bk-035", "bk-039", "bk-040",
+                                                 "bk-042", "tp-015", "tp-020", "tp-022"))
         for k in p.CONSUMER_GRANT_KEYS:
             self.assertIn(k, p.VERSION_KEYS)
             self.assertIn(k, p.KEY_TEXT)
@@ -525,6 +526,21 @@ class BuildCellsTest(unittest.TestCase):
                 c["missing"] = []
         st, _ = statuses(f)
         self.assertEqual(st["consumer.contract_grants.bk-042"], "pass")
+
+    def test_tenant_tripplanner_view_grant_is_its_own_cell(self):
+        # AA-1038 R5 slice 2: TripPlanner reads catalog.v_tenant_tripplanner_v1 (tenant.entitlements.v1 1.4), created
+        # with its grant by the contract file CIS 379; the cell waits for that apply and passes once 379 is registered.
+        objs = {c[2]: (c[0], c[3]) for c in p.CONSUMER_GRANTS if c[3] == "379"}
+        self.assertEqual(objs, {"catalog.v_tenant_tripplanner_v1": ("tripplanner", "379")})
+        f = today_facts()
+        st, _ = statuses(f)
+        self.assertEqual(st["consumer.contract_grants.379"], "pending")
+        f["catalog"]["registered"] = ["379"]
+        for c in f["consumer"]["grants"]:
+            if c["from"] == "379":
+                c["missing"] = []
+        st, _ = statuses(f)
+        self.assertEqual(st["consumer.contract_grants.379"], "pass")
 
     def test_cis_app_login_waits_for_set_password(self):
         f = today_facts()
