@@ -804,6 +804,21 @@ makes CI Terraform Plan fail with 403.
 ## How a change gets applied
 
 - **Plan** runs in CI on every PR (required check).
+  - **State lock (S271 lessons guard G9):** each root's PR plans queue in a job-level concurrency group
+    (`tf-state-aa365-plan`, `tf-state-management-plan`, `cancel-in-progress: false`), and every CI plan / apply passes
+    `-lock-timeout=10m`, so a plan that meets a held lock (an apply, the drift run, a local MFA plan) waits instead of
+    going red. The apply keeps its own group (a PR plan queued in the apply's group would cancel a pending apply).
+    `tools/terraform/tests/test_workflow_tf_locking.py` holds every workflow to both rules.
+  - **IAM trust inventory (S271 lessons guard G13):** the same check runs `tools/terraform/iam_trust_inventory.py
+    static` before any credential: every `aws_iam_role` trust of `accounts/` and `modules/`, all principal kinds (AWS,
+    Federated SAML / OIDC, Service, `*`, NotPrincipal). A trust to an outside account, a SAML or unlisted OIDC
+    provider, a GitHub OIDC trust without a `sub` condition or a service outside `tools/terraform/iam_trust_allowlist.json`
+    fails until it is reviewed and acknowledged there (no account id in that file). For an audit, the `live` mode
+    (read-only `iam list-roles` / `get-role`, optional Access Analyzer status) also lists roles Terraform does not
+    create, such as the Identity Center `AWSReservedSSO_*` roles, as unmanaged external trusts.
+  - **Workflow Lint (S271 lessons guard G15):** `workflow-lint.yml` runs a pinned, checksum-verified actionlint and
+    `.github/scripts/workflow_lint.py` (no sensitive `vars.*`, Playwright jobs on `ubuntu-24.04`, `npm ci` only with a
+    tracked lockfile) on every workflow change. Not a required check yet.
 - **Apply** is done deliberately, not on merge:
   - `terraform-apply.yml` is `workflow_dispatch` only (manual trigger), against the same
     `accounts/aa365` root and `dev/terraform.tfstate` state.
