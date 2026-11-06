@@ -1,0 +1,79 @@
+name: Workflow Lint
+
+# S271 (lessons guard G15): every workflow change is linted before it first runs (a workflow broken at its first run
+# is a lesson that repeated, S220). Two layers:
+#   1. actionlint, pinned (version + SHA-256 of the release tarball, checked before it runs): expression and context
+#      errors, unknown keys, bad `needs`, invalid runner labels, action input typos. Its shellcheck / pyflakes
+#      integrations are off for now: the run: scripts have not been through shellcheck yet (follow-up in
+#      docs/implementation-notes/AA-1024-s271-guards-infra.md).
+#   2. .github/scripts/workflow_lint.py, the repo rules actionlint does not know: no sensitive `vars.*` (ARN / role /
+#      key: variables print in clear in this public repo's logs), Playwright jobs on runs-on ubuntu-24.04, `npm ci` only
+#      with a git-tracked lockfile.
+# Offline apart from the actionlint download; no secret, no AWS. Not a required check yet (the ruleset is changed by the
+# tech lead).
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/**"
+      - ".github/actions/**"
+      - ".github/actionlint.yaml"
+      - ".github/scripts/workflow_lint.py"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/**"
+      - ".github/actions/**"
+      - ".github/actionlint.yaml"
+      - ".github/scripts/workflow_lint.py"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: workflow-lint-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  workflow-lint:
+    name: Workflow lint (actionlint + repo rules)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    env:
+      ACTIONLINT_VERSION: "1.7.12"
+      # sha256 of actionlint_1.7.12_linux_amd64.tar.gz, from the release's actionlint_1.7.12_checksums.txt (S271).
+      ACTIONLINT_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install actionlint (pinned, checksum verified)
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/actionlint"
+          mkdir -p "$DIR"
+          TGZ="$DIR/actionlint.tar.gz"
+          curl -fsSL --retry 3 -o "$TGZ" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  $TGZ" | sha256sum -c -
+          tar -xzf "$TGZ" -C "$DIR" actionlint
+          "$DIR/actionlint" -version
+          echo "$DIR" >> "$GITHUB_PATH"
+
+      - name: actionlint
+        run: actionlint -color -shellcheck= -pyflakes=
+
+      - name: Setup Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Repo workflow rules
+        run: |
+          python -m pip install --quiet pyyaml==6.0.2
+          python -B .github/scripts/workflow_lint.py

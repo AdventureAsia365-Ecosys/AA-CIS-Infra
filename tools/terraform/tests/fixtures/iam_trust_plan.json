@@ -1,0 +1,64 @@
+{
+ "format_version": "1.2",
+ "planned_values": {
+  "root_module": {
+   "resources": [
+    {
+     "address": "aws_iam_role.api_task",
+     "mode": "managed",
+     "type": "aws_iam_role",
+     "name": "api_task",
+     "values": {
+      "name": "demo-api-task",
+      "assume_role_policy": "{\"Version\": \"2012-10-17\", \"Statement\": [{\"Effect\": \"Allow\", \"Principal\": {\"Service\": \"ecs-tasks.amazonaws.com\"}, \"Action\": \"sts:AssumeRole\"}]}"
+     }
+    },
+    {
+     "address": "aws_iam_role.new_role",
+     "mode": "managed",
+     "type": "aws_iam_role",
+     "name": "new_role",
+     "values": {
+      "name": "demo-new-role"
+     }
+    },
+    {
+     "address": "aws_s3_bucket.logs",
+     "mode": "managed",
+     "type": "aws_s3_bucket",
+     "name": "logs",
+     "values": {
+      "bucket": "demo-logs"
+     }
+    }
+   ],
+   "child_modules": [
+    {
+     "address": "module.env",
+     "resources": [
+      {
+       "address": "module.env.aws_iam_role.satellite",
+       "mode": "managed",
+       "type": "aws_iam_role",
+       "name": "satellite",
+       "values": {
+        "name": "demo-satellite-caller",
+        "assume_role_policy": "{\"Version\": \"2012-10-17\", \"Statement\": [{\"Effect\": \"Allow\", \"Principal\": {\"AWS\": [\"arn:aws:iam::222222222222:role/demo-worker\", \"111111111111\"]}, \"Action\": \"sts:AssumeRole\"}]}"
+       }
+      },
+      {
+       "address": "module.env.aws_iam_role.vendor",
+       "mode": "managed",
+       "type": "aws_iam_role",
+       "name": "vendor",
+       "values": {
+        "name": "demo-vendor-audit",
+        "assume_role_policy": "{\"Version\": \"2012-10-17\", \"Statement\": [{\"Effect\": \"Allow\", \"Principal\": {\"AWS\": \"arn:aws:iam::999999999999:root\"}, \"Action\": \"sts:AssumeRole\"}]}"
+       }
+      }
+     ]
+    }
+   ]
+  }
+ }
+}

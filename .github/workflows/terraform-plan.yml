@@ -12,6 +12,12 @@ jobs:
   terraform-plan:
     name: Terraform Plan (dev)
     runs-on: ubuntu-latest
+    # S271 (lessons guard G9): no concurrency group here on purpose. Two runs that meet on the S3 state lock (another
+    # PR plan, an apply, the drift run, a local MFA plan) are handled by -lock-timeout=20m on the plan below: the later
+    # run waits for the lock instead of failing with "Error acquiring the state lock". A shared group would be worse:
+    # GitHub keeps one PENDING job per group and cancels the older one, so a burst of PRs (bot migration copies) would
+    # leave cancelled required checks to rerun by hand. tools/terraform/tests/test_workflow_tf_locking.py holds every
+    # workflow to this.
 
     defaults:
       run:
@@ -20,6 +26,17 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # S271 (lessons guard G13): every aws_iam_role trust of accounts/ and modules/, all principal kinds (AWS,
+      # Federated SAML / OIDC, Service, `*`, NotPrincipal). Fails on a new trust to an outside account, a SAML or
+      # non-allowlisted OIDC provider, a GitHub OIDC trust without a sub condition or a service outside
+      # tools/terraform/iam_trust_allowlist.json, until it is reviewed and acknowledged there (per role AND principal).
+      # Static, stdlib only, before any credential; the summary table is masked (tools/docs/aws_mask.py). The live
+      # account (roles Terraform does not create, such as Identity Center ones) is read by the same tool's `live` mode
+      # in an audit, not here.
+      - name: IAM trust inventory (static)
+        working-directory: ${{ github.workspace }}
+        run: python3 -B tools/terraform/iam_trust_inventory.py static --summary "$GITHUB_STEP_SUMMARY"
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
@@ -48,7 +65,7 @@ jobs:
       - name: Terraform Plan
         env:
           TF_VAR_db_password: ${{ secrets.TF_VAR_DB_PASSWORD }}
-        run: terraform plan -out=tfplan
+        run: terraform plan -lock-timeout=20m -out=tfplan
 
       # S271: tagging standard (root docs/architecture/tagging-standard.md, FIN-03). Fails this required check when a
       # taggable resource the plan creates or updates lacks a mandatory tag or holds a value outside
@@ -82,7 +99,8 @@ jobs:
   terraform-plan-management:
     name: Terraform Plan (management)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # S271 (G9): like the dev plan, no concurrency group; the plan waits for a held state lock (-lock-timeout=20m).
+    timeout-minutes: 30
 
     env:
       ROOT: accounts/management
@@ -197,7 +215,7 @@ jobs:
           LOG="$RUNNER_TEMP/management-plan.jsonl"
           trap 'rm -f "$LOG"' EXIT
           set +e
-          terraform -chdir="$ROOT" plan -input=false -detailed-exitcode -json -out="$RUNNER_TEMP/management.tfplan" > "$LOG"
+          terraform -chdir="$ROOT" plan -input=false -lock-timeout=20m -detailed-exitcode -json -out="$RUNNER_TEMP/management.tfplan" > "$LOG"
           RC=$?
           set -e
           echo "terraform plan exit code: $RC"
