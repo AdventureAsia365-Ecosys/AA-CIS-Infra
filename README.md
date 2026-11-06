@@ -87,7 +87,7 @@ Names only. GitHub secrets: `AWS_ROLE_ARN` (OIDC role assumed by CI), `AWS_REGIO
 `TF_STATE_BUCKET`, `TF_VAR_DB_PASSWORD`, `AA_CI_BOT_PRIVATE_KEY` with the variable `AA_CI_BOT_APP_ID` (GitHub
 App `aa-ecosys-ci-bot`, root ADR 0011: DB Schema Dump and Docs Gen mint a short-lived token on
 AdventureAsia365-Ecosys/AA-Ecosys only, Contents + Pull requests write, in jobs that run on `main` only; the Migration
-Copy Guard retention-rows job mints a Contents-read token). Terraform inputs for `accounts/aa365` are in
+Copy Guard `guard` job mints a Contents-read token for its retention-rows steps). Terraform inputs for `accounts/aa365` are in
 `variables.tf` / `tripplanner_variables.tf` / `booking_variables.tf` and `terraform.tfvars` (no secret values in git —
 secrets are referenced by ARN).
 
@@ -120,7 +120,7 @@ password / API key / token in `.tf` / `.tfvars` / `.hcl`; a credential-named key
   are transcoded to UTF-8; no path allowlist); an octopus merge or a git error
   fails the check. For a false positive prefer a narrow allowlist in `.gitleaks.toml`: a commit
   fingerprint does not survive the squash merge (header of `.gitleaksignore`).
-- **gitleaks full history** (`secret-scan-history.yml`: nightly, every push to `main`, on demand; AA-981): every commit of every
+- **gitleaks full history** (`secret-scan-history.yml`: nightly and on demand; a push to `main` scans its own commits only, S271; AA-981): every commit of every
   branch and tag, plus the head of every pull request (`refs/pull/*/head`, closed PRs included: GitHub
   keeps them public after the branch is deleted). Historical findings are pinned by commit fingerprint in
   `.gitleaksignore`; anything else turns the job red. A new real finding is rotated first, then pinned. On demand the job

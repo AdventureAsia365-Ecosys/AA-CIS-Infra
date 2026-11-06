@@ -31,9 +31,16 @@ name: Migration Copy Guard
 # scoped dir has a copy; with no such copy it passes without minting a token. The job also runs on pull_request, so
 # it never asks for a write permission. The existing owners' tables are grandfathered (DM-7.1).
 # AA-993 I1 (S255): no `paths` filter on pull_request any more. The jobs below are required checks of the ruleset on
-# main (tools/github/infra-main-ruleset.json), and a required check whose workflow never starts blocks the PR. The job
-# `scope` decides instead (tools/github/pr_paths.py, the path list that used to be the filter): when the PR touches
-# none of those paths, guard, lint and retention-rows are skipped, and a skipped job counts as passed.
+# main (tools/github/infra-main-ruleset.json), and a required check whose workflow never starts blocks the PR. The
+# scope step decides instead (db/migration_guard_scope.py, the path list that used to be the filter): when the PR
+# touches none of those paths, the guard's own checks are skipped (the job ends green) and lint and classify are
+# skipped (a skipped job counts as passed).
+# S271 (CI minutes): three jobs instead of five. The scope (was job `scope`) and the retention rows (was job
+# `retention-rows`, "Retention rows for new-app tables") are steps of `guard`, and lint and classify need `guard`
+# for the scope. A PR outside the paths costs one short job, as before; a PR inside them three instead of five (each
+# job is billed by the started minute). The retention rows are now part of the required check "Copies match owner
+# main": a copy whose new tables have no DM-7.1 row fails that check (it was a red non-required check before, which
+# the copy bot's merge check did not read). Wall time: lint and classify start after `guard` (~30 s later).
 on:
   pull_request:
     branches: [main]
@@ -46,30 +53,38 @@ concurrency:
   cancel-in-progress: true
 
 # No AWS: the owner repos are public, GITHUB_TOKEN only lifts the API rate limit. The one secret is the App key
-# AA_CI_BOT_PRIVATE_KEY (with the variable AA_CI_BOT_APP_ID) in the retention-rows job: it mints a Contents-read
-# token for the root repo (reads one root file; only when a crm copy exists).
+# AA_CI_BOT_PRIVATE_KEY (with the variable AA_CI_BOT_APP_ID) in the retention-rows steps of the `guard` job: it mints a
+# Contents-read token for the root repo (reads one root file; only when a crm copy exists).
 permissions:
   contents: read
 
 jobs:
-  # AA-993 I1: replaces the old pull_request `paths` filter (see the comment above `on:`). Schedule and manual runs
-  # always check everything.
-  scope:
-    name: Migration paths touched?
+  # AA-993 I1 + S271: the scope (the old pull_request `paths` filter, see the comment above `on:`), the copy compare
+  # and the retention rows in one job. Schedule and manual runs always check everything.
+  guard:
+    name: Copies match owner main
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: read
+      pull-requests: read    # the scope step lists the PR's files
+    env:
+      ROOT_REPO: AdventureAsia365-Ecosys/AA-Ecosys
+      ROOT_BRANCH: master
+      REGISTRY_PATH: docs/architecture/data-standards/02-data-management.md
+      HAS_CI_BOT_APP: ${{ vars.AA_CI_BOT_APP_ID != '' && secrets.AA_CI_BOT_PRIVATE_KEY != '' }}
     outputs:
       relevant: ${{ steps.scope.outputs.relevant }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          sparse-checkout: db/migration_guard_scope.py
-          sparse-checkout-cone-mode: false
+          fetch-depth: 0
 
+      # Fail closed (review S255): every later step and the two jobs that need this one run unless this step said
+      # relevant=false explicitly. A failed step (API error, script error) leaves the output empty and the job goes on
+      # (continue-on-error), so a broken scope means the full check, never a silent skip.
       - name: Changed files vs the guard's path list
         id: scope
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           EVENT: ${{ github.event_name }}
@@ -80,39 +95,31 @@ jobs:
           fi
           # Both names of a rename count (moving a file out of db/migrations/ is relevant too).
           gh api --paginate "repos/${{ github.repository }}/pulls/$PR/files" \
-            --jq '.[] | .filename, (.previous_filename // empty)' > changed.txt
+            --jq '.[] | .filename, (.previous_filename // empty)' > "$RUNNER_TEMP/changed-paths.txt"
           # The files API lists at most 3000 files: a PR at that cap may hide a migration path, so it is relevant.
           N=$(gh api "repos/${{ github.repository }}/pulls/$PR" --jq .changed_files)
           if [ "${N:-0}" -ge 3000 ]; then
             echo "relevant=true" >> "$GITHUB_OUTPUT"; echo "$N changed files (>= 3000, the files API cap): every job runs"; exit 0
           fi
-          python3 db/migration_guard_scope.py < changed.txt | tee -a "$GITHUB_OUTPUT"
-          echo "$(wc -l < changed.txt) changed path(s)"
-
-  guard:
-    name: Copies match owner main
-    needs: scope
-    # Fail closed (review S255): skip only on an explicit relevant=false. A failed or cancelled `scope` (API error,
-    # script error) leaves the output empty and this job runs the full check; a skipped job would count as passed.
-    if: ${{ !cancelled() && needs.scope.outputs.relevant != 'false' }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
+          python3 db/migration_guard_scope.py < "$RUNNER_TEMP/changed-paths.txt" | tee -a "$GITHUB_OUTPUT"
+          echo "$(wc -l < "$RUNNER_TEMP/changed-paths.txt") changed path(s)"
 
       # PyYAML only for the registry test (db/tests/test_owners_registry.py reads db/owners.yaml and
       # the workflow); the guards and the runner stay standard-library only.
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        if: steps.scope.outputs.relevant != 'false'
         with:
           python-version: "3.12"
 
       - name: Guard unit tests
+        if: steps.scope.outputs.relevant != 'false'
         run: |
           python -m pip install --quiet pyyaml==6.0.2
           python -m unittest discover -s db/tests -v
 
       - name: Compare copies with owner main
+        id: compare
+        if: steps.scope.outputs.relevant != 'false'
         env:
           GITHUB_TOKEN: ${{ github.token }}
           EVENT: ${{ github.event_name }}
@@ -143,12 +150,65 @@ jobs:
           { echo '### Migration copy guard'; echo '```'; grep -v '^::' guard.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           exit "$status"
 
+      # Third check (AA-929, data standards DM-7.1; was the job "Retention rows for new-app tables" until S271): runs
+      # when the compare failed too, so one run shows every reason.
+      - name: Is any new-app dir in scope?
+        id: retention_scope
+        if: ${{ !cancelled() && steps.scope.outputs.relevant != 'false' }}
+        run: echo "scoped=$(python3 db/check_retention_rows.py --scoped)" >> "$GITHUB_OUTPUT"
+
+      # AA-901: Contents READ only (this job runs on pull_request too: it must never mint a write token).
+      - name: Mint the aa-ecosys-ci-bot token (root repo, contents read)
+        id: app-token
+        if: ${{ !cancelled() && steps.retention_scope.outputs.scoped == 'yes' && env.HAS_CI_BOT_APP == 'true' }}
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.AA_CI_BOT_APP_ID }}
+          private-key: ${{ secrets.AA_CI_BOT_PRIVATE_KEY }}
+          owner: AdventureAsia365-Ecosys
+          repositories: AA-Ecosys
+          permission-contents: read
+
+      - name: Fetch the retention registry from the root repo's master
+        id: registry
+        if: ${{ !cancelled() && steps.retention_scope.outputs.scoped == 'yes' }}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          if [ "$HAS_CI_BOT_APP" != "true" ]; then
+            echo "::error::the aa-ecosys-ci-bot App is not configured (repo variable AA_CI_BOT_APP_ID and/or secret AA_CI_BOT_PRIVATE_KEY missing): the retention registry on the root repo cannot be read (see the header of this workflow)"
+            exit 1
+          fi
+          gh api -H "Accept: application/vnd.github.raw" "repos/$ROOT_REPO/contents/$REGISTRY_PATH?ref=$ROOT_BRANCH" > registry.md
+          test -s registry.md
+
+      - name: Every scoped table has a DM-7 row
+        if: >-
+          ${{ !cancelled() && steps.scope.outputs.relevant != 'false' && steps.retention_scope.outcome == 'success' &&
+          steps.registry.outcome != 'failure' }}
+        run: |
+          set +e
+          if [ "${{ steps.retention_scope.outputs.scoped }}" = "yes" ]; then
+            python3 db/check_retention_rows.py --registry registry.md > retention.log 2>&1
+          else
+            python3 db/check_retention_rows.py > retention.log 2>&1
+          fi
+          status=$?
+          cat retention.log
+          { echo '### Retention rows (DM-7.1)'; echo '```'; grep -v '^::' retention.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+
+      - name: Nothing in the guard's paths
+        if: steps.scope.outputs.relevant == 'false'
+        run: |
+          echo "### Migration copy guard - the PR touches none of the guard's paths (checks skipped)" >> "$GITHUB_STEP_SUMMARY"
+
   lint:
     name: Migration lint and unique numbers
-    needs: scope
-    # Fail closed (review S255): skip only on an explicit relevant=false. A failed or cancelled `scope` (API error,
-    # script error) leaves the output empty and this job runs the full check; a skipped job would count as passed.
-    if: ${{ !cancelled() && needs.scope.outputs.relevant != 'false' }}
+    needs: guard
+    # Fail closed (review S255): skip only on an explicit relevant=false. A failed scope step leaves the output empty and
+    # this job runs the full check (a skipped job would count as passed); it runs when the guard's checks failed too.
+    if: ${{ !cancelled() && needs.guard.outputs.relevant != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -177,62 +237,6 @@ jobs:
           done
           exit "$status"
 
-  retention-rows:
-    name: Retention rows for new-app tables
-    needs: scope
-    # Fail closed (review S255): skip only on an explicit relevant=false. A failed or cancelled `scope` (API error,
-    # script error) leaves the output empty and this job runs the full check; a skipped job would count as passed.
-    if: ${{ !cancelled() && needs.scope.outputs.relevant != 'false' }}
-    runs-on: ubuntu-latest
-    env:
-      ROOT_REPO: AdventureAsia365-Ecosys/AA-Ecosys
-      ROOT_BRANCH: master
-      REGISTRY_PATH: docs/architecture/data-standards/02-data-management.md
-      HAS_CI_BOT_APP: ${{ vars.AA_CI_BOT_APP_ID != '' && secrets.AA_CI_BOT_PRIVATE_KEY != '' }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Is any new-app dir in scope?
-        id: scope
-        run: echo "scoped=$(python3 db/check_retention_rows.py --scoped)" >> "$GITHUB_OUTPUT"
-
-      # AA-901: Contents READ only (this job runs on pull_request too: it must never mint a write token).
-      - name: Mint the aa-ecosys-ci-bot token (root repo, contents read)
-        id: app-token
-        if: steps.scope.outputs.scoped == 'yes' && env.HAS_CI_BOT_APP == 'true'
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with:
-          app-id: ${{ vars.AA_CI_BOT_APP_ID }}
-          private-key: ${{ secrets.AA_CI_BOT_PRIVATE_KEY }}
-          owner: AdventureAsia365-Ecosys
-          repositories: AA-Ecosys
-          permission-contents: read
-
-      - name: Fetch the retention registry from the root repo's master
-        if: steps.scope.outputs.scoped == 'yes'
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: |
-          if [ "$HAS_CI_BOT_APP" != "true" ]; then
-            echo "::error::the aa-ecosys-ci-bot App is not configured (repo variable AA_CI_BOT_APP_ID and/or secret AA_CI_BOT_PRIVATE_KEY missing): the retention registry on the root repo cannot be read (see the header of this workflow)"
-            exit 1
-          fi
-          gh api -H "Accept: application/vnd.github.raw" "repos/$ROOT_REPO/contents/$REGISTRY_PATH?ref=$ROOT_BRANCH" > registry.md
-          test -s registry.md
-
-      - name: Every scoped table has a DM-7 row
-        run: |
-          set +e
-          if [ "${{ steps.scope.outputs.scoped }}" = "yes" ]; then
-            python3 db/check_retention_rows.py --registry registry.md > retention.log 2>&1
-          else
-            python3 db/check_retention_rows.py > retention.log 2>&1
-          fi
-          status=$?
-          cat retention.log
-          { echo '### Retention rows (DM-7.1)'; echo '```'; grep -v '^::' retention.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-          exit "$status"
-
   # AA-993 M2b (root ADR 0017 d3, design §2 M2b): the expand runtime post-check as evidence on the PR, on a throw-away
   # PostgreSQL 15 container on this runner (no AWS, no secret; the same pinned image as the DB Schema Dump replay).
   #   1. the M2b PostgreSQL tests (db/tests/test_aa993_expand_check_pg.py: the exit-14 and pass cases, the classify
@@ -246,9 +250,9 @@ jobs:
   # A required check of the ruleset on main (tools/github/infra-main-ruleset.json, context "Expand classify").
   classify:
     name: Expand classify
-    needs: scope
-    # Fail closed (review S255): skip only on an explicit relevant=false.
-    if: ${{ !cancelled() && needs.scope.outputs.relevant != 'false' }}
+    needs: guard
+    # Fail closed (review S255): skip only on an explicit relevant=false (see lint).
+    if: ${{ !cancelled() && needs.guard.outputs.relevant != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     permissions:

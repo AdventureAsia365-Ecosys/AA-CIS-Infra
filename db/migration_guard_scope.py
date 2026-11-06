@@ -2,9 +2,10 @@
 """Does a pull request touch the paths the Migration Copy Guard checks? (AA-993 I1)
 
 The guard's jobs are required checks of the ruleset on main (tools/github/infra-main-ruleset.json). A required check
-whose workflow never starts blocks the PR, so migration-copy-guard.yml runs on every PR and its `scope` job calls
-this script: when no changed path matches, the guard, lint and retention-rows jobs are skipped (a skipped job counts
-as passed). PATHS is the list that used to be the workflow's `pull_request.paths` filter; scripts/pre-push.sh keeps
+whose workflow never starts blocks the PR, so migration-copy-guard.yml runs on every PR and the scope step of its
+`guard` job calls this script (S271; a job of its own before): when no changed path matches, the guard's checks
+(copy compare, retention rows) are skipped inside the job and the lint and classify jobs are skipped (a skipped job
+counts as passed). PATHS is the list that used to be the workflow's `pull_request.paths` filter; scripts/pre-push.sh keeps
 the same list for its local selection (db/tests/test_migration_guard_scope.py checks that both agree).
 
 Glob rules are GitHub's filter rules: `*` matches within one path segment, `**` matches across segments.

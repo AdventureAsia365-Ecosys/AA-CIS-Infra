@@ -322,8 +322,8 @@ line) prints the plan the task would follow.
   (`python3 db/check_migration_ownership.py FILE`) prints a note for each DO block with dynamic SQL. `roles/` is not
   checked. Every copy on `main` passes; on the owners' full history it finds the known cases (TripPlanner
   `002_shared_destinations.sql` / `005`, CIS `122`'s `public.*` drops, CIS `001`–`007` before the owner split).
-- **Retention rows** (DM-7.1, AA-929): `db/check_retention_rows.py` (CI job "Retention rows for new-app
-  tables") fails when a table created by a copy in a new-app dir (`RETENTION_OWNERS`, today `crm`) has no
+- **Retention rows** (DM-7.1, AA-929): `db/check_retention_rows.py` (steps of the required CI check "Copies
+  match owner main" since S271; the job "Retention rows for new-app tables" before) fails when a table created by a copy in a new-app dir (`RETENTION_OWNERS`, today `crm`) has no
   row in the retention table of data standards Part B §7, read from the root repo's `master` with a
   Contents-read token of the GitHub App `aa-ecosys-ci-bot`. Merge the root row first, then the Infra copy. The cis/booking/tripplanner
   dirs are grandfathered (DM-7.1); a new app's dir is added to `RETENTION_OWNERS` with its
