@@ -82,6 +82,9 @@ module "vpc" {
   # ADR 0004b (X1 S11): one source group per DB caller (app_security_groups.tf).
   rds_ingress_sg_ids = local.rds_ingress_sg_ids
 
+  # AA-911 (staff_web_edge.tf): browsers reach the ALB's :443 for the staff frontends.
+  alb_public_https_cidrs = local.staff_web_public_https_cidrs
+
   tags = local.shared_app_tags # AA-828: VPC, subnets, NAT instance + EIP, route tables, SGs
 }
 
@@ -298,6 +301,10 @@ module "waf" {
   alb_arn        = module.alb.alb_arn
   rate_limit     = 1000
   vpc_allow_cidr = var.vpc_cidr
+
+  # AA-911 (staff_web_edge.tf): the staff hosts get their own rate rule instead of RateLimit1000.
+  staff_web_hosts      = values(local.staff_web_hosts)
+  staff_web_rate_limit = var.staff_web_rate_limit
 
   # S263 alert diet (AA-1025): Dev keeps the WAF log 30 days and only the requests a rule acted on.
   log_retention_days = 30

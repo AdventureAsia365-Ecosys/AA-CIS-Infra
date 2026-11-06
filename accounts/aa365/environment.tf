@@ -106,16 +106,21 @@ module "environment" {
   cognito_workforce_cis_admin_client_id  = aws_cognito_user_pool_client.workforce["cis-admin"].id
   cognito_workforce_breakglass_client_id = aws_cognito_user_pool_client.workforce["breakglass"].id
   cognito_workforce_crm_staff_client_id  = aws_cognito_user_pool_client.workforce["crm-staff"].id
-  cognito_workforce_prefix_domain        = aws_cognito_user_pool_domain.workforce_prefix.domain
-  cognito_partner_pool_id                = aws_cognito_user_pool.partner.id
-  cognito_partner_web_client_id          = aws_cognito_user_pool_client.partner["partner-web"].id
-  cognito_partner_issuer                 = local.idpartner_issuer
-  cognito_partner_login_base             = local.idpartner_login_base
-  cognito_external_cis_portal_client_id  = aws_cognito_user_pool_client.external["cis-portal"].id
-  cognito_external_prefix_domain         = aws_cognito_user_pool_domain.external_prefix.domain
-  identity_custom_domains_enabled        = local.id_custom_domains
-  identity_external_custom_domain        = var.identity_external_custom_domain
-  identity_workforce_custom_domain       = var.identity_workforce_custom_domain
+  # AA-911: the staff frontends on ECS (staff_web.tf of the module, staff_web_edge.tf + alb_rules.tf here).
+  cognito_workforce_booking_staff_client_id = aws_cognito_user_pool_client.workforce["booking-staff"].id
+  cis_admin_secret_arn                      = var.secret_admin_arn
+  staff_web_security_group_id               = aws_security_group.staff_web.id
+  staff_web_listener_rule_gate              = [aws_lb_listener_rule.staff_cis_admin.arn, aws_lb_listener_rule.staff_booking_admin.arn]
+  cognito_workforce_prefix_domain           = aws_cognito_user_pool_domain.workforce_prefix.domain
+  cognito_partner_pool_id                   = aws_cognito_user_pool.partner.id
+  cognito_partner_web_client_id             = aws_cognito_user_pool_client.partner["partner-web"].id
+  cognito_partner_issuer                    = local.idpartner_issuer
+  cognito_partner_login_base                = local.idpartner_login_base
+  cognito_external_cis_portal_client_id     = aws_cognito_user_pool_client.external["cis-portal"].id
+  cognito_external_prefix_domain            = aws_cognito_user_pool_domain.external_prefix.domain
+  identity_custom_domains_enabled           = local.id_custom_domains
+  identity_external_custom_domain           = var.identity_external_custom_domain
+  identity_workforce_custom_domain          = var.identity_workforce_custom_domain
 
   # CRM settings (crm_variables.tf of this root, passed through unchanged).
   crm_github_repo_id           = var.crm_github_repo_id

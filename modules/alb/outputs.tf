@@ -2,6 +2,11 @@ output "alb_dns_name" {
   value = aws_lb.main.dns_name
 }
 
+output "alb_zone_id" {
+  description = "AA-911: hosted zone id of the ALB, for Route 53 alias records (the apex when staff_web_apex_on_alb is on)"
+  value       = aws_lb.main.zone_id
+}
+
 output "alb_arn" {
   value = aws_lb.main.arn
 }

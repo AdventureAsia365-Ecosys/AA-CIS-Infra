@@ -93,3 +93,8 @@ crm_mail_oauth_enabled = true
 
 # AA-979 P2b: portal.lumiguides.it.com points at the crm_agency CloudFront distribution since the S253 cutover; the
 # switch crm_agency_live and the Vercel rollback target were removed at the clean-up (runbook 4.5, S256).
+
+# AA-911 (staff_web_edge.tf): 60 s TTL on aa-cis. and booking. from the first staff web apply, so the later DNS
+# cut-over (staff_web_dns_on_ecs) and its rollback reach every resolver within a minute. Back to false at the Vercel
+# retirement (root runbook staff-web-ecs-cutover.md section 4).
+staff_web_dns_switch_window = true
