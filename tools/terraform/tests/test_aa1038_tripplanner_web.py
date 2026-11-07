@@ -144,15 +144,18 @@ def test_web_acl_is_cloudfront_scope_in_us_east_1_and_on_the_distribution():
 def test_rules_rate_model_paths_and_challenge_in_order():
     acl = _code(_resource(EDGE, "aws_wafv2_web_acl", "tripplanner_web"))
     names = re.findall(r'name     = "([A-Za-z]+)"\n\s+priority = (\d+)', acl)
-    assert names == [("RateLimitPerIp", "0"), ("RateLimitModelPaths", "1"), ("ChallengeBrowsers", "2")]
+    assert names == [("RateLimitPerIp", "0"), ("RateLimitModelPaths", "1"), ("ChallengePlanner", "2")]
     rate = _rule(acl, "RateLimitPerIp")
     assert "limit              = var.tripplanner_web_rate_limit" in rate and "response_code            = 429" in rate
     model = _rule(acl, "RateLimitModelPaths")
     assert "limit              = var.tripplanner_web_model_rate_limit" in model
     assert "for_each = local.tp_web_model_paths" in model and "uri_path {}" in model
-    challenge = _rule(acl, "ChallengeBrowsers")
+    challenge = _rule(acl, "ChallengePlanner")
     assert "challenge {}" in challenge
     assert 'name = "sec-fetch-dest"' in challenge and 'search_string         = "document"' in challenge
+    # Only planner documents are challenged (the catalog pages never see an interstitial).
+    assert 'search_string         = "/plan"' in challenge and 'positional_constraint = "ENDS_WITH"' in challenge
+    assert 'search_string         = "/plan/"' in challenge
     assert "for_each = local.tp_web_model_paths" in challenge
     assert "immunity_time = var.tripplanner_web_challenge_immunity_s" in acl
 

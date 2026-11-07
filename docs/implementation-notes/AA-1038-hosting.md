@@ -16,9 +16,11 @@ Root ADR 0019 d23 and the S265 tech-lead decision (one Fargate Spot task + Cloud
 - **Size 0.5 vCPU / 1 GB, not 0.25 / 0.5.** The TripPlanner server renders the catalog pages and keeps the ISR cache
   in process; the staff admins' size leaves no headroom. ~ +2.5 USD/month on Spot.
 - **Web ACL, three rules (3 USD), first terminating action wins:** `RateLimitPerIp` (3000 / 5 min / viewer IP, 429
-  JSON), `RateLimitModelPaths` (100 / 5 min on `/api/browse/search` + `/api/trip/narrate`, 429), `ChallengeBrowsers`
-  (Challenge on a GET with `sec-fetch-dest: document` OR a model path). A browser solves the silent Challenge on its
-  first page load and its `fetch()` to a model path carries the `aws-waf-token`; a script without the token gets 202 +
+  JSON), `RateLimitModelPaths` (100 / 5 min on `/api/browse/search` + `/api/trip/narrate`, 429), `ChallengePlanner`
+  (Challenge on a GET with `sec-fetch-dest: document` of a planner page, `/plan`, `/{tenant}/plan` and below, OR a
+  model path). The model paths are called only from the planner (AA-TripPlanner-Web `lib/api.ts`), so home,
+  destination and tour pages never see an interstitial. A browser solves the silent Challenge when it opens the planner
+  and its `fetch()` to a model path carries the `aws-waf-token`; a script without the token gets 202 +
   `x-amzn-waf-action: challenge`. Token immunity 4 h (variable). curl health checks send no `sec-fetch-dest`, so they
   are never challenged.
 - **The app must not leave a side door.** A WAF rule sees the path only; the BFF's older spellings of the same calls

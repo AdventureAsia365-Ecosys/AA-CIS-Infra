@@ -23,11 +23,13 @@
 #   0 RateLimitPerIp        every request, per viewer IP, var.tripplanner_web_rate_limit per 5 minutes -> 429
 #   1 RateLimitModelPaths   GET /api/browse/search + POST /api/trip/narrate (the two calls that reach a model), per IP,
 #                           var.tripplanner_web_model_rate_limit per 5 minutes -> 429
-#   2 ChallengeBrowsers     Challenge (silent JavaScript proof, no puzzle) on a document navigation (GET with
-#                           sec-fetch-dest: document) and on the two model paths. A real browser solves it on its
-#                           first page load and gets the aws-waf-token cookie; its later fetch() calls to the model
-#                           paths carry the token and pass. A script that calls a model path without the token gets
-#                           HTTP 202 + x-amzn-waf-action: challenge and never reaches the app. The app answers the
+#   2 ChallengePlanner      Challenge (silent JavaScript proof, no puzzle) on a document navigation of a planner page
+#                           (GET with sec-fetch-dest: document on /plan, /{tenant}/plan and below; the only pages that
+#                           call the model paths) and on the two model paths. A real browser solves it when it opens
+#                           the planner and gets the aws-waf-token cookie; its later fetch() calls to the model paths
+#                           carry the token and pass. Home, destination and tour pages never see an interstitial. A
+#                           script that calls a model path without the token gets HTTP 202 + x-amzn-waf-action:
+#                           challenge and never reaches the app. The app answers the
 #                           older spellings of the two calls (not on these paths) 404 (AA-TripPlanner-Web
 #                           lib/edgeGate.ts, task env TP_EDGE_GATE=on), so no model call passes outside rule 1 and 2.
 #   Token lifetime: var.tripplanner_web_challenge_immunity_s (default 4 h).
@@ -136,7 +138,7 @@ resource "aws_wafv2_web_acl" "tripplanner_web" {
   provider = aws.us_east_1
 
   name        = local.tp_web_waf_name
-  description = "TripPlanner web on CloudFront: rate per viewer IP, model paths, Challenge (AA-1038)"
+  description = "TripPlanner web on CloudFront: rate per viewer IP, model paths, Challenge on the planner (AA-1038)"
   scope       = "CLOUDFRONT"
 
   default_action {
@@ -231,7 +233,7 @@ resource "aws_wafv2_web_acl" "tripplanner_web" {
   }
 
   rule {
-    name     = "ChallengeBrowsers"
+    name     = "ChallengePlanner"
     priority = 2
 
     action {
@@ -240,7 +242,8 @@ resource "aws_wafv2_web_acl" "tripplanner_web" {
 
     statement {
       or_statement {
-        # A document navigation: issues the token to a real browser on its first page load.
+        # A document navigation of a planner page: issues the token to a real browser when it opens the planner (the
+        # only pages that call the model paths, AA-TripPlanner-Web lib/api.ts).
         statement {
           and_statement {
             statement {
@@ -268,6 +271,37 @@ resource "aws_wafv2_web_acl" "tripplanner_web" {
                 text_transformation {
                   priority = 0
                   type     = "LOWERCASE"
+                }
+              }
+            }
+            # The planner pages only (/plan, /{tenant}/plan and below): the catalog pages never see an interstitial.
+            statement {
+              or_statement {
+                statement {
+                  byte_match_statement {
+                    search_string         = "/plan"
+                    positional_constraint = "ENDS_WITH"
+                    field_to_match {
+                      uri_path {}
+                    }
+                    text_transformation {
+                      priority = 0
+                      type     = "NONE"
+                    }
+                  }
+                }
+                statement {
+                  byte_match_statement {
+                    search_string         = "/plan/"
+                    positional_constraint = "CONTAINS"
+                    field_to_match {
+                      uri_path {}
+                    }
+                    text_transformation {
+                      priority = 0
+                      type     = "NONE"
+                    }
+                  }
                 }
               }
             }
