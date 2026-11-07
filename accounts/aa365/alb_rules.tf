@@ -41,7 +41,7 @@ locals {
   alb_https_rule_priorities = {
     staff_cis_admin     = 10 # aa-cis. host -> CIS admin service (modules/environment staff_web.tf)
     staff_booking_admin = 11 # booking. host -> Booking admin service
-    staff_apex_redirect = 12 # the apex -> 301 https://aa-cis.<zone>/ (reached once staff_web_apex_on_alb is on)
+    staff_apex_redirect = 12 # the apex -> 301 https://aa-cis.<zone>/ (dns.tf apex alias)
   }
 }
 
@@ -153,8 +153,8 @@ resource "aws_lb_listener_rule" "staff_booking_admin" {
   depends_on = [aws_lb_listener_certificate.staff_web]
 }
 
-# AA-911: the apex redirect (dns.tf apex, staff_web_edge.tf var.staff_web_apex_on_alb). Replaces the Vercel domain
-# redirect of aa-cis-frontend; harmless while the apex still points at Vercel (no request reaches it).
+# AA-911: the apex redirect (dns.tf apex, an alias to the ALB since the Vercel retirement). Replaces the Vercel domain
+# redirect of the retired aa-cis-frontend project.
 resource "aws_lb_listener_rule" "staff_apex_redirect" {
   listener_arn = module.alb.https_listener_arn
   priority     = local.alb_https_rule_priorities.staff_apex_redirect

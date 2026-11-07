@@ -55,13 +55,8 @@ locals {
       records = ["v=DKIM1; k=rsa; p=MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCRUfeh2HiNAjL8S3BM/504yuZp5PX26R8zInoJDzySIjJ4B6aORZYP2o3FZpE0wGGJ+5M6XDgwVk83nNy5HV3VVXQ+QEibpelTenSNu7XOPKs2hzDV1/kfCXwzv5hslYbQirihzK1A7+XlQBpqqdGExmV5rm7snvcUBXHDQ8lZuwIDAQAB"]
     }
 
-    # CIS admin frontend: Vercel project aa-cis-frontend until the AA-911 cut-over (staff_web_edge.tf
-    # var.staff_web_dns_on_ecs), then the shared ALB (staff web on ECS). Same record, value changed in place.
-    "aa-cis|CNAME" = {
-      name    = "aa-cis"
-      type    = "CNAME"
-      records = [var.staff_web_dns_on_ecs ? local.staff_web_alb_dns_name : "91b6470228dd7980.vercel-dns-017.com"]
-    }
+    # aa-cis. (the CIS admin) is aws_route53_record.staff_web["cis"] in staff_web_edge.tf since the AA-911 Vercel
+    # retirement (moved block there: same Route 53 record, never destroyed).
 
     # CIS REST API custom domain (API GW 4ylo382khg, hand-made domain + cert, not in Terraform
     # state) and the DNS-validation records ACM needs to auto-renew both api-cis certificates.
@@ -92,8 +87,7 @@ resource "aws_route53_record" "parity" {
   zone_id = aws_route53_zone.lumiguides.zone_id
   name    = each.value.name == "" ? var.dns_zone_name : "${each.value.name}.${var.dns_zone_name}"
   type    = each.value.type
-  # AA-911: aa-cis. drops to 60 s while the staff web cut-over window is open (staff_web_edge.tf).
-  ttl     = each.key == "aa-cis|CNAME" ? coalesce(local.staff_web_switch_ttl, 1800) : 1800
+  ttl     = 1800
   records = each.value.records
 }
 
@@ -114,25 +108,21 @@ resource "aws_route53_record" "parity" {
 # redirect (HTTP only, :443 refused); CloudFront + new apex cert (5 more resources for a redirect).
 # -----------------------------------------------------------------------------
 #
-# AA-911 (staff_web_edge.tf var.staff_web_apex_on_alb): the staff admin leaves Vercel, so before the aa-cis-frontend
-# project (which claims the apex) is retired, the apex becomes an alias to the shared ALB, whose :443 listener now
-# serves browsers behind its own web ACL and redirects the apex to aa-cis. (alb_rules.tf staff_apex_redirect, the
-# staff web certificate covers the apex). The "Rejected: alias to the CIS ALB" reason above no longer holds: the
-# listener answers only host rules and the API stays behind API Gateway. Same record, changed in place.
+# AA-911: the staff admin left Vercel, so the apex is an alias to the shared ALB, whose :443 listener serves browsers
+# behind its own web ACL and redirects the apex to aa-cis. (alb_rules.tf staff_apex_redirect; the staff web
+# certificate covers the apex). The "Rejected: alias to the CIS ALB" reason above no longer holds: the listener answers
+# only host rules and the API stays behind API Gateway. The switch staff_web_apex_on_alb and the Vercel anycast IP
+# (dns_apex_a_records) were removed at the Vercel retirement (root runbook staff-web-ecs-cutover.md section 4): the
+# aa-cis-frontend project that claimed the apex is gone, so an A record to Vercel would be a takeover risk.
 resource "aws_route53_record" "apex" {
   zone_id = aws_route53_zone.lumiguides.zone_id
   name    = var.dns_zone_name
   type    = "A"
-  ttl     = var.staff_web_apex_on_alb ? null : 300
-  records = var.staff_web_apex_on_alb ? null : var.dns_apex_a_records
 
-  dynamic "alias" {
-    for_each = var.staff_web_apex_on_alb ? [1] : []
-    content {
-      name                   = module.alb.alb_dns_name
-      zone_id                = module.alb.alb_zone_id
-      evaluate_target_health = false
-    }
+  alias {
+    name                   = module.alb.alb_dns_name
+    zone_id                = module.alb.alb_zone_id
+    evaluate_target_health = false
   }
 }
 

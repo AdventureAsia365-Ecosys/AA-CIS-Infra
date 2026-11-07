@@ -195,8 +195,9 @@ resource "aws_route53_record" "tripplanner_api" {
 }
 
 # -----------------------------------------------------------------------------
-# Gated: Vercel frontends (tripplanner., later booking.). No ACM: Vercel issues its own certificate
-# once the CNAME resolves. Add the domain to the Vercel project before turning this on.
+# Gated: Vercel frontends (tripplanner.). No ACM: Vercel issues its own certificate once the CNAME
+# resolves. Add the domain to the Vercel project before turning this on. booking. (the staff admin) left this map at
+# the AA-911 Vercel retirement: it is aws_route53_record.staff_web["booking"] (staff_web_edge.tf, moved block).
 # -----------------------------------------------------------------------------
 resource "aws_route53_record" "vercel_frontend" {
   for_each = var.custom_domains_enabled ? var.custom_domain_vercel_hosts : {}
@@ -204,10 +205,8 @@ resource "aws_route53_record" "vercel_frontend" {
   zone_id = aws_route53_zone.lumiguides.zone_id
   name    = "${each.key}.${var.dns_zone_name}"
   type    = "CNAME"
-  # AA-911: booking. drops to 60 s while the staff web cut-over window is open (staff_web_edge.tf).
-  ttl = each.key == "booking" ? coalesce(local.staff_web_switch_ttl, 300) : 300
-  # AA-911 cut-over (staff_web_edge.tf): booking. (the staff admin) moves from Vercel to the shared ALB in place.
-  records = [var.staff_web_dns_on_ecs && each.key == "booking" ? local.staff_web_alb_dns_name : each.value]
+  ttl     = 300
+  records = [each.value]
 }
 
 # -----------------------------------------------------------------------------
@@ -231,6 +230,10 @@ output "custom_domain_urls" {
   value = var.custom_domains_enabled ? {
     booking_api     = "https://${local.cd_booking_api_host}/booking"
     tripplanner_api = "https://${local.cd_tripplanner_api_host}"
-    frontends       = concat([for label in keys(var.custom_domain_vercel_hosts) : "https://${label}.${var.dns_zone_name}"], ["https://${local.crm_agency_host}"])
+    frontends = concat(
+      [for label in keys(var.custom_domain_vercel_hosts) : "https://${label}.${var.dns_zone_name}"],
+      [for host in values(local.staff_web_hosts) : "https://${host}"],
+      ["https://${local.crm_agency_host}"],
+    )
   } : null
 }

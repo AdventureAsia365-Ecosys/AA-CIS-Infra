@@ -14,9 +14,10 @@
 #   - 2 user pools on the Essentials plan, deletion protection ACTIVE (decision 1):
 #       aa-workforce-<env>  staff + break-glass; admin-create only; MFA OPTIONAL (TOTP, break-glass only)
 #       aa-external-<env>   tenant users + travellers; self sign-up gated per client by the trigger; MFA OFF
-#   - 8 app clients (decision 2): workforce cis-admin / booking-staff / breakglass (confidential) plus the
-#     Preview-only cis-admin-preview / booking-staff-preview (confidential, capped at viewer by the APIs; AA-911
-#     D-1, root ADR 0006a A11), external cis-portal (confidential), booking-customer / tripplanner (public, PKCE)
+#   - 6 app clients (decision 2): workforce cis-admin / booking-staff / breakglass (confidential), external
+#     cis-portal (confidential), booking-customer / tripplanner (public, PKCE). The Preview-only
+#     cis-admin-preview / booking-staff-preview (AA-911 D-1, root ADR 0006a A11) were deleted with their Vercel
+#     Preview hosts (AA-911 Vercel retirement, S272, root ADR 0006a A13)
 #   - 10 WORKFORCE groups <app>-<role> (decision 3): 3 CIS roles + every Booking staff role
 #     (AA-Booking backend/app/auth/staff.py STAFF_ROLES, incl. content_creator: S241 Q4/Q5, AA-854)
 #     + the 3 AA-Partner staff groups crm-platform-admin / crm-ops / crm-support (AA-939, root ADR 0006b
@@ -34,7 +35,7 @@
 #   - prefix domains (managed login v2) always (fallback); custom domains auth. / staff-auth. +
 #     their Route 53 alias records when identity_custom_domains_enabled = true (default since
 #     AA-816 S242; AA-818 us-east-1 certificate + apex A record in dns.tf)
-#   - managed login branding (Adventure Asia style + logos) for every WORKFORCE client (AA-816 S242; 5 with AA-911)
+#   - managed login branding (Adventure Asia style + logos) for every WORKFORCE client (AA-816 S242)
 #   - Cognito mail through the AA-811 SES identity (ses.tf, same root) when identity_ses_enabled = true
 #     (default since AA-854: identity verified, DKIM SUCCESS, account out of the SES sandbox, checked
 #     live 17/10/2026); off = COGNITO_DEFAULT and no EMAIL_OTP. EXTERNAL native self sign-up stays
@@ -182,20 +183,10 @@ locals {
       secret = true, access_minutes = 15, refresh_hours = 12
       idps   = ["COGNITO"], writes = ["name"]
     }
-    # AA-911 decision D-1 (S246, root ADR 0006a A11): one Preview-only client per staff app, registered with ONLY
-    # the app's fixed Preview host (identity_variables.tf). Same settings as the production client. A session on a
-    # Preview host is therefore a token for THIS client_id, which the APIs cap at viewer (CIS
-    # api/core/staff_identity.py, Booking app/auth/staff.py): unmerged preview code never holds a real role.
-    # Adding keys to this map creates new clients only; the existing ones (and their client_id / secret) are
-    # untouched. Each new client also gets its managed login style (aws_cognito_managed_login_branding.workforce).
-    "cis-admin-preview" = {
-      secret = true, access_minutes = 15, refresh_hours = 12
-      idps   = ["COGNITO"], writes = ["name"]
-    }
-    "booking-staff-preview" = {
-      secret = true, access_minutes = 15, refresh_hours = 12
-      idps   = ["COGNITO"], writes = ["name"]
-    }
+    # AA-911 decision D-1 (S246) added the Preview-only cis-admin-preview / booking-staff-preview here; they were
+    # removed with the Vercel Preview hosts at the Vercel retirement (S272, root ADR 0006a A13). Removing keys deletes
+    # only those clients and their managed login styles; the other clients (and their client_id / secret) are
+    # untouched (for_each by key).
     "breakglass" = {
       secret = true, access_minutes = 15, refresh_hours = 1
       idps   = ["COGNITO"], writes = ["name"]

@@ -67,7 +67,7 @@ VERCEL_API_ENVS = [
 
 VERCEL_CLI_TEXT = f"""Vercel CLI 60.0.1 (Node.js 22.22.3)
 Retrieving project…
-> Environment Variables found for team/aa-booking-admin [663ms]
+> Environment Variables found for team/aa-booking-sample [663ms]
 
  name                                   value               type        environments                       created
  COGNITO_BOOKING_STAFF_CLIENT_SECRET    Hidden              Secret      Production                         3d ago
@@ -129,8 +129,9 @@ def _aws_model() -> dict:
 
 
 def _vercel_model() -> dict:
-    projects = {p: ec.extract_vercel_api(VERCEL_API_ENVS) for p in ec.REQUIRED_VERCEL if p != "aa-booking-admin"}
-    projects["aa-booking-admin"] = ec.parse_vercel_cli(VERCEL_CLI_TEXT)
+    # Every required project from the API shape, plus one invented, non-required project from the CLI shape.
+    projects = {p: ec.extract_vercel_api(VERCEL_API_ENVS) for p in ec.REQUIRED_VERCEL}
+    projects["aa-booking-sample"] = ec.parse_vercel_cli(VERCEL_CLI_TEXT)
     return {"format": 1, "source": "snapshot", "captured": "2026-10-22", "projects": projects}
 
 
@@ -268,8 +269,9 @@ class Render(unittest.TestCase):
     def test_sections_per_app_and_runtime(self):
         for h in ("## CIS", "## Booking", "## TripPlanner", "## Identity (Cognito triggers)",
                   "### ECS service `aa-cis-dev-api`", "### ECS service `aa-cis-dev-worker`",
-                  "### ECS service `aa-booking-dev-api`", "### Lambda `aa-tripplanner-dev-browse`",
-                  "### Vercel project `aa-tripplanner`", "### Vercel project `aa-booking-admin`"):
+                  "### ECS service `aa-booking-dev-api`", "### ECS service `aa-cis-dev-admin`",
+                  "### ECS service `aa-booking-dev-admin`", "### Lambda `aa-tripplanner-dev-browse`",
+                  "### Vercel project `aa-tripplanner`", "### Vercel project `aa-booking-sample`"):
             self.assertIn(h, self.page)
         self.assertLess(self.page.index("## CIS"), self.page.index("## Booking"))
 
@@ -326,6 +328,16 @@ class Cli(unittest.TestCase):
             rc = ec.main(["render", "--aws", str(t / "aws.json"), "--vercel", str(t / "vercel.json"), "--out-dir", str(t / "gen")])
             self.assertEqual(rc, 1)
             self.assertFalse((t / "gen" / ec.PAGE).exists())
+
+    def test_retired_vercel_projects_are_not_required(self):
+        # AA-911 (S272): the staff frontends left Vercel; a live snapshot without them must still render, and the
+        # ECS services that replaced them are required instead.
+        self.assertEqual(ec.REQUIRED_VERCEL, ("aa-tripplanner",))
+        self.assertTrue({"aa-cis-dev-admin", "aa-booking-dev-admin"} <= set(ec.REQUIRED_ECS))
+        vercel = {"format": 1, "source": "api", "captured": "2026-11-07",
+                  "projects": {"aa-tripplanner": ec.extract_vercel_api(VERCEL_API_ENVS)}}
+        self.assertEqual(ec.missing_runtimes(_aws_model(), vercel, ec.REQUIRED_ECS, ec.REQUIRED_LAMBDA,
+                                             ec.REQUIRED_VERCEL), [])
 
     def test_checked_in_snapshot_is_names_only(self):
         data = json.loads(ec.VERCEL_SNAPSHOT.read_text(encoding="utf-8"))

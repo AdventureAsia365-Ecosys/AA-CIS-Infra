@@ -22,7 +22,7 @@ variable "booking_staff_notify_email" {
 }
 
 variable "booking_staff_admin_url" {
-  description = "Base URL of the AA-Booking staff admin (Vercel project aa-booking-admin); staff e-mail links to <this>/cases/<code>."
+  description = "Base URL of the AA-Booking staff admin (ECS service aa-booking-<env>-admin behind the shared ALB, AA-911); staff e-mail links to <this>/cases/<code>."
   type        = string
   default     = "https://booking.lumiguides.it.com"
 
