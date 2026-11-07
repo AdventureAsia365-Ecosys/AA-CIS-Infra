@@ -94,22 +94,8 @@ crm_mail_oauth_enabled = true
 # AA-979 P2b: portal.lumiguides.it.com points at the crm_agency CloudFront distribution since the S253 cutover; the
 # switch crm_agency_live and the Vercel rollback target were removed at the clean-up (runbook 4.5, S256).
 
-# AA-911 (staff_web_edge.tf): 60 s TTL on aa-cis. and booking. from the first staff web apply, so the later DNS
-# cut-over (staff_web_dns_on_ecs) and its rollback reach every resolver within a minute. Back to false at the Vercel
-# retirement (root runbook staff-web-ecs-cutover.md section 4).
-staff_web_dns_switch_window = true
-
-# AA-911 cut-over (root ADR 0019 d23, runbook docs/ops/runbooks/staff-web-ecs-cutover.md): aa-cis. and booking. point
-# at the shared ALB (the two staff web services on ECS) instead of Vercel. Merge only after the runbook's step 2
-# (verified through the ALB without DNS) and at least 30 minutes after the switch window above was applied.
-# Rollback: false (60 s TTL while the window is on), or the runbook's one-line Route 53 rollback when CI cannot wait.
-staff_web_dns_on_ecs = true
-
-# AA-911 Vercel retirement, step 1 (root runbook staff-web-ecs-cutover.md section 4 step 2): the apex A record becomes
-# an alias to the shared ALB (alb_rules.tf staff_apex_redirect answers 301 with location https://aa-cis.<zone>:443/:
-# the ALB keeps the rule's explicit port; the live check accepts it with or without :443) BEFORE the
-# aa-cis-frontend Vercel project, which claims the apex today, loses the domain or is deleted. An A record to Vercel
-# with no project claiming it is a takeover risk, and Cognito's staff-auth. / auth. custom domains need the apex A
-# record (dns.tf). Plan: one in-place update of aws_route53_record.apex. Rollback: false (records back to Vercel's
-# anycast IP, 300 s TTL) while the Vercel project still holds the apex domain.
-staff_web_apex_on_alb = true
+# AA-911 (staff_web_edge.tf): the 60 s switch window on aa-cis. and booking. is closed since the Vercel retirement
+# (root runbook staff-web-ecs-cutover.md section 4 step 4): TTLs back to 1800 s / 300 s. The cut-over switch
+# staff_web_dns_on_ecs and the apex switch staff_web_apex_on_alb were removed with their Vercel targets (both hosts and
+# the apex point at the shared ALB, staff_web_edge.tf / dns.tf).
+staff_web_dns_switch_window = false

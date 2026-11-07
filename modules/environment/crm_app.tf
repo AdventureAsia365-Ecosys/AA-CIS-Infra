@@ -80,7 +80,7 @@ variable "crm_booking_api_url" {
 }
 
 variable "crm_booking_admin_url" {
-  description = "AA-956 (CRM-26, design v3 Fix B3): BOOKING_ADMIN_URL of the AA-Partner task, the origin of the AA-Booking staff admin (Vercel project aa-booking-admin). The S-02 ops release links AA ops to <this>/b2b-desk (tab Departures & incidents) to flag an incident on a departure; the CRM never flags one itself. No path, no trailing slash. Empty: S-02 shows the departure ids without the link."
+  description = "AA-956 (CRM-26, design v3 Fix B3): BOOKING_ADMIN_URL of the AA-Partner task, the origin of the AA-Booking staff admin (ECS service aa-booking-<env>-admin since AA-911; the Vercel project aa-booking-admin was retired in S272). The S-02 ops release links AA ops to <this>/b2b-desk (tab Departures & incidents) to flag an incident on a departure; the CRM never flags one itself. No path, no trailing slash. Empty: S-02 shows the departure ids without the link."
   type        = string
   default     = "https://booking.lumiguides.it.com"
 

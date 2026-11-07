@@ -1,6 +1,6 @@
 # =============================================================================
 # AA-911 (root ADR 0019 d23 + S271 amendment) — the edge of the staff frontends on ECS (modules/environment/staff_web.tf,
-# one service per app): the hosts, their certificate on the shared ALB's HTTPS listener, the DNS cut-over switch, the
+# one service per app): the hosts and their DNS records, their certificate on the shared ALB's HTTPS listener, the
 # switch-window TTL and the apex redirect.
 #
 # No CDN and no new web ACL (ADR 0019 d23): browsers reach the ALB's :443 directly (modules/vpc ALB group, CIDRs
@@ -12,10 +12,8 @@
 # listener answers 404 to any host without a host rule (modules/alb); the host rules are in alb_rules.tf
 # (alb_https_rule_priorities).
 #
-# Hosts: the SAME names the staff use today on Vercel (aa-cis. and booking.), so no Cognito callback, app link, CRM
-# link or bookmark changes at the cut-over. Before the cut-over the ECS hosts are verified by resolving the name to
-# the ALB on the test client only (curl --resolve, Chromium --host-resolver-rules): sign-in works there because the
-# callback URLs are the same names.
+# Hosts: the SAME names the staff used on Vercel (aa-cis. and booking.), so no Cognito callback, app link, CRM link or
+# bookmark changed at the cut-over.
 #
 # Certificate: a WILDCARD *.<zone> (+ the apex), not aa-cis. + booking. Both names CNAME to Vercel until the flip and
 # the CAA lookup follows the CNAME to a Vercel set that does not list Amazon, so a certificate naming them fails with
@@ -27,31 +25,21 @@
 # different token, aws_acm_certificate_validation fails at once ("missing ... DNS validation record"), not after the
 # timeout.
 #
-# Cut-over (root runbook staff-web-ecs-cutover.md): var.staff_web_dns_on_ecs = true re-points the two CNAMEs (dns.tf
-# "aa-cis|CNAME", custom_domains.tf vercel_frontend["booking"]) from Vercel to the ALB, in place (same record, new
-# value). var.staff_web_dns_switch_window (on from the first apply, terraform.tfvars) drops both records to a 60 s
-# TTL so the flip and a rollback reach every resolver within a minute; it goes back off at the Vercel retirement.
-# var.staff_web_apex_on_alb points the apex A record at the ALB (alias) where a :443 host rule redirects to aa-cis.;
-# it must be on before the aa-cis-frontend Vercel project, which claims the apex today, is removed.
+# DNS (root runbook staff-web-ecs-cutover.md): both hosts CNAME to the ALB (aws_route53_record.staff_web below). The
+# cut-over flipped them in place from Vercel (switch staff_web_dns_on_ecs); at the Vercel retirement (section 4, S272)
+# the switch, its Vercel targets and the apex switch staff_web_apex_on_alb were removed, because the Vercel projects
+# that claimed those names are deleted and a record pointing there would be a takeover risk. The records moved here
+# from dns.tf ("aa-cis|CNAME") and custom_domains.tf (vercel_frontend["booking"]) with moved blocks: same Route 53
+# records, never destroyed. var.staff_web_dns_switch_window keeps the 60 s TTL option for a later move of these hosts
+# (off since the retirement: 1800 s / 300 s). The apex is an alias to the ALB (dns.tf), where a :443 host rule
+# redirects it to aa-cis.
 #
 # Cost: the ACM certificate is free (public, DNS-validated), no new record; one listener certificate and three
 # listener rules on the existing ALB: no extra LCU at Dev volume; one more WAF rule 1 USD/month.
 # =============================================================================
 
-variable "staff_web_dns_on_ecs" {
-  description = "AA-911 cut-over: true points aa-cis.<zone> and booking.<zone> at the shared ALB (staff frontends on ECS); false keeps them on Vercel. Flip only after the ECS hosts are verified (runbook staff-web-ecs-cutover.md)."
-  type        = bool
-  default     = false
-}
-
 variable "staff_web_dns_switch_window" {
-  description = "AA-911: true sets a 60 s TTL on aa-cis.<zone> and booking.<zone> (normally 1800 s and 300 s) while the cut-over and its rollback are possible. Must be applied at least 30 minutes before staff_web_dns_on_ecs flips; back to false at the Vercel retirement."
-  type        = bool
-  default     = false
-}
-
-variable "staff_web_apex_on_alb" {
-  description = "AA-911: true makes the apex A record an alias to the shared ALB (a :443 host rule redirects to aa-cis.<zone>) instead of var.dns_apex_a_records (Vercel). Must be true before the aa-cis-frontend Vercel project is retired (dns.tf: an unclaimed Vercel A record is a takeover risk; Cognito custom domains need the apex A record)."
+  description = "AA-911: true sets a 60 s TTL on aa-cis.<zone> and booking.<zone> (normally 1800 s and 300 s) while a move of these hosts and its rollback are possible. Apply it at least 30 minutes before the records change. Off since the Vercel retirement (S272)."
   type        = bool
   default     = false
 }
@@ -78,11 +66,17 @@ locals {
   # 404 default, a one-line follow-up sets ["0.0.0.0/0"].
   staff_web_public_https_cidrs = ["0.0.0.0/0"]
 
-  # DNS cut-over: the CNAME target of the two staff hosts once var.staff_web_dns_on_ecs is on.
+  # The CNAME target of the two staff hosts.
   staff_web_alb_dns_name = module.alb.alb_dns_name
 
   # TTL of the two staff host records during the switch window (null = each record keeps its normal TTL).
   staff_web_switch_ttl = var.staff_web_dns_switch_window ? 60 : null
+
+  # Normal TTL per host: what each record had before the move (dns.tf parity 1800 s, custom_domains.tf 300 s).
+  staff_web_dns_ttl = {
+    cis     = 1800
+    booking = 300
+  }
 
   # The certificate names: never a host that CNAMEs off-zone (test_aa911_staff_web.py).
   staff_web_cert_domain = "*.${var.dns_zone_name}"
@@ -119,10 +113,36 @@ resource "aws_lb_listener_certificate" "staff_web" {
 }
 
 # -----------------------------------------------------------------------------
+# DNS: aa-cis. and booking. -> the shared ALB. Moved from dns.tf (parity "aa-cis|CNAME") and custom_domains.tf
+# (vercel_frontend["booking"]) at the Vercel retirement: the moved blocks keep the same Route 53 records (plan: moved +
+# update in place of the TTL when the switch window closes, never destroy / create), so neither name ever stops
+# resolving. A CNAME on both sides, the target is the ALB DNS name (unchanged since the cut-over).
+# -----------------------------------------------------------------------------
+moved {
+  from = aws_route53_record.parity["aa-cis|CNAME"]
+  to   = aws_route53_record.staff_web["cis"]
+}
+
+moved {
+  from = aws_route53_record.vercel_frontend["booking"]
+  to   = aws_route53_record.staff_web["booking"]
+}
+
+resource "aws_route53_record" "staff_web" {
+  for_each = local.staff_web_hosts
+
+  zone_id = aws_route53_zone.lumiguides.zone_id
+  name    = each.value
+  type    = "CNAME"
+  ttl     = coalesce(local.staff_web_switch_ttl, local.staff_web_dns_ttl[each.key])
+  records = [local.staff_web_alb_dns_name]
+}
+
+# -----------------------------------------------------------------------------
 # Outputs (names only).
 # -----------------------------------------------------------------------------
 output "staff_web_hosts" {
-  description = "AA-911: public base URL per staff app (served by ECS once staff_web_dns_on_ecs = true)."
+  description = "AA-911: public base URL per staff app (served by ECS behind the shared ALB)."
   value       = { for k, h in local.staff_web_hosts : k => "https://${h}" }
 }
 

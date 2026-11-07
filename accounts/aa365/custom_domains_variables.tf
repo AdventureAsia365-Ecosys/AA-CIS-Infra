@@ -7,16 +7,14 @@ variable "custom_domains_enabled" {
 }
 
 variable "custom_domain_vercel_hosts" {
-  description = "Frontend hosts on Vercel, as { label under dns_zone_name = CNAME target }. Created only when custom_domains_enabled = true. Add the domain to the Vercel project FIRST and use the target Vercel shows (project-specific *.vercel-dns-0xx.com, or cname.vercel-dns.com); a CNAME to Vercel with no project claiming the host is a takeover risk. booking (staff admin) added S239 (AA-818); portal (CIS tenant portal, Vercel project aa-cis-portal) added S243 (AA-885); booking-preview (aa-booking-admin) and aa-cis-preview (aa-cis-frontend), the fixed staff Preview sign-in hosts, added S246 (AA-911)."
+  description = "Frontend hosts on Vercel, as { label under dns_zone_name = CNAME target }. Created only when custom_domains_enabled = true. Add the domain to the Vercel project FIRST and use the target Vercel shows (project-specific *.vercel-dns-0xx.com, or cname.vercel-dns.com); a CNAME to Vercel with no project claiming the host is a takeover risk. booking (staff admin, S239) left at the AA-911 Vercel retirement (staff_web_edge.tf staff_web); portal moved to crm_agency_edge.tf (AA-979); the Preview hosts booking-preview and aa-cis-preview (S246) were deleted with their Vercel projects (AA-911, S272)."
   type        = map(string)
   default = {
     tripplanner = "a1520bcb29624260.vercel-dns-017.com" # project-specific target, domain added to aa-tripplanner first
-    booking     = "faa59191f1f73e21.vercel-dns-017.com" # S239 AA-818: staff admin, domain added to aa-booking-admin first (verified)
+    # booking moved to staff_web_edge.tf aws_route53_record.staff_web["booking"] (AA-911 Vercel retirement, S272).
     # portal moved to crm_agency_edge.tf (AA-979 P2b): aws_route53_record.crm_agency, the crm_agency CloudFront
     # distribution (the Vercel project aa-cis-portal was deleted at the P2b clean-up).
-    # S246 AA-911: fixed Preview sign-in hosts. Targets = Vercel recommendedCNAME for each project (read 21/10/2026
-    # with get_domain_config). The domain must be added to the project BEFORE this is applied (takeover rule).
-    booking-preview = "faa59191f1f73e21.vercel-dns-017.com" # aa-booking-admin
-    aa-cis-preview  = "91b6470228dd7980.vercel-dns-017.com" # aa-cis-frontend
+    # booking-preview / aa-cis-preview (the S246 Preview sign-in hosts) were deleted with the aa-booking-admin and
+    # aa-cis-frontend Vercel projects (AA-911, S272; root ADR 0006a A13).
   }
 }

@@ -12,8 +12,10 @@
    secrets, and the security group not admitted by RDS.
 5. Each deploy grant (Booking in the module, CIS in cicd_split.tf) is scoped to its OWN app's family, service and
    execution role.
-6. The DNS cut-over changes the two existing records in place, behind var.staff_web_dns_on_ecs (default false); the
-   switch window gives both records a 60 s TTL; the apex alias is behind its own switch.
+6. Since the Vercel retirement (S272) both staff hosts CNAME to the ALB with no switch and no Vercel target left: the
+   records moved (moved blocks, never destroyed) from dns.tf / custom_domains.tf to staff_web_edge.tf; the switch
+   window can still give both a 60 s TTL and is off; the apex is an alias to the ALB with no Vercel fallback; the
+   Preview-only WORKFORCE clients and the Vercel callback URLs are gone.
 7. The certificate never names a host that CNAMEs off-zone (CAA follows the CNAME, critic C1): wildcard + apex only,
    validated through the existing wildcard validation record.
 8. The WAF scopes the staff hosts out of RateLimit1000 and rate-limits them in their own rule.
@@ -41,6 +43,9 @@ CRM_AGENCY = (AA365 / "crm_agency_edge.tf").read_text(encoding="utf-8")
 MAIN = (AA365 / "main.tf").read_text(encoding="utf-8")
 TFVARS = (AA365 / "terraform.tfvars").read_text(encoding="utf-8")
 VERCEL_VARS = (AA365 / "custom_domains_variables.tf").read_text(encoding="utf-8")
+IDENTITY = (AA365 / "identity.tf").read_text(encoding="utf-8")
+IDENTITY_VARS = (AA365 / "identity_variables.tf").read_text(encoding="utf-8")
+SES_VARS = (AA365 / "ses_variables.tf").read_text(encoding="utf-8")
 WAF = (ROOT / "modules" / "waf" / "main.tf").read_text(encoding="utf-8")
 
 
@@ -198,40 +203,57 @@ def test_each_deploy_grant_is_scoped_to_its_own_app():
     assert not re.search(r"\baws_[a-z0-9_]+\.", scope), "no resource attribute in the scope"
 
 
-def test_dns_cutover_is_in_place_and_off_by_default():
-    var = _block_after(EDGE, EDGE.index('variable "staff_web_dns_on_ecs"'))
-    assert "default     = false" in var
-    aa_cis = _block_after(DNS, DNS.index('"aa-cis|CNAME"'))
-    assert 'type    = "CNAME"' in aa_cis
-    assert "var.staff_web_dns_on_ecs ? local.staff_web_alb_dns_name" in aa_cis
-    vercel = _resource(CUSTOM, "aws_route53_record", "vercel_frontend")
-    assert 'var.staff_web_dns_on_ecs && each.key == "booking" ? local.staff_web_alb_dns_name : each.value' in vercel
+def test_staff_hosts_point_at_the_alb_with_no_switch_left():
+    record = _code(_resource(EDGE, "aws_route53_record", "staff_web"))
+    assert "for_each = local.staff_web_hosts" in record
+    assert 'type    = "CNAME"' in record
+    assert "records = [local.staff_web_alb_dns_name]" in record
+    assert "staff_web_alb_dns_name = module.alb.alb_dns_name" in EDGE
+    # The cut-over switch and its Vercel targets are gone (an unclaimed Vercel target is a takeover risk).
+    for text in (EDGE, DNS, CUSTOM, TFVARS):
+        assert "staff_web_dns_on_ecs" not in _code(text)
+    assert '"aa-cis|CNAME"' not in _code(DNS)
+    assert not re.search(r"^\s*(booking|aa-cis|booking-preview|aa-cis-preview)\s*=", VERCEL_VARS, re.M)
 
 
-def test_switch_window_gives_both_staff_records_a_60s_ttl():
+def test_staff_records_moved_never_recreated():
+    moves = re.findall(r"moved \{\s*from = (\S+)\s*to   = (\S+)\s*\}", EDGE)
+    assert ('aws_route53_record.parity["aa-cis|CNAME"]', 'aws_route53_record.staff_web["cis"]') in moves
+    assert ('aws_route53_record.vercel_frontend["booking"]', 'aws_route53_record.staff_web["booking"]') in moves
+    # The new keys are the app keys of local.staff_web_hosts.
+    hosts = _block_after(EDGE, EDGE.index("staff_web_hosts = {"))
+    assert 'cis     = "aa-cis.${var.dns_zone_name}"' in hosts
+    assert 'booking = "booking.${var.dns_zone_name}"' in hosts
+
+
+def test_switch_window_ttl_and_closed_after_the_retirement():
     var = _block_after(EDGE, EDGE.index('variable "staff_web_dns_switch_window"'))
     assert "default     = false" in var
     assert "staff_web_switch_ttl = var.staff_web_dns_switch_window ? 60 : null" in EDGE
-    parity = _resource(DNS, "aws_route53_record", "parity")
-    assert 'each.key == "aa-cis|CNAME" ? coalesce(local.staff_web_switch_ttl, 1800) : 1800' in parity
-    vercel = _resource(CUSTOM, "aws_route53_record", "vercel_frontend")
-    assert 'each.key == "booking" ? coalesce(local.staff_web_switch_ttl, 300) : 300' in vercel
-    # On from the first apply, long before the flip.
-    assert re.search(r"^staff_web_dns_switch_window\s*=\s*true", TFVARS, re.M)
+    record = _code(_resource(EDGE, "aws_route53_record", "staff_web"))
+    assert "ttl     = coalesce(local.staff_web_switch_ttl, local.staff_web_dns_ttl[each.key])" in record
+    ttl = _block_after(EDGE, EDGE.index("staff_web_dns_ttl = {"))
+    assert "cis     = 1800" in ttl and "booking = 300" in ttl
+    # Root runbook section 4 step 4: closed at the Vercel retirement.
+    assert re.search(r"^staff_web_dns_switch_window\s*=\s*false", TFVARS, re.M)
 
 
-def test_apex_alias_is_behind_its_own_switch():
-    var = _block_after(EDGE, EDGE.index('variable "staff_web_apex_on_alb"'))
-    assert "default     = false" in var
+def test_apex_is_an_alias_to_the_alb_with_no_vercel_fallback():
     apex = _code(_resource(DNS, "aws_route53_record", "apex"))
-    assert "records = var.staff_web_apex_on_alb ? null : var.dns_apex_a_records" in apex
-    assert 'dynamic "alias"' in apex and "module.alb.alb_zone_id" in apex
+    assert "alias {" in apex and "module.alb.alb_zone_id" in apex and "module.alb.alb_dns_name" in apex
+    assert "records" not in apex and "dynamic" not in apex
+    for text in (EDGE, DNS, TFVARS):
+        assert "staff_web_apex_on_alb" not in _code(text)
+    assert "dns_apex_a_records" not in _code(SES_VARS) + _code(DNS)
 
 
-def test_apex_is_on_the_alb_before_vercel_goes():
-    # Runbook section 4 step 2: the apex leaves Vercel before the aa-cis-frontend project (its claim) is retired, and it
-    # never goes back once the Vercel staff projects are gone (an A record to Vercel with no claim is a takeover risk).
-    assert re.search(r"^staff_web_apex_on_alb\s*=\s*true", TFVARS, re.M)
+def test_preview_clients_and_vercel_callbacks_are_gone():
+    clients = _block_after(IDENTITY, IDENTITY.index("id_workforce_clients = {"))
+    assert '"cis-admin-preview"' not in _code(clients) and '"booking-staff-preview"' not in _code(clients)
+    urls = _code(IDENTITY_VARS)
+    for host in ("aa-cis-preview.", "booking-preview.", "aa-booking-admin.vercel.app"):
+        assert f'"https://{host}' not in urls, host  # no URL (the description may name what was removed)
+    assert '"https://booking.lumiguides.it.com/api/auth/callback/cognito"' in urls
 
 
 def _vercel_cname_labels() -> set[str]:
@@ -250,7 +272,7 @@ def test_certificate_never_names_a_host_that_cnames_off_zone():
     assert "staff_web_cert_sans   = [var.dns_zone_name]" in EDGE
     assert "staff_web_hosts" not in cert
     labels = _vercel_cname_labels()
-    assert {"aa-cis", "booking"} <= labels, labels
+    assert "tripplanner" in labels, labels  # the parser still finds the Vercel CNAMEs that remain
     names = re.findall(r'staff_web_cert_(?:domain|sans)\s*=\s*(.+)', EDGE)
     for label in labels:
         assert all(f'"{label}.' not in n for n in names), f"certificate names {label}. (a CNAME to Vercel)"
