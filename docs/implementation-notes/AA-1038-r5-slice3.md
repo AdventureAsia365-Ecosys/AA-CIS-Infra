@@ -39,9 +39,12 @@ Session S272 (lane l11). Root ADR 0019 d11 (+ the S272 amendment), root contract
 
 - **One execution role for browse and assembly** (as since the start): the grants go on that role. Splitting it is a
   larger change (new role, both functions updated) and out of this slice; follow-up in Linear AA-1038.
-- **First apply is local.** The new secret's ARN exists only after the create and feeds the apply boundary (a
-  bootstrap object CI cannot edit); a CI apply would fail on the boundary update or on the version read-back. One
-  local MFA-admin apply from merged `main` does it all; CI plans and applies work after it.
+- **First apply is local, never through the Terraform Apply workflow.** Two walls: the plan adds an
+  `aws_secretsmanager_secret_version` (a guarded type: `tools/terraform/plan_guard.py` refuses the workflow unless
+  `allow_guarded` is set), and it edits `aws_iam_policy.tf_apply_boundary` (a bootstrap object,
+  `DenyBoundaryPolicyEdits`: the CI apply role gets AccessDenied). With `allow_guarded` a CI apply would stop partway
+  (secret and resource server created, boundary edit denied). One local MFA-admin apply from merged `main` does it
+  all; CI plans and applies work after it. See "Ship steps" below.
 - `execute-api` origin rather than the `api-tripplanner.` custom domain: the custom domain lives in the account root
   behind `custom_domains_enabled`; the module-local API keeps the module self-contained. Switch later if wanted.
 
@@ -58,4 +61,51 @@ Session S272 (lane l11). Root ADR 0019 d11 (+ the S272 amendment), root contract
 - After the apply the CRM's latest task-definition revision carries the `bootstrap` image (S250 lesson): the next
   AA-Partner deploy copies it with the real image. Apply before the CRM code PR deploys, or run Deploy Dev after it.
 - Re-plan after the apply (S252 lesson on resource servers): "No changes" expected.
-- Secrets register row (root `docs/security/secrets-register.md` + `.yaml`) is in the PR body for the root PR.
+- Secrets register rows: the root PR of this lane (branch `docs/aa-1038-lead-webhook-key-register`) adds the rows
+  below to root `docs/security/secrets-register.yaml` and `.md`, so the register drift check
+  (`tools/secrets/register_check.py`) finds the live secret after the apply.
+
+## Ship steps (orchestrator)
+
+**Warning: once this PR is merged, every CI Terraform Apply of `accounts/aa365` from `main` is blocked (plan guard on
+the secret version, then AccessDenied on the boundary) until step 1 is done. Do step 1 right after the merge.**
+
+1. Right after the merge, from a clean checkout of merged `main`: init and apply `accounts/aa365` locally with the
+   MFA admin profile (`aa365-admin`, credentials exported as the root CLAUDE.md says, never a bare
+   `export $(...)`). Never through the Terraform Apply workflow, never with `allow_guarded`. Check the plan matches
+   "Expected plan" above before confirming.
+2. Re-plan with `-detailed-exitcode`: "No changes" expected (exit 0).
+3. Run AA-Partner Deploy Dev so the CRM's latest task-definition revision carries the real image and
+   `TRIPPLANNER_API_URL` (the apply leaves the `bootstrap` image on the new revision, S250 lesson).
+4. Read-only live checks: `describe-secret` of `tripplanner/dev/lead-webhook-key` (exists, no rotation);
+   `describe-resource-server` on the aa-m2m pool, identifier `tripplanner.leads` (scope `deliver`); the CRM client's
+   `AllowedOAuthScopes` lists `tripplanner.leads/deliver`; `get-function-configuration` of the TP assembly and jobs
+   Lambdas shows `TP_LEAD_EMAIL_FROM` (assembly also `TP_LEAD_CRM_PULL_ENABLED=true`, `TP_M2M_ISSUER`,
+   `TP_M2M_CRM_CLIENT_ID`); the CRM service rollout COMPLETED with `TRIPPLANNER_API_URL` in its container env.
+
+## Secrets register rows (root)
+
+YAML (`docs/security/secrets-register.yaml`, after `tripplanner/dev/cognito-signup-proof-key`):
+
+```yaml
+  - name: tripplanner/dev/lead-webhook-key
+    store: "secretsmanager:acc2"
+    owner_app: tripplanner
+    owner: nghiep
+    consumers:
+      - "TP assembly Lambda (inline lead delivery) and jobs Lambda (tp_lead_deliver), read by name tripplanner/<ENVIRONMENT>/lead-webhook-key (AA-TripPlanner-Web backend/assembly/leads.py)"
+      - "grant ReadLeadWebhookKeySecret (AA-CIS-Infra modules/environment/tripplanner.tf, tripplanner_jobs.tf)"
+      - "Terraform refresh (tf-plan / tf-apply roles, local.tf_plan_secret_arns)"
+    managed_by: "terraform aws_secretsmanager_secret.tripplanner_lead_webhook_key + write-only version from ephemeral random_password (never in state)"
+    rotation: "bump local.tp_lead_webhook_key_version (re-issue derived agency keys)"
+    last_changed: TBD-M0
+    status: keep
+    notes: "AA-1038 (S272). Master key of the TripPlanner lead webhook channel; per-agency webhook signing keys are derived from it. Created by the first local apply of AA-CIS-Infra (AA-1038 R5 slice 3)."
+```
+
+MD (`docs/security/secrets-register.md`, Secrets Manager table, after the `tripplanner/dev/cognito-signup-proof-key`
+row), same fields in the table's column order:
+
+```markdown
+| `tripplanner/dev/lead-webhook-key` | tripplanner | TP assembly Lambda (inline lead delivery) and jobs Lambda (tp_lead_deliver), read by name tripplanner/<ENVIRONMENT>/lead-webhook-key (AA-TripPlanner-Web backend/assembly/leads.py); grant ReadLeadWebhookKeySecret (AA-CIS-Infra modules/environment/tripplanner.tf, tripplanner_jobs.tf); Terraform refresh (tf-plan / tf-apply roles, local.tf_plan_secret_arns) | terraform aws_secretsmanager_secret.tripplanner_lead_webhook_key + write-only version from ephemeral random_password (never in state) | bump local.tp_lead_webhook_key_version (re-issue derived agency keys) | TBD-M0 | **keep** | AA-1038 (S272). Master key of the TripPlanner lead webhook channel; per-agency webhook signing keys are derived from it. Created by the first local apply of AA-CIS-Infra (AA-1038 R5 slice 3). |
+```
