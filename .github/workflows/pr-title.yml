@@ -1,0 +1,73 @@
+name: PR title
+# AA-1024 G11 (S272): the AA-890 check of the app repos, now in Infra too (Infra #255 closed an issue by title).
+# With squash merges the PR title becomes the commit subject on main, so it follows "<type>: <description>" (types
+# below, optional scope). Three Linear rules (lessons S243-S246):
+#   - no issue id anywhere in the title ("fix: AA-123" reads as a closing phrase, "[AA-123]" too);
+#   - no closing keyword in the body ("Fixes AA-123", "Closes AA-123", ...): Linear closes the issue on merge;
+#   - no issue id outside the one "Refs AA-<n>, ..." line of the body: Linear links every id it sees and its Git
+#     automation moved linked issues to Done on merge.
+# Bot PRs (bot/* branches, Dependabot, release-please) skip only the last rule: generated bodies cite issues.
+# Same rules as the root repo's pr-title.yml and the orchestrator's PR opener (tools/github in the root repo).
+#
+# Free: one short job per PR event, no checkout, no secrets beyond the default read-only token.
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+    branches: [main]
+
+permissions:
+  pull-requests: read
+
+concurrency:
+  group: pr-title-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  title:
+    name: PR title
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Conventional title without an issue id
+        uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50 # v6.1.1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          types: |
+            feat
+            fix
+            chore
+            refactor
+            docs
+            ci
+            test
+            perf
+          requireScope: false
+          subjectPattern: ^(?!.*\bAA-\d+\b).+$
+          subjectPatternError: |
+            The title "{title}" carries a Linear issue id. Remove it from the title and put
+            "Refs AA-..." in the PR body instead.
+
+      - name: Linear ids only on the Refs line, no closing keywords
+        env:
+          BODY: ${{ github.event.pull_request.body }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
+        run: |
+          pattern='(^|[^[:alnum:]])(close[sd]?|closing|fix(e[sd])?|fixing|resolve[sd]?|resolving|complete[sd]?|completing)[[:space:]:]+AA-[0-9]+'
+          if printf '%s' "$BODY" | grep -qiE "$pattern"; then
+            printf '%s' "$BODY" | grep -inE "$pattern" | head -5
+            echo "::error title=Linear keyword::Use 'Refs AA-123' in the PR body. Closing keywords make Linear close the issue on merge; an issue is Done only after deploy and a live check."
+            exit 1
+          fi
+          if [ "$AUTHOR_TYPE" = "Bot" ] || [[ "$HEAD_REF" == bot/* ]]; then
+            echo "Bot PR: issue ids outside the Refs line are not checked."
+            exit 0
+          fi
+          stray=$(printf '%s\n' "$BODY" | tr -d '\r' | grep -nE 'AA-[0-9]+' | grep -vE '^[0-9]+:[[:space:]]*Refs[[:space:]]+AA-[0-9]+([[:space:]]*,[[:space:]]*AA-[0-9]+)*[[:space:]]*$' || true)
+          if [ -n "$stray" ]; then
+            printf '%s\n' "$stray" | head -5
+            echo "::error title=Linear id outside Refs::Name issues only on the one 'Refs AA-<n>, ...' line. Linear links every id in the body and may move it to Done on merge; describe other work in words."
+            exit 1
+          fi
+          echo "Body OK: no closing keyword, issue ids only on the Refs line."
