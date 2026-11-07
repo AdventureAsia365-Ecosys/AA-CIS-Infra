@@ -12,8 +12,11 @@
 # backend.jobs.handler.handler) through the app deploy role, which gets this function in tripplanner.tf.
 #
 # Least privilege: its OWN role, not the browse / assembly one: the DB DSN secret and the Sentry DSN secret by ARN, VPC
-# ENIs (AWS managed policy, as the other TripPlanner Lambdas), logs. No Bedrock, no satellite assume, no edge key, no
-# SES. Same security group as browse / assembly (no ingress; the RDS security group already admits it). No API Gateway
+# ENIs (AWS managed policy, as the other TripPlanner Lambdas), logs. No Bedrock, no satellite assume, no edge key.
+# AA-1038 R5 slice 3 (tp_lead_deliver retries undelivered webhook / e-mail leads): + the lead webhook master key by ARN
+# (ReadLeadWebhookKeySecret), SES send as var.ses_from_address only (accounts/aa365 ses.tf tripplanner_jobs_ses_send,
+# the same grant as the assembly role) and TP_LEAD_EMAIL_FROM. Both Lambdas get these in the same apply: a retry
+# without them stops at the channel breaker and the 7-day hold then ends the lead (loudly). Same security group as browse / assembly (no ingress; the RDS security group already admits it). No API Gateway
 # route or Function URL: only the scheduler (its own invoke role) and an operator's `aws lambda invoke` reach it.
 #
 # Connection budget (data standards C2.2): reserved concurrency 1 x pool 1 = 1 connection of role tripplanner
@@ -118,6 +121,13 @@ resource "aws_iam_role_policy" "tripplanner_jobs_permissions" {
         Resource = [aws_secretsmanager_secret.tripplanner_sentry_dsn.arn]
       },
       {
+        # AA-1038: the lead webhook master key (tripplanner.tf), read by name for the tp_lead_deliver retries.
+        Sid      = "ReadLeadWebhookKeySecret"
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = [aws_secretsmanager_secret.tripplanner_lead_webhook_key.arn]
+      },
+      {
         Sid      = "WriteOwnLogs"
         Effect   = "Allow"
         Action   = ["logs:CreateLogStream", "logs:PutLogEvents"]
@@ -165,6 +175,8 @@ resource "aws_lambda_function" "tripplanner_jobs" {
       # backend/config.py reads the AWS region of its Secrets Manager client from this name (no Bedrock call here).
       BEDROCK_REGION             = var.aws_region
       RETENTION_OVERRIDE_ENABLED = var.tripplanner_jobs_retention_override_enabled
+      # AA-1038: the From of the lead e-mail retries (same value and grant as the assembly Lambda, tripplanner.tf).
+      TP_LEAD_EMAIL_FROM = var.ses_from_address
     }
   }
 

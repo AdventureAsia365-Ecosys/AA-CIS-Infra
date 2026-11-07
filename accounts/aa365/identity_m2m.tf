@@ -17,7 +17,9 @@
 #   - resource server "booking.b2b" with the four contract scopes read / quote / hold / book (contract
 #     booking.b2b.v1 securitySchemes.m2m). Later receivers add their own resource server here: AA-976 adds
 #     "cis.catalog" (scope read, contract catalog.http.v1, served by AA-CIS-App /catalog/v1); AA-978 adds
-#     "cis.tenant" (scope read, contract tenant.membership.v1, served by AA-CIS-App /tenant/membership/v1).
+#     "cis.tenant" (scope read, contract tenant.membership.v1, served by AA-CIS-App /tenant/membership/v1); AA-1038 R5
+#     slice 3 adds "tripplanner.leads" (scope deliver, root contract lead.submitted.v1, served by the AA-TripPlanner-Web
+#     assembly Lambda under /trip/m2m/v1: the CRM pulls and acknowledges its agencies' leads).
 #   - app client aa-m2m-<env>-crm: confidential (generated secret), client_credentials ONLY, all four booking.b2b
 #     scopes (hold/book routes arrive with AA-973; Booking checks a scope per route, so an extra scope grants nothing
 #     until its route exists), access tokens 6 h (ADR 0006b: cached in process), token revocation on.
@@ -38,6 +40,8 @@
 #      and writes {client_id, client_secret, token_url, scopes} as JSON) — see the AA-972 handoff for the exact command.
 #   2. A Booking deploy (or Deploy Dev dispatch) copies the latest task definition revision with the two env vars.
 #   3. AA-978: add cis.tenant/read to the "scopes" value of that JSON (same container; client id and secret unchanged).
+#      AA-1038: likewise tripplanner.leads/deliver ("scopes" is informational for the CRM: it asks each receiver's scope
+#      by name, AA-Partner app/cis/m2m.py), and TRIPPLANNER_API_URL reaches the CRM task on its next deploy.
 #      crm_app.tf injects the whole JSON into the AA-Partner task as the secret env M2M_CLIENT, so the next AA-Partner
 #      deploy (which copies the latest task definition revision) gives the CRM worker its credentials.
 # =============================================================================
@@ -96,6 +100,19 @@ locals {
     # agency whose owner has no Content studio membership. Same client; an in-place update of the resource server and
     # of the client's allowed scopes (re-plan after the apply: the client takes the new scope on the second apply).
     addons = "Read an agency's add-ons and request one for its CRM owner (CIS /tenant/v1, tenant.addons.v1)"
+  }
+
+  # AA-1038 R5 slice 3 (root ADR 0019 d11 + its S272 amendment, root contract lead.submitted.v1): the CRM pulls each
+  # agency's TripPlanner leads and acknowledges them (GET /trip/m2m/v1/tenants/{agency}/leads + the ack) on the
+  # assembly Lambda's M2M route class. TripPlanner pins issuer + the CRM client + this scope before any SQL
+  # (AA-TripPlanner-Web backend/shared/m2m_auth.py; issuer and client id arrive as TP_M2M_ISSUER /
+  # TP_M2M_CRM_CLIENT_ID on the assembly Lambda, modules/environment/tripplanner.tf). Granted to the CRM client only
+  # (m2m_crm below; the pool's only client). A new resource server: its scope_identifiers are known after the create,
+  # so the client's allowed_oauth_scopes shows as an in-place update with a value known after apply; re-plan after the
+  # apply ("No changes" expected, S252 lesson).
+  idm2m_tripplanner_identifier = "tripplanner.leads"
+  idm2m_tripplanner_scopes = {
+    deliver = "Pull and acknowledge an agency's TripPlanner leads (TripPlanner /trip/m2m/v1, lead.submitted.v1)"
   }
 }
 
@@ -163,6 +180,20 @@ resource "aws_cognito_resource_server" "cis_tenant" {
   }
 }
 
+resource "aws_cognito_resource_server" "tripplanner_leads" {
+  identifier   = local.idm2m_tripplanner_identifier
+  name         = "AA-TripPlanner-Web lead pull lead.submitted.v1"
+  user_pool_id = aws_cognito_user_pool.m2m.id
+
+  dynamic "scope" {
+    for_each = local.idm2m_tripplanner_scopes
+    content {
+      scope_name        = scope.key
+      scope_description = scope.value
+    }
+  }
+}
+
 resource "aws_cognito_user_pool_client" "m2m_crm" {
   name         = "${local.idm2m_name}-crm"
   user_pool_id = aws_cognito_user_pool.m2m.id
@@ -173,10 +204,12 @@ resource "aws_cognito_user_pool_client" "m2m_crm" {
   # AA-976: + cis.catalog/read. Each receiver checks its own scope per route, so a scope of another API grants nothing
   # there. Updating the scopes of an existing client is in place (no new client id, the secret is kept).
   # AA-978: + cis.tenant/read (the CIS membership feed), same in-place update.
+  # AA-1038: + tripplanner.leads/deliver (the TripPlanner lead pull), same in-place update.
   allowed_oauth_scopes = concat(
     [for s in aws_cognito_resource_server.booking_b2b.scope_identifiers : s],
     [for s in aws_cognito_resource_server.cis_catalog.scope_identifiers : s],
     [for s in aws_cognito_resource_server.cis_tenant.scope_identifiers : s],
+    [for s in aws_cognito_resource_server.tripplanner_leads.scope_identifiers : s],
   )
   # Cognito always allows refresh-token auth; nothing else (no SRP, no password, no USER_AUTH: there are no users).
   explicit_auth_flows = ["ALLOW_REFRESH_TOKEN_AUTH"]
@@ -237,6 +270,10 @@ output "identity_m2m_catalog_scopes" {
 
 output "identity_m2m_tenant_scopes" {
   value = sort(aws_cognito_resource_server.cis_tenant.scope_identifiers)
+}
+
+output "identity_m2m_tripplanner_scopes" {
+  value = sort(aws_cognito_resource_server.tripplanner_leads.scope_identifiers)
 }
 
 output "identity_m2m_crm_secret_arn" {
