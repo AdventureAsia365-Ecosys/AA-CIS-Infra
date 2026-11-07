@@ -8,7 +8,8 @@ name: PR title
 #     automation moved linked issues to Done on merge.
 # Bot PRs (Dependabot, the CI bot's release / schema PRs, bot/* and release-please branches; by login, not by
 # user.type: the orchestrator's App is a Bot too) skip only the last rule: generated bodies cite issues.
-# An id the Refs line names may appear anywhere in the body; an id inside a file path is ignored.
+# An id the Refs line names may appear anywhere in the body; an id inside a file path is ignored. The Refs line is
+# "Refs AA-<n>[, AA-<m>...]" at the start of a line and may go on with free text ("Refs AA-1040 (EU AI Act ...).").
 # Same rules as the root repo's pr-title.yml and the orchestrator's PR opener (tools/github in the root repo).
 #
 # Free: one short job per PR event, no checkout, no secrets beyond the default read-only token.
@@ -77,11 +78,18 @@ jobs:
               print("Bot PR: issue ids beyond the Refs line are not checked.")
               sys.exit(0)
           issue = re.compile(r"\bAA-\d+\b")
-          refs_line = re.compile(r"Refs\s+AA-\d+(?:\s*,\s*AA-\d+)*")
+          # The Refs line: "Refs AA-<n>[, AA-<m>...]" at the start of a line, then any free text; its ids are the
+          # leading list only. An id in the free text that the list lacks is stray like any other.
+          refs_lead = re.compile(r"^\s*Refs\s+(AA-\d+(?:\s*,\s*AA-\d+)*)\b")
           path_id = re.compile(r"[\w./-]*\bAA-\d+[\w-]*\.(?:md|py|json|ya?ml|sh|js|mjs|ts|tsx|sql|txt|html|toml)\b")
-          refs = {x for line in lines if refs_line.fullmatch(line.strip()) for x in issue.findall(line)}
-          stray = [line for line in lines if not refs_line.fullmatch(line.strip())
-                   and any(x not in refs for x in issue.findall(path_id.sub(" ", line)))]
+          refs, rest = set(), []
+          for line in lines:
+              m = refs_lead.match(line)
+              if m:
+                  refs.update(issue.findall(m.group(1)))
+                  line = line[m.end():]
+              rest.append(line)
+          stray = [line for line in rest if any(x not in refs for x in issue.findall(path_id.sub(" ", line)))]
           if stray:
               print("\n".join(stray[:5]))
               print("::error title=Linear id not on the Refs line::The body names an issue that the 'Refs AA-<n>, ...' "
