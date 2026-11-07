@@ -188,9 +188,9 @@ accounts/
                                    deletions per run; lambda_src/rds_snapshot_expiry + _tests,
                                    .github/workflows/rds-snapshot-expiry-test.yml)
     identity.tf, identity_variables.tf (AA-703, root ADR 0006: Cognito pools aa-workforce-dev /
-                                   aa-external-dev, app clients (WORKFORCE also has the Preview-only
-                                   cis-admin-preview / booking-staff-preview, capped at viewer by the
-                                   APIs, AA-911 D-1), groups, trigger Lambdas in
+                                   aa-external-dev, app clients (the Preview-only cis-admin-preview /
+                                   booking-staff-preview of AA-911 D-1 were deleted at the Vercel
+                                   retirement, S272), groups, trigger Lambdas in
                                    lambda_src/identity_triggers + tests; SES (ses.tf identity) on,
                                    EXTERNAL native sign-up, WAF and custom domains gated by
                                    variables, default off — AA-854; Dev tfvars turn the WAF and
@@ -321,12 +321,10 @@ accounts/
     custom_domains.tf             (AA-818: ACM certs api-booking./api-tripplanner. (us-west-1) and auth./staff-auth.
                                    (us-east-1, provider alias aws.us_east_1) + validation records; API GW custom
                                    domains, alias records and Vercel CNAMEs gated by var.custom_domains_enabled;
-                                   Vercel hosts in var.custom_domain_vercel_hosts: tripplanner. (aa-tripplanner),
-                                   booking. (aa-booking-admin) (portal. left for crm_agency_edge.tf in AA-979 P2b),
-                                   booking-preview. (aa-booking-admin) and aa-cis-preview. (aa-cis-frontend): the
-                                   fixed staff Preview sign-in hosts, the only callbacks of the two
-                                   *-preview app clients (AA-911);
-                                   aa-cis. is a static record in dns.tf)
+                                   Vercel hosts in var.custom_domain_vercel_hosts: tripplanner. (aa-tripplanner)
+                                   only (portal. left for crm_agency_edge.tf in AA-979 P2b; booking. left for
+                                   staff_web_edge.tf and the Preview hosts booking-preview. / aa-cis-preview. were
+                                   deleted at the AA-911 Vercel retirement, S272))
     photos_cdn.tf                 (AA-844, edge: CloudFront img.lumiguides.it.com in front of the bronze
                                    bucket's photos/ prefix — ACM cert us-east-1 + validation record always;
                                    validation wait, distribution (origin_path /photos, OAC SigV4, cache key
@@ -446,8 +444,9 @@ accounts/
                                    WORKFORCE client secrets, written by tools/identity/staff_web_secret.py, never by Terraform); ADMIN_SECRET maps
                                    aa-cis/<env>/admin-secret (CIS role only). Extra policy on the Booking deploy role for the Booking family only.
                                    Edge in the root: staff_web_edge.tf (wildcard *.<zone> + apex cert on the ALB :443 listener, validated through
-                                   the crm_agency wildcard record; DNS cut-over var.staff_web_dns_on_ecs, 60 s TTL window
-                                   var.staff_web_dns_switch_window, apex alias var.staff_web_apex_on_alb), alb_rules.tf alb_https_rule_priorities
+                                   the crm_agency wildcard record; DNS records aws_route53_record.staff_web (aa-cis., booking.
+                                   -> the ALB, moved from dns.tf / custom_domains.tf at the Vercel retirement), 60 s TTL window
+                                   var.staff_web_dns_switch_window (off); the apex alias is in dns.tf), alb_rules.tf alb_https_rule_priorities
                                    (two host rules + the apex redirect; the :443 default is a fixed 404), modules/waf StaffWebRateLimit (staff hosts
                                    out of RateLimit1000), sg-staff-web (ALB -> 3000/3001, not admitted by RDS), cicd_split.tf
                                    cis_app_deploy_staff_web (bootstrap, CIS family only))

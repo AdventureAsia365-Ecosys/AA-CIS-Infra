@@ -30,8 +30,8 @@
 # Linear). The containers are debugged from their logs.
 #
 # Routing (accounts/aa365): viewer -> https://aa-cis.<zone> / https://booking.<zone> -> ALB :443 (staff_web_edge.tf
-# certificate, alb_rules.tf host rules staff_cis_admin / staff_booking_admin) -> the app's service. DNS stays on Vercel
-# until the cut-over (accounts/aa365 var.staff_web_dns_on_ecs). The apps call their APIs through the public API hosts
+# certificate, alb_rules.tf host rules staff_cis_admin / staff_booking_admin) -> the app's service. DNS: accounts/aa365
+# staff_web_edge.tf aws_route53_record.staff_web (Vercel retired, S272). The apps call their APIs through the public API hosts
 # (egress via the NAT instance), like the CRM web.
 #
 # Deploys: each app repo's Deploy Admin Dev (AA-CIS-App, AA-Booking) copies ITS family's latest revision with only the
