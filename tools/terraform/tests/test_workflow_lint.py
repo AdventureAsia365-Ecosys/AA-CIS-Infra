@@ -113,10 +113,28 @@ def test_wl3_npm_ci_needs_a_tracked_lockfile(tmp_path):
               - working-directory: ${{ matrix.app }}
                 run: npm ci
         """
+    wl.UNCHECKED.clear()
     findings = _lint(body, str(tmp_path))
-    assert [f.split(":")[1] for f in findings] == ["api", "root", "dyn"]
+    assert [f.split(":")[1] for f in findings] == ["api", "root"]
     assert "api/package-lock.json" in findings[0] and "package-lock.json" in findings[1]
-    assert "expression working-directory" in findings[2]
+    # AA-1024 S272: an expression working-directory (a matrix of other repos' apps) is listed as unchecked, not refused
+    assert wl.UNCHECKED == ["demo.yml:dyn: npm ci in ${{ matrix.app }}"]
+
+
+def test_skip_switch_and_shell_comments_are_not_a_playwright_use():
+    body = """
+        on: push
+        jobs:
+          a:
+            runs-on: ubuntu-latest
+            steps:
+              - run: |
+                  # the invented smoke needs Playwright and a live host, so it is not run here
+                  echo ${{ vars.DEMO_ROLE_ARN }}
+        """
+    assert [f.split(":")[2].split()[0] for f in _lint(body)] == ["WL1"]
+    assert wl.lint_workflow("demo.yml", textwrap.dedent(body), REPO_ROOT, frozenset({"WL1"})) == []
+    assert wl.main(["--skip", "WL9"]) == 2
 
 
 def test_the_repo_workflows_are_clean():
