@@ -167,15 +167,50 @@ def test_model_paths_are_the_app_paths():
 
 # --- 4. caching -----------------------------------------------------------------------------------------------------
 
+def _ordered_behaviors(dist: str) -> dict[str, str]:
+    out = {}
+    for m in re.finditer(r"^\s*ordered_cache_behavior \{", dist, re.M):
+        block = _block_after(dist, m.start())
+        path = re.search(r"path_pattern\s+= local\.(\w+)", block)
+        assert path, block
+        out[path.group(1)] = block
+    return out
+
+
 def test_pages_and_api_are_never_cached_only_static_chunks_and_photos_are():
     dist = _code(_resource(EDGE, "aws_cloudfront_distribution", "tripplanner_web"))
     default = _block_after(dist, dist.index("default_cache_behavior"))
     assert "caching_disabled[0].id" in default
     assert "all_viewer_and_cf_headers[0].id" in default  # Host for the ALB rule, CloudFront-Viewer-Address for the app
-    ordered = _block_after(dist, dist.index('dynamic "ordered_cache_behavior"'))
-    assert "for_each = local.tp_web_cached_paths" in ordered and "caching_optimized[0].id" in ordered
-    m = re.search(r"tp_web_cached_paths = \[(.*?)\]", EDGE)
-    assert m and re.findall(r'"([^"]+)"', m.group(1)) == ["/_next/static/*", "/photo-cdn/*"]
+    assert 'dynamic "ordered_cache_behavior"' not in dist
+    behaviors = _ordered_behaviors(dist)
+    assert sorted(behaviors) == ["tp_web_photo_path", "tp_web_static_path"]
+    assert 'tp_web_static_path = "/_next/static/*"' in EDGE
+    assert 'tp_web_photo_path  = "/photo-cdn/*"' in EDGE
+    # Content-hashed chunk paths: the managed policy (query not in the key) is right there.
+    assert "caching_optimized[0].id" in behaviors["tp_web_static_path"]
+    # The photo proxy is versioned by ?v= (AA-TripPlanner-Web lib/photoResolve.ts), never by CachingOptimized.
+    photo = behaviors["tp_web_photo_path"]
+    assert "aws_cloudfront_cache_policy.tripplanner_web_photos[0].id" in photo
+    assert "caching_optimized" not in photo
+
+
+def test_photo_cache_key_carries_the_version_query():
+    policy = _code(_resource(EDGE, "aws_cloudfront_cache_policy", "tripplanner_web_photos"))
+    assert "count = local.tp_web_edge_on" in policy
+    qs = _block_after(policy, policy.index("query_strings_config"))
+    assert 'query_string_behavior = "whitelist"' in qs
+    assert re.search(r'items = \["v"\]', qs)
+    assert 'cookie_behavior = "none"' in policy and 'header_behavior = "none"' in policy
+    assert "enable_accept_encoding_gzip   = true" in policy and "enable_accept_encoding_brotli = true" in policy
+    assert "max_ttl     = 31536000" in policy
+
+
+def test_waf_integration_url_is_an_output_for_the_planner_build():
+    # The planner loads this web ACL's challenge.js (AA-TripPlanner-Web lib/wafToken.ts, build arg from the repository
+    # variable TP_WAF_INTEGRATION_URL), so a client-side navigation into the planner still gets a token.
+    out = _block_after(EDGE, EDGE.index('output "tripplanner_web_edge"'))
+    assert "waf_integration_url = aws_wafv2_web_acl.tripplanner_web[0].application_integration_url" in out
 
 
 def test_distribution_reuses_the_shared_origin_secret_and_the_wildcard_certificate():

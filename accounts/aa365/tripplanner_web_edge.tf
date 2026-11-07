@@ -14,20 +14,27 @@
 # and geo rules (CloudFrontOriginAllow, modules/waf); its CommonRuleSet still inspects them first.
 #
 # Caching: pages and /api/* are never cached at the edge (CachingDisabled: the guest cookie of /plan, per-traveller
-# answers; the task serves pages from its own ISR cache, which the CIS purge notice drops). Only the immutable build
-# chunks (/_next/static/*) and the photo proxy (/photo-cdn/*, versioned URLs with a one-year Cache-Control) use
-# CachingOptimized.
+# answers; the task serves pages from its own ISR cache, which the CIS purge notice drops). The immutable build chunks
+# (/_next/static/*, content-hashed paths) use CachingOptimized. The photo proxy (/photo-cdn/*) uses its own policy
+# (tripplanner_web_photos): CachingOptimized's TTLs and compression plus ?v= in the cache key, because a photo file is
+# versioned by its query (AA-TripPlanner-Web lib/photoResolve.ts), not by its path; CachingOptimized drops the query
+# and would serve the old file for a new ?v= (review S272). A photo withdrawn from the CDN at the same path and ?v=
+# stays in this distribution's cache too: the runbook names the invalidation (the CIS purge reaches the photos CDN only).
 #
 # Web ACL (CLOUDFRONT scope, so it lives in us-east-1 and sees the real viewer IP). It replaces BotID, which needs the
 # Vercel edge. Three rules, first terminating action wins:
 #   0 RateLimitPerIp        every request, per viewer IP, var.tripplanner_web_rate_limit per 5 minutes -> 429
 #   1 RateLimitModelPaths   GET /api/browse/search + POST /api/trip/narrate (the two calls that reach a model), per IP,
 #                           var.tripplanner_web_model_rate_limit per 5 minutes -> 429
-#   2 ChallengePlanner      Challenge (silent JavaScript proof, no puzzle) on a document navigation of a planner page
-#                           (GET with sec-fetch-dest: document on /plan, /{tenant}/plan and below; the only pages that
-#                           call the model paths) and on the two model paths. A real browser solves it when it opens
-#                           the planner and gets the aws-waf-token cookie; its later fetch() calls to the model paths
-#                           carry the token and pass. Home, destination and tour pages never see an interstitial. A
+#   2 ChallengePlanner      Challenge (silent JavaScript proof, no puzzle) on the two model paths and on a document
+#                           navigation of a planner page (GET with sec-fetch-dest: document on /plan, /{tenant}/plan
+#                           and below). The planner gets its aws-waf-token from the AWS WAF JavaScript integration
+#                           (challenge.js of this web ACL's application_integration_url, output waf_integration_url,
+#                           built into the TripPlanner image): it fetches and refreshes the token in the background,
+#                           so a planner opened by a client-side Next navigation (sec-fetch-dest: empty, never
+#                           challenged) has a token too (review S272). The document arm is the fallback: on a
+#                           challenged model call without the integration the planner reloads itself once, a document
+#                           load this rule challenges. Home, destination and tour pages never see an interstitial. A
 #                           script that calls a model path without the token gets HTTP 202 + x-amzn-waf-action:
 #                           challenge and never reaches the app. The app answers the
 #                           older spellings of the two calls (not on these paths) 404 (AA-TripPlanner-Web
@@ -46,7 +53,8 @@
 # a certificate naming it would fail CAA, critic C1). A certificate can serve several distributions.
 #
 # Cost (us-west-1 / global, est., D-19): web ACL 5 USD/month + 3 rules x 1 USD + 0.60 USD per million requests;
-# Challenge responses are billed per attempt (AWS WAF pricing, CAPTCHA / Challenge), a few cents at Dev volume;
+# Challenge responses and the JavaScript integration's token requests are billed per attempt (AWS WAF pricing,
+# CAPTCHA / Challenge), a few cents at Dev volume; the photo cache policy costs nothing;
 # CloudFront and the VPC origin inside the always-free tier (1 TB, 10M requests); ACM, Route 53 alias queries 0; one
 # ALB rule inside the LCU rule allowance. ~ 8.5 USD/month for the edge; with the task (tripplanner_web.tf, ~ 6 USD)
 # ~ 14.5 USD/month on Dev. Vercel Hobby costs nothing, so the delta is the same figure.
@@ -118,8 +126,9 @@ locals {
   # The two BFF paths that reach a model (AA-TripPlanner-Web lib/botCheck.ts SEARCH_PATH / NARRATE_PATH).
   tp_web_model_paths = ["/api/browse/search", "/api/trip/narrate"]
 
-  # Cached at the edge (CachingOptimized); everything else is CachingDisabled.
-  tp_web_cached_paths = ["/_next/static/*", "/photo-cdn/*"]
+  # Cached at the edge, each with its cache policy; everything else is CachingDisabled.
+  tp_web_static_path = "/_next/static/*"
+  tp_web_photo_path  = "/photo-cdn/*"
 
   # TTL of the tripplanner. record: 60 s during the switch window, else the 300 s it had in custom_domains.tf.
   tp_web_dns_ttl = var.tripplanner_web_dns_switch_window ? 60 : 300
@@ -128,6 +137,36 @@ locals {
 data "aws_cloudfront_cache_policy" "caching_optimized" {
   count = local.tp_web_edge_on
   name  = "Managed-CachingOptimized"
+}
+
+# /photo-cdn/*: CachingOptimized's TTLs (1 s / 1 day / 1 year, on the origin's Cache-Control) and compression, plus the
+# photo version ?v= in the cache key. Only v: any other query is neither a key nor forwarded (the CDN file needs none).
+# CreateCachePolicy: cicd_split.tf PhotosCdnCloudFront (cloudfront:*CachePolicy*).
+resource "aws_cloudfront_cache_policy" "tripplanner_web_photos" {
+  count = local.tp_web_edge_on
+
+  name        = "aa-tripplanner-${var.environment}-web-photos"
+  comment     = "AA-1038: TripPlanner /photo-cdn/* proxy, CachingOptimized TTLs, cache key = path + ?v="
+  min_ttl     = 1
+  default_ttl = 86400
+  max_ttl     = 31536000
+
+  parameters_in_cache_key_and_forwarded_to_origin {
+    cookies_config {
+      cookie_behavior = "none"
+    }
+    headers_config {
+      header_behavior = "none"
+    }
+    query_strings_config {
+      query_string_behavior = "whitelist"
+      query_strings {
+        items = ["v"]
+      }
+    }
+    enable_accept_encoding_gzip   = true
+    enable_accept_encoding_brotli = true
+  }
 }
 
 # -----------------------------------------------------------------------------
@@ -385,19 +424,28 @@ resource "aws_cloudfront_distribution" "tripplanner_web" {
     origin_request_policy_id = data.aws_cloudfront_origin_request_policy.all_viewer_and_cf_headers[0].id
   }
 
-  # Immutable build chunks and the versioned photo proxy: cached on the origin's Cache-Control (one year for both).
-  dynamic "ordered_cache_behavior" {
-    for_each = local.tp_web_cached_paths
-    content {
-      path_pattern             = ordered_cache_behavior.value
-      target_origin_id         = local.crm_origin_id
-      viewer_protocol_policy   = "redirect-to-https"
-      allowed_methods          = ["GET", "HEAD", "OPTIONS"]
-      cached_methods           = ["GET", "HEAD"]
-      compress                 = true
-      cache_policy_id          = data.aws_cloudfront_cache_policy.caching_optimized[0].id
-      origin_request_policy_id = data.aws_cloudfront_origin_request_policy.all_viewer_and_cf_headers[0].id
-    }
+  # Immutable build chunks (content-hashed paths): cached on the origin's Cache-Control, query not in the key.
+  ordered_cache_behavior {
+    path_pattern             = local.tp_web_static_path
+    target_origin_id         = local.crm_origin_id
+    viewer_protocol_policy   = "redirect-to-https"
+    allowed_methods          = ["GET", "HEAD", "OPTIONS"]
+    cached_methods           = ["GET", "HEAD"]
+    compress                 = true
+    cache_policy_id          = data.aws_cloudfront_cache_policy.caching_optimized[0].id
+    origin_request_policy_id = data.aws_cloudfront_origin_request_policy.all_viewer_and_cf_headers[0].id
+  }
+
+  # The photo proxy: versioned by ?v=, so the version is in the cache key (tripplanner_web_photos).
+  ordered_cache_behavior {
+    path_pattern             = local.tp_web_photo_path
+    target_origin_id         = local.crm_origin_id
+    viewer_protocol_policy   = "redirect-to-https"
+    allowed_methods          = ["GET", "HEAD", "OPTIONS"]
+    cached_methods           = ["GET", "HEAD"]
+    compress                 = true
+    cache_policy_id          = aws_cloudfront_cache_policy.tripplanner_web_photos[0].id
+    origin_request_policy_id = data.aws_cloudfront_origin_request_policy.all_viewer_and_cf_headers[0].id
   }
 
   restrictions {
@@ -476,12 +524,13 @@ resource "aws_route53_record" "tripplanner_web" {
 # Outputs (no secret values).
 # -----------------------------------------------------------------------------
 output "tripplanner_web_edge" {
-  description = "AA-1038: the public host, the distribution (its domain is the --resolve target of the pre-switch checks and the repository variable TP_WEB_CLOUDFRONT_DNS), the web ACL and where the host points now."
+  description = "AA-1038: the public host, the distribution (its domain is the --resolve target of the pre-switch checks and the repository variable TP_WEB_CLOUDFRONT_DNS), the web ACL, its JavaScript integration URL (the repository variable TP_WAF_INTEGRATION_URL, a public value every planner page loads) and where the host points now."
   value = local.tp_web_edge_on == 1 ? {
     host                = local.tp_web_host
     distribution_id     = aws_cloudfront_distribution.tripplanner_web[0].id
     distribution_domain = aws_cloudfront_distribution.tripplanner_web[0].domain_name
     web_acl_name        = aws_wafv2_web_acl.tripplanner_web[0].name
+    waf_integration_url = aws_wafv2_web_acl.tripplanner_web[0].application_integration_url
     dns_target          = var.tripplanner_web_dns_on_cloudfront ? aws_cloudfront_distribution.tripplanner_web[0].domain_name : var.tripplanner_web_vercel_target
     ecs_service         = module.environment.tripplanner_web_ecs_service_name
     ecr_repository_url  = module.environment.tripplanner_web_ecr_repository_url

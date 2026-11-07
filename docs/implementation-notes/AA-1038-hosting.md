@@ -19,18 +19,29 @@ Root ADR 0019 d23 and the S265 tech-lead decision (one Fargate Spot task + Cloud
   JSON), `RateLimitModelPaths` (100 / 5 min on `/api/browse/search` + `/api/trip/narrate`, 429), `ChallengePlanner`
   (Challenge on a GET with `sec-fetch-dest: document` of a planner page, `/plan`, `/{tenant}/plan` and below, OR a
   model path). The model paths are called only from the planner (AA-TripPlanner-Web `lib/api.ts`), so home,
-  destination and tour pages never see an interstitial. A browser solves the silent Challenge when it opens the planner
-  and its `fetch()` to a model path carries the `aws-waf-token`; a script without the token gets 202 +
+  destination and tour pages never see an interstitial. A script without the token gets 202 +
   `x-amzn-waf-action: challenge`. Token immunity 4 h (variable). curl health checks send no `sec-fetch-dest`, so they
   are never challenged.
+- **The planner's token comes from the AWS WAF JavaScript integration (review S272).** Most ways into the planner are
+  client-side Next navigations (header link, home search, tour and destination CTAs): an RSC fetch with
+  `sec-fetch-dest: empty`, never challenged, so the document arm alone left those travellers without a token and their
+  search and narration got the 202. The output `tripplanner_web_edge.waf_integration_url` (the web ACL's
+  `application_integration_url`, a public value) becomes the TripPlanner repository variable
+  `TP_WAF_INTEGRATION_URL`, a build arg of the image; the planner loads `challenge.js` from it and gets / refreshes the
+  token in the background (also after the 4 h immunity). The document arm stays as the fallback (the planner reloads
+  itself once on a challenged call when the integration is missing). A build arg, not a task env: the URL is fixed per
+  web ACL and the pages that need it may be prerendered.
 - **The app must not leave a side door.** A WAF rule sees the path only; the BFF's older spellings of the same calls
   would bypass the Challenge, so the task env `TP_EDGE_GATE=on` makes the BFF refuse them (AA-TripPlanner-Web
   `lib/edgeGate.ts`, 404 `use_protected_path`). `TP_CLIENT_IP_SOURCE=cloudfront`: the app keys its per-IP AI limits on
   `CloudFront-Viewer-Address` (forwarded by `Managed-AllViewerAndCloudFrontHeaders-2022-06`).
 - **Caching:** default behaviour `Managed-CachingDisabled` (pages carry the guest cookie on /plan and the BFF answers
-  are per traveller; the task's ISR cache serves the pages and the CIS purge notice drops it). Only `/_next/static/*`
-  and `/photo-cdn/*` use `Managed-CachingOptimized` (origin Cache-Control: one year, immutable / versioned URLs). No
-  custom cache policy, so the apply role needs no new CloudFront grant (PhotosCdnCloudFront covers distributions).
+  are per traveller; the task's ISR cache serves the pages and the CIS purge notice drops it). `/_next/static/*` uses
+  `Managed-CachingOptimized` (content-hashed paths). `/photo-cdn/*` uses its own cache policy
+  `aa-tripplanner-<env>-web-photos` (review S272): CachingOptimized's TTLs and compression plus `?v=` in the cache key,
+  because the photo file is versioned by its query (AA-TripPlanner-Web `lib/photoResolve.ts`) and CachingOptimized
+  leaves the query out (a new `?v=` would hit the old object for up to a year). Same shape as `photos_cdn.tf`. The
+  apply role already holds `cloudfront:*CachePolicy*` (`cicd_split.tf` PhotosCdnCloudFront), so no new grant.
 - **DNS:** the `tripplanner.` record moved from `custom_domains.tf` (`vercel_frontend["tripplanner"]`) to
   `aws_route53_record.tripplanner_web[0]` with a moved block (same record, in-place updates only). A CNAME on both sides
   of the switch; `tripplanner_web_dns_on_cloudfront` default false (Vercel target kept as
@@ -81,11 +92,14 @@ Root ADR 0019 d23 and the S265 tech-lead decision (one Fargate Spot task + Cloud
 3. Terraform Apply workflow (CI). Read the plan: creates for the web ACL (us-east-1), the distribution (5-15 min), the
    ALB rule, `sg-tp-web`, ECR repo + lifecycle policy, secret shell, log group, execution role + policy, task
    definition, target group, service, alarm, the deploy role's `app-deploy-web` policy and the CachingOptimized data
-   source; `aws_route53_record.vercel_frontend["tripplanner"]` has moved to `aws_route53_record.tripplanner_web[0]`
+   source, the photo cache policy; `aws_route53_record.vercel_frontend["tripplanner"]` has moved to `aws_route53_record.tripplanner_web[0]`
    with ONE in-place change, ttl 300 -> 60 (the target stays the Vercel name). No destroy; the CIS task definitions
    unchanged (the revalidate URL is null until the switch).
 4. `python3 tools/identity/tripplanner_web_secret.py --apply --sentry-dsn "<TripPlanner web DSN>"` (MFA admin).
-5. AA-TripPlanner-Web settings, then its PR (runbook section 1).
+5. AA-TripPlanner-Web settings (`TP_WAF_INTEGRATION_URL` = `terraform output -json tripplanner_web_edge` →
+   `waf_integration_url`), then its PR (runbook section 1).
+- A photo withdrawn from the photos CDN at the same path and `?v=` stays in this distribution's cache too (the CIS
+  purge invalidates the photos CDN only): the runbook names the `/photo-cdn/*` invalidation of this distribution.
 
 ### Cost (D-19)
 
