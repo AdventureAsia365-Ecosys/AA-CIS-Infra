@@ -1,6 +1,6 @@
 # =============================================================================
 # AA-911 (root ADR 0019 d23 + its S271 amendment, S265 tech-lead cost yes) — the two staff frontends on ECS: CIS admin
-# (AA-CIS-App frontend/) and Booking admin (AA-Booking frontend/), today on Vercel (aa-cis-frontend, aa-booking-admin).
+# (AA-CIS-App frontend/) and Booking admin (AA-Booking frontend/); until S272 on Vercel (aa-cis-frontend, aa-booking-admin, retired by AA-911).
 #
 # ONE SERVICE PER APP (S271 amendment of d23, which first said one task with two containers): aa-cis-<env>-admin and
 # aa-booking-<env>-admin, each one Fargate Spot task of 0.25 vCPU / 0.5 GB (the same cost as one 0.5 / 1 task: Fargate
