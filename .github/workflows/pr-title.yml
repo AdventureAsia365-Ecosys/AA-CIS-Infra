@@ -63,7 +63,7 @@ jobs:
           body = os.environ.get("BODY", "").replace("\r", "")
           lines = body.splitlines()
           closing = re.compile(r"(?<![0-9A-Za-z])(close[sd]?|closing|fix(e[sd])?|fixing|resolve[sd]?|resolving"
-                               r"|complete[sd]?|completing)[\s:]+AA-\d+", re.IGNORECASE)
+                               r"|complete[sd]?|completing)[\s:*_`\[(\-]*(?:(?:https?://)?linear\.app/\S*?/issue/)?AA-\d+", re.IGNORECASE)
           hits = [line for line in lines if closing.search(line)]
           if hits:
               print("\n".join(hits[:5]))
