@@ -6,7 +6,8 @@
    and the edge-aware app env (TP_EDGE_GATE=on, TP_CLIENT_IP_SOURCE=cloudfront).
 2. The TripPlanner deploy role's web grant is scoped to this family, service and execution role.
 3. The web ACL is CLOUDFRONT scope (us-east-1) with the rate rule, the model-path rate rule and the Challenge, on the
-   same two paths the app gates (AA-TripPlanner-Web lib/botCheck.ts); the distribution carries it.
+   same two paths the app gates (AA-TripPlanner-Web lib/botCheck.ts); the distribution carries it. Every path match
+   URL-decodes and normalizes first, so a dot-segment spelling (/api/browse/%2e/search) is caught too.
 4. Caching: pages and /api/* never cached at the edge; only the immutable chunks and the photo proxy are.
 5. DNS: the record moved from custom_domains.tf (never destroyed), stays a CNAME on both sides, the switch is off by
    default, the TTL window is on, and the switch needs the edge.
@@ -158,6 +159,52 @@ def test_rules_rate_model_paths_and_challenge_in_order():
     assert 'search_string         = "/plan/"' in challenge
     assert "for_each = local.tp_web_model_paths" in challenge
     assert "immunity_time = var.tripplanner_web_challenge_immunity_s" in acl
+
+
+def test_every_path_match_decodes_and_normalizes_before_comparing():
+    # CloudFront hands WAF the raw path; Next resolves %2e as a dot segment (WHATWG new URL), so a match with
+    # transformation NONE let /api/browse/%2e/search skip the model rate and the Challenge (review S272).
+    m = re.search(r"tp_web_path_normalize = \[(.*?)\]", EDGE)
+    assert m and re.findall(r'"([^"]+)"', m.group(1)) == ["URL_DECODE", "NORMALIZE_PATH"]
+    acl = _code(_resource(EDGE, "aws_wafv2_web_acl", "tripplanner_web"))
+    uri_matches = [m.start() for m in re.finditer(r"uri_path \{\}", acl)]
+    assert len(uri_matches) == 4, "model rate x1, plan document x2, challenge model x1"
+    for start in uri_matches:
+        stmt = _block_after(acl, acl.rindex("byte_match_statement {", 0, start))
+        assert 'dynamic "text_transformation"' in stmt and "for_each = local.tp_web_path_normalize" in stmt, stmt
+        assert "priority = text_transformation.key" in stmt and "type     = text_transformation.value" in stmt
+        assert '"NONE"' not in stmt
+
+
+def _waf_url_decode_then_normalize(path: str) -> str:
+    """Local model of URL_DECODE + NORMALIZE_PATH (AWS WAF text transformations)."""
+    from urllib.parse import unquote
+
+    out: list[str] = []
+    for seg in re.sub(r"/{2,}", "/", unquote(path)).split("/")[1:]:
+        if seg == ".":
+            continue
+        if seg == "..":
+            if out:
+                out.pop()
+            continue
+        out.append(seg)
+    return "/" + "/".join(out)
+
+
+def test_dot_segment_spellings_of_the_model_paths_normalize_to_the_protected_path():
+    spellings = {
+        "/api/browse/%2e/search": "/api/browse/search",
+        "/api/browse/%2E/search": "/api/browse/search",
+        "/api/trip/%2e/narrate": "/api/trip/narrate",
+        "/api/trip/./narrate": "/api/trip/narrate",
+        "/api/x/../trip/narrate": "/api/trip/narrate",
+        "/api/browse/%2e%2e/browse/search": "/api/browse/search",
+        "/api//browse/search": "/api/browse/search",
+    }
+    for raw, want in spellings.items():
+        assert _waf_url_decode_then_normalize(raw) == want, raw
+        assert want in MODEL_PATHS
 
 
 def test_model_paths_are_the_app_paths():

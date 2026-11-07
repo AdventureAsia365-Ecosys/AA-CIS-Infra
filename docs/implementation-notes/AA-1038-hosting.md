@@ -31,6 +31,14 @@ Root ADR 0019 d23 and the S265 tech-lead decision (one Fargate Spot task + Cloud
   token in the background (also after the 4 h immunity). The document arm stays as the fallback (the planner reloads
   itself once on a challenged call when the integration is missing). A build arg, not a task env: the URL is fixed per
   web ACL and the pages that need it may be prerendered.
+- **Every WAF path match URL-decodes, then normalizes (review S272).** CloudFront passes the raw path to the web ACL,
+  and the app (Next, WHATWG `new URL`) resolves `%2e` / `%2E` as a dot segment: `/api/browse/%2e/search` and
+  `/api/trip/%2e/narrate` reach the model routes, and the app's own edge gate sees the resolved path too. With
+  transformation `NONE` those spellings matched neither model rule, so they skipped the model rate and the Challenge.
+  Every `uri_path` match in rule 1 and 2 now runs `URL_DECODE` (priority 0) then `NORMALIZE_PATH` (priority 1)
+  (`local.tp_web_path_normalize`), so `/./`, `/x/../`, `//` and the encoded dots match the protected path. No extra
+  "block `/.`" rule: normalizing matches what the app routes to, and a block would also hit legitimate paths such as
+  `/.well-known/`. A `%2f` spelling now matches too (challenged, harmless): the app keeps `%2f` encoded and 404s it.
 - **The app must not leave a side door.** A WAF rule sees the path only; the BFF's older spellings of the same calls
   would bypass the Challenge, so the task env `TP_EDGE_GATE=on` makes the BFF refuse them (AA-TripPlanner-Web
   `lib/edgeGate.ts`, 404 `use_protected_path`). `TP_CLIENT_IP_SOURCE=cloudfront`: the app keys its per-IP AI limits on
@@ -99,7 +107,9 @@ Root ADR 0019 d23 and the S265 tech-lead decision (one Fargate Spot task + Cloud
 5. AA-TripPlanner-Web settings (`TP_WAF_INTEGRATION_URL` = `terraform output -json tripplanner_web_edge` →
    `waf_integration_url`), then its PR (runbook section 1).
 - A photo withdrawn from the photos CDN at the same path and `?v=` stays in this distribution's cache too (the CIS
-  purge invalidates the photos CDN only): the runbook names the `/photo-cdn/*` invalidation of this distribution.
+  purge invalidates the photos CDN only): the runbook names the invalidation of this distribution, with a trailing
+  `*` (`/photo-cdn/<path>*`) because `v` is in the photo cache key: a path with no query and no wildcard does not
+  match the objects cached as `/photo-cdn/<path>?v=<hash>`.
 
 ### Cost (D-19)
 

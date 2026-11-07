@@ -39,6 +39,9 @@
 #                           challenge and never reaches the app. The app answers the
 #                           older spellings of the two calls (not on these paths) 404 (AA-TripPlanner-Web
 #                           lib/edgeGate.ts, task env TP_EDGE_GATE=on), so no model call passes outside rule 1 and 2.
+#   Every path match of rule 1 and 2 runs URL_DECODE then NORMALIZE_PATH (local.tp_web_path_normalize), so a dot
+#   segment spelling (/api/browse/%2e/search, /api/trip/./narrate, /x/../api/trip/narrate), which the app resolves to
+#   the model route, is rate-limited and challenged like the plain path (review S272).
 #   Token lifetime: var.tripplanner_web_challenge_immunity_s (default 4 h).
 #   No WAF log group: CloudWatch metrics and sampled requests per rule (console) are enough on Dev (cost).
 #
@@ -125,6 +128,13 @@ locals {
 
   # The two BFF paths that reach a model (AA-TripPlanner-Web lib/botCheck.ts SEARCH_PATH / NARRATE_PATH).
   tp_web_model_paths = ["/api/browse/search", "/api/trip/narrate"]
+
+  # Text transformations on every uri_path match of the web ACL, in this order (priority = index): URL_DECODE, then
+  # NORMALIZE_PATH (drops /./, resolves /x/../, folds //). CloudFront passes the raw path and the app (Next, WHATWG
+  # new URL) resolves %2e / %2E as a dot segment, so /api/browse/%2e/search reaches the search route; with NONE that
+  # spelling matched neither model rule and skipped the Challenge and the model rate (review S272). Matching the path
+  # the app routes to is the point: the rules see the same path the route handler sees.
+  tp_web_path_normalize = ["URL_DECODE", "NORMALIZE_PATH"]
 
   # Cached at the edge, each with its cache policy; everything else is CachingDisabled.
   tp_web_static_path = "/_next/static/*"
@@ -252,9 +262,12 @@ resource "aws_wafv2_web_acl" "tripplanner_web" {
                   field_to_match {
                     uri_path {}
                   }
-                  text_transformation {
-                    priority = 0
-                    type     = "NONE"
+                  dynamic "text_transformation" {
+                    for_each = local.tp_web_path_normalize
+                    content {
+                      priority = text_transformation.key
+                      type     = text_transformation.value
+                    }
                   }
                 }
               }
@@ -323,9 +336,12 @@ resource "aws_wafv2_web_acl" "tripplanner_web" {
                     field_to_match {
                       uri_path {}
                     }
-                    text_transformation {
-                      priority = 0
-                      type     = "NONE"
+                    dynamic "text_transformation" {
+                      for_each = local.tp_web_path_normalize
+                      content {
+                        priority = text_transformation.key
+                        type     = text_transformation.value
+                      }
                     }
                   }
                 }
@@ -336,9 +352,12 @@ resource "aws_wafv2_web_acl" "tripplanner_web" {
                     field_to_match {
                       uri_path {}
                     }
-                    text_transformation {
-                      priority = 0
-                      type     = "NONE"
+                    dynamic "text_transformation" {
+                      for_each = local.tp_web_path_normalize
+                      content {
+                        priority = text_transformation.key
+                        type     = text_transformation.value
+                      }
                     }
                   }
                 }
@@ -356,9 +375,12 @@ resource "aws_wafv2_web_acl" "tripplanner_web" {
               field_to_match {
                 uri_path {}
               }
-              text_transformation {
-                priority = 0
-                type     = "NONE"
+              dynamic "text_transformation" {
+                for_each = local.tp_web_path_normalize
+                content {
+                  priority = text_transformation.key
+                  type     = text_transformation.value
+                }
               }
             }
           }
