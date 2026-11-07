@@ -228,6 +228,12 @@ def test_apex_alias_is_behind_its_own_switch():
     assert 'dynamic "alias"' in apex and "module.alb.alb_zone_id" in apex
 
 
+def test_apex_is_on_the_alb_before_vercel_goes():
+    # Runbook section 4 step 2: the apex leaves Vercel before the aa-cis-frontend project (its claim) is retired, and it
+    # never goes back once the Vercel staff projects are gone (an A record to Vercel with no claim is a takeover risk).
+    assert re.search(r"^staff_web_apex_on_alb\s*=\s*true", TFVARS, re.M)
+
+
 def _vercel_cname_labels() -> set[str]:
     labels = set(re.findall(r'^\s*([a-z0-9-]+)\s*=\s*"[^"]*vercel-dns[^"]*"', VERCEL_VARS, re.M))
     for m in re.finditer(r'"([a-z0-9-]+)\|CNAME" = \{', DNS):
