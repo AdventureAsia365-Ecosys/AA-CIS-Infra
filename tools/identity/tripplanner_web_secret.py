@@ -12,7 +12,8 @@ through a terminal, a file or a Terraform state read:
                              The Vercel copy cannot be read back (a "sensitive" Vercel env), so the ECS host starts
                              with its own key: a traveller signed in on Vercel signs in again after the DNS switch.
   catalog_revalidate_secret  the HMAC key of the CIS catalog purge notice (CATALOG_REVALIDATE_SECRET), copied from
-                             aa-cis/<env>/tripplanner-revalidate-hmac (a plain string; the CIS worker signs with it).
+                             aa-cis/<env>/tripplanner-revalidate-hmac (a plain string, or JSON {"secret": ...}: the
+                             two shapes the CIS worker reads).
   sentry_dsn                 the browser/server DSN of the TripPlanner web Sentry project (SENTRY_DSN): --sentry-dsn
                              when given, else the value already stored, else "" (Sentry stays off; the app sends
                              nothing without a DSN).
@@ -84,7 +85,15 @@ def revalidate_key(sm: Any, name: str) -> str:
     if not value:
         raise ToolError(f"{name} is empty")
     if value.startswith("{"):
-        raise ToolError(f"{name} holds JSON, expected the plain key string the CIS worker signs with")
+        # The CIS job also reads {"secret": "..."} (AA-CIS-App services/jobs/tripplanner_purge_job.py).
+        try:
+            data = json.loads(value)
+        except ValueError as exc:
+            raise ToolError(f"{name} is neither a plain key nor JSON") from exc
+        inner = data.get("secret") if isinstance(data, dict) else None
+        if not isinstance(inner, str) or not inner.strip():
+            raise ToolError(f"{name} holds JSON without a \"secret\" string, the shape the CIS worker signs with")
+        return inner.strip()
     return value
 
 

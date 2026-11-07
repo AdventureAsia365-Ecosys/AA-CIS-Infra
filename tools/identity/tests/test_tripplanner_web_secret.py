@@ -97,6 +97,12 @@ def test_a_short_session_key_is_replaced_and_an_empty_dsn_switches_sentry_off(ca
     assert sm.puts[0][1]["session_secret"] != "short"
 
 
+def test_the_json_shape_of_the_purge_key_is_read_too(capsys):
+    sm = FakeSm({WEB: None, PURGE: json.dumps({"secret": REVALIDATE})})
+    rc, _ = _run(["--apply"], sm, capsys)
+    assert rc == 0 and sm.puts[0][1]["catalog_revalidate_secret"] == REVALIDATE
+
+
 def test_output_never_contains_a_secret_value(capsys):
     sm = FakeSm({WEB: None, PURGE: REVALIDATE})
     tool.main(["--apply", "--sentry-dsn", DSN], clients=(FakeSts(), sm))
@@ -117,7 +123,7 @@ def test_refusals(capsys):
 
     rc, _ = _run(["--apply"], FakeSm({WEB: None, PURGE: json.dumps({"k": "v"})}), capsys)
     assert rc == 1
-    assert "plain key string" in _run.err
+    assert "without a" in _run.err
 
     rc, _ = _run(["--apply", "--sentry-dsn", "http://insecure.example.test/1"], FakeSm({WEB: None, PURGE: REVALIDATE}), capsys)
     assert rc == 1
