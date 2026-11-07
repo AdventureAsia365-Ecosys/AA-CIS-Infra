@@ -104,3 +104,12 @@ staff_web_dns_switch_window = true
 # (verified through the ALB without DNS) and at least 30 minutes after the switch window above was applied.
 # Rollback: false (60 s TTL while the window is on), or the runbook's one-line Route 53 rollback when CI cannot wait.
 staff_web_dns_on_ecs = true
+
+# AA-911 Vercel retirement, step 1 (root runbook staff-web-ecs-cutover.md section 4 step 2): the apex A record becomes
+# an alias to the shared ALB (alb_rules.tf staff_apex_redirect answers 301 with location https://aa-cis.<zone>:443/:
+# the ALB keeps the rule's explicit port; the live check accepts it with or without :443) BEFORE the
+# aa-cis-frontend Vercel project, which claims the apex today, loses the domain or is deleted. An A record to Vercel
+# with no project claiming it is a takeover risk, and Cognito's staff-auth. / auth. custom domains need the apex A
+# record (dns.tf). Plan: one in-place update of aws_route53_record.apex. Rollback: false (records back to Vercel's
+# anycast IP, 300 s TTL) while the Vercel project still holds the apex domain.
+staff_web_apex_on_alb = true
