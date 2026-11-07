@@ -7,7 +7,7 @@ status: active
 owner: nghiep
 audience: [engineer, devops, agent]
 applies_to: [aa-cis-infra, ecosystem]
-last_reviewed: 2026-11-06
+last_reviewed: 2026-11-07
 review_every_days: 90
 related: [ARCH-01, ARCH-05, ARCH-08, docs/adr/README.md]
 ---
@@ -150,6 +150,12 @@ accounts/
                                    EventBridge Scheduler tick 19:30 UTC, no Lambda retry, alarms errors >= 1
                                    and not-run 2 days, log group 30 d. Live override of the outbox
                                    redaction closed unless var.tripplanner_jobs_retention_override_enabled)
+    tripplanner_web.tf            (AA-1038 R5 hosting: the TripPlanner frontend on ECS, service
+                                   aa-tripplanner-<env>-web: ECR (IMMUTABLE), secret shell tripplanner/<env>/web
+                                   (tools/identity/tripplanner_web_secret.py), execution role, task definition
+                                   (Fargate Spot ARM64 512/1024, env TP_EDGE_GATE / TP_CLIENT_IP_SOURCE), target group
+                                   /api/health, desired 0 at create, ECS Exec off, alarm, the deploy role's web grant.
+                                   Edge: accounts/aa365 tripplanner_web_edge.tf)
     environment.tf                (AA-1004 P0: `module "environment"` = the Dev instance of modules/environment,
                                    the environment-scoped stack a future accounts/aa-prod root instantiates too;
                                    one moved block per moved resource, so the Dev plan stays a pure no-op. Slice 1
@@ -321,10 +327,18 @@ accounts/
     custom_domains.tf             (AA-818: ACM certs api-booking./api-tripplanner. (us-west-1) and auth./staff-auth.
                                    (us-east-1, provider alias aws.us_east_1) + validation records; API GW custom
                                    domains, alias records and Vercel CNAMEs gated by var.custom_domains_enabled;
-                                   Vercel hosts in var.custom_domain_vercel_hosts: tripplanner. (aa-tripplanner)
-                                   only (portal. left for crm_agency_edge.tf in AA-979 P2b; booking. left for
-                                   staff_web_edge.tf and the Preview hosts booking-preview. / aa-cis-preview. were
-                                   deleted at the AA-911 Vercel retirement, S272))
+                                   Vercel hosts in var.custom_domain_vercel_hosts: none left (tripplanner. moved to
+                                   tripplanner_web_edge.tf for AA-1038; portal. left for crm_agency_edge.tf in AA-979
+                                   P2b; booking. left for staff_web_edge.tf and the Preview hosts booking-preview. /
+                                   aa-cis-preview. were deleted at the AA-911 Vercel retirement, S272))
+    tripplanner_web_edge.tf       (AA-1038 R5 hosting: CloudFront tripplanner.<zone> on the shared VPC origin and
+                                   origin secret (crm_edge.tf) and the us-east-1 wildcard certificate
+                                   (crm_agency_edge.tf); CLOUDFRONT-scope web ACL aa-tripplanner-<env>-web (rate per IP,
+                                   rate on the two model paths, Challenge; replaces BotID); ALB :80 host rule
+                                   tripplanner_web; the tripplanner. CNAME (moved from custom_domains.tf) with the DNS
+                                   switch var.tripplanner_web_dns_on_cloudfront (default false = Vercel) and the 60 s
+                                   window var.tripplanner_web_dns_switch_window; root runbook
+                                   docs/ops/runbooks/tripplanner-web-ecs-cutover.md)
     photos_cdn.tf                 (AA-844, edge: CloudFront img.lumiguides.it.com in front of the bronze
                                    bucket's photos/ prefix — ACM cert us-east-1 + validation record always;
                                    validation wait, distribution (origin_path /photos, OAC SigV4, cache key
