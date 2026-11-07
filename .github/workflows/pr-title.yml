@@ -4,9 +4,11 @@ name: PR title
 # below, optional scope). Three Linear rules (lessons S243-S246):
 #   - no issue id anywhere in the title ("fix: AA-123" reads as a closing phrase, "[AA-123]" too);
 #   - no closing keyword in the body ("Fixes AA-123", "Closes AA-123", ...): Linear closes the issue on merge;
-#   - no issue id outside the one "Refs AA-<n>, ..." line of the body: Linear links every id it sees and its Git
+#   - no issue id in the body that its "Refs AA-<n>, ..." line does not name: Linear links every id it sees and its Git
 #     automation moved linked issues to Done on merge.
-# Bot PRs (bot/* branches, Dependabot, release-please) skip only the last rule: generated bodies cite issues.
+# Bot PRs (Dependabot, the CI bot's release / schema PRs, bot/* and release-please branches; by login, not by
+# user.type: the orchestrator's App is a Bot too) skip only the last rule: generated bodies cite issues.
+# An id the Refs line names may appear anywhere in the body; an id inside a file path is ignored.
 # Same rules as the root repo's pr-title.yml and the orchestrator's PR opener (tools/github in the root repo).
 #
 # Free: one short job per PR event, no checkout, no secrets beyond the default read-only token.
@@ -52,22 +54,38 @@ jobs:
         env:
           BODY: ${{ github.event.pull_request.body }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
-          AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+        shell: python3 {0}
         run: |
-          pattern='(^|[^[:alnum:]])(close[sd]?|closing|fix(e[sd])?|fixing|resolve[sd]?|resolving|complete[sd]?|completing)[[:space:]:]+AA-[0-9]+'
-          if printf '%s' "$BODY" | grep -qiE "$pattern"; then
-            printf '%s' "$BODY" | grep -inE "$pattern" | head -5
-            echo "::error title=Linear keyword::Use 'Refs AA-123' in the PR body. Closing keywords make Linear close the issue on merge; an issue is Done only after deploy and a live check."
-            exit 1
-          fi
-          if [ "$AUTHOR_TYPE" = "Bot" ] || [[ "$HEAD_REF" == bot/* ]]; then
-            echo "Bot PR: issue ids outside the Refs line are not checked."
-            exit 0
-          fi
-          stray=$(printf '%s\n' "$BODY" | tr -d '\r' | grep -nE 'AA-[0-9]+' | grep -vE '^[0-9]+:[[:space:]]*Refs[[:space:]]+AA-[0-9]+([[:space:]]*,[[:space:]]*AA-[0-9]+)*[[:space:]]*$' || true)
-          if [ -n "$stray" ]; then
-            printf '%s\n' "$stray" | head -5
-            echo "::error title=Linear id outside Refs::Name issues only on the one 'Refs AA-<n>, ...' line. Linear links every id in the body and may move it to Done on merge; describe other work in words."
-            exit 1
-          fi
-          echo "Body OK: no closing keyword, issue ids only on the Refs line."
+          # Same rule as stray_issue_ids() of the root repo's PR opener (tools/github); keep the two in step.
+          import os, re, sys
+          body = os.environ.get("BODY", "").replace("\r", "")
+          lines = body.splitlines()
+          closing = re.compile(r"(?<![0-9A-Za-z])(close[sd]?|closing|fix(e[sd])?|fixing|resolve[sd]?|resolving"
+                               r"|complete[sd]?|completing)[\s:]+AA-\d+", re.IGNORECASE)
+          hits = [line for line in lines if closing.search(line)]
+          if hits:
+              print("\n".join(hits[:5]))
+              print("::error title=Linear keyword::Use 'Refs AA-123' in the PR body. Closing keywords make Linear "
+                    "close the issue on merge; an issue is Done only after deploy and a live check.")
+              sys.exit(1)
+          # Generated bodies of the dependency / release / schema bots cite issues for context. The orchestrator's
+          # App (aa-agent[bot]) is NOT exempt: its PRs are the ones this rule is for.
+          bots = {"dependabot[bot]", "github-actions[bot]", "aa-ecosys-ci-bot[bot]"}
+          head = os.environ.get("HEAD_REF", "")
+          if os.environ.get("AUTHOR", "") in bots or head.startswith(("bot/", "release-please--")):
+              print("Bot PR: issue ids beyond the Refs line are not checked.")
+              sys.exit(0)
+          issue = re.compile(r"\bAA-\d+\b")
+          refs_line = re.compile(r"Refs\s+AA-\d+(?:\s*,\s*AA-\d+)*")
+          path_id = re.compile(r"[\w./-]*\bAA-\d+[\w-]*\.(?:md|py|json|ya?ml|sh|js|mjs|ts|tsx|sql|txt|html|toml)\b")
+          refs = {x for line in lines if refs_line.fullmatch(line.strip()) for x in issue.findall(line)}
+          stray = [line for line in lines if not refs_line.fullmatch(line.strip())
+                   and any(x not in refs for x in issue.findall(path_id.sub(" ", line)))]
+          if stray:
+              print("\n".join(stray[:5]))
+              print("::error title=Linear id not on the Refs line::The body names an issue that the 'Refs AA-<n>, ...' "
+                    "line does not. Linear links every id in the body and may move it to Done on merge: add it to "
+                    "Refs only if this PR does that issue, else describe the other work in words.")
+              sys.exit(1)
+          print("Body OK: no closing keyword; every issue id is on the Refs line (or in a file path).")
