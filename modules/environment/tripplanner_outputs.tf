@@ -24,6 +24,16 @@ output "tripplanner_lambda_exec_role_id" {
   value       = aws_iam_role.tripplanner_lambda_exec.id
 }
 
+output "tripplanner_jobs_exec_role_id" {
+  description = "AA-1038: execution role of the jobs Lambda: the root attaches the SES send grant to it (ses.tf) for the lead e-mail retries."
+  value       = aws_iam_role.tripplanner_jobs_exec.id
+}
+
+output "tripplanner_lead_webhook_key_secret_arn" {
+  description = "AA-1038: secret tripplanner/<env>/lead-webhook-key (write-only version; cicd_split.tf plan refresh list)."
+  value       = aws_secretsmanager_secret.tripplanner_lead_webhook_key.arn
+}
+
 output "tripplanner_browse_function_name" {
   description = "Browse Lambda (observability_ecosys.tf log group and alarms)."
   value       = aws_lambda_function.tripplanner_browse.function_name
