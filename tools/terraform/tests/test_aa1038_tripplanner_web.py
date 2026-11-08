@@ -10,8 +10,10 @@
    app gates (AA-TripPlanner-Web lib/botCheck.ts: the two model calls and Send to advisor, review S272), each scoped to the TripPlanner host AND the origin secret, after
    CommonRuleSet and before both allow rules; the rate rules key on the viewer address the distribution's
    viewer-request function writes. Every path match URL-decodes and normalizes first, and a protected path matches
-   with CONTAINS, so a dot-segment spelling (/api/browse/%2e/search, and a leading /%2e%2e/api/trip/send, which
-   NORMALIZE_PATH keeps) is caught too.
+   unanchored (CONTAINS semantics), so a dot-segment spelling (/api/browse/%2e/search, and a leading
+   /%2e%2e/api/trip/send, which NORMALIZE_PATH keeps) is caught too. Each path set is ONE regex_match_statement (the
+   planner pages, the protected paths), which keeps every rule within the provider's statement depth
+   (test_waf_statement_depth.py); the regexes match exactly what the old byte matches did.
 4. Caching: pages and /api/* never cached at the edge; only the immutable chunks and the photo proxy are.
 5. DNS: the record moved from custom_domains.tf (never destroyed), stays a CNAME on both sides, the switch is off by
    default, the TTL window is on, and the switch needs the edge.
@@ -228,7 +230,7 @@ def test_rate_rules_key_on_the_viewer_address_header_with_the_same_limits():
         assert "header_name       = local.tp.viewer_ip_header" in rule
         assert 'fallback_behavior = "MATCH"' in rule
         assert "response_code            = 429" in rule and 'custom_response_body_key = "rate_limited"' in rule
-    assert "for_each = local.tp.protected_paths" in model and "uri_path {}" in model
+    assert "regex_string = local.tp_protected_path_regex" in model and "uri_path {}" in model
     # The 429 body exists exactly when the rules do.
     body = _block_after(acl, acl.index('dynamic "custom_response_body"'))
     assert "for_each = local.tp_on ? [1] : []" in body and 'key          = "rate_limited"' in body
@@ -241,9 +243,9 @@ def test_challenge_rule_documents_of_the_planner_and_the_protected_paths_with_it
     assert 'name = "sec-fetch-dest"' in challenge and 'search_string         = "document"' in challenge
     assert 'search_string         = "GET"' in challenge
     # Only planner documents are challenged (the catalog pages never see an interstitial).
-    assert 'search_string         = "/plan"' in challenge and 'positional_constraint = "ENDS_WITH"' in challenge
-    assert 'search_string         = "/plan/"' in challenge
-    assert "for_each = local.tp.protected_paths" in challenge
+    assert "regex_string = local.tp_planner_path_regex" in challenge
+    assert "regex_string = local.tp_protected_path_regex" in challenge
+    assert "byte_match_statement" not in challenge.split("regex_string = local.tp_planner_path_regex")[1]
     # No ACL-wide challenge_config / token domains: the other hosts keep the ACL defaults.
     acl = _acl()
     assert acl.count("challenge_config {") == 1 and "token_domains" not in acl
@@ -309,9 +311,10 @@ def test_every_path_match_decodes_and_normalizes_before_comparing():
     acl = _acl()
     tp = "".join(_rule(acl, name) for name in TP_RULES)
     uri_matches = [m.start() for m in re.finditer(r"uri_path \{\}", tp)]
-    assert len(uri_matches) == 4, "model rate x1, plan document x2, challenge model x1"
+    assert len(uri_matches) == 3, "model rate x1, plan document x1, challenge model x1"
     for start in uri_matches:
-        stmt = _block_after(tp, tp.rindex("byte_match_statement {", 0, start))
+        stmt = _block_after(tp, tp.rindex("regex_match_statement {", 0, start))
+        assert re.search(r"regex_string = local\.tp_(planner|protected)_path_regex\n", stmt), stmt
         assert 'dynamic "text_transformation"' in stmt and "for_each = local.tp.path_transformations" in stmt, stmt
         assert "priority = text_transformation.key" in stmt and "type     = text_transformation.value" in stmt
         assert '"NONE"' not in stmt
@@ -341,10 +344,76 @@ def _waf_url_decode_then_normalize(path: str) -> str:
     return "/" + "/".join(lead + out)
 
 
-def _waf_protected_match(raw: str) -> bool:
-    """Rules 3 and 4: the transformed path CONTAINS a protected path (modules/waf, positional_constraint)."""
-    path = _waf_url_decode_then_normalize(raw)
+# --- the two path regexes (modules/waf locals) ---------------------------------------------------------------------
+# AWS WAF regex: the PCRE subset (no lookaround, no backreference, no \C, \R or \K, no atomic group, no possessive
+# quantifier), at most 200 characters per regex_string (WAF quota "Maximum length of a regex pattern"). Python's re
+# agrees with PCRE on the plain syntax these use (literals, "|", "$", escaped metacharacters); "$" matches at the end or
+# before a final newline in both.
+WAF_REGEX_MAX_LEN = 200
+
+
+def _hcl_string(name: str) -> str:
+    m = re.search(rf'^\s*{name}\s*=\s*"((?:[^"\\]|\\.)*)"\s*$', WAF, re.M)
+    assert m, name
+    return m.group(1).encode().decode("unicode_escape")  # HCL "\\" -> "\"
+
+
+def _protected_regex(paths: list[str]) -> str:
+    """Python mirror of local.tp_protected_path_regex: every path, regex metacharacters escaped, joined with "|"."""
+    return "|".join(re.sub(r"([.^$*+?()\[\]{}|\\])", r"\\\1", p) for p in paths)
+
+
+PLANNER_REGEX = _hcl_string("tp_planner_path_regex")
+PROTECTED_REGEX = _protected_regex(PROTECTED_PATHS)
+
+
+def test_the_path_regexes_are_the_ones_in_the_module():
+    assert PLANNER_REGEX == "/plan/|/plan$"
+    assert PROTECTED_REGEX == "/api/browse/search|/api/trip/narrate|/api/trip/send"
+    # The Terraform expression the Python mirror copies (escape every metacharacter, join with "|", no anchor).
+    assert (
+        'for p in local.tp.protected_paths : replace(p, "/([.^$*+?()\\\\[\\\\]{}|\\\\\\\\])/", "\\\\$1")'
+        in WAF
+    )
+    assert "tp_protected_path_regex = local.tp_on ? join(\"|\", [" in WAF
+    # The escape mirror on paths that hold every metacharacter (terraform console gives the same strings, S272).
+    assert _protected_regex(["/a.b", "/x+y(z)", "/q|r$"]) == r"/a\.b|/x\+y\(z\)|/q\|r\$"
+    for odd in ["/a.b", "/x+y(z)", "/q|r$", "/br[a]{1}\\s^*?"]:
+        assert re.fullmatch(_protected_regex([odd]), odd), odd
+
+
+def test_the_path_regexes_are_aws_waf_compatible_and_short():
+    for rx in (PLANNER_REGEX, PROTECTED_REGEX):
+        re.compile(rx)
+        assert 0 < len(rx) <= WAF_REGEX_MAX_LEN, rx
+        for banned in ("(?=", "(?!", "(?<=", "(?<!", "(?>", "\\C", "\\R", "\\K", "*+", "++", "?+", "(?P"):
+            assert banned not in rx, (rx, banned)
+        assert not re.search(r"\\[1-9]|\\k<", rx), rx  # no backreference
+        assert "(" not in rx.replace("\\(", ""), rx  # no group at all (capturing or not)
+    # Unanchored at the start: CONTAINS semantics (a leading /../ or /./ that NORMALIZE_PATH keeps still matches).
+    assert not PROTECTED_REGEX.startswith("^") and "$" not in PROTECTED_REGEX
+    # The worst case the module can build: every protected path in one regex stays well under the quota.
+    assert len(PROTECTED_REGEX) < WAF_REGEX_MAX_LEN // 2
+
+
+def _old_planner_match(path: str) -> bool:
+    """The byte matches the planner regex replaced: ENDS_WITH "/plan" OR CONTAINS "/plan/"."""
+    return path.endswith("/plan") or "/plan/" in path
+
+
+def _old_protected_match(path: str) -> bool:
+    """The byte matches the protected regex replaced: CONTAINS any protected path."""
     return any(p in path for p in PROTECTED_PATHS)
+
+
+def _waf_planner_match(raw: str) -> bool:
+    """Rule 4, planner documents: the transformed path matches local.tp_planner_path_regex."""
+    return re.search(PLANNER_REGEX, _waf_url_decode_then_normalize(raw)) is not None
+
+
+def _waf_protected_match(raw: str) -> bool:
+    """Rules 3 and 4: the transformed path matches local.tp_protected_path_regex (CONTAINS semantics)."""
+    return re.search(PROTECTED_REGEX, _waf_url_decode_then_normalize(raw)) is not None
 
 
 # Raw request paths the app (Next 16, WHATWG new URL) routes to a protected path. A leading back-reference survives
@@ -415,16 +484,48 @@ def test_the_waf_match_agrees_with_the_app_whatwg_resolution():
             assert _waf_protected_match(raw), (raw, app_path)
 
 
+PLANNER_SPELLINGS = [
+    "/plan", "/plan/", "/plan/x", "/en/plan", "/acme/plan", "/acme/plan/", "/acme/plan/day/2", "/x/../plan",
+    "/%2e%2e/plan", "/./plan", "/plan/%2e%2e", "/acme/%2e/plan", "//plan", "/PLAN", "/plans", "/planner", "/acme/plans",
+    "/explan", "/x/explan/y", "/plan.json", "/pla", "/", "", "/api/plan", "/plan%2f", "/plan%23x", "/plan#x",
+]
+
+
+def test_the_regexes_match_exactly_what_the_old_byte_matches_did():
+    # Same transformed input (URL_DECODE, NORMALIZE_PATH), same answer as the byte matches, path by path.
+    neighbours = [
+        "/api/trip", "/api/browse", "/api/health", "/api/trip/sen", "/api/browse/searc", "/api/trip/sendx",
+        "/xapi/trip/send", "/api/trip/send/", "/api/trip/send/.", "/api/trip/send%23x", "/api/browse/%73earch",
+        "/api/TRIP/send", "/api//browse/search", "/api/trip/narrate/1", "/api/trip/narrated",
+    ]
+    corpus = list(DOT_SPELLINGS) + neighbours + PLANNER_SPELLINGS
+    for raw in corpus:
+        path = _waf_url_decode_then_normalize(raw) if raw else raw
+        assert (re.search(PLANNER_REGEX, path) is not None) == _old_planner_match(path), raw
+        assert (re.search(PROTECTED_REGEX, path) is not None) == _old_protected_match(path), raw
+    # The one documented difference: "$" also matches before a final newline (a decoded %0a), so "/plan\n" is
+    # challenged while ENDS_WITH "/plan" let it through. More, never less.
+    assert re.search(PLANNER_REGEX, "/plan\n") and not _old_planner_match("/plan\n")
+
+
+def test_planner_pages_are_matched_and_catalog_pages_are_not():
+    for raw in ["/plan", "/acme/plan", "/acme/plan/day/2", "/x/../plan", "/acme/%2e/plan"]:
+        assert _waf_planner_match(raw), raw
+    for raw in ["/", "/tours/vietnam", "/plans", "/planner", "/acme/plans", "/explan", "/api/trip/send"]:
+        assert not _waf_planner_match(raw), raw
+
+
 def test_protected_path_matches_use_contains_never_exactly():
     # EXACTLY missed a leading back-reference (/%2e%2e/api/trip/send), which NORMALIZE_PATH keeps (review S272).
+    # The protected paths are one unanchored regex (CONTAINS semantics), never an EXACTLY byte match.
     acl = _acl()
     for name in ("TripPlannerRateLimitModelPaths", "TripPlannerChallengePlanner"):
         rule = _rule(acl, name)
-        i = rule.index("for_each = local.tp.protected_paths")
-        stmt = _block_after(rule, rule.index("byte_match_statement {", i))
-        assert "search_string         = statement.value" in stmt, name
-        assert 'positional_constraint = "CONTAINS"' in stmt, name
-        assert "EXACTLY" not in stmt, name
+        i = rule.index("regex_string = local.tp_protected_path_regex")
+        stmt = _block_after(rule, rule.rindex("regex_match_statement {", 0, i))
+        assert "uri_path {}" in stmt and "EXACTLY" not in stmt, name
+        assert "for_each = local.tp.protected_paths" not in rule, name  # no OR of byte matches any more
+    assert not PROTECTED_REGEX.startswith("^") and not PROTECTED_REGEX.endswith("$")
 
 
 def test_protected_paths_are_the_app_paths_send_included():

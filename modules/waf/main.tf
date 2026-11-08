@@ -21,6 +21,18 @@ locals {
   tp_on         = var.tripplanner_web != null && nonsensitive(var.origin_verify_header != null)
   tp_host_regex = local.tp_on ? "^${replace(lower(local.tp.host), ".", "\\.")}(:443)?$" : null
 
+  # One regex per path set, so no rule nests a logical statement deeper than 3 levels (the provider schema refuses a
+  # fourth: and > or > and > or failed the plan, S272; tools/terraform/tests/test_waf_statement_depth.py). Both run on
+  # uri_path after local.tp.path_transformations, like the byte matches they replaced, and use no group, no
+  # lookaround and no backreference (AWS WAF regex subset).
+  #   planner: the old ENDS_WITH "/plan" OR CONTAINS "/plan/" (/plan, /{tenant}/plan and anything below them).
+  #     PCRE's $ also matches before a final newline, so a decoded "/plan\n" is challenged too (more, never less).
+  #   protected: the old CONTAINS of each protected path, unanchored, every regex metacharacter escaped.
+  tp_planner_path_regex = "/plan/|/plan$"
+  tp_protected_path_regex = local.tp_on ? join("|", [
+    for p in local.tp.protected_paths : replace(p, "/([.^$*+?()\\[\\]{}|\\\\])/", "\\$1")
+  ]) : null
+
   # Rule order (first terminating action wins). The numbers only order the rules; a rule that is off leaves a gap.
   #   1   CommonRuleSet first, for every caller (content inspection, S235).
   #   2-4 TripPlanner web (AA-1038): after the content rules, BEFORE both allow rules. CloudFrontOriginAllow would end
@@ -164,9 +176,9 @@ resource "aws_wafv2_web_acl" "main" {
   #
   # Every path match runs var.tripplanner_web.path_transformations (URL_DECODE, NORMALIZE_PATH): the app resolves a
   # dot-segment spelling such as /api/browse/%2e/search to the model route, so the rules must see the same path.
-  # A protected path matches with CONTAINS, never EXACTLY: NORMALIZE_PATH keeps a back-reference at the start of the
-  # path (AWS: "not at the beginning of the input"), so /%2e%2e/api/trip/send stays /../api/trip/send for WAF while
-  # the app (WHATWG new URL) resolves it to /api/trip/send; a resolver may also drop a raw #fragment suffix. Matching
+  # A protected path matches unanchored (CONTAINS semantics, local.tp_protected_path_regex), never EXACTLY:
+  # NORMALIZE_PATH keeps a back-reference at the start of the path (AWS: "not at the beginning of the input"), so
+  # /%2e%2e/api/trip/send stays /../api/trip/send for WAF while the app (WHATWG new URL) resolves it to /api/trip/send; a resolver may also drop a raw #fragment suffix. Matching
   # more is harmless: the rules are scoped to the TripPlanner host and the origin secret, and the app answers any other
   # path 404 (AA-TripPlanner-Web lib/edgeGate.ts compares the resolved path exactly). Review S272.
   dynamic "rule" {
@@ -296,25 +308,18 @@ resource "aws_wafv2_web_acl" "main" {
                   }
                 }
               }
+              # The protected paths: CONTAINS any of them (one regex, see local.tp_protected_path_regex).
               statement {
-                or_statement {
-                  dynamic "statement" {
-                    for_each = local.tp.protected_paths
+                regex_match_statement {
+                  regex_string = local.tp_protected_path_regex
+                  field_to_match {
+                    uri_path {}
+                  }
+                  dynamic "text_transformation" {
+                    for_each = local.tp.path_transformations
                     content {
-                      byte_match_statement {
-                        search_string         = statement.value
-                        positional_constraint = "CONTAINS"
-                        field_to_match {
-                          uri_path {}
-                        }
-                        dynamic "text_transformation" {
-                          for_each = local.tp.path_transformations
-                          content {
-                            priority = text_transformation.key
-                            type     = text_transformation.value
-                          }
-                        }
-                      }
+                      priority = text_transformation.key
+                      type     = text_transformation.value
                     }
                   }
                 }
@@ -420,61 +425,36 @@ resource "aws_wafv2_web_acl" "main" {
                       }
                     }
                   }
-                  # The planner pages only (/plan, /{tenant}/plan and below).
+                  # The planner pages only (/plan, /{tenant}/plan and below; local.tp_planner_path_regex).
                   statement {
-                    or_statement {
-                      statement {
-                        byte_match_statement {
-                          search_string         = "/plan"
-                          positional_constraint = "ENDS_WITH"
-                          field_to_match {
-                            uri_path {}
-                          }
-                          dynamic "text_transformation" {
-                            for_each = local.tp.path_transformations
-                            content {
-                              priority = text_transformation.key
-                              type     = text_transformation.value
-                            }
-                          }
-                        }
+                    regex_match_statement {
+                      regex_string = local.tp_planner_path_regex
+                      field_to_match {
+                        uri_path {}
                       }
-                      statement {
-                        byte_match_statement {
-                          search_string         = "/plan/"
-                          positional_constraint = "CONTAINS"
-                          field_to_match {
-                            uri_path {}
-                          }
-                          dynamic "text_transformation" {
-                            for_each = local.tp.path_transformations
-                            content {
-                              priority = text_transformation.key
-                              type     = text_transformation.value
-                            }
-                          }
+                      dynamic "text_transformation" {
+                        for_each = local.tp.path_transformations
+                        content {
+                          priority = text_transformation.key
+                          type     = text_transformation.value
                         }
                       }
                     }
                   }
                 }
               }
-              # The protected paths: no valid token, no model call and no lead. CONTAINS, see the note above rule 2.
-              dynamic "statement" {
-                for_each = local.tp.protected_paths
-                content {
-                  byte_match_statement {
-                    search_string         = statement.value
-                    positional_constraint = "CONTAINS"
-                    field_to_match {
-                      uri_path {}
-                    }
-                    dynamic "text_transformation" {
-                      for_each = local.tp.path_transformations
-                      content {
-                        priority = text_transformation.key
-                        type     = text_transformation.value
-                      }
+              # The protected paths: no valid token, no model call and no lead (CONTAINS, see the note above rule 2).
+              statement {
+                regex_match_statement {
+                  regex_string = local.tp_protected_path_regex
+                  field_to_match {
+                    uri_path {}
+                  }
+                  dynamic "text_transformation" {
+                    for_each = local.tp.path_transformations
+                    content {
+                      priority = text_transformation.key
+                      type     = text_transformation.value
                     }
                   }
                 }
