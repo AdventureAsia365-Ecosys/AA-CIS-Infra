@@ -99,3 +99,8 @@ crm_mail_oauth_enabled = true
 # staff_web_dns_on_ecs and the apex switch staff_web_apex_on_alb were removed with their Vercel targets (both hosts and
 # the apex point at the shared ALB, staff_web_edge.tf / dns.tf).
 staff_web_dns_switch_window = false
+
+# AA-1038 R5 (S272, 08/11/2026): tripplanner.<zone> points at the CloudFront distribution (ECS) after the runbook checks
+# through the distribution passed (health git_sha, pages, WAF challenge, real browser search). Rollback = false.
+# The 60 s TTL window (tripplanner_web_dns_switch_window, default true) stays on until the Vercel retirement.
+tripplanner_web_dns_on_cloudfront = true
