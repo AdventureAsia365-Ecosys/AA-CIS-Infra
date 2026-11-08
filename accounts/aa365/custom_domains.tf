@@ -199,7 +199,7 @@ resource "aws_route53_record" "tripplanner_api" {
 # resolves. Add the domain to the Vercel project before turning this on. booking. (the staff admin) left this map at
 # the AA-911 Vercel retirement: it is aws_route53_record.staff_web["booking"] (staff_web_edge.tf, moved block).
 # tripplanner. left it for AA-1038: aws_route53_record.tripplanner_web (tripplanner_web_edge.tf, moved block), which
-# keeps the Vercel target until the DNS switch.
+# points at the TripPlanner web distribution since the Vercel retirement (S272).
 # -----------------------------------------------------------------------------
 resource "aws_route53_record" "vercel_frontend" {
   for_each = var.custom_domains_enabled ? var.custom_domain_vercel_hosts : {}

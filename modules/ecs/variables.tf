@@ -306,7 +306,7 @@ variable "t9_faq_llm_filter" {
 }
 
 variable "tripplanner_revalidate_url" {
-  description = "AA-1038: TRIPPLANNER_REVALIDATE_URL of the CIS api and worker (the TripPlanner catalog purge endpoint). null = not set (the app default, the Vercel host); set to the public host when it points at ECS. Never empty (\"\" switches delivery off)."
+  description = "AA-1038: TRIPPLANNER_REVALIDATE_URL of the CIS api and worker (the TripPlanner catalog purge endpoint). null = not set (the app default, the public TripPlanner host since the Vercel retirement); the root sets the public host of its zone. Never empty (\"\" switches delivery off)."
   type        = string
   default     = null
 

@@ -108,12 +108,13 @@ resource "aws_secretsmanager_secret_version" "tripplanner_db" {
 
 # -----------------------------------------------------------------------------
 # Edge shared-secret. The Lambdas verify the X-TripPlanner-Key header against
-# this value (backend/shared/auth.py); the Vercel BFF sends it. API Gateway
+# this value (backend/shared/auth.py); the TripPlanner web BFF (ECS service
+# aa-tripplanner-dev-web, tripplanner_web.tf) sends it. API Gateway
 # itself stays authorization = NONE (MVP; a JWT/authorizer is the later
 # hardening). Generated here (random_password) so the value is managed, and
 # stored in Secrets Manager, the single source of truth: since AA-878 (S243) the
 # Lambdas read it by name at run time (IAM grant ReadApiKeySecret below), and
-# Nghiep copies the same value into the Vercel TRIPPLANNER_API_KEY by hand.
+# the web task gets it as TRIPPLANNER_API_KEY from its task definition secrets.
 # -----------------------------------------------------------------------------
 resource "aws_secretsmanager_secret" "tripplanner_api_key" {
   name                    = "tripplanner/${var.environment}/api-key"
@@ -589,7 +590,7 @@ resource "aws_apigatewayv2_stage" "tripplanner" {
   # AA-806 (from AA-805): the HTTP API has no auth at the edge and HTTP APIs cannot carry a WAF web
   # ACL, so stage throttling is the only cap in front of the Lambdas. default_route_settings applies
   # per route (each route its own bucket), not as one stage-wide cap. The limits are shared by every
-  # caller (the Vercel BFF is the only one), not per client. The default is deliberately generous
+  # caller (the TripPlanner web BFF on ECS is the only one), not per client. The default is deliberately generous
   # (map tile fan-out, see the search route above); tight limits sit only on the two LLM-cost routes.
   # Numbers (Dev placeholders): tripplanner_variables.tf.
   default_route_settings {

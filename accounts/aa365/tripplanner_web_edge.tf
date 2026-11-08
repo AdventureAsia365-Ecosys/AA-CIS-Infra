@@ -48,7 +48,7 @@
 #                                     interstitial. The app answers the older spellings of the three calls 404
 #                                     (AA-TripPlanner-Web lib/edgeGate.ts, task env TP_EDGE_GATE=on), so no model call
 #                                     and no lead passes outside rules 3 and 4. On ECS these rules are the whole bot
-#                                     check of the three calls (BotID needs the Vercel edge: the image builds it off).
+#                                     check of the three calls (Vercel BotID left with the Vercel project, AA-1038).
 #   Every path match of rules 3 and 4 runs URL_DECODE then NORMALIZE_PATH (local.tp_web_path_normalize), and a
 #   protected path matches with CONTAINS, so a dot-segment spelling (/api/browse/%2e/search, /api/trip/./narrate,
 #   /x/../api/trip/send, and a LEADING one: /%2e%2e/api/trip/send, /../api/browse/search, /./api/trip/narrate), which
@@ -64,15 +64,15 @@
 #   photos itself), so the per-IP limit counts pages, BFF calls and cache misses.
 #   No extra WAF log: the ACL's log keeps the requests a rule acted on (30 days, modules/waf).
 
-# DNS (root runbook docs/ops/runbooks/tripplanner-web-ecs-cutover.md): tripplanner.<zone> stays a CNAME on both sides of
-# the switch, so the switch and its rollback are a one-value change. var.tripplanner_web_dns_on_cloudfront = false
-# (default) keeps the Vercel target; true points it at the distribution. var.tripplanner_web_dns_switch_window gives
-# the record a 60 s TTL (300 s normally) while a switch or a rollback is possible; it is on from the first apply, so
-# the window is open well before the switch PR. The record moved here from custom_domains.tf
+# DNS (root runbook docs/ops/runbooks/tripplanner-web-ecs-cutover.md): tripplanner.<zone> is a CNAME to the distribution.
+# The cut-over switch and its Vercel rollback target were removed at the Vercel retirement (runbook section 4, S272):
+# the aa-tripplanner Vercel project is gone, so a CNAME to Vercel would be a takeover risk. Rollback from here is a
+# redeploy of the ECS service, not a DNS change. var.tripplanner_web_dns_switch_window keeps the 60 s TTL option for a
+# later move of this host (off since the retirement: 300 s). The record moved here from custom_domains.tf
 # (vercel_frontend["tripplanner"]) with a moved block: the same Route 53 record, never destroyed.
 #
-# Certificate: the us-east-1 wildcard *.<zone> of crm_agency_edge.tf (tripplanner. CNAMEs to Vercel until the switch;
-# a certificate naming it would fail CAA, critic C1). A certificate can serve several distributions.
+# Certificate: the us-east-1 wildcard *.<zone> of crm_agency_edge.tf (chosen while tripplanner. still CNAMEd to Vercel:
+# a certificate naming it would have failed CAA, critic C1). A certificate can serve several distributions.
 #
 # Cost (us-west-1 / global, est., D-19): 3 rules x 1 USD/month in the existing ALB web ACL (no web ACL fee: that ACL
 # is paid already) + 0.60 USD per million requests it inspects; Challenge responses are billed per attempt (AWS WAF
@@ -80,8 +80,8 @@
 # million invocations after the always-free 2M a month (shared with crm_edge.tf), 0 on Dev; the photo cache policy
 # costs nothing; CloudFront and the VPC origin inside the always-free tier (1 TB, 10M requests); ACM, Route 53 alias
 # queries 0; one ALB rule inside the LCU rule allowance. ~ 3.1 USD/month for the edge (was ~ 8.5 with the CLOUDFRONT
-# web ACL); with the task (tripplanner_web.tf, ~ 6 USD) ~ 9.5 USD/month on Dev. Vercel Hobby costs nothing, so the
-# delta is the same figure.
+# web ACL); with the task (tripplanner_web.tf, ~ 6 USD) ~ 9.5 USD/month on Dev. Vercel Hobby cost nothing, so the
+# delta of the move is the same figure.
 # =============================================================================
 
 variable "tripplanner_web_edge_enabled" {
@@ -90,22 +90,10 @@ variable "tripplanner_web_edge_enabled" {
   default     = true
 }
 
-variable "tripplanner_web_dns_on_cloudfront" {
-  description = "AA-1038: false keeps tripplanner.<zone> on Vercel (var.tripplanner_web_vercel_target); true points it at the CloudFront distribution (ECS). Flip only after the runbook's checks through the distribution pass; false is the rollback."
+variable "tripplanner_web_dns_switch_window" {
+  description = "AA-1038: true gives tripplanner.<zone> a 60 s TTL (300 s otherwise) while a move of this host and its rollback are possible. Apply it at least 30 minutes before the record changes. Off since the Vercel retirement (S272)."
   type        = bool
   default     = false
-}
-
-variable "tripplanner_web_dns_switch_window" {
-  description = "AA-1038: true gives tripplanner.<zone> a 60 s TTL (300 s otherwise) while a switch or a rollback is possible. Keep it on at least 30 minutes before the record changes; close it after the Vercel retirement."
-  type        = bool
-  default     = true
-}
-
-variable "tripplanner_web_vercel_target" {
-  description = "AA-1038: the CNAME target Vercel gave the aa-tripplanner project for tripplanner.<zone> (was custom_domain_vercel_hosts[\"tripplanner\"]). Used while tripplanner_web_dns_on_cloudfront is false; removed at the Vercel retirement (a CNAME to Vercel with no project claiming the host is a takeover risk)."
-  type        = string
-  default     = "a1520bcb29624260.vercel-dns-017.com"
 }
 
 variable "tripplanner_web_rate_limit" {
@@ -167,7 +155,7 @@ locals {
   tp_web_static_path = "/_next/static/*"
   tp_web_photo_path  = "/photo-cdn/*"
 
-  # TTL of the tripplanner. record: 60 s during the switch window, else the 300 s it had in custom_domains.tf.
+  # TTL of the tripplanner. record: 60 s during a switch window, else the 300 s it had in custom_domains.tf.
   tp_web_dns_ttl = var.tripplanner_web_dns_switch_window ? 60 : 300
 }
 
@@ -352,8 +340,9 @@ resource "aws_lb_listener_rule" "tripplanner_web" {
 }
 
 # -----------------------------------------------------------------------------
-# DNS: tripplanner.<zone>. Moved from custom_domains.tf (vercel_frontend["tripplanner"]): the same Route 53 record,
-# updated in place (TTL now, target at the switch), never destroyed.
+# DNS: tripplanner.<zone> -> the distribution. Moved from custom_domains.tf (vercel_frontend["tripplanner"]): the same
+# Route 53 record, updated in place (TTL and target at the cut-over, TTL back to 300 s at the Vercel retirement), never
+# destroyed.
 # -----------------------------------------------------------------------------
 moved {
   from = aws_route53_record.vercel_frontend["tripplanner"]
@@ -367,12 +356,12 @@ resource "aws_route53_record" "tripplanner_web" {
   name    = local.tp_web_host
   type    = "CNAME"
   ttl     = local.tp_web_dns_ttl
-  records = [var.tripplanner_web_dns_on_cloudfront ? aws_cloudfront_distribution.tripplanner_web[0].domain_name : var.tripplanner_web_vercel_target]
+  records = [one(aws_cloudfront_distribution.tripplanner_web[*].domain_name)]
 
   lifecycle {
     precondition {
-      condition     = !var.tripplanner_web_dns_on_cloudfront || local.tp_web_edge_on == 1
-      error_message = "tripplanner_web_dns_on_cloudfront needs the TripPlanner web edge (tripplanner_web_edge_enabled and the CRM edge)."
+      condition     = local.tp_web_edge_on == 1
+      error_message = "tripplanner.<zone> points at the TripPlanner web distribution: it needs the TripPlanner web edge (tripplanner_web_edge_enabled and the CRM edge)."
     }
   }
 }
@@ -381,14 +370,14 @@ resource "aws_route53_record" "tripplanner_web" {
 # Outputs (no secret values).
 # -----------------------------------------------------------------------------
 output "tripplanner_web_edge" {
-  description = "AA-1038: the public host, the distribution (its domain is the --resolve target of the pre-switch checks and the repository variable TP_WEB_CLOUDFRONT_DNS), the web ACL that holds the TripPlanner rules (the ALB one) with their rule names, and where the host points now."
+  description = "AA-1038: the public host, the distribution (its domain is the --resolve target of the pre-switch checks and the repository variable TP_WEB_CLOUDFRONT_DNS), the web ACL that holds the TripPlanner rules (the ALB one) with their rule names, and where the host points (always the distribution)."
   value = local.tp_web_edge_on == 1 ? {
     host                = local.tp_web_host
     distribution_id     = aws_cloudfront_distribution.tripplanner_web[0].id
     distribution_domain = aws_cloudfront_distribution.tripplanner_web[0].domain_name
     web_acl_name        = module.waf.web_acl_name
     waf_rules           = module.waf.tripplanner_web_rule_names
-    dns_target          = var.tripplanner_web_dns_on_cloudfront ? aws_cloudfront_distribution.tripplanner_web[0].domain_name : var.tripplanner_web_vercel_target
+    dns_target          = aws_cloudfront_distribution.tripplanner_web[0].domain_name
     ecs_service         = module.environment.tripplanner_web_ecs_service_name
     ecr_repository_url  = module.environment.tripplanner_web_ecr_repository_url
     secret_name         = module.environment.tripplanner_web_secret_name

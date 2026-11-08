@@ -4,7 +4,7 @@ name: Docs Gen (generated infra docs)
 #   network.md    ARCH-02-tables  VPC, subnets, routes, NAT, security groups, load balancers, API Gateway, DNS
 #   inventory.md  ARCH-03         resources per App tag + the root Terraform outputs
 #   iam-roles.md  ARCH-04-tables  IAM roles: trust, boundary, managed + inline policies
-#   env-config.md APP-03          env var NAMES of every ECS service, Lambda function and Vercel project
+#   env-config.md APP-03          env var NAMES of every ECS service and Lambda function
 #                                 (AA-894 scope 5, tools/docs/gen_env_config.py; see step "Env config register")
 #
 # 1. terraform init + `terraform show -json` with the READ-ONLY plan role (aa-cis-infra-tf-plan, which
@@ -22,9 +22,9 @@ name: Docs Gen (generated infra docs)
 #    lambda:ListFunctions, secretsmanager:ListSecrets metadata) through the runner's preinstalled AWS CLI v2:
 #    every call projects names with a JMESPath --query (Lambda: keys() of the environment), so a value never
 #    leaves the CLI process and is written nowhere. No pip install in this job: it holds the plan role's
-#    credentials and a root repo App token, and only stdlib Python runs next to them. Vercel names come from the API when the repo secret
-#    VERCEL_TOKEN is set (team: repo variable VERCEL_TEAM_ID), otherwise from the checked-in snapshot
-#    tools/docs/env_config_vercel.json (refresh: gen_env_config.py vercel-snapshot --cli). A failure there
+#    credentials and a root repo App token, and only stdlib Python runs next to them. No ecosystem runtime is on
+#    Vercel since the TripPlanner retirement (S272): Vercel is no longer collected and render reads the checked-in,
+#    empty snapshot tools/docs/env_config_vercel.json. A failure there
 #    does not hold back the Terraform pages: the run turns red at the end instead.
 # Public repos (AA-981, S248 d15): every page goes through tools/docs/aws_mask.py (gen_docs.page): account ids become
 #    labels ({acc2}), ARNs lose partition + account (and the Secrets Manager suffix), EC2/VPC ids become <prefix>-{masked};
@@ -188,21 +188,13 @@ jobs:
       - name: Env config register (names only)
         id: envcfg
         continue-on-error: true
-        env:
-          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-          VERCEL_TEAM_ID: ${{ vars.VERCEL_TEAM_ID }}
         run: |
           umask 077
           GEN=tools/docs/gen_env_config.py
           python3 "$GEN" collect-aws --cluster aa-cis-dev-cluster --region "$AWS_REGION" --out "$RUNNER_TEMP/envcfg-aws.json"
-          VERCEL_JSON=tools/docs/env_config_vercel.json
-          if [ -n "$VERCEL_TOKEN" ]; then
-            python3 "$GEN" vercel-snapshot --api --out "$RUNNER_TEMP/envcfg-vercel.json"
-            VERCEL_JSON="$RUNNER_TEMP/envcfg-vercel.json"
-          fi
-          python3 "$GEN" render --aws "$RUNNER_TEMP/envcfg-aws.json" --vercel "$VERCEL_JSON" --out-dir generated \
+          python3 "$GEN" render --aws "$RUNNER_TEMP/envcfg-aws.json" --out-dir generated \
             --source "AA-CIS-Infra Docs Gen ($REASON), $RUN_URL" --sha "$GITHUB_SHA"
-          echo "- \`env-config.md\`: $(grep -c '^| ' generated/env-config.md) table rows (Vercel: $([ -n "$VERCEL_TOKEN" ] && echo live API || echo checked-in snapshot))" >> "$GITHUB_STEP_SUMMARY"
+          echo "- \`env-config.md\`: $(grep -c '^| ' generated/env-config.md) table rows" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Keep the rendered pages as an artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -259,7 +251,7 @@ jobs:
             echo "Pages updated: $(echo $PAGES | tr '\n' ' ')"
             echo
             echo "Source: the Terraform state of \`accounts/aa365\` (read-only plan role), rendered by \`tools/docs/gen_docs.py\`;"
-            echo "\`env-config.md\`: live ECS task definitions, Lambda configurations and Vercel env names (names only), rendered by \`tools/docs/gen_env_config.py\`."
+            echo "\`env-config.md\`: live ECS task definitions and Lambda configurations (names only), rendered by \`tools/docs/gen_env_config.py\`."
             echo "Review the diff for changes no Terraform PR explains, then merge by hand."
             echo "Do not push to \`$PR_BRANCH\`: every run force-pushes it from master. This PR is updated in place until merged."
             echo

@@ -208,9 +208,10 @@ module "ecs" {
   # 0.00095, openai-direct 2 models 0.0004), about 0.20 USD a month; a refused call costs 0. Rollback: false.
   llm_daily_probe = true
 
-  # AA-1038: the CIS catalog purge notice follows tripplanner. to ECS at the DNS switch (tripplanner_web_edge.tf); until
-  # then the app default (the Vercel host, which serves the site) stays.
-  tripplanner_revalidate_url = var.tripplanner_web_dns_on_cloudfront ? "https://${local.tp_web_host}/api/revalidate/catalog" : null
+  # AA-1038: the CIS catalog purge notice goes to the public TripPlanner host, served by ECS behind CloudFront
+  # (tripplanner_web_edge.tf). The same value as the app default since the Vercel retirement; set here so the target
+  # follows var.dns_zone_name.
+  tripplanner_revalidate_url = "https://${local.tp_web_host}/api/revalidate/catalog"
   # AA-835 (S6 review): the supply_media_purge job invalidates withdrawn Booking photo copies on the photos CDN.
   photos_cdn_distribution_arn = local.photos_cdn_on == 1 ? aws_cloudfront_distribution.photos_cdn[0].arn : ""
   # AA-839: data_erasure apply switch + tenant retention window, driven by local.erasure_drill above.

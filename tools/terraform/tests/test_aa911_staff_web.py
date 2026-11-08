@@ -257,16 +257,23 @@ def test_preview_clients_and_vercel_callbacks_are_gone():
     assert '"https://booking.lumiguides.it.com/api/auth/callback/cognito"' in urls
 
 
-def _vercel_cname_labels() -> set[str]:
-    labels = set(re.findall(r'^\s*([a-z0-9-]+)\s*=\s*"[^"]*vercel-dns[^"]*"', VERCEL_VARS, re.M)) - {"description"}
-    # AA-1038: tripplanner. keeps its Vercel target in tripplanner_web_edge.tf until the DNS switch.
-    m = re.search(r'^variable "tripplanner_web_vercel_target" \{', TP_WEB_EDGE, re.M)
-    if m and "vercel-dns" in _block_after(TP_WEB_EDGE, m.start()):
+def _vercel_cname_labels(vercel_vars: str = VERCEL_VARS, tp_web_edge: str = TP_WEB_EDGE, dns: str = DNS) -> set[str]:
+    labels = set(re.findall(r'^\s*([a-z0-9-]+)\s*=\s*"[^"]*vercel-dns[^"]*"', vercel_vars, re.M)) - {"description"}
+    # AA-1038: tripplanner. pointed at Vercel through a variable of tripplanner_web_edge.tf until the Vercel retirement
+    # (S272); any Vercel CNAME target left in that file counts as tripplanner.
+    if "vercel-dns" in tp_web_edge:
         labels.add("tripplanner")
-    for m in re.finditer(r'"([a-z0-9-]+)\|CNAME" = \{', DNS):
-        if "vercel" in _block_after(DNS, m.start()):
+    for m in re.finditer(r'"([a-z0-9-]+)\|CNAME" = \{', dns):
+        if "vercel" in _block_after(dns, m.start()):
             labels.add(m.group(1))
     return labels
+
+
+def test_vercel_cname_parser_finds_a_vercel_target():
+    # Invented targets: the parser must still see a Vercel CNAME in each of the three places one could come back.
+    assert _vercel_cname_labels('  shop = "abc123.vercel-dns-017.com"\n', "", "") == {"shop"}
+    assert _vercel_cname_labels("", 'default = "abc123.vercel-dns-017.com"', "") == {"tripplanner"}
+    assert _vercel_cname_labels("", "", '"blog|CNAME" = {\n records = ["cname.vercel-dns.com"]\n}') == {"blog"}
 
 
 def test_certificate_never_names_a_host_that_cnames_off_zone():
@@ -277,7 +284,9 @@ def test_certificate_never_names_a_host_that_cnames_off_zone():
     assert "staff_web_cert_sans   = [var.dns_zone_name]" in EDGE
     assert "staff_web_hosts" not in cert
     labels = _vercel_cname_labels()
-    assert "tripplanner" in labels, labels  # the parser still finds the Vercel CNAMEs that remain
+    # No Vercel CNAME is left since the TripPlanner Vercel retirement (AA-1038, S272); the parser itself is pinned by
+    # test_vercel_cname_parser_finds_a_vercel_target below.
+    assert labels == set(), labels
     names = re.findall(r'staff_web_cert_(?:domain|sans)\s*=\s*(.+)', EDGE)
     for label in labels:
         assert all(f'"{label}.' not in n for n in names), f"certificate names {label}. (a CNAME to Vercel)"
