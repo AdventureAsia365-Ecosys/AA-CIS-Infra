@@ -100,7 +100,8 @@ crm_mail_oauth_enabled = true
 # the apex point at the shared ALB, staff_web_edge.tf / dns.tf).
 staff_web_dns_switch_window = false
 
-# AA-1038 R5 (S272, 08/11/2026): tripplanner.<zone> points at the CloudFront distribution (ECS) after the runbook checks
-# through the distribution passed (health git_sha, pages, WAF challenge, real browser search). Rollback = false.
-# The 60 s TTL window (tripplanner_web_dns_switch_window, default true) stays on until the Vercel retirement.
-tripplanner_web_dns_on_cloudfront = true
+# AA-1038 R5 (S272): tripplanner.<zone> points at the CloudFront distribution (ECS) since the cut-over of 08/11/2026.
+# The switch tripplanner_web_dns_on_cloudfront and its Vercel target were removed at the Vercel retirement (root
+# runbook tripplanner-web-ecs-cutover.md section 4 step 3): the record always names the distribution. The 60 s window
+# is closed: TTL back to 300 s.
+tripplanner_web_dns_switch_window = false

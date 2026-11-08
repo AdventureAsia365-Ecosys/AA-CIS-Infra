@@ -309,8 +309,8 @@ AA1038_WEB_INPUTS = {
     "tripplanner_web_identity_secret_arns": "merge(",
 }
 AA1038_ROOT_EDGE_SETTINGS = {
-    "tripplanner_web_edge_enabled", "tripplanner_web_dns_on_cloudfront", "tripplanner_web_dns_switch_window",
-    "tripplanner_web_vercel_target", "tripplanner_web_rate_limit", "tripplanner_web_model_rate_limit",
+    "tripplanner_web_edge_enabled", "tripplanner_web_dns_switch_window",
+    "tripplanner_web_rate_limit", "tripplanner_web_model_rate_limit",
     "tripplanner_web_challenge_immunity_s",
 }
 

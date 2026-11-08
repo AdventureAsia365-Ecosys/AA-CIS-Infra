@@ -129,10 +129,17 @@ def _aws_model() -> dict:
 
 
 def _vercel_model() -> dict:
-    # Every required project from the API shape, plus one invented, non-required project from the CLI shape.
+    # No project is required since the TripPlanner retirement (S272), but the Vercel path still renders: one invented
+    # project from the API shape and one from the CLI shape keep the value-leak and kind tests covering it.
     projects = {p: ec.extract_vercel_api(VERCEL_API_ENVS) for p in ec.REQUIRED_VERCEL}
+    projects["aa-tripplanner-sample"] = ec.extract_vercel_api(VERCEL_API_ENVS)
     projects["aa-booking-sample"] = ec.parse_vercel_cli(VERCEL_CLI_TEXT)
     return {"format": 1, "source": "snapshot", "captured": "2026-10-22", "projects": projects}
+
+
+def _empty_vercel() -> dict:
+    # What the checked-in snapshot holds since the TripPlanner retirement (S272).
+    return {"format": 1, "source": "snapshot", "captured": "2026-11-08", "projects": {}}
 
 
 class NoValueLeaks(unittest.TestCase):
@@ -270,8 +277,9 @@ class Render(unittest.TestCase):
         for h in ("## CIS", "## Booking", "## TripPlanner", "## Identity (Cognito triggers)",
                   "### ECS service `aa-cis-dev-api`", "### ECS service `aa-cis-dev-worker`",
                   "### ECS service `aa-booking-dev-api`", "### ECS service `aa-cis-dev-admin`",
-                  "### ECS service `aa-booking-dev-admin`", "### Lambda `aa-tripplanner-dev-browse`",
-                  "### Vercel project `aa-tripplanner`", "### Vercel project `aa-booking-sample`"):
+                  "### ECS service `aa-booking-dev-admin`", "### ECS service `aa-tripplanner-dev-web`",
+                  "### Lambda `aa-tripplanner-dev-browse`",
+                  "### Vercel project `aa-tripplanner-sample`", "### Vercel project `aa-booking-sample`"):
             self.assertIn(h, self.page)
         self.assertLess(self.page.index("## CIS"), self.page.index("## Booking"))
 
@@ -330,19 +338,36 @@ class Cli(unittest.TestCase):
             self.assertFalse((t / "gen" / ec.PAGE).exists())
 
     def test_retired_vercel_projects_are_not_required(self):
-        # AA-911 (S272): the staff frontends left Vercel; a live snapshot without them must still render, and the
-        # ECS services that replaced them are required instead.
-        self.assertEqual(ec.REQUIRED_VERCEL, ("aa-tripplanner",))
-        self.assertTrue({"aa-cis-dev-admin", "aa-booking-dev-admin"} <= set(ec.REQUIRED_ECS))
-        vercel = {"format": 1, "source": "api", "captured": "2026-11-07",
-                  "projects": {"aa-tripplanner": ec.extract_vercel_api(VERCEL_API_ENVS)}}
-        self.assertEqual(ec.missing_runtimes(_aws_model(), vercel, ec.REQUIRED_ECS, ec.REQUIRED_LAMBDA,
+        # AA-911 (S272): the staff frontends left Vercel; the TripPlanner retirement (S272) deleted aa-tripplanner, the
+        # last project. An empty Vercel snapshot must still render, and the ECS services that replaced the projects
+        # are required instead.
+        self.assertEqual(ec.REQUIRED_VERCEL, ())
+        self.assertTrue({"aa-cis-dev-admin", "aa-booking-dev-admin", "aa-tripplanner-dev-web"} <= set(ec.REQUIRED_ECS))
+        self.assertEqual(ec.missing_runtimes(_aws_model(), _empty_vercel(), ec.REQUIRED_ECS, ec.REQUIRED_LAMBDA,
                                              ec.REQUIRED_VERCEL), [])
+
+    def test_missing_tripplanner_web_fails_closed(self):
+        aws = _aws_model()
+        aws["ecs"] = [s for s in aws["ecs"] if s["service"] != "aa-tripplanner-dev-web"]
+        self.assertEqual(ec.missing_runtimes(aws, _empty_vercel(), ec.REQUIRED_ECS, ec.REQUIRED_LAMBDA,
+                                             ec.REQUIRED_VERCEL), ["ECS service aa-tripplanner-dev-web"])
+
+    def test_render_without_vercel_drops_the_vercel_lines(self):
+        with tempfile.TemporaryDirectory() as td:
+            t = Path(td)
+            (t / "aws.json").write_text(json.dumps(_aws_model()))
+            # No --vercel: the default is the checked-in snapshot, empty since the TripPlanner retirement.
+            rc = ec.main(["render", "--aws", str(t / "aws.json"), "--out-dir", str(t / "gen"), "--date", "2026-11-08"])
+            self.assertEqual(rc, 0)
+            page = (t / "gen" / ec.PAGE).read_text()
+        self.assertNotIn("Vercel", page)
+        self.assertIn("### ECS service `aa-tripplanner-dev-web`", page)
+        self.assertRegex(page, r"\*\*Totals:\*\* \d+ ECS services \(.*\), \d+ Lambda functions \(\d+ variables\)\.\n")
 
     def test_checked_in_snapshot_is_names_only(self):
         data = json.loads(ec.VERCEL_SNAPSHOT.read_text(encoding="utf-8"))
         self.assertEqual(data["format"], 1)
-        self.assertEqual(set(data["projects"]), set(ec.REQUIRED_VERCEL))
+        self.assertEqual(data["projects"], {})
         for project, rows in data["projects"].items():
             for r in rows:
                 self.assertLessEqual(set(r), {"key", "kind", "target", "branch"}, project)

@@ -966,22 +966,22 @@ resource "aws_cognito_managed_login_branding" "external" {
 #     paths and never send x-amz-target, so an API-only scope would leave the browser sign-up path (the
 #     one travellers use, and the one that sends SES mail) under the global cap only.
 #   /oauth2/token (code exchange, refresh, client credentials) and /oauth2/revoke are left to the global
-#   cap: they are called server-side by the app BFFs from shared egress addresses (Vercel), need a code,
+#   cap: they are called server-side by the app BFFs from shared egress addresses (ECS NAT), need a code,
 #   a refresh token or a client secret, and send no mail.
 #   ManagedLoginPostRatePerIp also matches every public-API call (POST /), so it overlaps the first rule;
 #   the first rule is kept because it names the API actions in its own metric.
-#   AA-908 S4/S5: the TripPlanner BFF (Vercel) drives the traveller's passwordless sign-in through the public
+#   AA-908 S4/S5: the TripPlanner BFF (ECS service aa-tripplanner-dev-web) drives the traveller's passwordless sign-in through the public
 #   API (SignUp without a password, ConfirmSignUp, InitiateAuth USER_AUTH/EMAIL_OTP, RespondToAuthChallenge,
 #   GetTokensFromRefreshToken, RevokeToken; root ADR 0006 decisions 1 and 4: email code only). Counted per
-#   egress IP, every traveller behind one Vercel address would share one counter, and one script could lock
+#   egress IP, every traveller behind one egress address would share one counter, and one script could lock
 #   them all out. So the BFF identifies itself with a random header value (x-aa-traveller-bff = the secret
-#   tripplanner/<env>/cognito-bff-key below, Vercel env TP_COGNITO_BFF_KEY) and sends the traveller's own address
-#   (X-AA-Traveller-IP, from Vercel's x-forwarded-for). Requests carrying the exact value leave the two per-IP
+#   tripplanner/<env>/cognito-bff-key below, web task secret TP_COGNITO_BFF_KEY) and sends the traveller's own address
+#   (X-AA-Traveller-IP, from CloudFront-Viewer-Address behind the TripPlanner CloudFront edge). Requests carrying the exact value leave the two per-IP
 #   scoped rules and are counted per TRAVELLER address by BffRatePerTravellerIp, at the same limit. This is a
 #   re-keying, not a bypass: every sign-in call still has a per-person limit, and a caller without the value is
 #   counted per IP as before. If the value leaked, its holder could spread its calls over forged traveller
 #   addresses, still under the global per-IP cap; rotate with -replace=random_password.identity_traveller_bff[0]
-#   and update the Vercel env. A BFF-keyed request without a valid X-AA-Traveller-IP would not be counted by that
+#   and redeploy the TripPlanner web service. A BFF-keyed request without a valid X-AA-Traveller-IP would not be counted by that
 #   rule (AWS WAF skips a forwarded-IP rate rule when the header is missing), so the BFF sends the key ONLY together
 #   with a traveller address (AA-TripPlanner-Web frontend/lib/cognito.ts call()); without one, its call stays on the
 #   per-egress-IP rules. The global cap still counts all BFF traffic per egress IP (1000 / 5 min, far above a
@@ -1157,7 +1157,7 @@ resource "aws_wafv2_web_acl" "identity" {
   }
 
   # AA-908: the TripPlanner BFF's public-API calls (header value = the secret below), counted per traveller
-  # address (X-AA-Traveller-IP) instead of per Vercel egress address. Same limit as the per-IP scoped rules.
+  # address (X-AA-Traveller-IP) instead of per BFF egress address. Same limit as the per-IP scoped rules.
   rule {
     name     = "BffRatePerTravellerIp"
     priority = 2
@@ -1233,12 +1233,12 @@ resource "aws_wafv2_web_acl" "identity" {
 }
 
 # AA-908: the value that marks the TripPlanner BFF's Cognito calls (BffRatePerTravellerIp above). Generated here
-# like the TripPlanner edge key (modules/environment/tripplanner.tf) and kept in Secrets Manager as the single source: the orchestrator
-# pipes it into the Vercel env TP_COGNITO_BFF_KEY (Production + Preview of aa-tripplanner); nothing else reads it
+# like the TripPlanner edge key (modules/environment/tripplanner.tf) and kept in Secrets Manager as the single source: the
+# TripPlanner web task reads it as TP_COGNITO_BFF_KEY (tripplanner_web_identity_secret_arns, AA-1038); nothing else reads it
 # (the CIS task role is denied tripplanner/*). random_password and the secret version are plan-guard types: the
 # first CI apply needs allow_guarded=true. The plan role reads the version on refresh, so its ARN is in
 # local.tf_plan_secret_arns (cicd_split.tf, bootstrap: local MFA apply of that policy).
-# Rotate: -replace=random_password.identity_traveller_bff[0] (same opt-in), then update the Vercel env.
+# Rotate: -replace=random_password.identity_traveller_bff[0] (same opt-in), then redeploy the TripPlanner web service.
 resource "random_password" "identity_traveller_bff" {
   count   = var.identity_waf_enabled ? 1 : 0
   length  = 48
@@ -1268,9 +1268,9 @@ resource "aws_secretsmanager_secret_version" "identity_traveller_bff" {
 # (lambda_src/identity_triggers/external.py). The BFF never sends a password, so every self-registered traveller is
 # passwordless. This also closes the managed-login /signup page (it sends no proof).
 # A key of its own, not the WAF header value above: that value is visible in the web ACL definition and in sampled
-# requests. Copied into the Vercel env TP_COGNITO_SIGNUP_PROOF_KEY of aa-tripplanner. Guarded types like the BFF key
+# requests. Read by the TripPlanner web task as TP_COGNITO_SIGNUP_PROOF_KEY (AA-1038). Guarded types like the BFF key
 # (allow_guarded=true on the first CI apply; the ARN is in local.tf_plan_secret_arns, bootstrap: local MFA apply).
-# Rotate: -replace=random_password.identity_traveller_signup_proof[0], then the Vercel env; triggers re-read the
+# Rotate: -replace=random_password.identity_traveller_signup_proof[0], then redeploy the web service; triggers re-read the
 # secret within 5 minutes (sign-ups in between fail closed with "sign-up unavailable").
 resource "random_password" "identity_traveller_signup_proof" {
   count   = local.id_ext_native_signup ? 1 : 0

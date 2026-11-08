@@ -11,7 +11,9 @@ ecosystem gets, with where each one comes from. Never a value.
   Lambda   every function of the account: the KEYS of `Environment.Variables`.
   Vercel   every project: env var key, kind (sensitive = write-only, readable = a project member can
            read it) and targets. Read live from the Vercel REST API when a token is given, otherwise
-           from the checked-in snapshot tools/docs/env_config_vercel.json (names only).
+           from the checked-in snapshot tools/docs/env_config_vercel.json (names only). Since the
+           TripPlanner retirement (S272) no ecosystem runtime is on Vercel: the snapshot has no project,
+           Docs Gen no longer collects Vercel, and the page leaves the Vercel lines out.
 
 Values never leave the extraction functions: `extract_*` keep names and secret names only, so the
 names-only model (JSON) and the page cannot carry a value. For AWS the CLI --query projections already
@@ -60,24 +62,33 @@ SPEC = gd.PageSpec(
     PAGE,
     "APP-03",
     "Environment config register",
-    "Generated list of the environment variable NAMES of every ECS service, Lambda function and Vercel project, with the source of each (plain, secret by name, Vercel kind); never a value.",
+    "Generated list of the environment variable NAMES of every ECS service and Lambda function, with the source of each (plain, secret by name); never a value.",
     ("APP-01", "docs/security/secrets-register.md", "AA-894"),
 )
 
 BLURB = (
     "> **Generated - do not edit. Names only, never a value.** Source: {source}. AA-CIS-Infra",
-    "> `tools/docs/gen_env_config.py` renders it nightly from the live ECS task definitions, Lambda configurations and",
-    "> Vercel projects; a secret is listed by its store name and never read. To change a row, change the app's",
-    "> Terraform, task definition or Vercel project.",
+    "> `tools/docs/gen_env_config.py` renders it nightly from the live ECS task definitions and Lambda configurations;",
+    "> a secret is listed by its store name and never read. To change a row, change the app's Terraform or task",
+    "> definition.",
 )
 
 # Coverage the page must have (AA-894 Done-when 5). Missing one = collection problem, no page.
 # AA-911 (S272): the staff frontends run on ECS (aa-cis-dev-admin, aa-booking-dev-admin), required like the APIs.
-REQUIRED_ECS = ("aa-cis-dev-api", "aa-cis-dev-worker", "aa-booking-dev-api", "aa-cis-dev-admin", "aa-booking-dev-admin")
+# TripPlanner Vercel retirement (S272): the TripPlanner web runs on ECS (aa-tripplanner-dev-web), required too.
+REQUIRED_ECS = (
+    "aa-cis-dev-api",
+    "aa-cis-dev-worker",
+    "aa-booking-dev-api",
+    "aa-cis-dev-admin",
+    "aa-booking-dev-admin",
+    "aa-tripplanner-dev-web",
+)
 REQUIRED_LAMBDA = ("aa-tripplanner-dev-browse", "aa-tripplanner-dev-assembly")
 # AA-979 P2b clean-up: aa-cis-portal is gone (the Content studio is part of the CRM web, aa-crm-dev-web, since AA-1036).
-# AA-911 Vercel retirement (S272): aa-cis-frontend and aa-booking-admin are deleted; TripPlanner is the last project.
-REQUIRED_VERCEL = ("aa-tripplanner",)
+# AA-911 Vercel retirement (S272): aa-cis-frontend and aa-booking-admin are deleted; the TripPlanner retirement (S272)
+# deleted aa-tripplanner, the last project. No Vercel project is required any more.
+REQUIRED_VERCEL: tuple[str, ...] = ()
 
 # Sections of the page, by runtime-name prefix (ECS service, Lambda function, Vercel project).
 APPS = (
@@ -458,24 +469,36 @@ def render_body(aws: dict, vercel: dict) -> str:
     n_secret = sum(v["source"] == "secret" for s in ecs for c in s["containers"] for v in c["vars"])
     n_lambda = sum(len(f["vars"]) for f in lambdas)
     n_vercel = sum(len(v) for v in projects.values())
+    # No ecosystem runtime is on Vercel since the TripPlanner retirement (S272): without a project the page drops
+    # every Vercel line rather than print an empty "0 Vercel projects" section.
+    has_vercel = bool(projects)
+    runtimes = f"the ECS services of cluster `{aws.get('cluster', '')}`, every Lambda function of acc2"
+    runtimes += " and every Vercel project" if has_vercel else ""
+    totals = (
+        f"**Totals:** {len(ecs)} ECS services ({n_ecs} variables, {n_secret} from a secret), {len(lambdas)} Lambda "
+        f"functions ({n_lambda} variables)"
+    )
+    totals += f", {len(projects)} Vercel projects ({n_vercel} variables)." if has_vercel else "."
     out = [
-        "What every runtime of the Dev ecosystem is configured with, by **name**: the ECS services of cluster "
-        f"`{aws.get('cluster', '')}`, every Lambda function of acc2 and every Vercel project. Values are never read "
+        f"What every runtime of the Dev ecosystem is configured with, by **name**: {runtimes}. Values are never read "
         "for this page; a secret is named by its Secrets Manager secret (or SSM parameter), which the "
         "[secrets register](../security/secrets-register.md) describes (owner, readers, rotation).",
         "",
         "- **Source** (ECS, Lambda): `plain` = a value in the task definition or function configuration; `secret` = "
         "injected at start from the named secret (ECS `secrets[]`).",
-        "- **Kind** (Vercel): `sensitive` = write-only, nobody can read it back; `readable` = encrypted at rest but a "
-        "project member can read it.",
-        "- **Note** flags a name that looks like a secret in a plain or readable variable (same rule as the AA-878 "
-        "register drift check).",
-        f"- Vercel rows are {vsrc}.",
-        "",
-        f"**Totals:** {len(ecs)} ECS services ({n_ecs} variables, {n_secret} from a secret), {len(lambdas)} Lambda "
-        f"functions ({n_lambda} variables), {len(projects)} Vercel projects ({n_vercel} variables).",
-        "",
     ]
+    if has_vercel:
+        out.append(
+            "- **Kind** (Vercel): `sensitive` = write-only, nobody can read it back; `readable` = encrypted at rest but a "
+            "project member can read it."
+        )
+    out.append(
+        "- **Note** flags a name that looks like a secret in a plain or readable variable (same rule as the AA-878 "
+        "register drift check)."
+    )
+    if has_vercel:
+        out.append(f"- Vercel rows are {vsrc}.")
+    out += ["", totals, ""]
     for w in aws.get("warnings") or []:
         out += [f"> Collection warning: {gd.cell(w)}", ""]
     apps = [a for _, a in APPS] + [OTHER_APP]
