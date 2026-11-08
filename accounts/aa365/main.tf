@@ -322,7 +322,7 @@ module "waf" {
     rate_limit           = var.tripplanner_web_rate_limit
     model_rate_limit     = var.tripplanner_web_model_rate_limit
     challenge_immunity_s = var.tripplanner_web_challenge_immunity_s
-    model_paths          = local.tp_web_model_paths
+    protected_paths      = local.tp_web_protected_paths
     path_transformations = local.tp_web_path_normalize
   } : null
 

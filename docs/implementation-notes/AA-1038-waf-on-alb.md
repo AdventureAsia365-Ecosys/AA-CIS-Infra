@@ -10,9 +10,10 @@ not work.
 
 - **Three rules in the existing regional web ACL `aa-<env>-waf` (modules/waf, input `tripplanner_web`)**, renamed
   with a `TripPlanner` prefix because the ACL is shared: `TripPlannerRateLimitPerIp` (3000 / 5 min),
-  `TripPlannerRateLimitModelPaths` (100 / 5 min on `/api/browse/search` + `/api/trip/narrate`), both 429 JSON
+  `TripPlannerRateLimitModelPaths` (100 / 5 min on `/api/browse/search` + `/api/trip/narrate` + `/api/trip/send`,
+  see the send bullet below), both 429 JSON
   `{"error":"rate_limited"}`; `TripPlannerChallengePlanner` (Challenge on a GET `sec-fetch-dest: document` of
-  `/plan`, `/{tenant}/plan` and below, OR a model path). Same limits, same paths, same URL_DECODE + NORMALIZE_PATH on
+  `/plan`, `/{tenant}/plan` and below, OR a protected path). Same limits, same paths, same URL_DECODE + NORMALIZE_PATH on
   every path match (the dot-segment note stays in `tripplanner_web_edge.tf`).
 - **Scope: Host `tripplanner.<zone>` (regex, LOWERCASE, optional `:443`, like the staff rule) AND the exact origin
   secret `X-AA-Origin`.** The secret makes "came through our CloudFront" part of every rule, so a request sent straight
@@ -40,6 +41,15 @@ not work.
   `challenge_config`, so the ACL default (300 s) stays as it is for every other host. Provider 6.69 accepts the
   rule-level block (`terraform validate`).
 - **No new WAF log:** the ACL already logs the requests a rule acted on (BLOCK / CHALLENGE / ...), 30 days.
+- **Send to advisor is a protected path too (review S272, fix pass).** On Vercel BotID guarded `POST /api/trip/send`
+  (it stores a traveller's contact and delivers it to an agency); the ECS image builds BotID off, so the first version
+  of these rules left it with only the 3000 / 5 min per-IP rule and the Lambda's limits. `local.tp_web_model_paths`
+  became `local.tp_web_protected_paths` = the two model paths + `/api/trip/send` (module input `protected_paths`),
+  used by rule 3 (100 / 5 min per viewer) and rule 4 (Challenge). The rule names stay (no rule is added, no WCU
+  change worth noting: one more path match per rule). The app's edge gate answers the older spelling
+  `POST /api/trip {op:"send"}` 404 `use_protected_path` (AA-TripPlanner-Web), so a lead passes only through the
+  challenged path. A challenged send in the planner keeps the form and asks the traveller to reload the page (no
+  automatic reload: it would lose what they typed).
 
 ## Changed
 
@@ -78,8 +88,9 @@ not work.
 - WCU (est.): the three rules ~ 200 (regex 3 + LOWERCASE 10 per host match, 2 per exact header match, 22 per path
   match with two transformations, 30 for CONTAINS), the ACL ~ 940 in all, under the 1500 included in the price.
 - After apply: `aws wafv2 get-web-acl` on `aa-cis-dev-waf` shows the 9 rules in order; with the task at 0 the
-  checks through the distribution (`--resolve`) show `/api/browse/search` 202 + `x-amzn-waf-action: challenge`
-  without a token (the WAF answers before the ALB rule), and `/plan` with `sec-fetch-dest: document` the same.
+  checks through the distribution (`--resolve`) show `/api/browse/search` and `POST /api/trip/send` 202 +
+  `x-amzn-waf-action: challenge` without a token (the WAF answers before the ALB rule), and `/plan` with
+  `sec-fetch-dest: document` the same (202 only: with no token a working rule never answers 200).
 - **Cost (D-19):** 3 rules x 1 USD + requests 0.60 USD/M (Dev: cents) + Challenge attempts (cents) + function 0 =
   ~ 3.1 USD/month for the edge, ~ 9.5 USD/month with the task running (was ~ 14.5); saves the web ACL's 5 USD fee.
   No new paid feature: WAF rules, Challenge and CloudFront Functions were all in use.

@@ -33,21 +33,25 @@
 # Each rule is scoped to Host tripplanner.<zone> AND the exact origin secret, and runs after CommonRuleSet and before
 # VpcLinkInternalAllow / CloudFrontOriginAllow (modules/waf local.rule_priorities); no other host is touched.
 #   2 TripPlannerRateLimitPerIp       per viewer address, var.tripplanner_web_rate_limit per 5 minutes -> 429 JSON
-#   3 TripPlannerRateLimitModelPaths  GET /api/browse/search + POST /api/trip/narrate (the two calls that reach a
-#                                     model), per viewer address, var.tripplanner_web_model_rate_limit -> 429
+#   3 TripPlannerRateLimitModelPaths  the protected paths (local.tp_web_protected_paths): GET /api/browse/search +
+#                                     POST /api/trip/narrate (the two calls that reach a model) and POST
+#                                     /api/trip/send ("Send to advisor": stores a traveller's contact for an agency),
+#                                     per viewer address, var.tripplanner_web_model_rate_limit -> 429
 #   4 TripPlannerChallengePlanner     Challenge (silent JavaScript proof, no puzzle) on a document navigation of a
 #                                     planner page (GET with sec-fetch-dest: document on /plan, /{tenant}/plan and
-#                                     below) and on the two model paths. Every in-site link into the planner is a full
+#                                     below) and on the protected paths. Every in-site link into the planner is a full
 #                                     document load (AA-TripPlanner-Web), so the browser gets its aws-waf-token on that
 #                                     load; a script without the token gets HTTP 202 + x-amzn-waf-action: challenge and
 #                                     never reaches the app. On a challenged model call the planner reloads itself
-#                                     once (then shows its bot-check notice). Home, destination and tour pages never
-#                                     see an interstitial. The app answers the older spellings of the two calls 404
+#                                     once (then shows its bot-check notice); a challenged send keeps the form and
+#                                     asks the traveller to reload. Home, destination and tour pages never see an
+#                                     interstitial. The app answers the older spellings of the three calls 404
 #                                     (AA-TripPlanner-Web lib/edgeGate.ts, task env TP_EDGE_GATE=on), so no model call
-#                                     passes outside rules 3 and 4.
+#                                     and no lead passes outside rules 3 and 4. On ECS these rules are the whole bot
+#                                     check of the three calls (BotID needs the Vercel edge: the image builds it off).
 #   Every path match of rules 3 and 4 runs URL_DECODE then NORMALIZE_PATH (local.tp_web_path_normalize), so a dot
-#   segment spelling (/api/browse/%2e/search, /api/trip/./narrate, /x/../api/trip/narrate), which the app resolves to
-#   the model route, is rate-limited and challenged like the plain path (review S272).
+#   segment spelling (/api/browse/%2e/search, /api/trip/./narrate, /x/../api/trip/send), which the app resolves to
+#   the protected route, is rate-limited and challenged like the plain path (review S272).
 #   Token: the ALB web ACL issues it for the request's host (tripplanner.<zone>, the Host CloudFront forwards), so no
 #   token domain list is needed; lifetime var.tripplanner_web_challenge_immunity_s (default 4 h), set on the rule, so
 #   the ACL default stays as it is for the other hosts.
@@ -114,7 +118,7 @@ variable "tripplanner_web_rate_limit" {
 }
 
 variable "tripplanner_web_model_rate_limit" {
-  description = "AA-1038: requests per 5 minutes per viewer IP on the two model paths (WAF rule TripPlannerRateLimitModelPaths in the ALB web ACL). The app's own per-session / per-IP limits and the daily spend cap stay underneath."
+  description = "AA-1038: requests per 5 minutes per viewer IP on the protected paths, the two model calls and Send to advisor (WAF rule TripPlannerRateLimitModelPaths in the ALB web ACL). The app's own per-session / per-IP / per-agency limits and the daily spend cap stay underneath."
   type        = number
   default     = 100
 
@@ -143,8 +147,10 @@ locals {
   # The header the viewer-request function writes with the viewer's address: the key of the two WAF rate rules.
   tp_web_viewer_ip_header = "x-aa-viewer-ip"
 
-  # The two BFF paths that reach a model (AA-TripPlanner-Web lib/botCheck.ts SEARCH_PATH / NARRATE_PATH).
-  tp_web_model_paths = ["/api/browse/search", "/api/trip/narrate"]
+  # The protected BFF paths (AA-TripPlanner-Web lib/botCheck.ts SEARCH_PATH / NARRATE_PATH / SEND_PATH): the two calls
+  # that reach a model and "Send to advisor", which stores a traveller's contact for an agency (review S272: on Vercel
+  # BotID guarded it; on ECS only these rules do). Rate rule 3 and the Challenge rule 4 match exactly these paths.
+  tp_web_protected_paths = ["/api/browse/search", "/api/trip/narrate", "/api/trip/send"]
 
   # Text transformations on every uri_path match of the TripPlanner WAF rules, in this order (priority = index): URL_DECODE, then
   # NORMALIZE_PATH (drops /./, resolves /x/../, folds //). CloudFront passes the raw path and the app (Next, WHATWG

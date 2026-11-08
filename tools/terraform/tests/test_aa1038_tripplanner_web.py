@@ -6,8 +6,8 @@
    and the edge-aware app env (TP_EDGE_GATE=on, TP_CLIENT_IP_SOURCE=cloudfront).
 2. The TripPlanner deploy role's web grant is scoped to this family, service and execution role.
 3. The WAF rules (S272 cost decision: no CLOUDFRONT web ACL of their own, no Bot Control) are three rules in the ALB
-   web ACL (modules/waf): the rate rule, the model-path rate rule and the Challenge, on the same two paths the app gates
-   (AA-TripPlanner-Web lib/botCheck.ts), each scoped to the TripPlanner host AND the origin secret, after
+   web ACL (modules/waf): the rate rule, the protected-path rate rule and the Challenge, on the same three paths the
+   app gates (AA-TripPlanner-Web lib/botCheck.ts: the two model calls and Send to advisor, review S272), each scoped to the TripPlanner host AND the origin secret, after
    CommonRuleSet and before both allow rules; the rate rules key on the viewer address the distribution's
    viewer-request function writes. Every path match URL-decodes and normalizes first, so a dot-segment spelling
    (/api/browse/%2e/search) is caught too.
@@ -43,8 +43,10 @@ VIEWER_IP_JS = AA365 / "cloudfront_functions" / "tripplanner_web_viewer_ip.js"
 ECS = (ROOT / "modules" / "ecs" / "main.tf").read_text(encoding="utf-8")
 ECS_VARS = (ROOT / "modules" / "ecs" / "variables.tf").read_text(encoding="utf-8")
 
-# AA-TripPlanner-Web frontend/lib/botCheck.ts SEARCH_PATH / NARRATE_PATH (lib/edgeGate.test.ts pins the same values).
-MODEL_PATHS = ["/api/browse/search", "/api/trip/narrate"]
+# AA-TripPlanner-Web frontend/lib/botCheck.ts SEARCH_PATH / NARRATE_PATH / SEND_PATH (lib/edgeGate.test.ts pins the
+# same values). Send to advisor stores a traveller's contact for an agency: on ECS these rules are its only bot check
+# (review S272), so it is challenged and rate-limited like the two model calls.
+PROTECTED_PATHS = ["/api/browse/search", "/api/trip/narrate", "/api/trip/send"]
 
 
 def _block_after(text: str, start: int) -> str:
@@ -225,13 +227,13 @@ def test_rate_rules_key_on_the_viewer_address_header_with_the_same_limits():
         assert "header_name       = local.tp.viewer_ip_header" in rule
         assert 'fallback_behavior = "MATCH"' in rule
         assert "response_code            = 429" in rule and 'custom_response_body_key = "rate_limited"' in rule
-    assert "for_each = local.tp.model_paths" in model and "uri_path {}" in model
+    assert "for_each = local.tp.protected_paths" in model and "uri_path {}" in model
     # The 429 body exists exactly when the rules do.
     body = _block_after(acl, acl.index('dynamic "custom_response_body"'))
     assert "for_each = local.tp_on ? [1] : []" in body and 'key          = "rate_limited"' in body
 
 
-def test_challenge_rule_documents_of_the_planner_and_the_model_paths_with_its_own_token_lifetime():
+def test_challenge_rule_documents_of_the_planner_and_the_protected_paths_with_its_own_token_lifetime():
     challenge = _rule(_acl(), "TripPlannerChallengePlanner")
     assert "challenge {}" in challenge
     assert "immunity_time = local.tp.challenge_immunity_s" in challenge
@@ -240,7 +242,7 @@ def test_challenge_rule_documents_of_the_planner_and_the_model_paths_with_its_ow
     # Only planner documents are challenged (the catalog pages never see an interstitial).
     assert 'search_string         = "/plan"' in challenge and 'positional_constraint = "ENDS_WITH"' in challenge
     assert 'search_string         = "/plan/"' in challenge
-    assert "for_each = local.tp.model_paths" in challenge
+    assert "for_each = local.tp.protected_paths" in challenge
     # No ACL-wide challenge_config / token domains: the other hosts keep the ACL defaults.
     acl = _acl()
     assert acl.count("challenge_config {") == 1 and "token_domains" not in acl
@@ -255,7 +257,7 @@ def test_root_passes_the_edge_settings_to_the_alb_web_acl():
         "rate_limit           = var.tripplanner_web_rate_limit",
         "model_rate_limit     = var.tripplanner_web_model_rate_limit",
         "challenge_immunity_s = var.tripplanner_web_challenge_immunity_s",
-        "model_paths          = local.tp_web_model_paths",
+        "protected_paths      = local.tp_web_protected_paths",
         "path_transformations = local.tp_web_path_normalize",
     ]:
         assert line in tp, line
@@ -330,7 +332,7 @@ def _waf_url_decode_then_normalize(path: str) -> str:
     return "/" + "/".join(out)
 
 
-def test_dot_segment_spellings_of_the_model_paths_normalize_to_the_protected_path():
+def test_dot_segment_spellings_of_the_protected_paths_normalize_to_the_protected_path():
     spellings = {
         "/api/browse/%2e/search": "/api/browse/search",
         "/api/browse/%2E/search": "/api/browse/search",
@@ -339,15 +341,21 @@ def test_dot_segment_spellings_of_the_model_paths_normalize_to_the_protected_pat
         "/api/x/../trip/narrate": "/api/trip/narrate",
         "/api/browse/%2e%2e/browse/search": "/api/browse/search",
         "/api//browse/search": "/api/browse/search",
+        "/api/trip/%2e/send": "/api/trip/send",
+        "/api/x/../trip/send": "/api/trip/send",
     }
     for raw, want in spellings.items():
         assert _waf_url_decode_then_normalize(raw) == want, raw
-        assert want in MODEL_PATHS
+        assert want in PROTECTED_PATHS
 
 
-def test_model_paths_are_the_app_paths():
-    m = re.search(r"tp_web_model_paths = \[(.*?)\]", EDGE)
-    assert m and re.findall(r'"([^"]+)"', m.group(1)) == MODEL_PATHS
+def test_protected_paths_are_the_app_paths_send_included():
+    m = re.search(r"tp_web_protected_paths = \[(.*?)\]", EDGE)
+    assert m and re.findall(r'"([^"]+)"', m.group(1)) == PROTECTED_PATHS
+    # The old two-path list is gone, so no rule can be wired to a list without Send to advisor.
+    assert "tp_web_model_paths" not in EDGE + MAIN
+    assert "local.tp.model_paths" not in WAF
+    assert "protected_paths      = list(string)" in WAF_VARS
 
 
 # --- 4. caching -----------------------------------------------------------------------------------------------------

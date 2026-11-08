@@ -343,8 +343,9 @@ accounts/
                                    origin secret (crm_edge.tf) and the us-east-1 wildcard certificate
                                    (crm_agency_edge.tf); a viewer-request function writing the viewer address
                                    (x-aa-viewer-ip); WAF: three rules in the ALB web ACL aa-<env>-waf (modules/waf
-                                   input tripplanner_web: rate per viewer IP, rate on the two model paths,
-                                   Challenge on planner documents + model paths; replaces BotID; no CLOUDFRONT web
+                                   input tripplanner_web: rate per viewer IP, rate on the protected paths (the two
+                                   model calls + Send to advisor), Challenge on planner documents + protected paths;
+                                   the whole bot check of those calls on ECS; no CLOUDFRONT web
                                    ACL and no Bot Control, S272 cost decision); ALB :80 host rule
                                    tripplanner_web; the tripplanner. CNAME (moved from custom_domains.tf) with the DNS
                                    switch var.tripplanner_web_dns_on_cloudfront (default false = Vercel) and the 60 s

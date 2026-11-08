@@ -91,14 +91,14 @@ variable "staff_web_rate_limit" {
 }
 
 variable "tripplanner_web" {
-  description = "AA-1038: the TripPlanner web rules (TripPlannerRateLimitPerIp, TripPlannerRateLimitModelPaths, TripPlannerChallengePlanner), each scoped to host AND the exact origin secret (needs origin_verify_header). viewer_ip_header: the header the CloudFront viewer-request function writes with the viewer's address (the rate key). path_transformations run on every path match, in order. null = no rule (the ACL as before AA-1038)."
+  description = "AA-1038: the TripPlanner web rules (TripPlannerRateLimitPerIp, TripPlannerRateLimitModelPaths, TripPlannerChallengePlanner), each scoped to host AND the exact origin secret (needs origin_verify_header). viewer_ip_header: the header the CloudFront viewer-request function writes with the viewer's address (the rate key). protected_paths: the BFF paths that are rate-limited per viewer and challenged (the model calls and Send to advisor). path_transformations run on every path match, in order. null = no rule (the ACL as before AA-1038)."
   type = object({
     host                 = string
     viewer_ip_header     = string
     rate_limit           = number
     model_rate_limit     = number
     challenge_immunity_s = number
-    model_paths          = list(string)
+    protected_paths      = list(string)
     path_transformations = list(string)
   })
   default = null

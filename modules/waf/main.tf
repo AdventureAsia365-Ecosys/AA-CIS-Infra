@@ -81,8 +81,8 @@ resource "aws_wafv2_web_acl" "main" {
   #
   #   1 AWSManagedRulesCommonRuleSet    content inspection, valid for every caller
   #   2 TripPlannerRateLimitPerIp       (AA-1038, only with var.tripplanner_web) TripPlanner host via CloudFront
-  #   3 TripPlannerRateLimitModelPaths  (AA-1038) the two model paths of the TripPlanner host
-  #   4 TripPlannerChallengePlanner     (AA-1038) Challenge on the planner documents and the model paths
+  #   3 TripPlannerRateLimitModelPaths  (AA-1038) the protected paths of the TripPlanner host (model calls + send)
+  #   4 TripPlannerChallengePlanner     (AA-1038) Challenge on the planner documents and the protected paths
   #   5 VpcLinkInternalAllow            (ALB only) VPC-link traffic stops here (was 2 before AA-1038)
   #   6 CloudFrontOriginAllow           (ALB only, AA-931) CloudFront VPC-origin traffic stops here (was 3)
   #   7 RateLimit1000                   per source IP (was 4)
@@ -294,7 +294,7 @@ resource "aws_wafv2_web_acl" "main" {
               statement {
                 or_statement {
                   dynamic "statement" {
-                    for_each = local.tp.model_paths
+                    for_each = local.tp.protected_paths
                     content {
                       byte_match_statement {
                         search_string         = statement.value
@@ -328,9 +328,10 @@ resource "aws_wafv2_web_acl" "main" {
   }
 
   # Challenge (silent JavaScript proof, no puzzle) on a document navigation of a planner page (GET with
-  # sec-fetch-dest: document on /plan, /{tenant}/plan and below) and on the two model paths. The app opens the planner
+  # sec-fetch-dest: document on /plan, /{tenant}/plan and below) and on the protected paths (the two model calls and
+  # Send to advisor, var.tripplanner_web.protected_paths). The app opens the planner
   # with a full page load from every in-site link (AA-TripPlanner-Web), so this rule hands the browser its
-  # aws-waf-token before the planner calls a model path; a script without the token gets HTTP 202 +
+  # aws-waf-token before the planner calls a protected path; a script without the token gets HTTP 202 +
   # x-amzn-waf-action: challenge and never reaches the app. Catalog pages never see an interstitial. The token lifetime
   # is this rule's own (challenge_config below), so the ACL default stays as it is for every other host.
   dynamic "rule" {
@@ -453,9 +454,9 @@ resource "aws_wafv2_web_acl" "main" {
                   }
                 }
               }
-              # The model paths: no valid token, no model call.
+              # The protected paths: no valid token, no model call and no lead.
               dynamic "statement" {
-                for_each = local.tp.model_paths
+                for_each = local.tp.protected_paths
                 content {
                   byte_match_statement {
                     search_string         = statement.value
