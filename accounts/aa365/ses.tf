@@ -219,11 +219,21 @@ resource "aws_iam_role_policy" "booking_ecs_task_ses_send" {
   policy = data.aws_iam_policy_document.ses_send.json
 }
 
-# Shared by the browse and assembly Lambdas. Unused since S238 (AA-811): AA-Booking sends the staff
-# inquiry e-mail, TripPlanner notify.py only logs. Kept for a future traveller e-mail from TripPlanner.
+# Shared by the browse and assembly Lambdas. Unused from S238 (AA-811: AA-Booking sends the staff
+# inquiry e-mail) until AA-1038 R5 slice 3: the assembly Lambda sends an agency's lead e-mail (channel email of
+# lead.submitted.v1, From = TP_LEAD_EMAIL_FROM = var.ses_from_address, modules/environment/tripplanner.tf).
 resource "aws_iam_role_policy" "tripplanner_lambda_ses_send" {
   name   = "${local.tp_name_prefix}-lambda-ses-send"
   role   = module.environment.tripplanner_lambda_exec_role_id
+  policy = data.aws_iam_policy_document.ses_send.json
+}
+
+# AA-1038 R5 slice 3: the TripPlanner jobs Lambda retries undelivered lead e-mails (tp_lead_deliver), same sender and
+# configuration-set limits as the assembly grant above. No new SES identity: the AA-811 domain identity, already used
+# for the d20 fan-out; sending costs 0.10 USD per 1,000 mails (cents a month at pilot volume).
+resource "aws_iam_role_policy" "tripplanner_jobs_ses_send" {
+  name   = "${local.tp_name_prefix}-jobs-ses-send"
+  role   = module.environment.tripplanner_jobs_exec_role_id
   policy = data.aws_iam_policy_document.ses_send.json
 }
 

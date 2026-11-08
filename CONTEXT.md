@@ -142,11 +142,17 @@ accounts/
                                    the Mapbox secret is forgotten via a removed block, not deleted.
                                    AA-712 X4: no PLACES_SOURCE any more (TripPlanner reads only the catalog views).
                                    AA-871: secret shell tripplanner/<env>/sentry-dsn (no version), read by
-                                   name at cold start, grant ReadSentryDsnSecret; no DSN in the Lambda env)
+                                   name at cold start, grant ReadSentryDsnSecret; no DSN in the Lambda env.
+                                   AA-1038 R5 slice 3 (lead.submitted.v1): secret tripplanner/<env>/lead-webhook-key
+                                   (webhook master key, ephemeral random_password -> write-only version, never in
+                                   state; grant ReadLeadWebhookKeySecret), assembly env TP_LEAD_EMAIL_FROM
+                                   (= var.ses_from_address), TP_LEAD_CRM_PULL_ENABLED and TP_M2M_ISSUER /
+                                   TP_M2M_CRM_CLIENT_ID from the aa-m2m pool)
     tripplanner_jobs.tf           (AA-861: the TripPlanner jobs Lambda aa-tripplanner-<env>-jobs, worker of
                                    tripplanner.job (tp-021, ADR 0003a d4): same zip (jobs.zip, handler
                                    backend.jobs.handler.handler), own role (DB + Sentry DSN secrets, VPC,
-                                   own logs; no Bedrock / edge key / SES), reserved concurrency 1, daily
+                                   own logs; AA-1038: + the lead webhook key and SES send (ses.tf) for the
+                                   tp_lead_deliver retries, env TP_LEAD_EMAIL_FROM; no Bedrock / edge key), reserved concurrency 1, daily
                                    EventBridge Scheduler tick 19:30 UTC, no Lambda retry, alarms errors >= 1
                                    and not-run 2 days, log group 30 d. Live override of the outbox
                                    redaction closed unless var.tripplanner_jobs_retention_override_enabled)
@@ -213,8 +219,9 @@ accounts/
                                    on /login; tools/terraform/managed_login_branding.py in
                                    managed-login-branding.yml fails CI on a gap, AA-935 S249)
     identity_m2m.tf               (AA-972, root ADR 0006b d7: M2M pool aa-m2m-dev, resource servers
-                                   booking.b2b (read/quote/hold/book), AA-976 cis.catalog (read) and
-                                   AA-978 cis.tenant (read), client-credentials client aa-m2m-dev-crm
+                                   booking.b2b (read/quote/hold/book), AA-976 cis.catalog (read),
+                                   AA-978 cis.tenant (read) and AA-1038 tripplanner.leads (deliver: the CRM
+                                   pulls and acknowledges TripPlanner leads), client-credentials client aa-m2m-dev-crm
                                    (AA-Partner -> Booking B2B, -> CIS catalog.http.v1 and -> CIS
                                    tenant.membership.v1; each receiver checks only its own scope),
                                    prefix domain for the token endpoint, secret container
@@ -308,7 +315,8 @@ accounts/
     db_dns.tf                     (AA-829: private zone <env>.internal on the VPC, CNAME db.<env>.internal -> RDS,
                                    TTL 60; every DSN secret names it; var.db_dns_target_override repoints it)
     ses.tf                        (SES domain identity, DKIM/MAIL FROM/DMARC records, configuration sets,
-                                   ses:SendEmail grants for the app roles, reputation alarms — AA-811)
+                                   ses:SendEmail grants for the app roles (AA-1038: + the TripPlanner jobs role,
+                                   lead e-mail retries), reputation alarms — AA-811)
     e2e_mailbox.tf                (AA-816 I5: SES inbound for the Cognito E2E: MX e2e-mail.lumiguides.it.com,
                                    the region's single ACTIVE receipt rule set aa-cis-dev-e2e (rule e2e-cognito,
                                    fixed recipients: the CIS staff E2E e2e@, the Booking staff E2E e2e-booking@
@@ -423,6 +431,8 @@ accounts/
                                    for the CIS membership feed (crm_membership_pull), AA-947, BOOKING_API_URL
                                    (var.crm_booking_api_url) for booking.b2b.v1 (crm_booking_sync, same M2M_CLIENT), AA-956
                                    BOOKING_ADMIN_URL (the Booking staff admin origin for the S-02 incident link),
+                                   AA-1038 TRIPPLANNER_API_URL (the TripPlanner HTTP API origin, from the module's
+                                   aws_apigatewayv2_api.tripplanner; crm_tp_lead_pull, same M2M_CLIENT),
                                    AA-955 KMS_SEAL_KEY_ID + kms:Sign / GetPublicKey on the seal key (e-sign seal),
                                    target group aa-crm-<env>-api-tg (/crm/health), ALB rule crm_api
                                    (partner host + X-AA-Origin + /crm, /crm/*; above crm_partner_default), service

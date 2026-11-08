@@ -94,12 +94,16 @@ locals {
   # proof key (only while traveller native sign-up is on).
   # AA-873 (S261): + the EXTERNAL Google / Facebook IdP secrets (identity.tf data sources), each only while its IdP
   # variables are set, so turning an IdP on needs no hand edit here. Both are off today: no change to the list.
+  # AA-1038 (R5 slice 3): + the TripPlanner lead webhook master key (modules/environment/tripplanner.tf, write-only
+  # version like the Redis AUTH one). Its ARN exists only after the create, so the first apply of that secret is a
+  # local MFA-admin apply (this list feeds the bootstrap boundary below); later CI plans and applies refresh it.
   # The apply boundary (DenySecretValuesTerraformDoesNotRefresh below) uses this same list as its only exception.
   tf_plan_secret_arns = concat(
     [
       module.environment.tripplanner_db_secret_arn,
       module.environment.tripplanner_api_key_secret_arn,
       module.elasticache.auth_secret_arn,
+      module.environment.tripplanner_lead_webhook_key_secret_arn,
     ],
     aws_secretsmanager_secret.identity_traveller_bff[*].arn,
     aws_secretsmanager_secret.identity_traveller_signup_proof[*].arn,

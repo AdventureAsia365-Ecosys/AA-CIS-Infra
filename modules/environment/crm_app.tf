@@ -407,6 +407,11 @@ resource "aws_iam_role_policy" "crm_ecs_task" {
 # aa-crm/<env>/m2m-booking-client {client_id, client_secret, token_url, scopes} (identity_m2m.tf). The worker's
 # crm_membership_pull asks for scope cis.tenant/read with it; while either is empty the job logs not_configured. The
 # secret holds a value on Dev since AA-972 (a task whose valueFrom secret has no value fails to start).
+# AA-1038 (R5 slice 3, root contract lead.submitted.v1): TRIPPLANNER_API_URL = the origin of the TripPlanner HTTP API
+# (tripplanner.tf aws_apigatewayv2_api.tripplanner, its $default stage serves at the root, no path). The worker's
+# crm_tp_lead_pull calls <this>/trip/m2m/v1/tenants/{agency}/leads with the same M2M_CLIENT and scope
+# tripplanner.leads/deliver (identity_m2m.tf). The CRM refuses to start on a value that is not a lower-case https
+# origin without a path, hence lower() and no trailing slash. Empty would mean not_configured (leads wait at TripPlanner).
 # AA-947 (CRM-19 B2B client): BOOKING_API_URL (var.crm_booking_api_url) with the same M2M_CLIENT (the CRM client holds
 # every booking.b2b scope and cis.catalog/read already, identity_m2m.tf: no Cognito, IAM or secret change).
 # AA-945 (CRM-17 mail, crm_mail.tf local.crm_mail_env / crm_mail_secrets): CRM_INGEST_BUCKET (the ingest bucket the
@@ -470,6 +475,8 @@ resource "aws_ecs_task_definition" "crm_api" {
       { name = "BOOKING_API_URL", value = var.crm_booking_api_url },
       # AA-956: the Booking staff admin origin, the S-02 link to flag an incident on a departure (Fix B3).
       { name = "BOOKING_ADMIN_URL", value = var.crm_booking_admin_url },
+      # AA-1038: the TripPlanner lead pull (crm_tp_lead_pull); the same M2M_CLIENT secret.
+      { name = "TRIPPLANNER_API_URL", value = lower(trimsuffix(aws_apigatewayv2_api.tripplanner.api_endpoint, "/")) },
       # AA-946: the portal code echo, Dev only (synthetic agencies, no mailbox); the API refuses it elsewhere.
       { name = "PORTAL_OTP_DEV_ECHO", value = var.environment == "dev" ? "true" : "false" },
       # S263 (AA-1025): the in-app ops checks publish their alerts here (task role PublishOpsAlerts).
