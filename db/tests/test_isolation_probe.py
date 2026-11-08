@@ -109,7 +109,9 @@ def today_facts():
                             "current_user": "aa_app_user",
                             "cross": {"booking.trip_cases": denied("booking"), "tripplanner.sessions": denied("tp")}},
             "booking": {"secret": "booking/dev/database-url", "secret_user": "booking", "current_user": "booking",
-                        "cross": {"tripplanner.sessions": denied("tp"), "shared.tenants": denied("shared")}},
+                        "cross": {"tripplanner.sessions": denied("tp"), "shared.tenants": denied("shared"),
+                                  # tp-009's grant, live until tp-027 (AA-1046) revokes it
+                                  "tripplanner.v_inquiry_outbox": {"readable": True, "sqlstate": None}}},
             "tripplanner": {"secret": "tripplanner/dev/database-url", "secret_user": "tripplanner",
                             "current_user": "tripplanner", "cross": {"booking.trip_cases": denied("booking")}},
             "cis_app": {"secret": "aa-cis/dev/rds-cis-app",
@@ -439,7 +441,8 @@ class BuildCellsTest(unittest.TestCase):
 
     def test_consumer_grant_lost_fails(self):
         f = today_facts()
-        f["consumer"]["grants"][1]["missing"] = ["SELECT"]                # booking on v_inquiry_outbox
+        lost = next(c for c in f["consumer"]["grants"] if c["object"] == "shared.llm_call_log")
+        lost["missing"] = ["INSERT"]                                      # tripplanner cost logging (CIS 173)
         st, _ = statuses(f)
         self.assertEqual(st["consumer.contract_grants"], "FAIL")
 
@@ -533,6 +536,30 @@ class BuildCellsTest(unittest.TestCase):
         targets = {t for _r, t, _w in p.CROSS_APP}
         self.assertNotIn("booking.customers", targets)
         self.assertIn("booking.trip_cases", targets)
+
+    def test_retired_inquiry_view_is_a_cross_app_cell_from_tp027(self):
+        # AA-1046: the inquiry.submitted contract is retired. booking's tp-009 read of tripplanner.v_inquiry_outbox
+        # (every tenant's traveller data, owner view = no RLS) is no contract grant any more; TripPlanner tp-027
+        # revokes it, and the cell asserts 42501 once tp-027 is registered (pending before: merging this registry
+        # change before the apply never turns the probe red, and the always-expected consumer cell stays green).
+        self.assertNotIn("tripplanner.v_inquiry_outbox", {c[2] for c in p.CONSUMER_GRANTS})
+        self.assertIn(("booking", "tripplanner.v_inquiry_outbox", ("tp-027",)), p.CROSS_APP)
+        self.assertIn("tp-027", p.VERSION_KEYS)
+        self.assertIn("tp-027", p.KEY_TEXT)
+        cid = "cross.booking.tripplanner.v_inquiry_outbox"
+        f = today_facts()
+        st, _ = statuses(f)
+        self.assertEqual((st[cid], st["consumer.contract_grants"]), ("pending", "pass"))
+        f["catalog"]["registered"] = ["tp-027"]
+        st, _ = statuses(f)
+        self.assertEqual(st[cid], "FAIL")                                # registered, booking still reads it
+        f["logins"]["booking"]["cross"]["tripplanner.v_inquiry_outbox"] = denied("tp")
+        st, _ = statuses(f)
+        self.assertEqual((st[cid], st["consumer.contract_grants"]), ("pass", "pass"))
+        f["logins"]["booking"]["cross"]["tripplanner.v_inquiry_outbox"] = {
+            "readable": False, "sqlstate": "42P01", "error": "42P01 UndefinedTableError: x"}
+        st, _ = statuses(f)
+        self.assertEqual(st[cid], "FAIL")                                # a dropped view is not the evidence
 
     def test_from_price_view_grant_is_its_own_cell(self):
         # AA-1029: TripPlanner reads booking.v_from_prices (price.from.v1), created by the contract file bk-039; the

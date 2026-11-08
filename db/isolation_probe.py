@@ -49,8 +49,8 @@ read but a runtime role losing a grant — an object the new owner creates that 
 (42501 after deploy). Cells runtime_grants.<owner> (baseline privilege on every existing object, as
 has_*_privilege catalog facts) and default_acl.<owner> (pg_default_acl FOR ROLE <live owner> grants the
 runtime role; no FOR ROLE master row left once transferred) cover it; consumer.contract_grants keeps
-the contract reads of other apps (booking → tripplanner.v_inquiry_outbox, …); a grant whose migration is
-newer than the cell set (owners.yaml expected_from, e.g. cis_app → booking.v_ops_* from bk-017, AA-858) has
+the contract reads of other apps (booking → geo.name_norm, tripplanner → shared.llm_call_log, …); a grant whose
+migration is newer than the cell set (owners.yaml expected_from, e.g. cis_app → booking.v_ops_* from bk-017, AA-858) has
 its own cell consumer.contract_grants.<key>, pending until that key is registered.
 
 RLS parity (X1 S16, S243 correction): the master reads the FORCE RLS tables unfiltered (rds_superuser,
@@ -170,7 +170,6 @@ OBJECT_KINDS = ("relation", "sequence", "function")
 # DB Migrate apply never turns the nightly probe red (AA-858).
 CONSUMER_GRANTS = (
     ("booking", ("EXECUTE",), "geo.name_norm(text)", ""),
-    ("booking", ("USAGE", "SELECT"), "tripplanner.v_inquiry_outbox", ""),
     ("tripplanner", ("EXECUTE",), "geo.name_norm(text)", ""),
     ("tripplanner", ("INSERT",), "shared.llm_call_log", ""),
     ("cis_app", ("USAGE", "SELECT"), "booking.v_ops_funnel_daily", "bk-017"),
@@ -274,13 +273,17 @@ CROSS_APP = (
     (CRM_APP, "shared.tenants", CRM_APP_LOGIN_KEYS),
     ("booking", "crm.job", ("crm-001",)),
     ("tripplanner", "crm.job", ("crm-001",)),
+    # AA-1046: the inquiry.submitted contract is retired; TripPlanner tp-027 revokes booking's SELECT on the view (its
+    # payload carries every tenant's traveller data, owner view = no RLS) and USAGE on schema tripplanner. Remove this
+    # row in the PR of the view's later destructive drop: a missing view answers 42P01, not 42501.
+    ("booking", "tripplanner.v_inquiry_outbox", ("tp-027",)),
     ("aa_app_user", "crm.job", ("crm-001",)),
     (CIS_APP, "crm.job", ("crm-001",) + CIS_APP_LOGIN_KEYS),
     (CIS_RUNTIME, "crm.job", ("crm-001", "cis_runtime_on_cis_app")),
 )
 
 VERSION_KEYS = ("rl-001", "243", "bk-014", "tp-013", "244", "rl-002", "245", "rl-003", "rl-004", "269",
-                "crm-001", "crm-006") + CONSUMER_GRANT_KEYS
+                "crm-001", "crm-006", "tp-027") + CONSUMER_GRANT_KEYS
 TRANSFER_KEYS = {name: f"{name}_transferred" for name in OWNERS}
 KEY_TEXT = {
     "rl-001": "rl-001 registered (X1 S3, first apply of the S8 train)",
@@ -295,6 +298,7 @@ KEY_TEXT = {
     "269": "CIS 269 registered (AA-932: crm_owner may register crm- keys)",
     "crm-001": "crm-001 registered (AA-932: crm.job, crm_app grants and default privileges)",
     "crm-006": "crm-006 registered (AA-937: F1 / F2 complete, the F2 views and the first reader grants)",
+    "tp-027": "tp-027 registered (AA-1046: role booking lost the tripplanner.v_inquiry_outbox read and schema USAGE)",
     "crm_transferred": "crm-001 registered and schema crm owned by crm_owner (AA-932)",
     "crm_app_secret_ready": "crm/dev/database-url holds a crm_app DSN (Nghiệp's hand edit, AA-932)",
     "crm_app_password_set": (f"role crm_app carries the '{PASSWORD_MARKER}' comment of DB Migrate "
