@@ -12,10 +12,26 @@ Each rule comes from a CI incident written in the root lessons log:
                        S253).
   WL3 npm-ci-lockfile  A step that runs `npm ci` reads a package-lock.json that git tracks in its working directory:
                        a gitignored lockfile broke a workflow at its first run (S220).
+  WL4 cache-default    A workflow saves caches only on the default branch (S273: GitHub keeps 10 GB of caches per
+                       repo and evicts least-recently-used entries above it; pull request and merge-queue caches, which
+                       only that ref can read, were 7.5 GB of AA-CIS-App's 10.7 GB). No `cache:` input on
+                       actions/setup-python or actions/setup-node (they save on every ref) and `package-manager-cache:
+                       false` on setup-node v5+; astral-sh/setup-uv sets `save-cache` to a default-branch test; no
+                       combined actions/cache (restore with actions/cache/restore, save with actions/cache/save); every
+                       actions/cache/save runs under `if:` with `github.ref == 'refs/heads/main'` (or master);
+                       aquasecurity/trivy-action has `cache: "false"` (its DB cache saves on every ref).
+  WL5 external-download  No step fetches a binary from outside without a cache and a sha256 pin (S273: GitHub throttled
+                       unauthenticated release downloads and the actions that download their own binary failed CI with
+                       HTTP 504): no action from DOWNLOADERS (anchore/sbom-action, setup-trivy, trivy-action without
+                       `skip-setup-trivy: "true"`, lychee-action, ...), and a `run:` that fetches a release asset or an
+                       archive (curl / wget / gh release download) needs an earlier actions/cache(/restore) step in
+                       its job and a sha256 check. Use ./.github/actions/release-bin (or ./.github/actions/lychee).
+                       Also checked in the composite actions under .github/actions (WL5 only: a composite action's
+                       binary cache is keyed on its pin and may save on a miss).
 
 The workflow `Workflow Lint` runs this next to a pinned actionlint. Stdlib + PyYAML.
 Run: python3 -B .github/scripts/workflow_lint.py [--skip WL1[,WL2]] [WORKFLOW.yml ...]
-     (default: every .github/workflows file)
+     (default: every .github/workflows file, then every .github/actions/*/action.yml for WL5)
 Exit 0 = clean, 1 = findings (one line each: file:job:rule message), 2 = a workflow does not parse.
 
 One file, the same in every repo (AA-CIS-Infra first, vendored into the root, AA-CIS-App, AA-Booking, AA-Partner and
@@ -41,6 +57,24 @@ SENSITIVE_VAR = re.compile(
 PLAYWRIGHT = re.compile(r"playwright", re.I)
 NPM_CI = re.compile(r"(?:^|[;&|(]|\s)npm\s+ci\b", re.M)
 PINNED_RUNNER = "ubuntu-24.04"
+NESTED_EXPR = re.compile(r"\$\{\{(?:(?!\}\}).)*\$\{\{")
+DEFAULT_REF = re.compile(r"github\.ref\s*==\s*'refs/heads/(?:main|master)'")
+CACHE_INPUT_ACTIONS = ("actions/setup-python@", "actions/setup-node@")
+# Actions that download a binary themselves on every run (no cache keyed on a sha256 pin): what to use instead.
+DOWNLOADERS = {
+    "anchore/sbom-action@": "run syft from ./.github/actions/release-bin (tool: syft)",
+    "anchore/scan-action@": "run grype from ./.github/actions/release-bin",
+    "aquasecurity/setup-trivy@": "install trivy with ./.github/actions/release-bin (tool: trivy)",
+    "lycheeverse/lychee-action@": "use ./.github/actions/lychee",
+    "gitleaks/gitleaks-action@": "run the pinned gitleaks image (ghcr.io/gitleaks/gitleaks:<version>)",
+}
+FETCH = re.compile(r"(?:^|[;&|(]|\s)(?:curl|wget|Invoke-WebRequest)\b|\bgh\s+release\s+download\b", re.M)
+URL = re.compile(r"https?://[^\s\"'<>`)]+")
+ARCHIVE = re.compile(r"\.(?:tar\.gz|tgz|tar\.xz|txz|tar\.bz2|zip|deb|rpm|whl|gz|xz|bz2|appimage|exe|msi|dmg|pkg)$"
+                     r"|/install\.sh$|/releases/download/|/archive/refs/", re.I)
+DOWNLOAD_HOSTS = ("raw.githubusercontent.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com")
+PIPE_TO_SHELL = re.compile(r"\|\s*(?:sudo\s+)?(?:ba)?sh\b")
+SHA_CHECK = re.compile(r"sha256sum\s+(?:-c|--check)|shasum\s+-a\s*256\s+(?:-c|--check)|\b[0-9a-f]{64}\b")
 
 
 def _strip_comments(text: str) -> str:
@@ -68,7 +102,106 @@ def tracked(path: str, repo_root: str) -> bool:
     return os.path.isfile(os.path.join(repo_root, path))
 
 
-RULES = ("WL1", "WL2", "WL3")
+def _major(uses: str) -> int | None:
+    """The major version of `owner/name@vN...` (None for a SHA pin: YAML drops the `# vN` comment; WL4 then
+    treats setup-node as v5+)."""
+    m = re.search(r"@v(\d+)", uses) or re.search(r"#\s*v(\d+)", uses)
+    return int(m.group(1)) if m else None
+
+
+def _is_download_url(url: str) -> bool:
+    host = url.split("://", 1)[1].split("/", 1)[0].lower()
+    if host.split(":")[0] in ("localhost", "127.0.0.1", "0.0.0.0") or "${" in host or "$" in host[:1]:
+        return False
+    path = url.split("?", 1)[0].split("#", 1)[0]
+    return host in DOWNLOAD_HOSTS or bool(ARCHIVE.search(path))
+
+
+def _downloads(run: str) -> list[str]:
+    """What a run script fetches from outside: download-shaped URLs (or `gh release download`), when it fetches."""
+    if not FETCH.search(run):
+        return []
+    got = [u for u in URL.findall(run) if _is_download_url(u)]
+    if not got and (re.search(r"\bgh\s+release\s+download\b", run) or
+                    (PIPE_TO_SHELL.search(run) and URL.search(run))):
+        got = [m.group(0) for m in re.finditer(r"gh\s+release\s+download\S*", run)] or URL.findall(run)[:1]
+    return got
+
+
+def _env_used(run: str, *envs) -> str:
+    """The values of the env entries (workflow, job, step) that the run script names ($X, ${X} or env.X)."""
+    vals = []
+    for env in envs:
+        for name, value in (env or {}).items() if isinstance(env, dict) else ():
+            if re.search(rf"\$\{{?{re.escape(str(name))}\b|\benv\.{re.escape(str(name))}\b", run):
+                vals.append(str(value))
+    return " ".join(vals)
+
+
+def _download_findings(where: str, steps: list, *envs) -> list[str]:
+    """WL5 for one job's (or composite action's) steps."""
+    findings, cached = [], False
+    for step in steps or []:
+        if not isinstance(step, dict):
+            continue
+        uses = str(step.get("uses") or "")
+        with_ = step.get("with") or {}
+        for prefix, fix in DOWNLOADERS.items():
+            if uses.startswith(prefix):
+                findings.append(f"{where}:WL5 {prefix[:-1]} downloads its binary on every run: {fix}")
+        if uses.startswith("aquasecurity/trivy-action@") and str(with_.get("skip-setup-trivy")).lower() != "true":
+            findings.append(f"{where}:WL5 aquasecurity/trivy-action installs trivy through setup-trivy: install it with "
+                            "./.github/actions/release-bin (tool: trivy) and set skip-setup-trivy: \"true\"")
+        if uses.startswith(("actions/cache@", "actions/cache/restore@")):
+            cached = True
+        run = _strip_comments(str(step.get("run") or ""))
+        got = _downloads(run)
+        if got:
+            pinned = bool(SHA_CHECK.search(run + " " + _env_used(run, *envs, step.get("env"))))
+            if not (cached and pinned):
+                missing = " and ".join(x for x, ok in (("no cache", cached), ("no sha256 check", pinned)) if not ok)
+                findings.append(f"{where}:WL5 step {step.get('name') or step.get('id') or '?'!r} downloads {got[0]} "
+                                f"({missing}): use ./.github/actions/release-bin")
+    return findings
+
+
+def _cache_findings(where: str, steps: list) -> list[str]:
+    """WL4 for one job's steps."""
+    findings = []
+    for step in steps or []:
+        if not isinstance(step, dict):
+            continue
+        uses = str(step.get("uses") or "")
+        with_ = step.get("with") or {}
+        label = step.get("name") or step.get("id") or uses.split("@")[0]
+        if uses.startswith(CACHE_INPUT_ACTIONS) and str(with_.get("cache") or "").strip():
+            findings.append(f"{where}:WL4 {label!r}: no `cache:` on {uses.split('@')[0]} (it saves on every ref): "
+                            "actions/cache/restore, and actions/cache/save only on the default branch")
+        if uses.startswith("actions/setup-node@") and (_major(uses) or 99) >= 5 \
+                and str(with_.get("package-manager-cache")).lower() != "false":
+            findings.append(f"{where}:WL4 {label!r}: setup-node v5+ needs package-manager-cache: false "
+                            "(its automatic cache saves on every ref)")
+        if uses.startswith("astral-sh/setup-uv@") and str(with_.get("enable-cache")).lower() != "false" \
+                and not DEFAULT_REF.search(str(with_.get("save-cache") or "")):
+            findings.append(f"{where}:WL4 {label!r}: setup-uv needs save-cache: ${{{{ github.ref == "
+                            "'refs/heads/main' }} (restore on every ref, save on the default branch)")
+        if uses.startswith("actions/cache@"):
+            findings.append(f"{where}:WL4 {label!r}: actions/cache saves on every ref: actions/cache/restore, and "
+                            "actions/cache/save under if: github.ref == 'refs/heads/main'")
+        if uses.startswith("actions/cache/save@") and not DEFAULT_REF.search(str(step.get("if") or "")):
+            findings.append(f"{where}:WL4 {label!r}: actions/cache/save needs if: github.ref == 'refs/heads/main' "
+                            "(a pull request or merge-queue copy is readable only by that ref)")
+        if uses.startswith(("actions/cache", "actions/setup-")) and any(
+                NESTED_EXPR.search(str(v)) for v in with_.values()):
+            findings.append(f"{where}:WL4 {label!r}: a `${{{{` inside an expression is a literal string (the key never "
+                            "matches): use format('...{0}...', value)")
+        if uses.startswith("aquasecurity/trivy-action@") and str(with_.get("cache")).lower() != "false":
+            findings.append(f"{where}:WL4 {label!r}: trivy-action needs cache: \"false\" (its DB cache saves on every "
+                            "ref): restore the DB with actions/cache/restore, save it on the default branch")
+    return findings
+
+
+RULES = ("WL1", "WL2", "WL3", "WL4", "WL5")
 UNCHECKED: list[str] = []   # npm ci steps whose working-directory is an expression (printed in the summary)
 
 
@@ -85,6 +218,10 @@ def lint_workflow(name: str, text: str, repo_root: str = REPO_ROOT, skip: frozen
         runs_on = job.get("runs-on")
         if "WL2" not in skip and PLAYWRIGHT.search(body) and runs_on != PINNED_RUNNER:
             findings.append(f"{name}:{job_id}:WL2 a Playwright job must pin runs-on: {PINNED_RUNNER} (got {runs_on!r})")
+        if "WL4" not in skip:
+            findings += _cache_findings(f"{name}:{job_id}", job.get("steps"))
+        if "WL5" not in skip:
+            findings += _download_findings(f"{name}:{job_id}", job.get("steps"), wf.get("env"), job.get("env"))
         default_dir = ((job.get("defaults") or {}).get("run") or {}).get("working-directory") or "."
         for step in job.get("steps") or []:
             run = _strip_comments(str(step.get("run") or ""))
@@ -100,6 +237,25 @@ def lint_workflow(name: str, text: str, repo_root: str = REPO_ROOT, skip: frozen
     return findings
 
 
+def lint_action(name: str, text: str, skip: frozenset = frozenset()) -> list[str]:
+    """WL5 for a composite action (.github/actions/<name>/action.yml)."""
+    if "WL5" in skip:
+        return []
+    action = yaml.safe_load(text) or {}
+    runs = action.get("runs") or {}
+    if runs.get("using") != "composite":
+        return []
+    return _download_findings(f"{name}:-", runs.get("steps"))
+
+
+def _action_files() -> list[str]:
+    root = os.path.join(REPO_ROOT, ".github", "actions")
+    if not os.path.isdir(root):
+        return []
+    return [os.path.join(root, d, f) for d in sorted(os.listdir(root)) for f in ("action.yml", "action.yaml")
+            if os.path.isfile(os.path.join(root, d, f))]
+
+
 def main(argv: list[str]) -> int:
     argv, skip = list(argv), set()
     while argv and argv[0] == "--skip":
@@ -110,12 +266,17 @@ def main(argv: list[str]) -> int:
         argv = argv[2:]
     wf_dir = os.path.join(REPO_ROOT, ".github", "workflows")
     paths = argv or [os.path.join(wf_dir, n) for n in sorted(os.listdir(wf_dir)) if n.endswith((".yml", ".yaml"))]
+    actions = [] if argv else _action_files()
     findings = []
     UNCHECKED.clear()
-    for path in paths:
+    for path in paths + actions:
         try:
             with open(path, encoding="utf-8") as fh:
-                findings += lint_workflow(os.path.basename(path), fh.read(), skip=frozenset(skip))
+                text = fh.read()
+            if path in actions:
+                findings += lint_action(os.path.relpath(path, REPO_ROOT), text, frozenset(skip))
+            else:
+                findings += lint_workflow(os.path.basename(path), text, skip=frozenset(skip))
         except (OSError, yaml.YAMLError) as exc:
             print(f"{path}: cannot read: {exc}", file=sys.stderr)
             return 2
@@ -124,7 +285,7 @@ def main(argv: list[str]) -> int:
     for u in UNCHECKED:
         print(f"unchecked (expression working-directory): {u}")
     skipped = f", skipped {','.join(sorted(skip))}" if skip else ""
-    print(f"workflow_lint: {len(paths)} workflows, {len(findings)} findings{skipped}")
+    print(f"workflow_lint: {len(paths)} workflows, {len(actions)} composite actions, {len(findings)} findings{skipped}")
     return 1 if findings else 0
 
 
