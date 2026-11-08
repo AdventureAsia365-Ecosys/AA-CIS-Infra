@@ -23,6 +23,9 @@ import sys
 # TagResource / UntagResource (AA-932 review): the CI boundary deny on CRM keys keys on the tag App = crm.
 ADMIN_EVENTS = ("PutKeyPolicy", "CreateGrant", "ScheduleKeyDeletion", "DisableKey", "TagResource", "UntagResource")
 CRYPTO_EVENT = {"data": "Decrypt", "ingest": "GenerateDataKey", "seal": "Sign"}
+# The MFA admin role (accounts/aa365/admin_role.tf, variable identity_breakglass_admin_role_name; AA-1004 replaced
+# the hand-made 'nghiep-admin-8h-session'). Any role other than the CRM task role would do for these sample events.
+ADMIN_ROLE = "nghiep-admin-12h"
 
 
 def cloudtrail_event(account: str, region: str, name: str, key_arn: str, key_id: str, identity: dict) -> dict:
@@ -48,7 +51,7 @@ SERVICE_IDENTITY = {"type": "AWSService", "invokedBy": "ses.amazonaws.com"}
 def cases(account: str, region: str, env: str, keys: dict) -> list:
     """(check id, rule name, event, expected match) for every check; keys = {name: (key id, key arn)}."""
     admin_rule, foreign_rule = f"aa-crm-{env}-kms-key-admin", f"aa-crm-{env}-kms-foreign-use"
-    admin = role_identity(account, "nghiep-admin-8h-session")
+    admin = role_identity(account, ADMIN_ROLE)
     task = role_identity(account, f"aa-crm-{env}-ecs-task-role")
     breakglass = role_identity(account, f"aa-crm-{env}-breakglass")
     out = []

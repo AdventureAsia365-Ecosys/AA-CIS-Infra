@@ -21,9 +21,9 @@ locals {
     linear_api       = "aa-ecosys/ops/linear-api-key"
   }
 
-  # The only principal that may read or write the values: the MFA admin role (identity_alerts.tf local, the
-  # role var.identity_breakglass_admin_role_name names).
-  ops_secret_reader_role_arns = [local.id_breakglass_admin_role_arn]
+  # The only principal that may read or write the values: the MFA admin role (identity_alerts.tf local
+  # id_admin_role_arns: the role admin_role.tf creates, plus the hand-made one during the AA-1004 transition).
+  ops_secret_reader_role_arns = local.id_admin_role_arns
 }
 
 data "aws_secretsmanager_secret" "ops" {
