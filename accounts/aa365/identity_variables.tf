@@ -18,9 +18,21 @@ variable "identity_breakglass_email" {
 }
 
 variable "identity_breakglass_admin_role_name" {
-  description = "IAM role that alone may GetSecretValue / PutSecretValue on the break-glass secret (identity_alerts.tf, ADR 0006 decision 11): the role the MFA admin CLI profiles (aa365-admin, default) assume. Every other principal, the CI apply role included, is denied; Terraform never needs the value."
+  description = "Name of the MFA admin role (admin_role.tf, AA-1004) that the admin CLI profiles (aa365-admin, default) assume; the role that alone may GetSecretValue / PutSecretValue on the break-glass secret (identity_alerts.tf, ADR 0006 decision 11). Every other principal, the CI apply role included, is denied; Terraform never needs the value."
   type        = string
-  default     = "nghiep-admin-8h-session"
+  default     = "nghiep-admin-12h"
+}
+
+variable "identity_admin_user_name" {
+  description = "IAM user that may assume the MFA admin role (admin_role.tf trust, MFA required). AA-1004."
+  type        = string
+  default     = "nghiep-admin"
+}
+
+variable "identity_admin_role_legacy_names" {
+  description = "AA-1004 transition only: hand-made admin roles still allowed next to the Terraform role in every policy that names the MFA admin role (local.id_admin_role_arns), until the CLI profiles switch to the new role. The follow-up PR removes this variable."
+  type        = list(string)
+  default     = ["nghiep-admin-8h-session"]
 }
 
 # ── Prefix domains (Dev) and optional custom domains ─────────────────────────

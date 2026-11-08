@@ -244,7 +244,7 @@ data "aws_iam_policy_document" "e2e_mail_bucket" {
     condition {
       test     = "StringNotEquals"
       variable = "aws:PrincipalArn"
-      values   = [local.id_breakglass_admin_role_arn]
+      values   = local.id_admin_role_arns
     }
   }
 
@@ -265,7 +265,7 @@ data "aws_iam_policy_document" "e2e_mail_bucket" {
     condition {
       test     = "StringNotEquals"
       variable = "aws:PrincipalArn"
-      values   = [local.e2e_mail_reader_arn, local.id_breakglass_admin_role_arn]
+      values   = concat([local.e2e_mail_reader_arn], local.id_admin_role_arns)
     }
   }
 

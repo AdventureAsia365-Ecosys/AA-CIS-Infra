@@ -247,6 +247,13 @@ accounts/
     identity_iam.tf               (AA-816: CIS task role (api + worker) allow-list on the WORKFORCE pool
                                    only — create/group/disable/enable/global sign-out + ListUsers*;
                                    no AdminGetUser / AdminSetUserPassword / attribute writes, ADR 0006)
+    admin_role.tf                 (AA-1004 S273: the MFA admin role nghiep-admin-12h that the CLI profiles aa365-admin
+                                   and default assume (trust = IAM user nghiep-admin + MFA, sts:AssumeRole; 12 h max
+                                   session; AdministratorAccess + Billing + AWSBillingConductorFullAccess; no boundary;
+                                   prevent_destroy). It replaced the hand-made nghiep-admin-8h-session; every policy that
+                                   names the MFA admin role uses local.id_admin_role_arns (identity_alerts.tf), which
+                                   also holds var.identity_admin_role_legacy_names during the switch. LOCAL-APPLY ONLY
+                                   (bootstrap object); guard tools/terraform/tests/test_aa1004_admin_role.py)
     identity_alerts.tf             (AA-854 I1: break-glass secret resource policy — Get/PutSecretValue
                                    only for the MFA admin role; EventBridge rule on CloudTrail
                                    management events incl. read-only -> SNS alerts topic; the
@@ -770,7 +777,8 @@ makes CI Terraform Plan fail with 403.
   `permissions_boundary = aws_iam_policy.workload_boundary.arn`** and keep an `aa-*-dev-*` name, or
   CI apply is denied. Changes to the bootstrap objects (the three roles, both boundaries, the GitHub
   OIDC provider, `local.cicd_managed_policies` / `local.cicd_inline_statements` in `cicd.tf` (the
-  apply role's grants), `aa-cis-dev-agent-session`, `cicd_crm.tf`) are applied locally.
+  apply role's grants), `aa-cis-dev-agent-session`, `cicd_crm.tf`, the MFA admin role in `admin_role.tf` (AA-1004,
+  no workload boundary on purpose)) are applied locally.
   AA-931 (`cicd_crm.tf`): the apply role holds 9 AWS managed policies (`AWSStepFunctionsFullAccess` dropped, no
   Step Functions resource since AA-750) plus the customer managed `aa-cis-infra-tf-apply-crm`; the apply boundary
   denies, on KMS keys tagged `App=crm`, every crypto use plus `CreateGrant` / `PutKeyPolicy` /

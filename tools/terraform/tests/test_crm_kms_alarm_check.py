@@ -143,6 +143,19 @@ class AlarmPatternTest(unittest.TestCase):
                 .split('\ndata "', 1)[0]
             self.assertNotIn("crm_breakglass_role_arn", block)
 
+    def test_admin_role_is_the_terraform_admin_role(self):
+        # AA-1004: the sample admin principal is the role accounts/aa365/admin_role.tf creates (its name is the
+        # default of identity_breakglass_admin_role_name), never the retired hand-made role.
+        variables = (ROOT / "accounts" / "aa365" / "identity_variables.tf").read_text(encoding="utf-8")
+        block = variables.split('variable "identity_breakglass_admin_role_name"', 1)[1].split("\n}", 1)[0]
+        default = re.search(r'default\s*=\s*"([^"]+)"', block).group(1)
+        self.assertEqual(chk.ADMIN_ROLE, default)
+        self.assertNotIn("8h-session", chk.ADMIN_ROLE)
+        events = [e for cid, _, e, _ in chk.cases(ACCOUNT, REGION, ENV, KEYS) if cid.startswith("admin.data.")]
+        self.assertTrue(events)
+        for event in events:
+            self.assertIn(f":assumed-role/{default}/", event["detail"]["userIdentity"]["arn"])
+
 
 if __name__ == "__main__":
     unittest.main()
