@@ -164,6 +164,11 @@ resource "aws_wafv2_web_acl" "main" {
   #
   # Every path match runs var.tripplanner_web.path_transformations (URL_DECODE, NORMALIZE_PATH): the app resolves a
   # dot-segment spelling such as /api/browse/%2e/search to the model route, so the rules must see the same path.
+  # A protected path matches with CONTAINS, never EXACTLY: NORMALIZE_PATH keeps a back-reference at the start of the
+  # path (AWS: "not at the beginning of the input"), so /%2e%2e/api/trip/send stays /../api/trip/send for WAF while
+  # the app (WHATWG new URL) resolves it to /api/trip/send; a resolver may also drop a raw #fragment suffix. Matching
+  # more is harmless: the rules are scoped to the TripPlanner host and the origin secret, and the app answers any other
+  # path 404 (AA-TripPlanner-Web lib/edgeGate.ts compares the resolved path exactly). Review S272.
   dynamic "rule" {
     for_each = local.tp_on ? [1] : []
 
@@ -298,7 +303,7 @@ resource "aws_wafv2_web_acl" "main" {
                     content {
                       byte_match_statement {
                         search_string         = statement.value
-                        positional_constraint = "EXACTLY"
+                        positional_constraint = "CONTAINS"
                         field_to_match {
                           uri_path {}
                         }
@@ -454,13 +459,13 @@ resource "aws_wafv2_web_acl" "main" {
                   }
                 }
               }
-              # The protected paths: no valid token, no model call and no lead.
+              # The protected paths: no valid token, no model call and no lead. CONTAINS, see the note above rule 2.
               dynamic "statement" {
                 for_each = local.tp.protected_paths
                 content {
                   byte_match_statement {
                     search_string         = statement.value
-                    positional_constraint = "EXACTLY"
+                    positional_constraint = "CONTAINS"
                     field_to_match {
                       uri_path {}
                     }

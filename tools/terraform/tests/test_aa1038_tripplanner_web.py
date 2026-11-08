@@ -9,8 +9,9 @@
    web ACL (modules/waf): the rate rule, the protected-path rate rule and the Challenge, on the same three paths the
    app gates (AA-TripPlanner-Web lib/botCheck.ts: the two model calls and Send to advisor, review S272), each scoped to the TripPlanner host AND the origin secret, after
    CommonRuleSet and before both allow rules; the rate rules key on the viewer address the distribution's
-   viewer-request function writes. Every path match URL-decodes and normalizes first, so a dot-segment spelling
-   (/api/browse/%2e/search) is caught too.
+   viewer-request function writes. Every path match URL-decodes and normalizes first, and a protected path matches
+   with CONTAINS, so a dot-segment spelling (/api/browse/%2e/search, and a leading /%2e%2e/api/trip/send, which
+   NORMALIZE_PATH keeps) is caught too.
 4. Caching: pages and /api/* never cached at the edge; only the immutable chunks and the photo proxy are.
 5. DNS: the record moved from custom_domains.tf (never destroyed), stays a CNAME on both sides, the switch is off by
    default, the TTL window is on, and the switch needs the edge.
@@ -317,11 +318,19 @@ def test_every_path_match_decodes_and_normalizes_before_comparing():
 
 
 def _waf_url_decode_then_normalize(path: str) -> str:
-    """Local model of URL_DECODE + NORMALIZE_PATH (AWS WAF text transformations)."""
+    """Local model of URL_DECODE + NORMALIZE_PATH (AWS WAF text transformations).
+
+    AWS: NORMALIZE_PATH removes multiple slashes, directory self-references and directory back-references "that are not
+    at the beginning of the input". So a LEADING /./ or /../ (any run of them) is kept as is, unlike WHATWG new URL,
+    which drops it: /../api/trip/send stays /../api/trip/send for WAF (review S272)."""
     from urllib.parse import unquote
 
+    segs = re.sub(r"/{2,}", "/", unquote(path)).split("/")[1:]
+    lead: list[str] = []
+    while segs and segs[0] in (".", "..") and len(segs) > 1:
+        lead.append(segs.pop(0))
     out: list[str] = []
-    for seg in re.sub(r"/{2,}", "/", unquote(path)).split("/")[1:]:
+    for seg in segs:
         if seg == ".":
             continue
         if seg == "..":
@@ -329,24 +338,93 @@ def _waf_url_decode_then_normalize(path: str) -> str:
                 out.pop()
             continue
         out.append(seg)
-    return "/" + "/".join(out)
+    return "/" + "/".join(lead + out)
 
 
-def test_dot_segment_spellings_of_the_protected_paths_normalize_to_the_protected_path():
-    spellings = {
-        "/api/browse/%2e/search": "/api/browse/search",
-        "/api/browse/%2E/search": "/api/browse/search",
-        "/api/trip/%2e/narrate": "/api/trip/narrate",
-        "/api/trip/./narrate": "/api/trip/narrate",
-        "/api/x/../trip/narrate": "/api/trip/narrate",
-        "/api/browse/%2e%2e/browse/search": "/api/browse/search",
-        "/api//browse/search": "/api/browse/search",
-        "/api/trip/%2e/send": "/api/trip/send",
-        "/api/x/../trip/send": "/api/trip/send",
-    }
-    for raw, want in spellings.items():
-        assert _waf_url_decode_then_normalize(raw) == want, raw
-        assert want in PROTECTED_PATHS
+def _waf_protected_match(raw: str) -> bool:
+    """Rules 3 and 4: the transformed path CONTAINS a protected path (modules/waf, positional_constraint)."""
+    path = _waf_url_decode_then_normalize(raw)
+    return any(p in path for p in PROTECTED_PATHS)
+
+
+# Raw request paths the app (Next 16, WHATWG new URL) routes to a protected path. A leading back-reference survives
+# NORMALIZE_PATH, so these are the spellings EXACTLY let through (review S272).
+DOT_SPELLINGS = {
+    "/api/browse/%2e/search": "/api/browse/search",
+    "/api/browse/%2E/search": "/api/browse/search",
+    "/api/trip/%2e/narrate": "/api/trip/narrate",
+    "/api/trip/./narrate": "/api/trip/narrate",
+    "/api/x/../trip/narrate": "/api/trip/narrate",
+    "/api/browse/%2e%2e/browse/search": "/api/browse/search",
+    "/api/trip/%2e/send": "/api/trip/send",
+    "/api/x/../trip/send": "/api/trip/send",
+    "/%2e%2e/api/trip/send": "/api/trip/send",
+    "/%2E%2E/api/trip/send": "/api/trip/send",
+    "/../api/browse/search": "/api/browse/search",
+    "/%2e%2e/api/browse/search": "/api/browse/search",
+    "/%2e%2e/api/trip/narrate": "/api/trip/narrate",
+    "/./api/trip/narrate": "/api/trip/narrate",
+    "/%2e/api/trip/send": "/api/trip/send",
+    "/../../api/trip/send": "/api/trip/send",
+    "/api/trip/send#x": "/api/trip/send",
+}
+
+
+def test_the_waf_model_keeps_a_leading_back_reference_as_aws_documents():
+    assert _waf_url_decode_then_normalize("/../api/trip/send") == "/../api/trip/send"
+    assert _waf_url_decode_then_normalize("/%2e%2e/api/trip/send") == "/../api/trip/send"
+    assert _waf_url_decode_then_normalize("/./api/trip/narrate") == "/./api/trip/narrate"
+    assert _waf_url_decode_then_normalize("/api/x/../trip/send") == "/api/trip/send"
+    # So an EXACTLY match misses it; the CONTAINS match does not.
+    assert _waf_url_decode_then_normalize("/%2e%2e/api/trip/send") not in PROTECTED_PATHS
+    assert _waf_protected_match("/%2e%2e/api/trip/send")
+
+
+def test_every_dot_segment_spelling_the_app_routes_to_a_protected_path_is_matched_by_the_rules():
+    for raw, want in DOT_SPELLINGS.items():
+        assert want in PROTECTED_PATHS, raw
+        assert _waf_protected_match(raw), raw
+    # Next answers a doubled slash or a backslash with a 308 to the clean path (base-server), and WAF folds it anyway.
+    assert _waf_protected_match("/api//browse/search")
+    # Plain neighbours stay out (the catalog and the other BFF calls are never challenged).
+    for raw in ["/api/trip", "/api/browse", "/plan", "/api/health", "/api/trip/sen", "/api/browse/searc"]:
+        assert not _waf_protected_match(raw), raw
+
+
+def test_the_waf_match_agrees_with_the_app_whatwg_resolution():
+    # Whatever the app resolves to a protected path, the WAF rules match (the WAF may match more, never less).
+    import json
+    import shutil
+    import subprocess
+
+    import pytest
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not installed")
+    raws = list(DOT_SPELLINGS) + ["/api//browse/search", "/api/trip/send/.", "/api/trip/send%23x", "/api/browse/%73earch", "/x/../plan"]
+    script = (
+        f"const r = {json.dumps(raws)};"
+        "process.stdout.write(JSON.stringify(r.map((p) => new URL(p, 'https://h').pathname)));"
+    )
+    resolved = json.loads(subprocess.run([node, "-e", script], check=True, capture_output=True, text=True).stdout)
+    for raw, app_path in zip(raws, resolved):
+        if raw in DOT_SPELLINGS:
+            assert app_path == DOT_SPELLINGS[raw], raw
+        if app_path in PROTECTED_PATHS:
+            assert _waf_protected_match(raw), (raw, app_path)
+
+
+def test_protected_path_matches_use_contains_never_exactly():
+    # EXACTLY missed a leading back-reference (/%2e%2e/api/trip/send), which NORMALIZE_PATH keeps (review S272).
+    acl = _acl()
+    for name in ("TripPlannerRateLimitModelPaths", "TripPlannerChallengePlanner"):
+        rule = _rule(acl, name)
+        i = rule.index("for_each = local.tp.protected_paths")
+        stmt = _block_after(rule, rule.index("byte_match_statement {", i))
+        assert "search_string         = statement.value" in stmt, name
+        assert 'positional_constraint = "CONTAINS"' in stmt, name
+        assert "EXACTLY" not in stmt, name
 
 
 def test_protected_paths_are_the_app_paths_send_included():

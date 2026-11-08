@@ -49,9 +49,11 @@
 #                                     (AA-TripPlanner-Web lib/edgeGate.ts, task env TP_EDGE_GATE=on), so no model call
 #                                     and no lead passes outside rules 3 and 4. On ECS these rules are the whole bot
 #                                     check of the three calls (BotID needs the Vercel edge: the image builds it off).
-#   Every path match of rules 3 and 4 runs URL_DECODE then NORMALIZE_PATH (local.tp_web_path_normalize), so a dot
-#   segment spelling (/api/browse/%2e/search, /api/trip/./narrate, /x/../api/trip/send), which the app resolves to
-#   the protected route, is rate-limited and challenged like the plain path (review S272).
+#   Every path match of rules 3 and 4 runs URL_DECODE then NORMALIZE_PATH (local.tp_web_path_normalize), and a
+#   protected path matches with CONTAINS, so a dot-segment spelling (/api/browse/%2e/search, /api/trip/./narrate,
+#   /x/../api/trip/send, and a LEADING one: /%2e%2e/api/trip/send, /../api/browse/search, /./api/trip/narrate), which
+#   the app resolves to the protected route, is rate-limited and challenged like the plain path. NORMALIZE_PATH keeps a
+#   back-reference at the start of the path, so EXACTLY let the leading spellings through (review S272).
 #   Token: the ALB web ACL issues it for the request's host (tripplanner.<zone>, the Host CloudFront forwards), so no
 #   token domain list is needed; lifetime var.tripplanner_web_challenge_immunity_s (default 4 h), set on the rule, so
 #   the ACL default stays as it is for the other hosts.
@@ -149,14 +151,16 @@ locals {
 
   # The protected BFF paths (AA-TripPlanner-Web lib/botCheck.ts SEARCH_PATH / NARRATE_PATH / SEND_PATH): the two calls
   # that reach a model and "Send to advisor", which stores a traveller's contact for an agency (review S272: on Vercel
-  # BotID guarded it; on ECS only these rules do). Rate rule 3 and the Challenge rule 4 match exactly these paths.
+  # BotID guarded it; on ECS only these rules do). Rate rule 3 and the Challenge rule 4 match a path that CONTAINS one
+  # of these after the transformations below (a leading /../ survives NORMALIZE_PATH; review S272).
   tp_web_protected_paths = ["/api/browse/search", "/api/trip/narrate", "/api/trip/send"]
 
-  # Text transformations on every uri_path match of the TripPlanner WAF rules, in this order (priority = index): URL_DECODE, then
-  # NORMALIZE_PATH (drops /./, resolves /x/../, folds //). CloudFront passes the raw path and the app (Next, WHATWG
-  # new URL) resolves %2e / %2E as a dot segment, so /api/browse/%2e/search reaches the search route; with NONE that
-  # spelling matched neither model rule and skipped the Challenge and the model rate (review S272). Matching the path
-  # the app routes to is the point: the rules see the same path the route handler sees.
+  # Text transformations on every uri_path match of the TripPlanner WAF rules, in this order (priority = index):
+  # URL_DECODE, then NORMALIZE_PATH (drops /./, resolves /x/../, folds //; a leading /../ or /./ stays). CloudFront
+  # passes the raw path and the app (Next, WHATWG new URL) resolves %2e / %2E as a dot segment, so
+  # /api/browse/%2e/search reaches the search route; with NONE that spelling matched neither model rule and skipped the
+  # Challenge and the model rate (review S272). Matching the path the app routes to is the point: the rules see the
+  # same path the route handler sees, up to a leading back-reference, which the CONTAINS match covers.
   tp_web_path_normalize = ["URL_DECODE", "NORMALIZE_PATH"]
 
   # Cached at the edge, each with its cache policy; everything else is CachingDisabled.
