@@ -347,10 +347,10 @@ accounts/
                                    model calls + Send to advisor), Challenge on planner documents + protected paths;
                                    the whole bot check of those calls on ECS; no CLOUDFRONT web
                                    ACL and no Bot Control, S272 cost decision); ALB :80 host rule
-                                   tripplanner_web; the tripplanner. CNAME (moved from custom_domains.tf) with the DNS
-                                   switch var.tripplanner_web_dns_on_cloudfront (default false = Vercel) and the 60 s
-                                   window var.tripplanner_web_dns_switch_window; root runbook
-                                   docs/ops/runbooks/tripplanner-web-ecs-cutover.md)
+                                   tripplanner_web; the tripplanner. CNAME (moved from custom_domains.tf), always to
+                                   the distribution since the Vercel retirement (S272: switch and Vercel target
+                                   removed), with the 60 s TTL option var.tripplanner_web_dns_switch_window (off, 300 s);
+                                   root runbook docs/ops/runbooks/tripplanner-web-ecs-cutover.md)
     photos_cdn.tf                 (AA-844, edge: CloudFront img.lumiguides.it.com in front of the bronze
                                    bucket's photos/ prefix — ACM cert us-east-1 + validation record always;
                                    validation wait, distribution (origin_path /photos, OAC SigV4, cache key

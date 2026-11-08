@@ -63,9 +63,9 @@ locals {
   ]
 
   # AA-1038: where the CIS tour lifecycle notice goes (AA-CIS-App services/jobs/tripplanner_purge_job.py
-  # TRIPPLANNER_REVALIDATE_URL, also read by services/acp_shared/subject_gate.py). null = no env: the app default, the
-  # Vercel host, which serves the site until the DNS switch. The root sets the public host once the switch points it
-  # at ECS (tripplanner_web_edge.tf). Never "": an empty value switches delivery off.
+  # TRIPPLANNER_REVALIDATE_URL, also read by services/acp_shared/subject_gate.py). null = no env: the app default (the
+  # public TripPlanner host since the Vercel retirement). The root sets the public host of its zone, served by ECS
+  # behind CloudFront (tripplanner_web_edge.tf). Never "": an empty value switches delivery off.
   tripplanner_revalidate_env = var.tripplanner_revalidate_url == null ? [] : [
     { name = "TRIPPLANNER_REVALIDATE_URL", value = var.tripplanner_revalidate_url },
   ]

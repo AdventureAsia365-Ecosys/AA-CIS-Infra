@@ -15,10 +15,10 @@
    planner pages, the protected paths), which keeps every rule within the provider's statement depth
    (test_waf_statement_depth.py); the regexes match exactly what the old byte matches did.
 4. Caching: pages and /api/* never cached at the edge; only the immutable chunks and the photo proxy are.
-5. DNS: the record moved from custom_domains.tf (never destroyed), stays a CNAME on both sides, the switch is off by
-   default, the TTL window is on, and the switch needs the edge.
+5. DNS: the record moved from custom_domains.tf (never destroyed) and, since the Vercel retirement (root runbook
+   section 4), is always a CNAME to the distribution: no switch, no Vercel target, the TTL window closed (300 s).
 6. The ALB host rule is a CloudFront-path rule (host + origin secret, priority from the map, below the deny rule).
-7. The CIS catalog purge follows the switch (TRIPPLANNER_REVALIDATE_URL only when the host points at ECS, never "").
+7. The CIS catalog purge goes to the public host (TRIPPLANNER_REVALIDATE_URL always set, never "").
 8. The apply role may create the web repository (bootstrap grant in cicd_crm.tf).
 
 Offline: reads the .tf files; no Terraform, no AWS. Run from the repo root:
@@ -38,6 +38,7 @@ SGS = (AA365 / "app_security_groups.tf").read_text(encoding="utf-8")
 ENV = (AA365 / "environment.tf").read_text(encoding="utf-8")
 MAIN = (AA365 / "main.tf").read_text(encoding="utf-8")
 CUSTOM = (AA365 / "custom_domains.tf").read_text(encoding="utf-8")
+TFVARS = (AA365 / "terraform.tfvars").read_text(encoding="utf-8")
 VERCEL_VARS = (AA365 / "custom_domains_variables.tf").read_text(encoding="utf-8")
 CICD_CRM = (AA365 / "cicd_crm.tf").read_text(encoding="utf-8")
 WAF = (ROOT / "modules" / "waf" / "main.tf").read_text(encoding="utf-8")
@@ -605,19 +606,27 @@ def test_record_moved_from_custom_domains_never_recreated():
     assert not re.search(r'^\s*tripplanner\s*=\s*"', VERCEL_VARS, re.M), "tripplanner left custom_domain_vercel_hosts"
 
 
-def test_switch_off_by_default_window_on_and_a_cname_on_both_sides():
-    switch = _block_after(EDGE, EDGE.index('variable "tripplanner_web_dns_on_cloudfront"'))
-    assert "default     = false" in switch
-    window = _block_after(EDGE, EDGE.index('variable "tripplanner_web_dns_switch_window"'))
-    assert "default     = true" in window
-    assert "tp_web_dns_ttl = var.tripplanner_web_dns_switch_window ? 60 : 300" in EDGE
+def test_record_always_points_at_the_distribution_after_the_vercel_retirement():
     rec = _code(_resource(EDGE, "aws_route53_record", "tripplanner_web"))
     assert 'type    = "CNAME"' in rec and "ttl     = local.tp_web_dns_ttl" in rec
-    assert (
-        "records = [var.tripplanner_web_dns_on_cloudfront ? aws_cloudfront_distribution.tripplanner_web[0].domain_name"
-        " : var.tripplanner_web_vercel_target]"
-    ) in rec
-    assert "!var.tripplanner_web_dns_on_cloudfront || local.tp_web_edge_on == 1" in rec
+    assert "records = [one(aws_cloudfront_distribution.tripplanner_web[*].domain_name)]" in rec
+    assert "condition     = local.tp_web_edge_on == 1" in rec
+    out = _code(_block_after(EDGE, EDGE.index('output "tripplanner_web_edge"')))
+    assert "dns_target          = aws_cloudfront_distribution.tripplanner_web[0].domain_name" in out
+    # The cut-over switch and the Vercel target are gone (a CNAME to Vercel with no project claiming the host is a
+    # takeover risk): no variable, no use, no tfvars line, no Vercel CNAME target anywhere in the edge file.
+    code = _code(EDGE)
+    for gone in ("tripplanner_web_dns_on_cloudfront", "tripplanner_web_vercel_target", "vercel-dns"):
+        assert gone not in code, gone
+        assert not re.search(rf"^{gone}\s*=", TFVARS, re.M), gone
+    assert "vercel-dns" not in EDGE
+
+
+def test_switch_window_closed_ttl_300():
+    window = _block_after(EDGE, EDGE.index('variable "tripplanner_web_dns_switch_window"'))
+    assert "default     = false" in window
+    assert "tp_web_dns_ttl = var.tripplanner_web_dns_switch_window ? 60 : 300" in EDGE
+    assert re.search(r"^tripplanner_web_dns_switch_window\s*=\s*false\s*$", TFVARS, re.M)
 
 
 def test_public_host_listed_with_the_frontends():
@@ -641,10 +650,9 @@ def test_alb_rule_is_a_cloudfront_host_rule_below_the_deny_rule():
 
 # --- 7. the CIS catalog purge ---------------------------------------------------------------------------------------
 
-def test_cis_purge_follows_the_switch_and_is_never_empty():
-    assert (
-        'tripplanner_revalidate_url = var.tripplanner_web_dns_on_cloudfront ? "https://${local.tp_web_host}/api/revalidate/catalog" : null'
-    ) in MAIN
+def test_cis_purge_goes_to_the_public_host_and_is_never_empty():
+    # The same value the switch gave since the cut-over, so the CIS api / worker task definitions do not change.
+    assert 'tripplanner_revalidate_url = "https://${local.tp_web_host}/api/revalidate/catalog"' in MAIN
     assert "tripplanner_revalidate_env = var.tripplanner_revalidate_url == null ? [] : [" in ECS
     assert ECS.count("local.tripplanner_revalidate_env,") == 2  # api and worker
     var = _block_after(ECS_VARS, ECS_VARS.index('variable "tripplanner_revalidate_url"'))
