@@ -73,6 +73,9 @@ jobs:
 
     env:
       TF_VAR_db_password: ${{ secrets.TF_VAR_DB_PASSWORD }}
+      # AA-1004 (accounts/aa365/org_access.tf): IDs of the organization admin role's trust, from secrets (masked).
+      TF_VAR_org_management_account_id: ${{ secrets.MGMT_ACCOUNT_ID }}
+      TF_VAR_org_management_org_id: ${{ secrets.MGMT_ORG_ID }}
       # AA-846: plan guard inputs, passed via env (never interpolated into a script).
       GUARD_SELFTEST: ${{ inputs.guard_selftest && 'true' || 'false' }}
       ALLOW_GUARDED: ${{ inputs.allow_guarded && 'true' || 'false' }}

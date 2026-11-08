@@ -131,6 +131,13 @@ accounts/
                                    Bootstrap (outside aa-*-dev-*), applied by a human. GitHub side (environment,
                                    ruleset on main): tools/github/db_auto_apply_gate.sh; proof:
                                    db-auto-apply-role-check.yml)
+    org_access.tf                 (AA-1004 S273: OrganizationAccountAccessRole, the AA organization's admin path into
+                                   this account before the 01/12/2026 move; trusts only the management account's
+                                   aa-org-member-access role + aws:PrincipalOrgID; AdministratorAccess minus IAM
+                                   users/keys, 1 h, prevent_destroy, no workload boundary on purpose. IDs from
+                                   TF_VAR_org_management_account_id / _org_id (secrets MGMT_ACCOUNT_ID / MGMT_ORG_ID
+                                   in the three Terraform workflows). Bootstrap, local targeted apply: management
+                                   README §6)
     (tripplanner.tf, tripplanner_jobs.tf, described below: moved to modules/environment, AA-1004 slice 3 (S267).
      Still here: tripplanner_variables.tf (same variables, passed through), tripplanner_removed.tf (the two Mapbox
      removed blocks), the tp_lambda security group (app_security_groups.tf), the SES grant (ses.tf), the browse /
@@ -512,7 +519,9 @@ accounts/
                     daily anomaly e-mail; cost_anomaly_immediate.tf: SNS topic aa3-cost-alerts +
                     IMMEDIATE anomaly subscription >= 15 USD; AA-896)
   management/     ← the management account root (AA-1004, root ADR 0018; applied, README there): organization.tf
-                    (organization, OUs, member accounts), scp.tf + policies/ (3 SCPs on the OUs), identity_center.tf,
+                    (organization, OUs incl. Transitional (S273: SCP 1 only, where an invited account lands first),
+                    member accounts), scp.tf + policies/ (3 SCPs on the OUs), org_member_access.tf (aa-org-member-access,
+                    bootstrap: Identity Center AA-Admin -> member OrganizationAccountAccessRole), identity_center.tf,
                     budgets.tf, cost_anomaly_app_tag.tf (off until a member joins), cloudtrail.tf (org trail, KMS,
                     Object Lock bucket), cicd.tf (its own OIDC provider, aa-terraform-plan / aa-terraform-apply,
                     bootstrap). State in the management account's own bucket; apply only through the GitHub
