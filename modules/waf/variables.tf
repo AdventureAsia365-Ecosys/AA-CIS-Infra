@@ -56,7 +56,7 @@ variable "log_redacted_headers" {
 }
 
 variable "origin_verify_header" {
-  description = "AA-931 (CRM-03): header that CloudFront adds to every origin request ({ name, value }). When set, rule CloudFrontOriginAllow (priority 3) allows requests carrying exactly this value past the rate and geo rules. null = no rule. Add the header name to log_redacted_headers."
+  description = "AA-931 (CRM-03): header that CloudFront adds to every origin request ({ name, value }). When set, rule CloudFrontOriginAllow (local.rule_priorities) allows requests carrying exactly this value past the rate and geo rules. null = no rule. Add the header name to log_redacted_headers."
   type = object({
     name  = string
     value = string
@@ -88,4 +88,18 @@ variable "staff_web_rate_limit" {
   description = "AA-911: requests per 5 minutes per client IP on the staff hosts (rule StaffWebRateLimit)."
   type        = number
   default     = 5000
+}
+
+variable "tripplanner_web" {
+  description = "AA-1038: the TripPlanner web rules (TripPlannerRateLimitPerIp, TripPlannerRateLimitModelPaths, TripPlannerChallengePlanner), each scoped to host AND the exact origin secret (needs origin_verify_header). viewer_ip_header: the header the CloudFront viewer-request function writes with the viewer's address (the rate key). protected_paths: the BFF paths that are rate-limited per viewer and challenged (the model calls and Send to advisor). path_transformations run on every path match, in order. null = no rule (the ACL as before AA-1038)."
+  type = object({
+    host                 = string
+    viewer_ip_header     = string
+    rate_limit           = number
+    model_rate_limit     = number
+    challenge_immunity_s = number
+    protected_paths      = list(string)
+    path_transformations = list(string)
+  })
+  default = null
 }
