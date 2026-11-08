@@ -102,6 +102,6 @@ staff_web_dns_switch_window = false
 
 # AA-1038 R5 (S272): tripplanner.<zone> points at the CloudFront distribution (ECS) since the cut-over of 08/11/2026.
 # The switch tripplanner_web_dns_on_cloudfront and its Vercel target were removed at the Vercel retirement (root
-# runbook tripplanner-web-ecs-cutover.md section 4 step 4): the record always names the distribution. The 60 s window
+# runbook tripplanner-web-ecs-cutover.md section 4 step 3): the record always names the distribution. The 60 s window
 # is closed: TTL back to 300 s.
 tripplanner_web_dns_switch_window = false

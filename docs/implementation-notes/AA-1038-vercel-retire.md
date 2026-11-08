@@ -1,8 +1,9 @@
 # AA-1038 — R5 hosting, final step: the tripplanner. record without the Vercel switch
 
-Root runbook `docs/ops/runbooks/tripplanner-web-ecs-cutover.md` section 4 step 4. Since the S272 cut-over
+Root runbook `docs/ops/runbooks/tripplanner-web-ecs-cutover.md` section 4 step 3 (applied before step 4 deletes the
+Vercel project). Since the S272 cut-over
 (`tripplanner_web_dns_on_cloudfront = true`, PR "point tripplanner. at the CloudFront distribution") the host is served
-by the ECS service behind CloudFront. The Vercel project `aa-tripplanner` is deleted by the orchestrator at this step.
+by the ECS service behind CloudFront. The orchestrator deletes the Vercel project `aa-tripplanner` after this apply.
 
 ## Decisions
 
