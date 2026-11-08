@@ -35,7 +35,10 @@ by the ECS service behind CloudFront. The orchestrator deletes the Vercel projec
   `localhost:3003` only (callback + sign-out); comment and variable description updated.
 - `accounts/aa365/identity.tf`: comments only (the BFF key and sign-up proof key are read by the ECS task, not a
   Vercel env). The two secrets' `description` strings still say "Vercel env": left as is so the plan stays small;
-  change them with the next identity edit.
+  change them with the next identity edit. The same goes for the docstring of
+  `lambda_src/identity_triggers/external.py` (it names the "Vercel env TP_COGNITO_SIGNUP_PROOF_KEY"): the file is
+  part of the `identity_triggers` archive, so any edit there changes `source_code_hash` and the plan would update and
+  publish every identity trigger function plus its `live` alias. Fix it with the next trigger code change.
 - Comments only: `custom_domains.tf`, `custom_domains_variables.tf`, `modules/ecs/main.tf`, `modules/ecs/variables.tf`;
   `CONTEXT.md`.
 - Tests: `test_aa1038_tripplanner_web.py` (record always to the distribution, no switch / Vercel target / tfvars line,
@@ -43,6 +46,19 @@ by the ECS service behind CloudFront. The orchestrator deletes the Vercel projec
   `test_aa911_staff_web.py` (no Vercel CNAME left; the label parser gets its own self-test on invented targets);
   `test_aa1038_tripplanner_web.py::test_no_cognito_client_url_on_a_vercel_host` (no `vercel.app` URL in any app
   client, the tripplanner client's exact list).
+
+- Review fixes (second round): the env config register no longer expects a Vercel project.
+  `tools/docs/gen_env_config.py`: `REQUIRED_VERCEL = ()`, `REQUIRED_ECS` gains `aa-tripplanner-dev-web`, and the page
+  leaves every Vercel line out when there is no project (no "0 Vercel projects" totals); the catalog description and
+  blurb name ECS and Lambda only. `tools/docs/env_config_vercel.json` has no project. `.github/workflows/docs-gen.yml`
+  drops the Vercel collection, the `VERCEL_TOKEN` / `VERCEL_TEAM_ID` env and the Vercel part of the step summary
+  (render reads the checked-in, empty snapshot by default). Without this, a Docs Gen run with `VERCEL_TOKEN` set would
+  fail closed on the missing `aa-tripplanner` project, and one without it would keep listing the deleted project as
+  live. The `vercel-snapshot` subcommand stays (no caller; harmless, and the Vercel path keeps its tests).
+- Comments only, review fixes: `modules/environment/tripplanner.tf` (edge key sender and stage throttling caller =
+  the web BFF on ECS, the key reaches the web task from its task definition secrets), `accounts/aa365/identity.tf`
+  (the AA-908 WAF block: BFF on ECS, egress via NAT, traveller address from CloudFront-Viewer-Address, rotate =
+  redeploy the web service).
 
 ## Tradeoffs
 
