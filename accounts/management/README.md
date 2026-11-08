@@ -233,10 +233,19 @@ first leaves the reseller's organization, then accepts our invitation.
    `aa-org-member-access`, with `aws:PrincipalOrgID` of our organization. Its two inputs come from the `aa-mgmt` profile,
    never from a file: `TF_VAR_org_management_account_id` (`aws sts get-caller-identity --profile aa-mgmt --query Account --output text`)
    and `TF_VAR_org_management_org_id` (`aws organizations describe-organization --profile aa-mgmt --query Organization.Id --output text`);
-   CI reads the same values from the repo secrets `MGMT_ACCOUNT_ID` and `MGMT_ORG_ID`. Targets:
+   CI reads the same values from the repo secrets `MGMT_ACCOUNT_ID` and `MGMT_ORG_ID`.
+   **Gate:** runbook check 1.4 is green (or answer R2 says no SCP protects the role name); otherwise this step waits
+   until the account sits in `Transitional` after the move. `terraform.tfvars` keeps `org_access_role_enabled = false`
+   until this apply, so CI applies never try to create the role (the CI apply role may not write it). The repo secret
+   `MGMT_ORG_ID` must exist before the flip PR below (GitHub passes a missing secret as an empty string, which fails
+   the variable validation once the role is enabled). Apply with `-var org_access_role_enabled=true` and the targets
    `-target=aws_iam_role.org_access -target=aws_iam_role_policy.org_access_guard -target=aws_iam_role_policy_attachments_exclusive.org_access -target=aws_iam_role_policies_exclusive.org_access`.
-   Expected: 4 to add (or 1 import plus in-place changes when adopting), 0 to destroy. The account's IAM Access Analyzer
-   raises one external-access finding for the new trust: expected, review it and leave it visible (no archive rule).
+   Expected: 4 to add (or 1 import plus in-place changes when adopting), 0 to destroy. **Right after**, merge the
+   one-line PR setting `org_access_role_enabled = true` in `accounts/aa365/terraform.tfvars`: until it merges, every
+   CI plan of `accounts/aa365` (PR plans, applies, drift) wants to destroy the role and `prevent_destroy` fails it, so
+   keep that window to minutes and dispatch no aa365 apply in it. After the merge, a CI plan of `accounts/aa365` shows
+   no change. The account's IAM Access Analyzer raises one external-access finding for the new trust: expected,
+   review it and leave it visible (no archive rule).
 3. **Test the path before the move** (tech lead): a profile chain `aa-mgmt` -> `aa-org-member-access` ->
    `OrganizationAccountAccessRole` (in `~/.aws/config`, account IDs local only), then
    `aws sts get-caller-identity --profile <chained profile>` prints the nonprod account and the role session.

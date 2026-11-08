@@ -105,7 +105,20 @@ def test_missing_ids_fail_the_plan_instead_of_destroying():
     for var in ("org_management_account_id", "org_management_org_id"):
         block = _block(text, f'variable "{var}" {{')
         assert "default     = null" in block
-        assert f"var.{var} == null ? !var.org_access_role_enabled" in block
+        # GitHub turns a missing secret into "" (not null): "" must count as "not set", or a plan with the role
+        # disabled fails on the regex while the secret does not exist yet.
+        assert f'var.{var} == null || var.{var} == "" ? !var.org_access_role_enabled' in block
+
+
+def test_role_stays_disabled_in_tfvars_until_the_local_apply():
+    # The CI apply role may not write this role (tf_apply_boundary). Committing true before the tech lead's local
+    # targeted apply makes every CI apply of accounts/aa365 fail; the flip to true is its own one-line PR right after
+    # that apply (management README section 6 step 2). The flip PR updates this test.
+    tfvars = _read(AA365, "terraform.tfvars")
+    assert re.search(r"^org_access_role_enabled\s*=\s*false\s*$", tfvars, re.M)
+    readme = _read(MGMT, "README.md")
+    assert "-var org_access_role_enabled=true" in readme
+    assert "one-line PR setting `org_access_role_enabled = true`" in readme
 
 
 def test_adoption_import_is_gated():
@@ -169,6 +182,17 @@ def test_broker_may_only_assume_the_member_role():
     assert re.findall(r'Action\s*=\s*"([^"]+)"', policy) == ["sts:AssumeRole"]
     assert '"arn:aws:iam::${a}:role/${local.org_member_role_name}"' in policy
     assert "NotAction" not in policy and '"*"' not in policy
+
+
+def test_broker_policy_count_uses_inputs_known_at_plan_time():
+    # The ID of an account this root creates (prod, account_id = null) is unknown until apply; a count derived from
+    # aws_organizations_account (through distinct()) is then unknown and the plan fails with "Invalid count argument".
+    policy = _block(_member_access(), 'resource "aws_iam_role_policy" "org_member_access" {')
+    count = re.search(r"^\s*count\s*=\s*(.+)$", policy, re.M)
+    assert count, "count not found"
+    expr = count.group(1)
+    assert "aws_organizations_account" not in expr and "local.org_member_access_accounts" not in expr
+    assert "var.member_accounts" in expr and "var.org_access_pending_account_ids" in expr
 
 
 def test_no_id_is_committed_in_the_broker_file():

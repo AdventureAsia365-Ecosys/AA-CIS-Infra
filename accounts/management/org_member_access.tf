@@ -73,7 +73,10 @@ resource "aws_iam_role" "org_member_access" {
 }
 
 resource "aws_iam_role_policy" "org_member_access" {
-  count = length(local.org_member_access_accounts) > 0 ? 1 : 0
+  # Count from inputs known at plan time only: the ID of an account this root creates (prod, account_id = null) is
+  # unknown until apply, and distinct() over an unknown element makes the whole list unknown ("Invalid count
+  # argument"). The computed list stays in Resource, where unknown values are fine.
+  count = length(var.member_accounts) + length(var.org_access_pending_account_ids) > 0 ? 1 : 0
 
   name = "aa-org-member-access"
   role = aws_iam_role.org_member_access.id

@@ -136,8 +136,10 @@ accounts/
                                    aa-org-member-access role + aws:PrincipalOrgID; AdministratorAccess minus IAM
                                    users/keys, 1 h, prevent_destroy, no workload boundary on purpose. IDs from
                                    TF_VAR_org_management_account_id / _org_id (secrets MGMT_ACCOUNT_ID / MGMT_ORG_ID
-                                   in the three Terraform workflows). Bootstrap, local targeted apply: management
-                                   README §6)
+                                   in the three Terraform workflows). Bootstrap: terraform.tfvars keeps
+                                   org_access_role_enabled = false until the local targeted apply
+                                   (-var org_access_role_enabled=true), then a one-line PR flips it: management
+                                   README §6 step 2)
     (tripplanner.tf, tripplanner_jobs.tf, described below: moved to modules/environment, AA-1004 slice 3 (S267).
      Still here: tripplanner_variables.tf (same variables, passed through), tripplanner_removed.tf (the two Mapbox
      removed blocks), the tp_lambda security group (app_security_groups.tf), the SES grant (ses.tf), the browse /

@@ -111,5 +111,8 @@ tripplanner_web_dns_switch_window = false
 # IDs come from TF_VAR_org_management_account_id / TF_VAR_org_management_org_id (repo secrets in CI, the aa-mgmt
 # profile locally), never from this file. Set org_access_adopt_existing_role = true only if the management README
 # section 6 step 0 check finds a role with that name already in this account.
-org_access_role_enabled        = true
+# Stays false until the tech lead's local targeted apply (management README section 6 step 2, run with
+# -var org_access_role_enabled=true) has created the role; a one-line PR flips it to true right after. True before
+# that apply would make every CI apply of this root fail on the role it may not write.
+org_access_role_enabled        = false
 org_access_adopt_existing_role = false

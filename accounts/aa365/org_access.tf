@@ -31,8 +31,16 @@
 # Inputs (public repo: no account or organization ID is written here): CI passes the repo secrets MGMT_ACCOUNT_ID and
 # MGMT_ORG_ID as TF_VAR_org_management_account_id / TF_VAR_org_management_org_id (terraform-plan.yml,
 # terraform-apply.yml, terraform-drift.yml); a local plan sets the same two TF_VAR_ values from the aa-mgmt profile.
-# With org_access_role_enabled = true a plan without them fails on the variable validation instead of planning a
-# destroy, and prevent_destroy refuses a destroy in any case (rollback: management README §9).
+# With org_access_role_enabled = true a plan without them (null, or "" for a missing GitHub secret) fails on the
+# variable validation instead of planning a destroy, and prevent_destroy refuses a destroy in any case (rollback:
+# management README §9).
+#
+# Order (management README §6 step 2): terraform.tfvars keeps org_access_role_enabled = false until the tech lead's
+# local targeted apply has created the role (run with -var org_access_role_enabled=true); a one-line PR flips it to
+# true right after. Committing true first would make every CI apply of this root plan the role, which the apply role
+# may not write (AccessDenied), for as long as the local apply waits (weeks if the reseller's SCPs hold it until the
+# move). Between the local apply and the flip merge, CI plans want to destroy the role and prevent_destroy fails them:
+# keep that window to minutes and dispatch no aa365 apply in it (the cicd_db_auto_apply.tf precedent).
 #
 # Cost: 0 USD (IAM).
 # =============================================================================
@@ -65,8 +73,9 @@ variable "org_management_account_id" {
   default     = null
 
   validation {
-    condition     = var.org_management_account_id == null ? !var.org_access_role_enabled : can(regex("^[0-9]{12}$", var.org_management_account_id))
-    error_message = "org_access_role_enabled = true needs TF_VAR_org_management_account_id (12 digits): CI reads the repo secret MGMT_ACCOUNT_ID; locally take it from the aa-mgmt profile (management README section 6)."
+    # GitHub passes a missing secret as "", not null: both mean "not set" (allowed only while the role is disabled).
+    condition     = var.org_management_account_id == null || var.org_management_account_id == "" ? !var.org_access_role_enabled : can(regex("^[0-9]{12}$", var.org_management_account_id))
+    error_message = "org_access_role_enabled = true needs TF_VAR_org_management_account_id (12 digits). An empty value in CI means the repo secret MGMT_ACCOUNT_ID is missing; locally take it from the aa-mgmt profile (management README section 6)."
   }
 }
 
@@ -76,8 +85,9 @@ variable "org_management_org_id" {
   default     = null
 
   validation {
-    condition     = var.org_management_org_id == null ? !var.org_access_role_enabled : can(regex("^o-[a-z0-9]{10,32}$", var.org_management_org_id))
-    error_message = "org_access_role_enabled = true needs TF_VAR_org_management_org_id (o-...): CI reads the repo secret MGMT_ORG_ID; locally take it from the aa-mgmt profile (management README section 6)."
+    # GitHub passes a missing secret as "", not null: both mean "not set" (allowed only while the role is disabled).
+    condition     = var.org_management_org_id == null || var.org_management_org_id == "" ? !var.org_access_role_enabled : can(regex("^o-[a-z0-9]{10,32}$", var.org_management_org_id))
+    error_message = "org_access_role_enabled = true needs TF_VAR_org_management_org_id (o-...). An empty value in CI means the repo secret MGMT_ORG_ID is missing (set it before the role is enabled); locally take it from the aa-mgmt profile (management README section 6)."
   }
 }
 
