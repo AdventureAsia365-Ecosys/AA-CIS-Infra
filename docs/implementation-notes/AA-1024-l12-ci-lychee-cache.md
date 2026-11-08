@@ -23,6 +23,8 @@ change goes into the root repo, AA-Booking, AA-Partner, AA-TripPlanner-Web and A
 - New: `.github/actions/lychee/{action.yml,pins.txt}`, `.github/scripts/lychee_bin.py` and
   `.github/scripts/test_lychee_bin.py`, byte-identical in all five repos. Edited: `docs-lint.yml` and
   `workflow-lint.yml` (it runs `test_lychee_bin.py` and lists both script files in its path filters).
+- `scripts/pre-push.sh` and `scripts/install-hooks.sh`: the hint for a missing lychee no longer names lychee-action.
+  It says how to fetch the same verified binary with `lychee_bin.py fetch`. Only the hint text changed.
 
 ## Tradeoffs
 
