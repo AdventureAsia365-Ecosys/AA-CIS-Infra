@@ -105,3 +105,14 @@ staff_web_dns_switch_window = false
 # runbook tripplanner-web-ecs-cutover.md section 4 step 3): the record always names the distribution. The 60 s window
 # is closed: TTL back to 300 s.
 tripplanner_web_dns_switch_window = false
+
+# AA-1004 (S273): the organization admin role OrganizationAccountAccessRole (org_access.tf), trusting only the
+# management account's aa-org-member-access role, ahead of the move into the AA organization on 01/12/2026. Its two
+# IDs come from TF_VAR_org_management_account_id / TF_VAR_org_management_org_id (repo secrets in CI, the aa-mgmt
+# profile locally), never from this file. Set org_access_adopt_existing_role = true only if the management README
+# section 6 step 0 check finds a role with that name already in this account.
+# Stays false until the tech lead's local targeted apply (management README section 6 step 2, run with
+# -var org_access_role_enabled=true) has created the role; a one-line PR flips it to true right after. True before
+# that apply would make every CI apply of this root fail on the role it may not write.
+org_access_role_enabled        = false
+org_access_adopt_existing_role = false

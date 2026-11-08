@@ -7,7 +7,7 @@
 #
 # Member accounts:
 #   - nonprod and ai are INVITED (README §6). Once an account has accepted, set member_accounts.<key>.account_id
-#     and the import block brings it under Terraform; plan then moves it to its OU.
+#     and the import block brings it under Terraform; plan then moves it to its OU (first Transitional, S273).
 #   - prod is CREATED by this root at go-live (account_id = null, a fresh root e-mail).
 # Every account carries prevent_destroy: removing an entry from member_accounts must fail the plan, because a
 # destroy of aws_organizations_account removes the account from the organization (or closes it).
@@ -53,6 +53,15 @@ resource "aws_organizations_organizational_unit" "prod" {
   parent_id = local.root_id
 }
 
+# S273 (Billing Transfer of 01/12/2026): where an invited account lands first, with a running workload. Only the
+# guardrail that no workload ever calls (SCP 1, deny leave / close) applies here; SCPs 2 and 3 wait for the move to
+# the account's own OU (scp.tf says why for each). The account can still be removed from this management account
+# (remove-account-from-organization is not subject to SCPs), which is the rollback (README §9).
+resource "aws_organizations_organizational_unit" "transitional" {
+  name      = "Transitional"
+  parent_id = local.root_id
+}
+
 # Accounts waiting to be closed. Same 3 SCPs as the others (scp.tf); nothing runs there.
 resource "aws_organizations_organizational_unit" "suspended" {
   name      = "Suspended"
@@ -65,10 +74,11 @@ locals {
   member_account_environment = { nonprod = "dev", ai = "shared", prod = "prod" }
 
   ou_parent_ids = {
-    root      = local.root_id
-    nonprod   = aws_organizations_organizational_unit.nonprod.id
-    prod      = aws_organizations_organizational_unit.prod.id
-    suspended = aws_organizations_organizational_unit.suspended.id
+    root         = local.root_id
+    transitional = aws_organizations_organizational_unit.transitional.id
+    nonprod      = aws_organizations_organizational_unit.nonprod.id
+    prod         = aws_organizations_organizational_unit.prod.id
+    suspended    = aws_organizations_organizational_unit.suspended.id
   }
 }
 

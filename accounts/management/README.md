@@ -7,6 +7,9 @@
 > `aa-developers` / `aa-billing` and the four permission sets. No member account has joined yet (§6 is still ahead),
 > so `member_accounts` and the `App`-tag monitors stay empty. The steps below are the record of the bootstrap and the
 > procedure for what is left; read every plan for destroys.
+>
+> S273 (08/11/2026, not applied yet): OU `Transitional` (SCP 1 only) and the role `aa-org-member-access` for the
+> nonprod account's move on 01/12/2026 (Billing Transfer). Apply order and checks: §6.
 
 Terraform root for the management account of the lean AWS model (root ADR 0018, Accepted 2026-10-31; S258 blueprint
 `docs/audits/2026-10-29-S258-aws-org-blueprint/` §0 in the root repo). It holds governance only. No workload ever
@@ -14,8 +17,9 @@ runs in the management account, because SCPs do not apply there.
 
 | File | Holds |
 |---|---|
-| `organization.tf` | The organization (created by apply 1), OUs `NonProd` / `Prod` / `Suspended`, member accounts (invited ones imported, prod created), centralized root access |
-| `scp.tf` + `policies/*.json.tftpl` | 3 SCPs, attached to the three OUs, never to the root |
+| `organization.tf` | The organization (created by apply 1), OUs `Transitional` / `NonProd` / `Prod` / `Suspended`, member accounts (invited ones imported, prod created), centralized root access |
+| `scp.tf` + `policies/*.json.tftpl` | 3 SCPs, attached to `NonProd` / `Prod` / `Suspended`; `Transitional` carries SCP 1 only (`scp.tf` header says why); never the root |
+| `org_member_access.tf` | Role `aa-org-member-access`: from an Identity Center `AA-Admin` session into `OrganizationAccountAccessRole` of the member accounts (S273); bootstrap object, applied locally |
 | `identity_center.tf` | Groups `aa-admins` / `aa-developers` / `aa-billing`, permission sets `AA-Admin` / `AA-Developer` / `AA-ReadOnly` / `AA-Billing`, the group x account matrix, users from `sso_users` (all gated on `identity_center_enabled`) |
 | `budgets.tf` | Organization budget, one budget per account, one Cost Anomaly Detection monitor + daily e-mail per account |
 | `cost_anomaly_app_tag.tf` | One anomaly monitor per `App` tag value + one daily e-mail, off until the nonprod account joins and `App` is active here (`app_tag_anomaly_monitors_enabled`, AA-896) |
@@ -175,9 +179,9 @@ resource; after the console click, `data.aws_ssoadmin_instances` reads it.
 | 1. Organization and guards | Day 1, `identity_center_enabled = false`, `member_accounts = {}` | About 32 to add (the organization, 3 OUs, root access features, 3 SCPs + 9 attachments, 2 budgets, 1 monitor + 1 subscription, KMS key + alias, trail bucket + 7 bucket settings, the trail), **0 to change, 0 to destroy** | Organizations shows "All features" with this account as management; `aws cloudtrail get-trail-status --name aa-org-trail --region us-west-1 --profile aa-mgmt` has an empty `LatestDeliveryError` |
 | (human) | After apply 1 | §2 step 4: enable Identity Center in us-west-1 | Access portal URL shown |
 | 2. Identity Center | Same day: `identity_center_enabled = true`, `sso_users` with the tech lead in group `admins` | No change on the organization when the trusted access check is clean (`sso.amazonaws.com` is now declared); 3 groups, 4 permission sets + 4 policy attachments, 2 assignments (management: `AA-Admin`, `AA-Billing`), 1 user + 1 membership per entry; 0 to destroy | Identity Center, Users, the tech lead, Reset password, send an e-mail. The tech lead signs in, registers MFA and opens the management account as `AA-Admin`. Then point `aa-mgmt` at that session (`aws configure sso`, role `AA-Admin`) and **delete the `AA-Bootstrap` role** |
-| 3. Each invited account | After it accepted the invitation (§6) | 1 to import (the account, stays under the root), its budget, monitor, subscription and assignments; 0 to destroy | Developers and admins see the account in the access portal |
-| 4. Move to its OU | One quiet week after apply 3: set `ou` to `nonprod` (the nonprod and ai accounts, open question in the PR) | 1 in-place change (`parent_id`) | The SCP tests in §7 |
-| 5. Prod account | At go-live (ADR 0018): add `prod` with `account_id = null`, a new root e-mail, `ou = "prod"` | 1 account to create, its budget, monitor, subscription, assignments | Account in OU Prod; `OrganizationAccountAccessRole` exists in it |
+| 3. Each invited account | After it accepted the invitation (§6), with `ou = "transitional"` | 1 to import (the account), 1 in-place change (`parent_id`: root to `Transitional`), its budget, monitor, subscription and assignments; no change to the `aa-org-member-access` policy when the account was in `org_access_pending_account_ids`; 0 to destroy | Developers and admins see the account in the access portal; §7 test 4 shows `Transitional` with `FullAWSAccess` + `aa-scp-deny-leave-close` |
+| 4. Move to its OU | After the checks of §6 step 6 (one quiet week, region inventory clean, bootstrap applies done or the admin profile exempted): set `ou` to `nonprod` | 1 in-place change (`parent_id`) | The SCP tests in §7 |
+| 5. Prod account | At go-live (ADR 0018): add `prod` with `account_id = null`, a new root e-mail, `ou = "prod"` | 1 account to create, its budget, monitor, subscription, assignments, and the `aa-org-member-access` policy gains the new account (a role policy write: local apply, §11) | Account in OU Prod; `OrganizationAccountAccessRole` exists in it |
 
 After `AA-Bootstrap` is gone, the same wrapper works with `aa-mgmt` as an Identity Center `AA-Admin` session (run
 `aws sso login --profile aa-mgmt` first). Other people are added as `sso_users` entries in `terraform.tfvars`.
@@ -205,28 +209,73 @@ run by the tech lead or by the agent inside the tech lead's MFA session.
 ## 6. Inviting the existing accounts
 
 Order and preconditions are in blueprint §3 (root e-mail owned by the company, root MFA, own payment method, cost
-data exported, no running wave). Both invitations wait for the business owner's billing decision. The ai account
-goes first, and only if the billing model allows it; the nonprod account is today a member of a reseller's
-organization and goes only after that reseller has released it (an account belongs to one organization at a time).
+data exported, no running wave). The nonprod account moves on **01/12/2026** under the Billing Transfer plan agreed in
+S271 (the reseller pays the organization's bill; the organization and its controls are ours). The ai account stays
+standalone until the tech lead says otherwise. An account belongs to one organization at a time: the nonprod account
+first leaves the reseller's organization, then accepts our invitation.
 
-1. Send the invitation from the management account (replace the ID; one line):
+**Before 20/11 (prepared in S273):**
+
+0. **Read-only checks** in the nonprod account: [`docs/runbooks/org-move-readiness-checks.md`](../../docs/runbooks/org-move-readiness-checks.md)
+   (what a member account can and cannot see of the reseller's SCPs, the simulator check of `LeaveOrganization`, whether
+   a role named `OrganizationAccountAccessRole` already exists, the questions only the reseller can answer). If that
+   role already exists, set `org_access_adopt_existing_role = true` in `accounts/aa365/terraform.tfvars` first: the
+   apply then imports it and replaces its trust and policies.
+1. **Management side, local apply** (tech lead, `aa-mgmt` Identity Center session, §4 wrapper): the OU `Transitional`
+   with its SCP 1 attachment and the role `aa-org-member-access`. Put the nonprod account ID in
+   `org_access_pending_account_ids` (git-ignored `terraform.tfvars`, and the same line in the `MGMT_TFVARS` secret so CI
+   plans match). Expected plan: 4 to add (`aws_organizations_organizational_unit.transitional`, the
+   `aa-scp-deny-leave-close:transitional` attachment, `aws_iam_role.org_member_access`,
+   `aws_iam_role_policy.org_member_access[0]`), 0 to change, 0 to destroy. A CI apply of the role fails by design
+   (bootstrap object, §11), so this apply is local; plan it in full, no `-target`.
+2. **Nonprod side, local targeted apply** (tech lead, `aa365-admin` MFA session, from an up-to-date `main` checkout of
+   `accounts/aa365`): `accounts/aa365/org_access.tf` creates `OrganizationAccountAccessRole` trusting only
+   `aa-org-member-access`, with `aws:PrincipalOrgID` of our organization. Its two inputs come from the `aa-mgmt` profile,
+   never from a file: `TF_VAR_org_management_account_id` (`aws sts get-caller-identity --profile aa-mgmt --query Account --output text`)
+   and `TF_VAR_org_management_org_id` (`aws organizations describe-organization --profile aa-mgmt --query Organization.Id --output text`);
+   CI reads the same values from the repo secrets `MGMT_ACCOUNT_ID` and `MGMT_ORG_ID`.
+   **Gate:** runbook check 1.4 is green (or answer R2 says no SCP protects the role name); otherwise this step waits
+   until the account sits in `Transitional` after the move. `terraform.tfvars` keeps `org_access_role_enabled = false`
+   until this apply, so CI applies never try to create the role (the CI apply role may not write it). The repo secret
+   `MGMT_ORG_ID` must exist before the flip PR below (GitHub passes a missing secret as an empty string, which fails
+   the variable validation once the role is enabled). Apply with `-var org_access_role_enabled=true` and the targets
+   `-target=aws_iam_role.org_access -target=aws_iam_role_policy.org_access_guard -target=aws_iam_role_policy_attachments_exclusive.org_access -target=aws_iam_role_policies_exclusive.org_access`.
+   Expected: 4 to add (or 1 import plus in-place changes when adopting), 0 to destroy. **Right after**, merge the
+   one-line PR setting `org_access_role_enabled = true` in `accounts/aa365/terraform.tfvars`: until it merges, every
+   CI plan of `accounts/aa365` (PR plans, applies, drift) wants to destroy the role and `prevent_destroy` fails it, so
+   keep that window to minutes and dispatch no aa365 apply in it. After the merge, a CI plan of `accounts/aa365` shows
+   no change. The account's IAM Access Analyzer raises one external-access finding for the new trust: expected,
+   review it and leave it visible (no archive rule).
+3. **Test the path before the move** (tech lead): a profile chain `aa-mgmt` -> `aa-org-member-access` ->
+   `OrganizationAccountAccessRole` (in `~/.aws/config`, account IDs local only), then
+   `aws sts get-caller-identity --profile <chained profile>` prints the nonprod account and the role session.
+
+**On the day (01/12):**
+
+4. The tech lead accepts the Billing Transfer invite in this account (console, Billing and Cost Management) when it
+   arrives; the agent has exported the nonprod account's Cost Explorer history before (S271 plan, 25-28/11).
+5. Send the invitation from this account (replace the ID; one line):
 
    ```bash
    aws organizations invite-account-to-organization --target Id=<member-account-id>,Type=ACCOUNT --profile aa-mgmt --region us-west-1  # WRITE
    ```
 
-2. Accept in the member account (console: Organizations, Invitations; or `aws organizations accept-handshake --handshake-id <handshake-id>`
-   with that account's profile). The account lands under the root: no SCP of ours applies, so it can still leave.
-3. Add its entry to `member_accounts` with `account_id` and `ou = "root"`, then apply 3.
-4. Create `OrganizationAccountAccessRole` in the invited account (it does not get one): trust the management
-   account, AdministratorAccess. For the nonprod account this goes into `accounts/aa365` as a local MFA bootstrap
-   apply (follow-up PR); for the ai account into `accounts/acc3-bedrock`. Do it **before apply 4**: once the account
-   is in an OU, SCP 2 lets only the exempt roles create or change that role.
-5. Smoke the account (blueprint §3 step 16 for nonprod; one real LLM call per route for ai), wait one week, then
-   apply 4.
+   The nonprod account leaves the reseller's organization (or the reseller removes it, per its answer to the runbook
+   questions), then accepts (console: Organizations, Invitations; or `aws organizations accept-handshake --handshake-id <handshake-id>`
+   with that account's profile). An accepted account lands under the root, with no SCP of ours.
+6. Add its entry to `member_accounts` with `account_id` and `ou = "transitional"`, drop its ID from
+   `org_access_pending_account_ids`, then apply 3 (CI or local). Smoke the account (blueprint §3 step 16; ECS, RDS,
+   health endpoints, one LLM call per route).
+7. **Leaving Transitional** (apply 4, `ou = "nonprod"`) needs: one quiet week; the region inventory of the runbook shows
+   nothing outside `allowed_regions` (SCP 3); and the bootstrap applies of `accounts/aa365` (`cicd*.tf`, which run
+   locally with the `aa365-admin` profile, not an exempt role) are done, or that profile's role is appended to
+   `scp_exempt_role_arn_patterns` in `terraform.tfvars` for the time being (SCP 2). Clean up the reseller's access
+   first (S271 plan, first session from 02/12): its Identity Center role and SAML provider in the nonprod account.
 
-Rollback before apply 4: the account can leave (from the member, needs its own payment method) or be removed from
-the management side. After apply 4, set `ou = "root"` again and apply.
+Rollback while in `Transitional`: remove the account from this management account
+(`aws organizations remove-account-from-organization`, not subject to SCPs; the account needs its own payment method
+to stand alone). A member-side leave is denied there by SCP 1. After apply 4, set `ou = "transitional"` (or `"root"`)
+again and apply.
 
 ## 7. Testing the SCPs
 
@@ -291,6 +340,8 @@ Evidence (command output) goes into `docs/audits/<date>-S<nnn>-aa1004-scp-tests/
 | Problem | Rollback |
 |---|---|
 | An SCP blocks real work in an account | Set that account's `ou = "root"` and apply (no SCP of ours there), or in the console detach the one policy from the OU. Then fix the policy text in a PR |
+| The account in `Transitional` must go back (billing, credits or Bedrock broke after joining) | Management side: `aws organizations remove-account-from-organization --account-id <id> --profile aa-mgmt` (SCPs never bind this account), then drop its entry and remove it from the Terraform state. SCP 1 denies a member-side leave from `Transitional` |
+| `OrganizationAccountAccessRole` (nonprod) or `aa-org-member-access` must go | The nonprod role carries `prevent_destroy`: remove that line in a PR, then a local targeted destroy (CI apply cannot write either role). The nonprod account stays reachable through its own admin profile and, after the move, Identity Center |
 | An SCP breaks every account at once | Management console, Organizations, Policies: detach it from the three OUs (SCPs never bind the management account, so this always works) |
 | Identity Center sign-in broken | Root of the management account (FIDO2), fix Identity Center; member accounts through `OrganizationAccountAccessRole` |
 | Organization trail fails | Remove `aws_cloudtrail.organization` in a PR and apply; the bucket stays (`prevent_destroy`) |

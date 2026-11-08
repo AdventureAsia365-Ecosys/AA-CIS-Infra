@@ -76,8 +76,10 @@ variable "member_accounts" {
       name       - display name (aa-nonprod, aa-ai, aa-prod); ignored for an invited account.
       email      - root e-mail; required by the API, ignored after an import (an invited account keeps its own).
       account_id - set for an INVITED account once it has accepted: Terraform imports it. Null = Terraform creates it.
-      ou         - root | nonprod | prod | suspended. "root" is the transitional place: no SCP of ours applies there,
-                   so an invited account can still leave the organization if billing or Bedrock breaks (README §6).
+      ou         - root | transitional | nonprod | prod | suspended. "transitional" (S273) is where an invited
+                   account with a running workload goes first: only SCP 1 (deny leave / close) applies there, so
+                   nothing it runs can break; it moves to its own OU after the checks of README §6 and §7.
+                   "root" (no SCP of ours) is kept for a rollback only.
       budget_usd - monthly budget in USD (gross cost, credits excluded).
   EOT
   type = map(object({
@@ -95,8 +97,8 @@ variable "member_accounts" {
   }
 
   validation {
-    condition     = alltrue([for a in values(var.member_accounts) : contains(["root", "nonprod", "prod", "suspended"], a.ou)])
-    error_message = "member_accounts[*].ou must be root, nonprod, prod or suspended."
+    condition     = alltrue([for a in values(var.member_accounts) : contains(["root", "transitional", "nonprod", "prod", "suspended"], a.ou)])
+    error_message = "member_accounts[*].ou must be root, transitional, nonprod, prod or suspended."
   }
 
   validation {

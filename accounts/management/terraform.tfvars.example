@@ -43,21 +43,25 @@ sso_users = {
 #   "arn:aws:iam::*:role/<legacy-admin-role-name>",
 # ]
 
-# Add an entry only after the account is in the organization (README §6). Start with ou = "root" (transitional,
-# no SCP), move to its OU after one quiet week.
+# S273: accounts about to join whose OrganizationAccountAccessRole aa-org-member-access may assume (README §6 step 1),
+# so the path is tested before the move. Remove an ID once its account is in member_accounts.
+# org_access_pending_account_ids = ["<12-digit id of the nonprod account>"]
+
+# Add an entry only after the account is in the organization (README §6). Start with ou = "transitional" (SCP 1
+# only), move to its own OU after the checks of README §6 step 7. ou = "root" (no SCP) is for a rollback only.
 member_accounts = {
   # ai = {
   #   name       = "aa-ai"
   #   email      = "<root e-mail of the ai account>"
   #   account_id = "<12-digit id>"   # invited: imported
-  #   ou         = "root"
+  #   ou         = "transitional"
   #   budget_usd = 300
   # }
   # nonprod = {
   #   name       = "aa-nonprod"
   #   email      = "<root e-mail of the nonprod account>"
   #   account_id = "<12-digit id>"   # invited: imported
-  #   ou         = "root"
+  #   ou         = "transitional"
   #   budget_usd = 250
   # }
   # prod = {

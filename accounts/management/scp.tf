@@ -4,10 +4,25 @@
 # Policy text: policies/*.json.tftpl (plain JSON with template slots), minified here so the 5,120-character SCP
 # limit counts no whitespace (today 0.25k / 2.1k / 1.6k characters with the default variables).
 #
-# Attached to the OUs NonProd, Prod and Suspended only, NEVER to the root: an invited account first sits directly
-# under the root (the transitional place) where no SCP of ours applies, so it can still leave the organization
-# if billing, credits or Bedrock break after joining. SCPs never apply to the management account itself, nor to
-# service-linked roles. AWS keeps FullAWSAccess attached at every level, so each OU holds 4 direct SCPs (max 5).
+# All three are attached to the OUs NonProd, Prod and Suspended, NEVER to the root. SCPs never apply to the management
+# account itself, nor to service-linked roles. AWS keeps FullAWSAccess attached at every level, so each of these OUs
+# holds 4 direct SCPs (max 5).
+#
+# OU Transitional (S273, Billing Transfer of 01/12/2026) gets SCP 1 only. An invited account arrives there with its
+# workload running (the nonprod account: ECS, RDS, Lambda, CI), so only a guardrail that no workload ever calls is safe
+# on day one:
+#   SCP 1 deny leave / close   ATTACHED. No workload, pipeline or person calls LeaveOrganization or CloseAccount in
+#                              normal work. The rollback stays open: the management account can still remove the
+#                              account (RemoveAccountFromOrganization is not subject to SCPs).
+#   SCP 2 protect audit/billing  HELD BACK. Before the move it would deny, outside the exempt roles: the account's own
+#                              trail changes from a local MFA apply, the IAM writes of the bootstrap applies on the
+#                              exempt CI role names (cicd*.tf of accounts/aa365 run locally with the MFA admin
+#                              profile, which is not exempt), and the clean-up of the old reseller's access. It moves
+#                              with the account to NonProd, once those applies are done or that profile is exempted.
+#   SCP 3 region allow-list    HELD BACK. A resource or call of the account outside the allowed regions would fail at
+#                              once. It moves with the account to NonProd after the region inventory of
+#                              docs/runbooks/org-move-readiness-checks.md shows nothing outside the list.
+# Moving the account from Transitional to NonProd is one in-place change of member_accounts.<key>.ou (README §4 apply 4).
 # =============================================================================
 
 locals {
@@ -50,15 +65,26 @@ locals {
   }
 
   scp_target_ous = {
-    nonprod   = aws_organizations_organizational_unit.nonprod.id
-    prod      = aws_organizations_organizational_unit.prod.id
-    suspended = aws_organizations_organizational_unit.suspended.id
+    transitional = aws_organizations_organizational_unit.transitional.id
+    nonprod      = aws_organizations_organizational_unit.nonprod.id
+    prod         = aws_organizations_organizational_unit.prod.id
+    suspended    = aws_organizations_organizational_unit.suspended.id
   }
 
-  scp_attachments = {
-    for pair in setproduct(keys(local.scps), keys(local.scp_target_ous)) :
-    "${pair[0]}:${pair[1]}" => { policy = pair[0], ou = pair[1] }
+  # Which SCPs each OU carries (header: why Transitional holds SCP 1 only).
+  scp_ou_policies = {
+    transitional = ["aa-scp-deny-leave-close"]
+    nonprod      = keys(local.scps)
+    prod         = keys(local.scps)
+    suspended    = keys(local.scps)
   }
+
+  # Keys "<policy>:<ou>", unchanged for the attachments that existed before Transitional (no replace in the plan).
+  scp_attachments = merge([
+    for ou, policies in local.scp_ou_policies : {
+      for policy in policies : "${policy}:${ou}" => { policy = policy, ou = ou }
+    }
+  ]...)
 }
 
 resource "aws_organizations_policy" "scp" {

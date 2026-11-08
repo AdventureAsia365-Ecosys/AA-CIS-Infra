@@ -4,7 +4,7 @@ output "organization_id" {
 }
 
 output "ou_ids" {
-  description = "OU IDs by key (root, nonprod, prod, suspended): the parent IDs used for member accounts."
+  description = "OU IDs by key (root, transitional, nonprod, prod, suspended): the parent IDs used for member accounts."
   value       = local.ou_parent_ids
 }
 

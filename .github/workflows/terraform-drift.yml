@@ -161,6 +161,9 @@ jobs:
         if: steps.wiring.outputs.ok == 'true'
         env:
           TF_VAR_db_password: ${{ matrix.root == 'accounts/aa365' && secrets.TF_VAR_DB_PASSWORD || '' }}
+          # AA-1004 (accounts/aa365/org_access.tf): IDs of the organization admin role's trust, from secrets (masked).
+          TF_VAR_org_management_account_id: ${{ matrix.root == 'accounts/aa365' && secrets.MGMT_ACCOUNT_ID || '' }}
+          TF_VAR_org_management_org_id: ${{ matrix.root == 'accounts/aa365' && secrets.MGMT_ORG_ID || '' }}
         run: |
           umask 077
           LOG="$RUNNER_TEMP/drift-plan.jsonl"

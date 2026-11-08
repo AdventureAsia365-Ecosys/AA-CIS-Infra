@@ -15,6 +15,8 @@ name: Terraform Plan Guard Tests
 # listed: other tests here check that the files they read are named).
 # S263 (AA-939 follow-up): plus the partner-pool AdminDeleteUser guards (test_partner_pool_delete_user.py reads
 # identity_partner.tf and identity_iam.tf), so those paths trigger it too.
+# AA-1004 S273: plus the organization admin role of the nonprod account and the Transitional OU
+# (test_aa1004_org_access.py reads accounts/aa365/org_access.tf, its terraform.tfvars and accounts/management/**).
 # S271 lessons guards: G9 test_workflow_tf_locking.py (every Terraform run waits for the state lock; PR plans have no group),
 # G13 test_iam_trust_inventory.py (tools/terraform/iam_trust_inventory.py; a .tf change does not need to trigger this
 # workflow: the required Terraform Plan (dev) check runs the same static scan on every PR), G15 test_workflow_lint.py
@@ -40,6 +42,8 @@ on:
       - "accounts/aa365/identity_partner_read.tf" # AA-1039 R6: the CIS read of partner member addresses
       - "accounts/aa365/cicd_split.tf" # AA-1023: the apply role trust vs the workflow environments
       - "accounts/aa365/environment.tf" # AA-1004 P0: the moved blocks into modules/environment
+      - "accounts/aa365/org_access.tf" # AA-1004 S273: test_aa1004_org_access.py (organization admin role)
+      - "accounts/aa365/terraform.tfvars" # AA-1004 S273: test_aa1004_org_access.py (no management ID committed)
       - "modules/environment/**"
       - ".github/scripts/prod-guard.sh" # AA-1004 P0: Deploy Prod / DB Migrate prod guard
       - ".github/workflows/crm-key-policy-diff.yml"
@@ -64,6 +68,8 @@ on:
       - "accounts/aa365/identity_partner_read.tf" # AA-1039 R6: the CIS read of partner member addresses
       - "accounts/aa365/cicd_split.tf" # AA-1023: the apply role trust vs the workflow environments
       - "accounts/aa365/environment.tf" # AA-1004 P0: the moved blocks into modules/environment
+      - "accounts/aa365/org_access.tf" # AA-1004 S273: test_aa1004_org_access.py (organization admin role)
+      - "accounts/aa365/terraform.tfvars" # AA-1004 S273: test_aa1004_org_access.py (no management ID committed)
       - "modules/environment/**"
       - ".github/scripts/prod-guard.sh" # AA-1004 P0: Deploy Prod / DB Migrate prod guard
       - ".github/workflows/crm-key-policy-diff.yml"
