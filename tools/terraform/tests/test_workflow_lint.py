@@ -147,6 +147,57 @@ def test_the_repo_workflows_are_clean():
     assert findings == []
 
 
+def test_wl4_wl5_cache_saves_and_external_downloads():
+    # S273 (AA-1024): the full rule tests live in the vendored unittest file of the app repos; here one bad and one good
+    # shape of each, so a change of the shared workflow_lint.py is caught in this repo too.
+    bad = _lint("""
+        on: pull_request
+        jobs:
+          a:
+            runs-on: ubuntu-24.04
+            steps:
+              - uses: actions/setup-python@0000000000000000000000000000000000000000 # v7.1.0
+                with:
+                  cache: pip
+              - uses: anchore/sbom-action@0000000000000000000000000000000000000000 # v0.24.3
+              - name: Fetch demotool
+                run: curl -fsSL -o d.tgz https://github.com/demo-org/demotool/releases/download/v1.0.0/d.tar.gz
+        """)
+    assert [f.split(":")[2].split()[0] for f in bad] == ["WL4", "WL5", "WL5"]
+    ok = _lint("""
+        on: push
+        jobs:
+          a:
+            runs-on: ubuntu-24.04
+            steps:
+              - id: c
+                uses: actions/cache/restore@0000000000000000000000000000000000000000 # v6.1.0
+                with:
+                  path: bin
+                  key: demo
+              - uses: actions/cache/save@0000000000000000000000000000000000000000 # v6.1.0
+                if: github.ref == 'refs/heads/main' && steps.c.outputs.cache-hit != 'true'
+                with:
+                  path: bin
+                  key: demo
+              - uses: ./.github/actions/release-bin
+                with:
+                  tool: demotool
+        """)
+    assert ok == []
+
+
+def test_the_repo_composite_actions_are_clean():
+    actions = os.path.join(REPO_ROOT, ".github", "actions")
+    findings = []
+    for name in sorted(os.listdir(actions)):
+        path = os.path.join(actions, name, "action.yml")
+        if os.path.isfile(path):
+            with open(path, encoding="utf-8") as fh:
+                findings += wl.lint_action(name, fh.read())
+    assert findings == []
+
+
 def test_cli_exit_codes(tmp_path):
     good = tmp_path / "good.yml"
     good.write_text("on: push\njobs:\n  a:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo ok\n")
@@ -169,12 +220,15 @@ def test_workflow_lint_workflow_pins_and_verifies_actionlint():
     assert wf["permissions"] == {"contents": "read"}
     job = wf["jobs"]["workflow-lint"]
     assert job["runs-on"] == "ubuntu-24.04"
-    assert re.fullmatch(r"\d+\.\d+\.\d+", job["env"]["ACTIONLINT_VERSION"])
-    assert re.fullmatch(r"[0-9a-f]{64}", job["env"]["ACTIONLINT_SHA256"])
     steps = {s.get("name", ""): s for s in job["steps"]}
-    install = steps["Install actionlint (pinned, checksum verified)"]["run"]
-    assert "sha256sum -c -" in install and install.index("sha256sum -c -") < install.index("tar -xzf")
-    assert "releases/download/v${ACTIONLINT_VERSION}/" in install
+    # S273 (AA-1024): actionlint from the cached, sha256-pinned release-bin action (pins.txt), not a bare download.
+    install = steps["Install actionlint (pinned, checksum verified)"]
+    assert install["uses"] == "./.github/actions/release-bin" and install["with"] == {"tool": "actionlint"}
+    pins = os.path.join(REPO_ROOT, ".github", "actions", "release-bin", "pins.txt")
+    with open(pins, encoding="utf-8") as fh:
+        assert re.search(r"(?m)^actionlint v\d+\.\d+\.\d+ x86_64 [0-9a-f]{64} https://github\.com/rhysd/", fh.read())
+    for needle in ("test_release_bin.py", "test_cache_cleanup.py"):
+        assert needle in steps["Repo workflow rules"]["run"]
     assert steps["actionlint"]["run"].startswith("actionlint ")
     assert ".github/scripts/workflow_lint.py" in steps["Repo workflow rules"]["run"]
     assert steps["Checkout"]["with"]["persist-credentials"] is False

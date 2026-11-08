@@ -1,0 +1,68 @@
+name: Cache cleanup
+
+# S273 (AA-1024): GitHub Actions keeps at most 10 GB of caches per repo and above that evicts the least recently used
+# entries first, which can be the default-branch entries every pull request and merge-queue run restores. A cache saved
+# on a pull request ref (refs/pull/<n>/merge) is readable only by that pull request, one saved on a merge-queue ref
+# (gh-readonly-queue/...) only by that queue group: once the pull request closes or the group finishes, nobody reads
+# them again. On 08/11/2026 such entries were 7.5 GB of AA-CIS-App's 10.7 GB.
+#   pull_request closed (merged or not): delete that pull request's caches.
+#   schedule (daily) / workflow_dispatch: delete merge-queue caches not used for more than 2 hours.
+# Default-branch caches are never touched. Logic and tests: .github/scripts/cache_cleanup.py (the same file in all six
+# repos); the root tools/github/ci_hygiene.py reports cache usage per repo at session start. A fork's pull request gets
+# a read-only token, so its caches stay until GitHub's 7-day idle eviction (ci_hygiene.py --clean covers them).
+on:
+  pull_request:
+    types: [closed]
+  schedule:
+    - cron: "41 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: write   # list and delete caches
+  contents: read   # check out the script (default branch)
+
+defaults:
+  run:
+    shell: bash   # bash -eo pipefail: a failed list or delete fails the step through the tee
+
+concurrency:
+  group: cache-cleanup-${{ github.event.pull_request.number || 'queue' }}
+  cancel-in-progress: false
+
+jobs:
+  pr-caches:
+    name: Delete the closed pull request's caches
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      # The default branch, never the closed pull request's code (its merge ref may already be gone).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Delete caches of refs/pull/<n>
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: python3 .github/scripts/cache_cleanup.py pr --repo "$REPO" --pr "$PR" --apply | tee -a "$GITHUB_STEP_SUMMARY"
+
+  queue-caches:
+    name: Delete merge-queue caches older than 2 h
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Delete caches of gh-readonly-queue refs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: python3 .github/scripts/cache_cleanup.py queue --repo "$REPO" --max-age-hours 2 --apply | tee -a "$GITHUB_STEP_SUMMARY"
