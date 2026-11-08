@@ -1,5 +1,9 @@
 # AA-1038 — R5 hosting slice: TripPlanner frontend on ECS behind CloudFront + a CLOUDFRONT-scope web ACL
 
+> **S272 follow-up (tech-lead cost decision):** the CLOUDFRONT web ACL and the JavaScript integration are gone; the
+> three rules live in the ALB web ACL `aa-<env>-waf`. See `AA-1038-waf-on-alb.md`. Bullets below marked
+> *superseded* describe the first design.
+
 Root ADR 0019 d23 and the S265 tech-lead decision (one Fargate Spot task + CloudFront + a CLOUDFRONT-scope WAF, about
 13-15 USD/month on Dev; the Fargate and WAF cost yeses are in the AA-1038 description). Companion PRs: root runbook
 `docs/ops/runbooks/tripplanner-web-ecs-cutover.md` + secrets register (merged first), AA-TripPlanner-Web image and
@@ -15,14 +19,14 @@ Root ADR 0019 d23 and the S265 tech-lead decision (one Fargate Spot task + Cloud
   certificate.
 - **Size 0.5 vCPU / 1 GB, not 0.25 / 0.5.** The TripPlanner server renders the catalog pages and keeps the ISR cache
   in process; the staff admins' size leaves no headroom. ~ +2.5 USD/month on Spot.
-- **Web ACL, three rules (3 USD), first terminating action wins:** `RateLimitPerIp` (3000 / 5 min / viewer IP, 429
+- *Superseded (rules now in the ALB web ACL):* **Web ACL, three rules (3 USD), first terminating action wins:** `RateLimitPerIp` (3000 / 5 min / viewer IP, 429
   JSON), `RateLimitModelPaths` (100 / 5 min on `/api/browse/search` + `/api/trip/narrate`, 429), `ChallengePlanner`
   (Challenge on a GET with `sec-fetch-dest: document` of a planner page, `/plan`, `/{tenant}/plan` and below, OR a
   model path). The model paths are called only from the planner (AA-TripPlanner-Web `lib/api.ts`), so home,
   destination and tour pages never see an interstitial. A script without the token gets 202 +
   `x-amzn-waf-action: challenge`. Token immunity 4 h (variable). curl health checks send no `sec-fetch-dest`, so they
   are never challenged.
-- **The planner's token comes from the AWS WAF JavaScript integration (review S272).** Most ways into the planner are
+- *Superseded (no integration URL without a paid Bot Control / ATP / ACFP group; full page loads instead):* **The planner's token comes from the AWS WAF JavaScript integration (review S272).** Most ways into the planner are
   client-side Next navigations (header link, home search, tour and destination CTAs): an RSC fetch with
   `sec-fetch-dest: empty`, never challenged, so the document arm alone left those travellers without a token and their
   search and narration got the 202. The output `tripplanner_web_edge.waf_integration_url` (the web ACL's
@@ -104,7 +108,7 @@ Root ADR 0019 d23 and the S265 tech-lead decision (one Fargate Spot task + Cloud
    with ONE in-place change, ttl 300 -> 60 (the target stays the Vercel name). No destroy; the CIS task definitions
    unchanged (the revalidate URL is null until the switch).
 4. `python3 tools/identity/tripplanner_web_secret.py --apply --sentry-dsn "<TripPlanner web DSN>"` (MFA admin).
-5. AA-TripPlanner-Web settings (`TP_WAF_INTEGRATION_URL` = `terraform output -json tripplanner_web_edge` →
+5. *Superseded (no such variable any more):* AA-TripPlanner-Web settings (`TP_WAF_INTEGRATION_URL` = `terraform output -json tripplanner_web_edge` →
    `waf_integration_url`), then its PR (runbook section 1).
 - A photo withdrawn from the photos CDN at the same path and `?v=` stays in this distribution's cache too (the CIS
   purge invalidates the photos CDN only): the runbook names the invalidation of this distribution, with a trailing
@@ -113,7 +117,7 @@ Root ADR 0019 d23 and the S265 tech-lead decision (one Fargate Spot task + Cloud
 
 ### Cost (D-19)
 
-Task 0.5 vCPU / 1 GB Fargate Spot ARM64 ~ 5.0 USD; web ACL 5 + 3 rules 3 + requests (0.60 USD per million) ~ 8.1 USD;
+*Superseded, see `AA-1038-waf-on-alb.md` (~ 9.5 USD/month running):* Task 0.5 vCPU / 1 GB Fargate Spot ARM64 ~ 5.0 USD; web ACL 5 + 3 rules 3 + requests (0.60 USD per million) ~ 8.1 USD;
 Challenge attempts at Dev volume: cents (to read on the first bill); secret 0.40; alarm 0.10; logs < 0.50; ECR < 0.10;
 CloudFront inside the always-free tier. **~ 14.5 USD/month running** (S265 estimate 13-15), ~ 9.5 USD/month at desired
 0 (the web ACL bills by the month). The issue's cost Done-when reads Cost Explorer for the first days after the move.

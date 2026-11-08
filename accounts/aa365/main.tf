@@ -313,6 +313,19 @@ module "waf" {
     name  = local.alb_origin_header_name
     value = random_password.crm_origin_verify[0].result
   } : null
+
+  # AA-1038 (tripplanner_web_edge.tf, S272 cost decision): the TripPlanner web rules live in this ACL (no CLOUDFRONT
+  # web ACL of their own), scoped to the TripPlanner host and the origin secret. null while the edge is off.
+  tripplanner_web = local.tp_web_edge_on == 1 ? {
+    host                 = local.tp_web_host
+    viewer_ip_header     = local.tp_web_viewer_ip_header
+    rate_limit           = var.tripplanner_web_rate_limit
+    model_rate_limit     = var.tripplanner_web_model_rate_limit
+    challenge_immunity_s = var.tripplanner_web_challenge_immunity_s
+    protected_paths      = local.tp_web_protected_paths
+    path_transformations = local.tp_web_path_normalize
+  } : null
+
   tags = merge(local.shared_tags, { Component = "edge" }) # AA-828: on the ALB and on the CIS + Booking REST API stages
 
   # S235 Phase 0: CommonRuleSet started in observe mode (whole group COUNT); enforced since
