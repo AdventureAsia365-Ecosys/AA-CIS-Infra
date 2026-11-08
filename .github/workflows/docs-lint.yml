@@ -6,7 +6,8 @@ name: Docs lint
 #   - no backslash-continued AWS CLI command in any tracked Markdown file (multi-line AWS CLI hangs WSL2)
 #   - literal resource IDs in Markdown: VPC resource IDs (sg-, subnet-, vpc-, ...) and API Gateway hosts fail;
 #     account IDs, ARNs and user-pool IDs only warn, because this private repo holds the account map (STYLE.md)
-#   - internal links, offline (lychee): no network, no external sites
+#   - internal links, offline (lychee): no network, no external sites; the binary comes from a cached, hash-checked
+#     copy (.github/actions/lychee, S273), warmed on main by the lychee-cache job
 # Weekly (and on demand): freshness report of pages past their review date, as a run artifact.
 # gitleaks already runs on every PR in secret-scan.yml (and nightly over the full history in
 # secret-scan-history.yml), so it is not repeated here.
@@ -21,6 +22,14 @@ on:
       - "tools/docs/**"
       - "docs/templates/**"
       - ".github/workflows/docs-lint.yml"
+      - ".github/actions/lychee/**"
+      - ".github/scripts/lychee_bin.py"
+  # S273: a push to main that moves the lychee pin warms the cache entry every pull request reads (lychee-cache job).
+  push:
+    branches: [main]
+    paths:
+      - ".github/actions/lychee/**"
+      - ".github/scripts/lychee_bin.py"
   schedule:
     - cron: "29 1 * * 1" # Mondays 01:29 UTC (08:29 in Vietnam), after the root repo's run
   workflow_dispatch:
@@ -35,7 +44,7 @@ concurrency:
 jobs:
   lint:
     name: Docs lint
-    if: github.event_name != 'schedule'
+    if: github.event_name != 'schedule' && github.event_name != 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -74,12 +83,33 @@ jobs:
 
       # The checkout has no .terraform or node_modules folders, so the glob only sees tracked pages.
       - name: Internal links (offline)
+        # S273: the local action runs what lycheeverse/lychee-action v2.9.0 ran (lychee v0.24.2, same args and report),
+        # with the binary from actions/cache (pinned sha256, .github/actions/lychee/pins.txt) instead of a one-shot
+        # download from github.com on every run.
         if: ${{ !cancelled() }}
-        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
+        uses: ./.github/actions/lychee
         with:
           args: --config tools/docs/lychee.toml './**/*.md'
           fail: true
           jobSummary: true
+
+  # S273: actions/cache entries saved on the default branch are the only ones every pull request and merge-queue run
+  # can read, and the Docs lint job runs on pull requests only. This job restores or downloads the pinned lychee binary
+  # on main (push of a new pin, the weekly schedule, a manual run) and saves it; it runs no check.
+  lychee-cache:
+    name: Lychee cache (default branch)
+    if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Restore or fetch lychee
+        uses: ./.github/actions/lychee
+        with:
+          install-only: "true"
 
   freshness:
     name: Docs freshness report
