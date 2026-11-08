@@ -611,7 +611,7 @@ def test_bucket_policy_denies_the_admin_prefix_to_everyone_but_the_mfa_admin():
     assert 'resources = ["${aws_s3_bucket.e2e_mail.arn}/${local.e2e_mail_admin_prefix}*"]' in deny
     assert 'identifiers = ["*"]' in deny
     assert re.search(r'test\s*=\s*"StringNotEquals"\s*variable\s*=\s*"aws:PrincipalArn"\s*'
-                     r'values\s*=\s*\[local\.id_breakglass_admin_role_arn\]', deny)
+                     r'values\s*=\s*local\.id_admin_role_arns\b', deny)
     assert "e2e_mail_reader_arn" not in deny
     # Unconditional: it is a plain statement, not inside the dev-only dynamic block.
     dyn = tf.index('dynamic "statement"')
