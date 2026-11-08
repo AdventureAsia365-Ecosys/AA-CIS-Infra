@@ -24,6 +24,27 @@ wl = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(wl)
 
 
+# git's repo-local variables (`git rev-parse --local-env-vars`). A hook exports GIT_DIR & co.; a test that inherits them
+# and runs `git init` in tmp_path works on the real clone instead (S273: core.bare=true in the config every worktree of
+# the clone shares). scripts/test_git_env_isolation.py checks this list against git and runs this file with a leak.
+GIT_REPO_VARS = ("GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT",
+                 "GIT_OBJECT_DIRECTORY", "GIT_DIR", "GIT_WORK_TREE", "GIT_IMPLICIT_WORK_TREE", "GIT_GRAFT_FILE",
+                 "GIT_INDEX_FILE", "GIT_NO_REPLACE_OBJECTS", "GIT_REPLACE_REF_BASE", "GIT_PREFIX", "GIT_SHALLOW_FILE",
+                 "GIT_COMMON_DIR")
+
+
+def _git_in(tmp_path, monkeypatch, *args: str) -> None:
+    """Run git in the temporary repo only: none of the repo-local variables, cwd = tmp_path, no user/system config.
+
+    The variables are also dropped from os.environ (monkeypatch), so the lint's own `git -C` call inherits none.
+    """
+    for name in GIT_REPO_VARS:
+        monkeypatch.delenv(name, raising=False)
+    env = {k: v for k, v in os.environ.items() if k not in GIT_REPO_VARS}
+    env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+    subprocess.run(["git", *args], cwd=str(tmp_path), env=env, check=True, capture_output=True)
+
+
 def _lint(body: str, repo_root: str = REPO_ROOT) -> list[str]:
     return wl.lint_workflow("demo.yml", textwrap.dedent(body), repo_root)
 
@@ -79,13 +100,13 @@ def test_wl2_playwright_jobs_pin_the_runner():
     assert ok == []
 
 
-def test_wl3_npm_ci_needs_a_tracked_lockfile(tmp_path):
-    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+def test_wl3_npm_ci_needs_a_tracked_lockfile(tmp_path, monkeypatch):
+    _git_in(tmp_path, monkeypatch, "init", "-q", ".")
     (tmp_path / "web").mkdir()
     (tmp_path / "web" / "package-lock.json").write_text("{}")
     (tmp_path / "api").mkdir()
     (tmp_path / "api" / "package-lock.json").write_text("{}")  # exists but not tracked (gitignored, S220)
-    subprocess.run(["git", "-C", str(tmp_path), "add", "web/package-lock.json"], check=True)
+    _git_in(tmp_path, monkeypatch, "add", "web/package-lock.json")
     body = """
         on: push
         jobs:
