@@ -66,3 +66,24 @@ resource "aws_iam_role_policy_attachment" "admin" {
   role       = aws_iam_role.admin.name
   policy_arn = each.value
 }
+
+# S273 (orchestrator, found by the live baseline): the tech lead's IAM user may only assume the admin role through its
+# hand-made inline policy AssumeAdminSessionRole, which named the old role alone. Brought under Terraform (imported,
+# same name) and pointed at local.id_admin_role_arns: both roles during the switch, the new role only after PR 2.
+import {
+  to = aws_iam_user_policy.admin_assume
+  id = "${var.identity_admin_user_name}:AssumeAdminSessionRole"
+}
+
+resource "aws_iam_user_policy" "admin_assume" {
+  name = "AssumeAdminSessionRole"
+  user = var.identity_admin_user_name
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = "sts:AssumeRole"
+      Resource = local.id_admin_role_arns
+    }]
+  })
+}

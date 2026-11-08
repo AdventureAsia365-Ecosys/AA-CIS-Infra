@@ -122,3 +122,13 @@ def test_transition_keeps_the_hand_made_role_allowed():
     # PR 1: both names pass every admin exception until the CLI profiles assume the new role. The follow-up PR
     # removes var.identity_admin_role_legacy_names and replaces this test with one asserting no legacy name.
     assert _default("identity_admin_role_legacy_names") == '["nghiep-admin-8h-session"]'
+
+
+def test_admin_user_assume_policy_follows_the_admin_role_list():
+    """S273: the IAM user's inline AssumeAdminSessionRole policy named only the hand-made role; it is now managed
+    (imported) and allows exactly local.id_admin_role_arns, so the profile switch is not denied."""
+    tf = (ROOT / "accounts" / "aa365" / "admin_role.tf").read_text()
+    assert 'resource "aws_iam_user_policy" "admin_assume"' in tf
+    assert 'name = "AssumeAdminSessionRole"' in tf
+    assert "Resource = local.id_admin_role_arns" in tf
+    assert 'id = "${var.identity_admin_user_name}:AssumeAdminSessionRole"' in tf
