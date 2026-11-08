@@ -305,6 +305,17 @@ variable "t9_faq_llm_filter" {
   }
 }
 
+variable "tripplanner_revalidate_url" {
+  description = "AA-1038: TRIPPLANNER_REVALIDATE_URL of the CIS api and worker (the TripPlanner catalog purge endpoint). null = not set (the app default, the Vercel host); set to the public host when it points at ECS. Never empty (\"\" switches delivery off)."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.tripplanner_revalidate_url == null || can(regex("^https://[a-z0-9.-]+/api/revalidate/catalog$", var.tripplanner_revalidate_url))
+    error_message = "tripplanner_revalidate_url must be null or https://<host>/api/revalidate/catalog."
+  }
+}
+
 variable "photos_cdn_distribution_arn" {
   description = "AA-835: ARN of the photos CloudFront distribution (accounts/aa365/photos_cdn.tf). Gives the CIS task role cloudfront:CreateInvalidation on it and the worker env PHOTO_CDN_DISTRIBUTION_ID (the supply_media_purge job). Empty = CDN gated off: no grant, no env."
   type        = string
