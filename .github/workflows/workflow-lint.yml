@@ -9,6 +9,8 @@ name: Workflow Lint
 #   2. .github/scripts/workflow_lint.py, the repo rules actionlint does not know: no sensitive `vars.*` (ARN / role /
 #      key: variables print in clear in this public repo's logs), Playwright jobs on runs-on ubuntu-24.04, `npm ci` only
 #      with a git-tracked lockfile.
+#   Also the unit tests of .github/scripts/lychee_bin.py and the shape of the Docs lint link step (S273: the lychee
+#   binary from a cached, hash-checked copy, .github/actions/lychee).
 # Offline apart from the actionlint download; no secret, no AWS. Not a required check yet (the ruleset is changed by the
 # tech lead).
 
@@ -20,6 +22,8 @@ on:
       - ".github/actions/**"
       - ".github/actionlint.yaml"
       - ".github/scripts/workflow_lint.py"
+      - ".github/scripts/lychee_bin.py"
+      - ".github/scripts/test_lychee_bin.py"
   push:
     branches: [main]
     paths:
@@ -27,6 +31,8 @@ on:
       - ".github/actions/**"
       - ".github/actionlint.yaml"
       - ".github/scripts/workflow_lint.py"
+      - ".github/scripts/lychee_bin.py"
+      - ".github/scripts/test_lychee_bin.py"
 
 permissions:
   contents: read
@@ -76,4 +82,5 @@ jobs:
       - name: Repo workflow rules
         run: |
           python -m pip install --quiet pyyaml==6.0.2
+          python -B -m unittest discover -s .github/scripts -p 'test_lychee_bin.py'
           python -B .github/scripts/workflow_lint.py

@@ -1,0 +1,6 @@
+# lychee release pins for .github/actions/lychee (S273): "<version> <target> <sha256 of lychee-<target>.tar.gz>".
+# One version; one line per runner platform. Each sha256 is the release's own lychee-<target>.tar.gz.sha256 file
+# (https://github.com/lycheeverse/lychee/releases/tag/lychee-v0.24.2), checked against the downloaded tarball when
+# the pin moved. To move the pin: change all lines together, in every repo that carries this file, in one wave.
+v0.24.2 x86_64-unknown-linux-gnu 1f4e0ef7f6554a6ed33dd7ac144fb2e1bbed98598e7af973042fc5cd43951c9a
+v0.24.2 aarch64-unknown-linux-gnu 91a7bd65685da41b90ccb9bc867a3d649a7818042dae04ff405e55a25bddee4c
