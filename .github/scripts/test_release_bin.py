@@ -1,7 +1,8 @@
 """Tests of .github/scripts/release_bin.py and .github/actions/release-bin (S273, AA-1024).
 
 Offline, stdlib unittest + PyYAML: the pin file parser and platform choice, the download retries against a fake network
-(wrong bytes are thrown away, the pin is never relaxed), the member extraction from synthetic archives, a kept file
+(wrong bytes are thrown away, the pin is never relaxed), the gh -> plain HTTPS fallback with only `path=` on
+stdout (stdout is $GITHUB_OUTPUT), the member extraction from synthetic archives, a kept file
 (member '-'), the CLI, then this repo's committed pin file and composite action, and that no workflow of this repo
 still runs a tool the action replaces through its own download (anchore/sbom-action, setup-trivy). Invented names only.
 The same file in every repo that carries .github/actions/release-bin.
@@ -9,6 +10,7 @@ Run: python3 -B -m unittest discover -s .github/scripts -p 'test_release_bin.py'
 """
 from __future__ import annotations
 
+import ast
 import hashlib
 import importlib.util
 import io
@@ -224,6 +226,53 @@ class Cli(unittest.TestCase):
             with unittest.mock.patch("sys.stderr", io.StringIO()):
                 self.assertEqual(rb.main(["key", "--tool", "nosuchtool", "--pins", str(pins)]), 2)
                 self.assertEqual(rb.main(["key", "--tool", "demotool", "--pins", str(tmp / "missing.txt")]), 2)
+
+
+class StdoutIsTheOutputFile(unittest.TestCase):
+    """The action sends stdout into $GITHUB_OUTPUT: any line there that is not `name=value` fails the step."""
+
+    def test_gh_failure_falls_back_to_https_and_stdout_stays_path_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            data = _tarball(tmp / "src.tar.gz", {"demotool": b"bin"})
+            pins = tmp / "pins.txt"
+            pins.write_text(_pins_text(sha_x86=_sha(data)), encoding="utf-8")
+            fakebin = tmp / "fakebin"
+            fakebin.mkdir()
+            gh = fakebin / "gh"
+            gh.write_text("#!/bin/sh\necho 'HTTP 403: rate limited' >&2\nexit 1\n", encoding="utf-8")
+            gh.chmod(0o755)
+            urls = []
+
+            def fake_urlopen(req, timeout=None):
+                urls.append(req.full_url)
+                return io.BytesIO(data)
+            out, err = io.StringIO(), io.StringIO()
+            env = {"GH_TOKEN": "x", "PATH": f"{fakebin}{os.pathsep}{os.environ.get('PATH', '')}"}
+            with unittest.mock.patch.dict(os.environ, env), \
+                    unittest.mock.patch.object(rb.urllib.request, "urlopen", fake_urlopen), \
+                    unittest.mock.patch("sys.stdout", out), unittest.mock.patch("sys.stderr", err):
+                code = rb.main(["fetch", "--tool", "demotool", "--pins", str(pins), "--machine", "x86_64",
+                                "--dest", str(tmp / "cache"), "--bin", str(tmp / "bin")])
+            self.assertEqual(code, 0, err.getvalue())
+            self.assertEqual(urls, [URL.format("amd64")])
+            self.assertEqual(out.getvalue(), f"path={tmp / 'bin' / 'demotool'}\n")
+            self.assertIn("::warning::authenticated gh download failed (CalledProcessError)", err.getvalue())
+            self.assertEqual((tmp / "bin" / "demotool").read_bytes(), b"bin")
+
+    def test_every_stdout_print_is_a_name_value_line(self):
+        tree = ast.parse(SCRIPT.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "print"):
+                continue
+            to_stderr = any(k.arg == "file" and ast.unparse(k.value) == "sys.stderr" for k in node.keywords)
+            if to_stderr:
+                continue
+            first = node.args[0] if node.args else None
+            lead = ""
+            if isinstance(first, ast.JoinedStr) and first.values and isinstance(first.values[0], ast.Constant):
+                lead = str(first.values[0].value)
+            self.assertRegex(lead, r"^[a-z0-9_]+=", f"line {node.lineno}: a stdout print that is not name=value")
 
 
 class GhReleaseDownload(unittest.TestCase):

@@ -13,7 +13,9 @@ setup-trivy, the actionlint and oasdiff `curl` steps). This script is the one pa
          asset when GH_TOKEN is set, then plain HTTPS over HTTP/1.1) with retries and backoff, and checked. Bytes that
          never match the pin fail the step: the pin is never relaxed. Then the pinned member (only that file) is
          extracted from the .tar.gz into --bin, mode 0755; a pin whose member is `-` keeps the file as is (a .deb the
-         job installs itself). Prints `path=` (the binary, or the verified file) for `$GITHUB_OUTPUT`.
+         job installs itself). Prints `path=` (the binary, or the verified file) for `$GITHUB_OUTPUT`; every log line,
+         warning and error goes to stderr, because the action sends stdout into `$GITHUB_OUTPUT` and a line that is not
+         `name=value` there fails the step.
 
 Pin line: `<tool> <version> <arch> <sha256> <url> <member>`; arch is x86_64 or aarch64; the url names the version.
 Used by .github/actions/release-bin (actions/cache keyed on tool + version + arch + sha256). Stdlib only. The same file
@@ -49,6 +51,11 @@ PIN_LINE = re.compile(r"^(?P<tool>[a-z0-9][a-z0-9-]*)\s+(?P<version>v?\d+(?:\.\d
 MACHINES = {"x86_64": "x86_64", "amd64": "x86_64", "x64": "x86_64", "aarch64": "aarch64", "arm64": "aarch64"}
 CHUNK = 1 << 16
 USER_AGENT = "aa-ci-release-bin/1"
+
+
+def log_stderr(msg: str) -> None:
+    """Log lines, ::warning:: and ::error:: annotations: stderr only (stdout is the `$GITHUB_OUTPUT` channel)."""
+    print(msg, file=sys.stderr)
 
 
 class PinError(ValueError):
@@ -158,7 +165,7 @@ def _download(url: str, dest: Path, timeout: float) -> None:
         if _gh_release_download(url, dest, timeout):
             return
     except Exception as exc:  # noqa: BLE001 - fall back to the plain HTTPS download below
-        print(f"::warning::authenticated gh download failed ({type(exc).__name__}); trying plain HTTPS")
+        log_stderr(f"::warning::authenticated gh download failed ({type(exc).__name__}); trying plain HTTPS")
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     fd, tmp = tempfile.mkstemp(dir=dest.parent, prefix=".part-")
     try:
@@ -171,7 +178,7 @@ def _download(url: str, dest: Path, timeout: float) -> None:
 
 
 def download_verified(pin: Pin, dest: Path, *, attempts: int = 6, base_delay: float = 5.0, timeout: float = 120.0,
-                      download=_download, sleep=time.sleep, log=print) -> None:
+                      download=_download, sleep=time.sleep, log=log_stderr) -> None:
     """Download `pin` to `dest` until its sha256 matches; backoff base_delay * 2**n (max 60 s) plus jitter."""
     last = ""
     for n in range(1, attempts + 1):
@@ -211,7 +218,7 @@ def extract_member(archive: Path, member: str, bin_dir: Path) -> Path:
     return target
 
 
-def fetch(pin: Pin, dest: Path, bin_dir: Path, *, log=print, **download_kw) -> Path:
+def fetch(pin: Pin, dest: Path, bin_dir: Path, *, log=log_stderr, **download_kw) -> Path:
     """The pinned file, verified, in `dest`; its member in `bin_dir`. Returns the binary (or, member '-', the file)."""
     dest.mkdir(parents=True, exist_ok=True)
     archive = dest / pin.filename
@@ -246,7 +253,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         pin = select(parse_pins(a.pins.read_text(encoding="utf-8")), a.tool, a.machine)
     except (OSError, PinError) as exc:
-        print(f"::error::{a.pins}: {exc}", file=sys.stderr)
+        log_stderr(f"::error::{a.pins}: {exc}")
         return 2
     if a.cmd == "key":
         print(f"tool={pin.tool}\nversion={pin.version}\narch={pin.arch}\nsha256={pin.sha256}\nfile={pin.filename}\n"
@@ -254,9 +261,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     try:
         path = fetch(pin, a.dest, a.bin, attempts=max(1, a.attempts), base_delay=a.base_delay,
-                     log=lambda msg: print(msg, file=sys.stderr))
+                     log=log_stderr)
     except (FetchError, OSError, tarfile.TarError) as exc:
-        print(f"::error::{exc}", file=sys.stderr)
+        log_stderr(f"::error::{exc}")
         return 1
     print(f"path={path}")
     return 0

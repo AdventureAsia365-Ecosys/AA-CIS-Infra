@@ -66,4 +66,9 @@ actionlint and oasdiff (`curl`) still downloaded on every run.
 
 - The shared files (`workflow_lint.py`, `release_bin.py`, `cache_cleanup.py`, their tests, `release-bin/`,
   `cache-cleanup.yml`) are byte-identical in the six repos: change them in all of them in one wave.
+- `release_bin.py fetch` writes only `path=` to stdout, because the action pipes stdout into `$GITHUB_OUTPUT`;
+  every log line, `::warning::` and `::error::` goes to stderr through `log_stderr` (review fix: the gh -> HTTPS
+  fallback warning used to go to stdout and would have failed the step in exactly the throttling case).
+  `test_release_bin.py` runs that fallback with a failing fake `gh` and checks stdout, and an AST check refuses
+  any stdout `print` that is not a `name=value` line.
 - `ci_hygiene.py` (root, session start) exits 1 when a repo is over 8 GB or a WL5 finding exists on a default branch.
