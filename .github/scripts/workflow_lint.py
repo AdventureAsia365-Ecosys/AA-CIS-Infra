@@ -57,6 +57,7 @@ SENSITIVE_VAR = re.compile(
 PLAYWRIGHT = re.compile(r"playwright", re.I)
 NPM_CI = re.compile(r"(?:^|[;&|(]|\s)npm\s+ci\b", re.M)
 PINNED_RUNNER = "ubuntu-24.04"
+NESTED_EXPR = re.compile(r"\$\{\{(?:(?!\}\}).)*\$\{\{")
 DEFAULT_REF = re.compile(r"github\.ref\s*==\s*'refs/heads/(?:main|master)'")
 CACHE_INPUT_ACTIONS = ("actions/setup-python@", "actions/setup-node@")
 # Actions that download a binary themselves on every run (no cache keyed on a sha256 pin): what to use instead.
@@ -102,7 +103,8 @@ def tracked(path: str, repo_root: str) -> bool:
 
 
 def _major(uses: str) -> int | None:
-    """The major version of `owner/name@vN...` or `owner/name@<sha> # vN.M.P`."""
+    """The major version of `owner/name@vN...` (None for a SHA pin: YAML drops the `# vN` comment; WL4 then
+    treats setup-node as v5+)."""
     m = re.search(r"@v(\d+)", uses) or re.search(r"#\s*v(\d+)", uses)
     return int(m.group(1)) if m else None
 
@@ -175,7 +177,7 @@ def _cache_findings(where: str, steps: list) -> list[str]:
         if uses.startswith(CACHE_INPUT_ACTIONS) and str(with_.get("cache") or "").strip():
             findings.append(f"{where}:WL4 {label!r}: no `cache:` on {uses.split('@')[0]} (it saves on every ref): "
                             "actions/cache/restore, and actions/cache/save only on the default branch")
-        if uses.startswith("actions/setup-node@") and (_major(uses) or 0) >= 5 \
+        if uses.startswith("actions/setup-node@") and (_major(uses) or 99) >= 5 \
                 and str(with_.get("package-manager-cache")).lower() != "false":
             findings.append(f"{where}:WL4 {label!r}: setup-node v5+ needs package-manager-cache: false "
                             "(its automatic cache saves on every ref)")
@@ -189,6 +191,10 @@ def _cache_findings(where: str, steps: list) -> list[str]:
         if uses.startswith("actions/cache/save@") and not DEFAULT_REF.search(str(step.get("if") or "")):
             findings.append(f"{where}:WL4 {label!r}: actions/cache/save needs if: github.ref == 'refs/heads/main' "
                             "(a pull request or merge-queue copy is readable only by that ref)")
+        if uses.startswith(("actions/cache", "actions/setup-")) and any(
+                NESTED_EXPR.search(str(v)) for v in with_.values()):
+            findings.append(f"{where}:WL4 {label!r}: a `${{{{` inside an expression is a literal string (the key never "
+                            "matches): use format('...{0}...', value)")
         if uses.startswith("aquasecurity/trivy-action@") and str(with_.get("cache")).lower() != "false":
             findings.append(f"{where}:WL4 {label!r}: trivy-action needs cache: \"false\" (its DB cache saves on every "
                             "ref): restore the DB with actions/cache/restore, save it on the default branch")
