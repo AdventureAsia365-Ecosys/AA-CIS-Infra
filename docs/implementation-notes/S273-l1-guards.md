@@ -62,3 +62,9 @@ Lane l1-guards of S273. Two of the three red scheduled guards at the session sta
 - After the management apply, rerun Terraform Drift by hand: both matrix entries must say "In sync".
 - When TripPlanner removes its leftover inquiry hand-off code and its `inquiry.submitted.*` test copies, the same
   change must drop their entries here (the guard fails on a registered copy that disappears).
+- Review fix (S273): the retired `inquiry.submitted` contract leaves the tp-009 grants to `booking` (`USAGE` on schema
+  `tripplanner`, `SELECT` on `tripplanner.v_inquiry_outbox`) without a reason; the view's `payload` carries traveller
+  personal data. The root PR marks them "retired, revoke pending". The revoke is a follow-up chain: a TripPlanner `tp-`
+  migration with the two REVOKEs, then here the `owners.yaml` consumer grant, the two `rls_catalogue_rules.py`
+  allowlist rows and the `isolation_probe.py` `CONSUMER_GRANTS` row removed (the nightly probe would go red if the
+  probe row stayed after the revoke). Not done in this PR: it is a TripPlanner-owned contract migration.
