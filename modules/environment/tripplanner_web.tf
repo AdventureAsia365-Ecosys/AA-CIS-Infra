@@ -1,8 +1,8 @@
 # =============================================================================
 # AA-1038 R5 hosting (root ADR 0019 d23, S265 tech-lead decision with its cost yeses: one Fargate Spot task + CloudFront
 # + a CLOUDFRONT-scope web ACL) — the TripPlanner frontend (AA-TripPlanner-Web frontend/, Next.js standalone) on ECS Dev.
-# Until the DNS switch Vercel keeps serving tripplanner.<zone>; this service is reached through its own CloudFront
-# distribution only (accounts/aa365 tripplanner_web_edge.tf). Same self-contained pattern as crm_web.tf and
+# It serves tripplanner.<zone> since the S272 cut-over (the Vercel project was retired after it), reached through its own
+# CloudFront distribution only (accounts/aa365 tripplanner_web_edge.tf). Same self-contained pattern as crm_web.tf and
 # staff_web.tf (IMMUTABLE ECR, secret shell filled out of band, desired 0 at create, the app's deploy copies the
 # family's latest revision with only the image swapped).
 #
@@ -82,7 +82,7 @@ locals {
   # Env names read by the frontend (AA-TripPlanner-Web frontend/lib, app/api). Public values only; the secrets below.
   tp_web_env = [
     { name = "PORT", value = tostring(local.tp_web_port) },
-    # The HTTP API custom domain (accounts/aa365 custom_domains.tf), the same base the Vercel production env holds.
+    # The HTTP API custom domain (accounts/aa365 custom_domains.tf), the same base the Vercel production env held.
     { name = "BROWSE_API_URL", value = "https://api-tripplanner.${var.dns_zone_name}" },
     { name = "TRIP_API_URL", value = "https://api-tripplanner.${var.dns_zone_name}" },
     { name = "SENTRY_ENVIRONMENT", value = var.environment },

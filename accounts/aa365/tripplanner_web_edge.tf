@@ -48,7 +48,7 @@
 #                                     interstitial. The app answers the older spellings of the three calls 404
 #                                     (AA-TripPlanner-Web lib/edgeGate.ts, task env TP_EDGE_GATE=on), so no model call
 #                                     and no lead passes outside rules 3 and 4. On ECS these rules are the whole bot
-#                                     check of the three calls (BotID needs the Vercel edge: the image builds it off).
+#                                     check of the three calls (Vercel BotID left with the Vercel project, AA-1038).
 #   Every path match of rules 3 and 4 runs URL_DECODE then NORMALIZE_PATH (local.tp_web_path_normalize), and a
 #   protected path matches with CONTAINS, so a dot-segment spelling (/api/browse/%2e/search, /api/trip/./narrate,
 #   /x/../api/trip/send, and a LEADING one: /%2e%2e/api/trip/send, /../api/browse/search, /./api/trip/narrate), which
