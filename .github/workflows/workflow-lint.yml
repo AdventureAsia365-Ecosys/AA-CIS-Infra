@@ -11,6 +11,9 @@ name: Workflow Lint
 #      with a git-tracked lockfile.
 #   Also the unit tests of .github/scripts/lychee_bin.py and the shape of the Docs lint link step (S273: the lychee
 #   binary from a cached, hash-checked copy, .github/actions/lychee).
+# WL6 (S273, AA-1024, root ADR 0021 decision 2.3): every `uses:` names a full-length commit SHA with its release tag
+# in a `# vX.Y.Z` comment (the org setting that refuses tag pins); .github/dependabot.yml moves the pins weekly,
+# in one grouped PR that is never auto-merged (its shape is checked by the unit tests here).
 # Offline apart from the actionlint download on a cache miss; no secret, no AWS. Not a required check yet (the ruleset is changed by the
 # tech lead).
 
@@ -22,6 +25,7 @@ on:
       - ".github/actions/**"
       - ".github/actionlint.yaml"
       - ".github/scripts/workflow_lint.py"
+      - ".github/dependabot.yml"
       - ".github/scripts/release_bin.py"
       - ".github/scripts/test_release_bin.py"
       - ".github/scripts/cache_cleanup.py"
@@ -35,6 +39,7 @@ on:
       - ".github/actions/**"
       - ".github/actionlint.yaml"
       - ".github/scripts/workflow_lint.py"
+      - ".github/dependabot.yml"
       - ".github/scripts/release_bin.py"
       - ".github/scripts/test_release_bin.py"
       - ".github/scripts/cache_cleanup.py"
