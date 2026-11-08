@@ -40,13 +40,10 @@ locals {
   # assumed-role session's aws:PrincipalArn is the role ARN, so this matches every session.
   id_breakglass_admin_role_arn = "arn:aws:iam::${var.account_id}:role/${var.identity_breakglass_admin_role_name}"
 
-  # Every policy that lets "the MFA admin role" through names this list, never the single ARN (AA-1004). During
-  # the transition it also holds the hand-made role (var.identity_admin_role_legacy_names) so the profile switch
-  # cannot lock the tech lead out; afterwards it is the Terraform role only.
-  id_admin_role_arns = concat(
-    [local.id_breakglass_admin_role_arn],
-    [for n in var.identity_admin_role_legacy_names : "arn:aws:iam::${var.account_id}:role/${n}"],
-  )
+  # Every policy that lets "the MFA admin role" through names this list, never the single ARN (AA-1004). It held
+  # the hand-made role too while the CLI profiles switched; since the switch it is the Terraform role only. A
+  # future role change goes the same way: add the new role here first, switch the profiles, then drop the old one.
+  id_admin_role_arns = [local.id_breakglass_admin_role_arn]
 
   # CloudTrail logs requestParameters.secretId exactly as the caller passed it: the name, the full
   # ARN (name + 6-char suffix) or a partial ARN. A prefix on the name and on the ARN covers all three.

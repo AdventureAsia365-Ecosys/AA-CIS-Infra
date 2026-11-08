@@ -57,3 +57,15 @@ The tech lead's CLI profiles `aa365-admin` and `default` assumed a role made by 
   CLI call asks for a fresh MFA code (new cache key).
 - Root `.claude/CLAUDE.md` and the private global CLAUDE.md also say "8h STS cache"; the lane does not edit
   CLAUDE.md files, the orchestrator / tech lead does (wording in the lane result).
+
+## PR 2: clean-up after the switch
+
+Merged only after `aws sts get-caller-identity --profile aa365-admin` and `--profile default` both return an
+`assumed-role/nghiep-admin-12h/...` ARN.
+
+- `var.identity_admin_role_legacy_names` removed; `local.id_admin_role_arns = [local.id_breakglass_admin_role_arn]`.
+  The test `test_no_legacy_admin_role_left` keeps the old name out of the root.
+- The hand-made role is not in Terraform state, so nothing is imported. It is deleted with single-line CLI after the
+  targeted local apply of the four policies, never before the profile switch. The commands are in the PR body
+  (orchestrator runbook): detach the three managed policies, check that no inline policy and no instance profile
+  is left, delete the role, then run the read-only inventory again (only `match=no`, old role `not found`).

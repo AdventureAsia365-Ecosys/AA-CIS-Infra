@@ -268,14 +268,13 @@ class OpsSecretPolicyTest(unittest.TestCase):
             self.assertNotIn(f'"secretsmanager:{action}"', stmt)
 
     def test_reader_is_the_mfa_admin_role_only(self):
-        # AA-1004: the shared admin-role list (the Terraform admin role first, plus the hand-made one only during
-        # the profile switch), never a hand-written ARN.
+        # AA-1004: the shared admin-role list (the Terraform admin role), never a hand-written ARN.
         m = re.search(r"ops_secret_reader_role_arns\s*=\s*(\S+)", OPS_GUARD)
         self.assertEqual(m.group(1), "local.id_admin_role_arns")
         self.assertRegex(IDENTITY_ALERTS,
                          r'id_breakglass_admin_role_arn\s*=\s*"arn:aws:iam::\$\{var\.account_id\}:role/'
                          r'\$\{var\.identity_breakglass_admin_role_name\}"')
-        self.assertRegex(IDENTITY_ALERTS, r"id_admin_role_arns\s*=\s*concat\(\s*\[local\.id_breakglass_admin_role_arn\]")
+        self.assertRegex(IDENTITY_ALERTS, r"id_admin_role_arns\s*=\s*\[local\.id_breakglass_admin_role_arn\]")
 
 
 if __name__ == "__main__":

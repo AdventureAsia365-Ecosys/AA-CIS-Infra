@@ -8,10 +8,9 @@
 # is var.identity_breakglass_admin_role_name, so every resource policy that names "the MFA admin role"
 # (local.id_admin_role_arns in identity_alerts.tf) follows this resource.
 #
-# Transition (two PRs): PR 1 creates this role and keeps the hand-made role's name in local.id_admin_role_arns
-# (var.identity_admin_role_legacy_names), so nothing locks the tech lead out before the profile switch. PR 2,
-# merged only after `aws sts get-caller-identity --profile aa365-admin` returns this role, drops the legacy
-# name and deletes the hand-made role.
+# Transition (done in two PRs): the first created this role and kept the hand-made role's name in
+# local.id_admin_role_arns until the CLI profiles assumed this role; the second dropped that name and deleted the
+# hand-made role (single-line CLI, runbook in docs/implementation-notes/AA-1004-l13-admin-role.md).
 #
 # LOCAL-APPLY ONLY (MFA admin profile, targeted; runbook in the PR): the CI apply role cannot create or change
 # a role without the workload boundary or outside aa-*-dev-* by design (CONTEXT.md, AA-806 role split). No

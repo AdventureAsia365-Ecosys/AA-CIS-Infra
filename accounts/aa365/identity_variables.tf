@@ -29,12 +29,6 @@ variable "identity_admin_user_name" {
   default     = "nghiep-admin"
 }
 
-variable "identity_admin_role_legacy_names" {
-  description = "AA-1004 transition only: hand-made admin roles still allowed next to the Terraform role in every policy that names the MFA admin role (local.id_admin_role_arns), until the CLI profiles switch to the new role. The follow-up PR removes this variable."
-  type        = list(string)
-  default     = ["nghiep-admin-8h-session"]
-}
-
 # ── Prefix domains (Dev) and optional custom domains ─────────────────────────
 variable "identity_workforce_domain_prefix" {
   description = "Cognito prefix domain for the WORKFORCE pool (<prefix>.auth.us-west-1.amazoncognito.com). Globally unique per region."
