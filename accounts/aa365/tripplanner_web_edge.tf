@@ -187,7 +187,7 @@ resource "aws_wafv2_web_acl" "tripplanner_web" {
   provider = aws.us_east_1
 
   name        = local.tp_web_waf_name
-  description = "TripPlanner web on CloudFront: rate per viewer IP, model paths, Challenge on the planner (AA-1038)"
+  description = "TripPlanner web on CloudFront: rate per viewer IP, model paths, Challenge on the planner, AA-1038"
   scope       = "CLOUDFRONT"
 
   default_action {
