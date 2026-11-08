@@ -46,7 +46,8 @@ def _git_in(tmp_path, monkeypatch, *args: str) -> None:
 
 
 def _lint(body: str, repo_root: str = REPO_ROOT) -> list[str]:
-    return wl.lint_workflow("demo.yml", textwrap.dedent(body), repo_root)
+    # the WL1-WL5 fixtures may name actions by tag; WL6 (SHA pins) has its own test
+    return [f for f in wl.lint_workflow("demo.yml", textwrap.dedent(body), repo_root) if ":WL6 " not in f]
 
 
 def test_wl1_sensitive_vars_are_refused_secrets_and_plain_vars_pass():
@@ -206,6 +207,60 @@ def test_wl4_wl5_cache_saves_and_external_downloads():
                   tool: demotool
         """)
     assert ok == []
+
+
+def test_wl6_actions_are_pinned_to_a_commit_sha_with_their_tag():
+    # S273 (AA-1024, root ADR 0021 decision 2.3): the full rule tests live in the vendored unittest file of the app
+    # repos; here one bad and one good shape of each, so a change of the shared workflow_lint.py is caught here too.
+    sha = "0123456789abcdef0123456789abcdef01234567"
+    body = textwrap.dedent(f"""
+        on: push
+        jobs:
+          shared:
+            uses: demo-org/demo-workflows/.github/workflows/demo.yml@main
+          a:
+            runs-on: ubuntu-24.04
+            steps:
+              - uses: demo-org/demo-setup@v3
+              - uses: demo-org/demo-setup@{sha}
+              - uses: demo-org/demo-setup@{sha} # v3.1.0
+              - uses: demo-org/demo-cache/save@{sha} # v6.1.0
+              - uses: ./.github/actions/release-bin
+              - uses: docker://demo/image@sha256:{"a" * 64}
+              - uses: docker://demo/image:1.0
+        """)
+    found = wl.lint_workflow("demo.yml", body, REPO_ROOT, frozenset(wl.RULES))
+    assert [f.split(":")[1] for f in found] == ["shared", "a", "a", "-"], found
+    assert all(":WL6 " in f for f in found)
+    assert "@main is not pinned" in found[0] and "demo-setup@v3 is not pinned" in found[1]
+    assert "docker://demo/image:1.0 is not pinned" in found[2] and "keep the release tag" in found[3]
+    # the setup-node major of a SHA pin comes from its `# vX.Y.Z` comment (v4 has no package-manager-cache input)
+    node = """
+        on: push
+        jobs:
+          a:
+            runs-on: ubuntu-24.04
+            steps:
+              - uses: actions/setup-node@{sha} # {tag}
+        """
+    assert _lint(node.format(sha=sha, tag="v4.4.0")) == []
+    assert [f.split(":")[2].split()[0] for f in _lint(node.format(sha=sha, tag="v7.1.0"))] == ["WL4"]
+
+
+def test_dependabot_bumps_the_pinned_actions_weekly_in_one_group():
+    with open(os.path.join(REPO_ROOT, ".github", "dependabot.yml"), encoding="utf-8") as fh:
+        cfg = yaml.safe_load(fh)
+    gha = [u for u in cfg["updates"] if u["package-ecosystem"] == "github-actions"]
+    assert len(gha) == 1
+    dirs = gha[0].get("directories") or [gha[0].get("directory")]
+    assert "/" in dirs and "/.github/actions/*" in dirs
+    assert gha[0]["schedule"]["interval"] == "weekly" and gha[0].get("groups")
+    wf_dir = os.path.join(REPO_ROOT, ".github", "workflows")
+    for name in os.listdir(wf_dir):   # never auto-merged: no workflow step approves or merges a Dependabot PR
+        with open(os.path.join(wf_dir, name), encoding="utf-8") as fh:
+            text = wl._strip_comments(fh.read())
+        assert not ("dependabot" in text.lower() and re.search(
+            r"gh\s+pr\s+(?:merge|review)|auto-?merge|enablePullRequestAutoMerge", text, re.I)), name
 
 
 def test_the_repo_composite_actions_are_clean():

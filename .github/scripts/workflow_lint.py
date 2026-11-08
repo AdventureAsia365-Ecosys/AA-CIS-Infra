@@ -28,10 +28,18 @@ Each rule comes from a CI incident written in the root lessons log:
                        its job and a sha256 check. Use ./.github/actions/release-bin (or ./.github/actions/lychee).
                        Also checked in the composite actions under .github/actions (WL5 only: a composite action's
                        binary cache is keyed on its pin and may save on a miss).
+  WL6 action-pin       Every `uses:` (a reusable-workflow job, a job step, a composite action step) names a full-length
+                       commit SHA, `<owner>/<repo>[/<path>]@<40-hex sha> # vX.Y.Z`, the trailing comment keeping the
+                       release tag for readers and Dependabot (which moves the SHA and the comment together). Whoever
+                       controls an action's repository can move a tag; the org setting "Require actions to be pinned
+                       to a full-length commit SHA" (root ADR 0021 decision 2.3) fails a run that names one (AA-1024,
+                       S273). Exempt: a local `./` path and `docker://<image>@sha256:<digest>`. Also checked in the
+                       composite actions; `--skip` does not turn it off (the org setting refuses a tag pin whatever
+                       this script says).
 
 The workflow `Workflow Lint` runs this next to a pinned actionlint. Stdlib + PyYAML.
 Run: python3 -B .github/scripts/workflow_lint.py [--skip WL1[,WL2]] [WORKFLOW.yml ...]
-     (default: every .github/workflows file, then every .github/actions/*/action.yml for WL5)
+     (default: every .github/workflows file, then every .github/actions/*/action.yml for WL5 and WL6)
 Exit 0 = clean, 1 = findings (one line each: file:job:rule message), 2 = a workflow does not parse.
 
 One file, the same in every repo (AA-CIS-Infra first, vendored into the root, AA-CIS-App, AA-Booking, AA-Partner and
@@ -75,6 +83,10 @@ ARCHIVE = re.compile(r"\.(?:tar\.gz|tgz|tar\.xz|txz|tar\.bz2|zip|deb|rpm|whl|gz|
 DOWNLOAD_HOSTS = ("raw.githubusercontent.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com")
 PIPE_TO_SHELL = re.compile(r"\|\s*(?:sudo\s+)?(?:ba)?sh\b")
 SHA_CHECK = re.compile(r"sha256sum\s+(?:-c|--check)|shasum\s+-a\s*256\s+(?:-c|--check)|\b[0-9a-f]{64}\b")
+SHA_PINNED = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_./-]+)?@[0-9a-f]{40}$")
+DOCKER_DIGEST = re.compile(r"^docker://[^@\s]+@sha256:[0-9a-f]{64}$")
+USES_LINE = re.compile(r"^\s*(?:-\s*)?uses:\s*['\"]?([^'\"\s#]+)['\"]?(.*)$")
+TAG_COMMENT = re.compile(r"^\s+#\s*(v?\d+(?:\.\d+)*)\b")
 
 
 def _strip_comments(text: str) -> str:
@@ -102,11 +114,54 @@ def tracked(path: str, repo_root: str) -> bool:
     return os.path.isfile(os.path.join(repo_root, path))
 
 
-def _major(uses: str) -> int | None:
-    """The major version of `owner/name@vN...` (None for a SHA pin: YAML drops the `# vN` comment; WL4 then
-    treats setup-node as v5+)."""
-    m = re.search(r"@v(\d+)", uses) or re.search(r"#\s*v(\d+)", uses)
+def _major(uses: str, tags: dict | None = None) -> int | None:
+    """The major version of `owner/name@vN...`; for a SHA pin, of its `# vN...` comment, which YAML drops, so it comes
+    from `tags` (`pin_tags` of the file text). None when neither says (WL4 then treats setup-node as v5+)."""
+    tag = (tags or {}).get(uses, "")
+    m = re.search(r"@v(\d+)", uses) or re.search(r"#\s*v(\d+)", uses) or re.match(r"v?(\d+)", tag)
     return int(m.group(1)) if m else None
+
+
+def pin_tags(text: str) -> dict:
+    """`{"owner/name@<sha>": "vX.Y.Z"}` from the `uses: ...@<sha> # vX.Y.Z` lines of a file (not shell comments)."""
+    tags = {}
+    for line in text.splitlines():
+        m = None if line.lstrip().startswith("#") else USES_LINE.match(line)
+        c = TAG_COMMENT.match(m.group(2)) if m else None
+        if c:
+            tags[m.group(1)] = c.group(1)
+    return tags
+
+
+def _uses(doc: dict) -> list[tuple[str, str]]:
+    """(job id, ref) of every `uses:` of a workflow (a reusable-workflow job, a job step) or a composite action
+    (its steps, job "-")."""
+    refs = []
+    for job_id, job in (doc.get("jobs") or {}).items():
+        if isinstance(job, dict):
+            refs += [(job_id, str(job["uses"]))] if job.get("uses") else []
+            refs += [(job_id, str(s["uses"])) for s in job.get("steps") or [] if isinstance(s, dict) and s.get("uses")]
+    runs = doc.get("runs") if isinstance(doc.get("runs"), dict) else {}
+    refs += [("-", str(s["uses"])) for s in runs.get("steps") or [] if isinstance(s, dict) and s.get("uses")]
+    return refs
+
+
+def pin_findings(name: str, doc: dict, text: str) -> list[str]:
+    """WL6: every action on a full-length commit SHA, its release tag in a trailing `# vX.Y.Z` comment."""
+    findings = []
+    for job_id, ref in _uses(doc):
+        if ref.startswith("./") or DOCKER_DIGEST.match(ref) or SHA_PINNED.match(ref):
+            continue
+        fix = ("docker://<image>@sha256:<digest>" if ref.startswith("docker://") else
+               "<owner>/<repo>@<40-hex sha> # vX.Y.Z (the tag's commit from gh api "
+               "repos/<owner>/<repo>/git/ref/tags/<tag>, annotated tags dereferenced)")
+        findings.append(f"{name}:{job_id}:WL6 {ref} is not pinned to a full-length commit SHA: use {fix}")
+    for n, line in enumerate(text.splitlines(), 1):
+        m = None if line.lstrip().startswith("#") else USES_LINE.match(line)
+        if m and SHA_PINNED.match(m.group(1)) and not TAG_COMMENT.match(m.group(2)):
+            findings.append(f"{name}:-:WL6 line {n}: keep the release tag of {m.group(1)} in a trailing comment "
+                            "(# vX.Y.Z)")
+    return findings
 
 
 def _is_download_url(url: str) -> bool:
@@ -165,8 +220,8 @@ def _download_findings(where: str, steps: list, *envs) -> list[str]:
     return findings
 
 
-def _cache_findings(where: str, steps: list) -> list[str]:
-    """WL4 for one job's steps."""
+def _cache_findings(where: str, steps: list, tags: dict | None = None) -> list[str]:
+    """WL4 for one job's steps (`tags`: the release tags of the file's SHA pins, `pin_tags`)."""
     findings = []
     for step in steps or []:
         if not isinstance(step, dict):
@@ -177,7 +232,7 @@ def _cache_findings(where: str, steps: list) -> list[str]:
         if uses.startswith(CACHE_INPUT_ACTIONS) and str(with_.get("cache") or "").strip():
             findings.append(f"{where}:WL4 {label!r}: no `cache:` on {uses.split('@')[0]} (it saves on every ref): "
                             "actions/cache/restore, and actions/cache/save only on the default branch")
-        if uses.startswith("actions/setup-node@") and (_major(uses) or 99) >= 5 \
+        if uses.startswith("actions/setup-node@") and (_major(uses, tags) or 99) >= 5 \
                 and str(with_.get("package-manager-cache")).lower() != "false":
             findings.append(f"{where}:WL4 {label!r}: setup-node v5+ needs package-manager-cache: false "
                             "(its automatic cache saves on every ref)")
@@ -201,13 +256,13 @@ def _cache_findings(where: str, steps: list) -> list[str]:
     return findings
 
 
-RULES = ("WL1", "WL2", "WL3", "WL4", "WL5")
+RULES = ("WL1", "WL2", "WL3", "WL4", "WL5")   # the rules `--skip` accepts; WL6 always runs
 UNCHECKED: list[str] = []   # npm ci steps whose working-directory is an expression (printed in the summary)
 
 
 def lint_workflow(name: str, text: str, repo_root: str = REPO_ROOT, skip: frozenset = frozenset()) -> list[str]:
     wf = yaml.safe_load(text) or {}
-    findings = []
+    findings, tags = pin_findings(name, wf, text), pin_tags(text)
     for m in ([] if "WL1" in skip else SENSITIVE_VAR.finditer(_strip_comments(text))):
         findings.append(f"{name}:-:WL1 vars.{m.group(1)} looks sensitive (ARN / role / key): use secrets.{m.group(1)}"
                         " (variables are printed in clear in the public run log)")
@@ -219,7 +274,7 @@ def lint_workflow(name: str, text: str, repo_root: str = REPO_ROOT, skip: frozen
         if "WL2" not in skip and PLAYWRIGHT.search(body) and runs_on != PINNED_RUNNER:
             findings.append(f"{name}:{job_id}:WL2 a Playwright job must pin runs-on: {PINNED_RUNNER} (got {runs_on!r})")
         if "WL4" not in skip:
-            findings += _cache_findings(f"{name}:{job_id}", job.get("steps"))
+            findings += _cache_findings(f"{name}:{job_id}", job.get("steps"), tags)
         if "WL5" not in skip:
             findings += _download_findings(f"{name}:{job_id}", job.get("steps"), wf.get("env"), job.get("env"))
         default_dir = ((job.get("defaults") or {}).get("run") or {}).get("working-directory") or "."
@@ -238,14 +293,13 @@ def lint_workflow(name: str, text: str, repo_root: str = REPO_ROOT, skip: frozen
 
 
 def lint_action(name: str, text: str, skip: frozenset = frozenset()) -> list[str]:
-    """WL5 for a composite action (.github/actions/<name>/action.yml)."""
-    if "WL5" in skip:
-        return []
+    """WL5 and WL6 for a composite action (.github/actions/<name>/action.yml)."""
     action = yaml.safe_load(text) or {}
     runs = action.get("runs") or {}
     if runs.get("using") != "composite":
         return []
-    return _download_findings(f"{name}:-", runs.get("steps"))
+    findings = pin_findings(name, action, text)
+    return findings + ([] if "WL5" in skip else _download_findings(f"{name}:-", runs.get("steps")))
 
 
 def _action_files() -> list[str]:
