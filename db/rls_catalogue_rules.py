@@ -208,8 +208,8 @@ ALLOWLIST: dict[str, dict[str, str]] = {
             "contract: agency billing status for the CIS tenant_billing_tick (bk-042)",
         "booking:tripplanner": "contract: schema USAGE for the public from price view (bk-039)",
         "booking.v_from_prices:tripplanner": "contract: price.from.v1, the tour page from price, RRP only (bk-039)",
-        "tripplanner:booking": "contract: schema USAGE for the inquiry outbox (tp-009)",
-        "tripplanner.v_inquiry_outbox:booking": "contract: Booking inquiry intake (tp-009)",
+        # AA-1046: tripplanner:booking and tripplanner.v_inquiry_outbox:booking (tp-009, the retired inquiry.submitted
+        # contract) left with tp-027, which revokes both; a grant back is a violation again.
         "tripplanner:cis_app": "contract: schema USAGE for the CIS ops view (tp-015)",
         "tripplanner.v_ops_traffic_daily:cis_app": "contract: CIS ops dashboard (tp-015)",
         "tripplanner.v_ops_data_totals:cis_app": "contract: CIS data coverage page, totals only (tp-020)",
