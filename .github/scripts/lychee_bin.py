@@ -132,7 +132,32 @@ def verified(path: Path, sha: str) -> bool:
     return path.is_file() and sha256_of(path) == sha
 
 
+_GH_RELEASE = re.compile(r"^https://github\.com/([^/]+)/([^/]+)/releases/download/([^/]+)/([^/?#]+)$")
+
+
+def _gh_release_download(url: str, dest: Path, timeout: float, run=subprocess.run) -> bool:
+    """Authenticated download of a public GitHub release asset through `gh` (S273: GitHub throttled
+    unauthenticated release downloads). True when gh fetched the file; False when this path does not apply."""
+    m = _GH_RELEASE.match(url)
+    if not m or not shutil.which("gh") or not (os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")):
+        return False
+    owner, repo, tag, name = m.groups()
+    work = Path(tempfile.mkdtemp(dir=dest.parent, prefix=".gh-"))
+    try:
+        run(["gh", "release", "download", tag, "--repo", f"{owner}/{repo}", "--pattern", name, "--dir", str(work)],
+            check=True, timeout=timeout, capture_output=True)
+        os.replace(work / name, dest)
+        return True
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
 def _download(url: str, dest: Path, timeout: float) -> None:
+    try:
+        if _gh_release_download(url, dest, timeout):
+            return
+    except Exception as exc:  # noqa: BLE001 - fall back to the plain HTTPS download below
+        print(f"::warning::authenticated gh download failed ({type(exc).__name__}); trying plain HTTPS")
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     fd, tmp = tempfile.mkstemp(dir=dest.parent, prefix=".part-")
     try:

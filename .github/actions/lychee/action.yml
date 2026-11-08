@@ -58,6 +58,9 @@ runs:
     - name: Fetch and verify lychee (download only on a cache miss)
       id: fetch
       shell: bash
+      env:
+        # S273: an authenticated `gh release download` first (GitHub throttled unauthenticated downloads).
+        GH_TOKEN: ${{ github.token }}
       run: |
         set -euo pipefail
         python3 "$GITHUB_ACTION_PATH/../../scripts/lychee_bin.py" fetch --pins "$GITHUB_ACTION_PATH/pins.txt" \

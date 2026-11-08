@@ -18,6 +18,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 import yaml
@@ -352,6 +353,38 @@ class ThisRepo(unittest.TestCase):
         text = (WORKFLOWS / "workflow-lint.yml").read_text()
         self.assertIn("-p 'test_lychee_bin.py'", text)
         self.assertEqual(len(re.findall(r'- "\.github/scripts/test_lychee_bin\.py"', text)), 2)
+
+
+# S273: GitHub throttled unauthenticated release downloads; a release asset goes through `gh` with the job token.
+class GhReleaseDownloadTest(unittest.TestCase):
+    URL = "https://github.com/invented-org/invented-tool/releases/download/v1.0.0/tool-x86_64.tar.gz"
+
+    def _fake(self, calls):
+        def run(argv, check, timeout, capture_output):
+            calls.append(argv)
+            out = Path(argv[argv.index("--dir") + 1]) / argv[argv.index("--pattern") + 1]
+            out.write_bytes(b"invented archive bytes")
+        return run
+
+    def test_release_asset_uses_gh_with_a_token(self):
+        calls = []
+        with tempfile.TemporaryDirectory() as d, unittest.mock.patch.dict(os.environ, {"GH_TOKEN": "job-token"}), \
+                unittest.mock.patch.object(lb.shutil, "which", return_value="/usr/bin/gh"):
+            dest = Path(d) / "tool.tar.gz"
+            self.assertTrue(lb._gh_release_download(self.URL, dest, 30, run=self._fake(calls)))
+            self.assertEqual(dest.read_bytes(), b"invented archive bytes")
+        self.assertEqual(calls[0][:6], ["gh", "release", "download", "v1.0.0", "--repo", "invented-org/invented-tool"])
+
+    def test_no_token_or_other_host_skips_gh(self):
+        calls = []
+        env = {k: v for k, v in os.environ.items() if k not in ("GH_TOKEN", "GITHUB_TOKEN")}
+        with tempfile.TemporaryDirectory() as d, unittest.mock.patch.dict(os.environ, env, clear=True), \
+                unittest.mock.patch.object(lb.shutil, "which", return_value="/usr/bin/gh"):
+            self.assertFalse(lb._gh_release_download(self.URL, Path(d) / "a", 30, run=self._fake(calls)))
+        with tempfile.TemporaryDirectory() as d, unittest.mock.patch.dict(os.environ, {"GH_TOKEN": "t"}):
+            other = "https://downloads.example.test/tool.tar.gz"
+            self.assertFalse(lb._gh_release_download(other, Path(d) / "a", 30, run=self._fake(calls)))
+        self.assertEqual(calls, [])
 
 
 if __name__ == "__main__":
