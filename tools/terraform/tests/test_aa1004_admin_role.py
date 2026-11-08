@@ -3,9 +3,9 @@
 1. The role keeps the shape of the hand-made role it replaces: trust = one IAM user of this account with MFA, action
    sts:AssumeRole only; 12-hour maximum session; the same three AWS managed policies; no permissions boundary (it is
    the account administrator); prevent_destroy; S271 tags.
-2. Every resource policy that lets "the MFA admin role" through names local.id_admin_role_arns, never one ARN, so the
-   transition (both names allowed) and the clean-up (new name only) change one list.
-3. Transition state of PR 1: the hand-made role's name is still in the legacy list (the follow-up PR flips this test).
+2. Every resource policy that lets "the MFA admin role" through names local.id_admin_role_arns, never one ARN, so a
+   future role change (both names allowed, then the new one only) edits one list.
+3. After the switch: no legacy role name or legacy list is left (the hand-made role was deleted, S273).
 
 Run: python3 -m pytest -p no:cacheprovider -q tools/terraform/tests/test_aa1004_admin_role.py
 """
@@ -92,12 +92,10 @@ def test_no_account_id_literal():
 
 # --- 2. one list names the admin role everywhere ---------------------------------------------------------------------
 
-def test_admin_role_list_starts_with_the_terraform_role():
+def test_admin_role_list_is_the_terraform_role_only():
     assert re.search(r'id_breakglass_admin_role_arn\s*=\s*"arn:aws:iam::\$\{var\.account_id\}:role/'
                      r'\$\{var\.identity_breakglass_admin_role_name\}"', ALERTS)
-    lst = re.search(r"id_admin_role_arns\s*=\s*concat\((.*?)\n  \)", ALERTS, re.S).group(1)
-    assert lst.strip().startswith("[local.id_breakglass_admin_role_arn]")
-    assert "var.identity_admin_role_legacy_names" in lst
+    assert re.search(r"id_admin_role_arns\s*=\s*\[local\.id_breakglass_admin_role_arn\]\n", ALERTS)
 
 
 def test_every_admin_exception_uses_the_list():
@@ -107,7 +105,6 @@ def test_every_admin_exception_uses_the_list():
         n = len(re.findall(r"\blocal\.id_breakglass_admin_role_arn\b", code))
         if n:
             uses[tf.name] = n
-        assert "nghiep-admin-8h-session" not in code or tf.name == "identity_variables.tf", tf.name
     # Only the list definition itself reads the single ARN.
     assert uses == {"identity_alerts.tf": 1}
     expected = {"identity_alerts.tf": 1, "ops_secret_guard.tf": 1, "e2e_mailbox.tf": 2}
@@ -116,12 +113,15 @@ def test_every_admin_exception_uses_the_list():
         assert len(re.findall(r"\blocal\.id_admin_role_arns\b", code)) >= count, name
 
 
-# --- 3. transition state (PR 1) --------------------------------------------------------------------------------------
+# --- 3. after the switch ---------------------------------------------------------------------------------------------
 
-def test_transition_keeps_the_hand_made_role_allowed():
-    # PR 1: both names pass every admin exception until the CLI profiles assume the new role. The follow-up PR
-    # removes var.identity_admin_role_legacy_names and replaces this test with one asserting no legacy name.
-    assert _default("identity_admin_role_legacy_names") == '["nghiep-admin-8h-session"]'
+def test_no_legacy_admin_role_left():
+    # The hand-made role is deleted (S273); nothing in the root may name it or keep a legacy list.
+    assert "identity_admin_role_legacy_names" not in VARIABLES
+    for tf in sorted(AA365.glob("*.tf")):
+        code = _code(tf.read_text(encoding="utf-8"))
+        assert "identity_admin_role_legacy_names" not in code, tf.name
+        assert "nghiep-admin-8h-session" not in code, tf.name
 
 
 def test_admin_user_assume_policy_follows_the_admin_role_list():
