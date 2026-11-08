@@ -9,9 +9,14 @@
   "consumer_repos": [
     "AA-Booking",
     "AA-CIS-App",
+    "AA-Partner",
     "AA-TripPlanner-Web"
   ],
   "contracts": {
+    "catalog.country.v1.json": {
+      "sha256": "1330141f01dd67014d2909f72879e5f5f06768bebdebbb2274e5b13804e6063c",
+      "copies": []
+    },
     "catalog.graph.v1.1.json": {
       "sha256": "9787500370953012a2fa195f841b23f2f2c66304ca0217483af78b47f79d2ef9",
       "copies": []
@@ -42,6 +47,10 @@
         }
       ]
     },
+    "catalog.tour.v1.3.json": {
+      "sha256": "fa2f09382670cd853ddb615266ccc6e8705e5b1fd50d45ea98a0a82b467fbe68",
+      "copies": []
+    },
     "catalog.tour.v1.json": {
       "sha256": "899d439dea21fd95971ade62a183022189d5f9b60afb5031d3189316ff5f522d",
       "copies": [
@@ -55,10 +64,6 @@
       "sha256": "148ccaac54a13316f7f3ab7ce59458534a585968edf3cb5ed2e6b23bbb369f98",
       "copies": [
         {
-          "repo": "AA-Booking",
-          "path": "backend/app/contracts/inquiry.submitted.v1.1.json"
-        },
-        {
           "repo": "AA-TripPlanner-Web",
           "path": "backend/tests/contracts/inquiry.submitted.v1.1.json"
         }
@@ -68,23 +73,40 @@
       "sha256": "4ab794659d59ad1f764f82405013c37f9a968511d1873ea8fd09d8fa4eb76a8e",
       "copies": [
         {
-          "repo": "AA-Booking",
-          "path": "backend/app/contracts/inquiry.submitted.v1.2.json"
-        },
-        {
           "repo": "AA-TripPlanner-Web",
           "path": "backend/tests/contracts/inquiry.submitted.v1.2.json"
         }
       ]
     },
-    "inquiry.submitted.v1.json": {
-      "sha256": "22cbb36608398322b38da93dcf814f841da91f3a307ac9a9736df90d7f93e995",
+    "inquiry.submitted.v1.3.json": {
+      "sha256": "6ddd01eac5e84e5068a65cfa2ae24a73ef593b192e7190bc708551df828b1074",
       "copies": [
         {
-          "repo": "AA-Booking",
-          "path": "backend/app/contracts/inquiry.submitted.v1.json"
+          "repo": "AA-TripPlanner-Web",
+          "path": "backend/tests/contracts/inquiry.submitted.v1.3.json"
         }
       ]
+    },
+    "inquiry.submitted.v1.4.json": {
+      "sha256": "655c7442e0cad471555fd7731fdc5a8a93c3a22a216b4aa96d64cdc4b7ffe810",
+      "copies": [
+        {
+          "repo": "AA-TripPlanner-Web",
+          "path": "backend/tests/contracts/inquiry.submitted.v1.4.json"
+        }
+      ]
+    },
+    "inquiry.submitted.v1.json": {
+      "sha256": "22cbb36608398322b38da93dcf814f841da91f3a307ac9a9736df90d7f93e995",
+      "copies": []
+    },
+    "supply.hotel.v1.json": {
+      "sha256": "6576990c4378b1cfe7ceaedadf95b803c5e3aad829822801e6ce815aedb675df",
+      "copies": []
+    },
+    "supply.service.v1.json": {
+      "sha256": "0e950ee27bd36468f79f4dd8a9c2bcf4386924b8ac622888fe8d4359b44cdeda",
+      "copies": []
     }
   }
 }
