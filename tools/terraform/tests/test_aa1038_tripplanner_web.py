@@ -5,9 +5,12 @@
    the target group, a secret shell without a Terraform version, an execution role that reads only its own secrets,
    and the edge-aware app env (TP_EDGE_GATE=on, TP_CLIENT_IP_SOURCE=cloudfront).
 2. The TripPlanner deploy role's web grant is scoped to this family, service and execution role.
-3. The web ACL is CLOUDFRONT scope (us-east-1) with the rate rule, the model-path rate rule and the Challenge, on the
-   same two paths the app gates (AA-TripPlanner-Web lib/botCheck.ts); the distribution carries it. Every path match
-   URL-decodes and normalizes first, so a dot-segment spelling (/api/browse/%2e/search) is caught too.
+3. The WAF rules (S272 cost decision: no CLOUDFRONT web ACL of their own, no Bot Control) are three rules in the ALB
+   web ACL (modules/waf): the rate rule, the model-path rate rule and the Challenge, on the same two paths the app gates
+   (AA-TripPlanner-Web lib/botCheck.ts), each scoped to the TripPlanner host AND the origin secret, after
+   CommonRuleSet and before both allow rules; the rate rules key on the viewer address the distribution's
+   viewer-request function writes. Every path match URL-decodes and normalizes first, so a dot-segment spelling
+   (/api/browse/%2e/search) is caught too.
 4. Caching: pages and /api/* never cached at the edge; only the immutable chunks and the photo proxy are.
 5. DNS: the record moved from custom_domains.tf (never destroyed), stays a CNAME on both sides, the switch is off by
    default, the TTL window is on, and the switch needs the edge.
@@ -34,6 +37,9 @@ MAIN = (AA365 / "main.tf").read_text(encoding="utf-8")
 CUSTOM = (AA365 / "custom_domains.tf").read_text(encoding="utf-8")
 VERCEL_VARS = (AA365 / "custom_domains_variables.tf").read_text(encoding="utf-8")
 CICD_CRM = (AA365 / "cicd_crm.tf").read_text(encoding="utf-8")
+WAF = (ROOT / "modules" / "waf" / "main.tf").read_text(encoding="utf-8")
+WAF_VARS = (ROOT / "modules" / "waf" / "variables.tf").read_text(encoding="utf-8")
+VIEWER_IP_JS = AA365 / "cloudfront_functions" / "tripplanner_web_viewer_ip.js"
 ECS = (ROOT / "modules" / "ecs" / "main.tf").read_text(encoding="utf-8")
 ECS_VARS = (ROOT / "modules" / "ecs" / "variables.tf").read_text(encoding="utf-8")
 
@@ -66,7 +72,7 @@ def _code(block: str) -> str:
 
 def _rule(acl: str, name: str) -> str:
     i = acl.index(f'name     = "{name}"')
-    start = acl.rindex("rule {", 0, i)
+    start = acl.rindex("content {", 0, i)
     return _block_after(acl, start)
 
 
@@ -132,33 +138,164 @@ def test_deploy_grant_is_scoped_to_this_family_service_and_execution_role():
     assert 'ArnEquals = { "ecs:cluster" = var.ecs_cluster_arn }' in grant
 
 
-# --- 3. the web ACL -------------------------------------------------------------------------------------------------
+# --- 3. the WAF rules (in the ALB web ACL) -------------------------------------------------------------------------
 
-def test_web_acl_is_cloudfront_scope_in_us_east_1_and_on_the_distribution():
-    acl = _code(_resource(EDGE, "aws_wafv2_web_acl", "tripplanner_web"))
-    assert 'scope       = "CLOUDFRONT"' in acl
-    assert "provider = aws.us_east_1" in acl
+TP_RULES = ["TripPlannerRateLimitPerIp", "TripPlannerRateLimitModelPaths", "TripPlannerChallengePlanner"]
+
+
+def _priorities() -> dict[str, int]:
+    block = re.search(r"rule_priorities = \{(.*?)\n  \}", WAF, re.S).group(1)
+    return {k: int(v) for k, v in re.findall(r"^\s*(\w+)\s*=\s*(\d+)", block, re.M)}
+
+
+def _acl() -> str:
+    return _code(_resource(WAF, "aws_wafv2_web_acl", "main"))
+
+
+def test_no_cloudfront_web_acl_and_no_integration_url():
+    # S272 tech-lead decision: no separate CLOUDFRONT web ACL (5 USD/month fixed), no Bot Control. The JavaScript
+    # integration URL exists only for a web ACL with a paid intelligent-threat group, so nothing may depend on it.
+    for path in list(AA365.glob("*.tf")) + list((ROOT / "modules").rglob("*.tf")):
+        code = _code(path.read_text(encoding="utf-8"))
+        assert "application_integration_url" not in code, path
+        assert "waf_integration_url" not in code, path
+        assert 'scope       = "CLOUDFRONT"' not in code or path.name != "tripplanner_web_edge.tf", path
+    assert 'resource "aws_wafv2_web_acl"' not in EDGE
+    assert "AWSManagedRulesBotControlRuleSet" not in WAF
     dist = _code(_resource(EDGE, "aws_cloudfront_distribution", "tripplanner_web"))
-    assert "web_acl_id      = aws_wafv2_web_acl.tripplanner_web[0].arn" in dist
+    assert "web_acl_id" not in dist
 
 
-def test_rules_rate_model_paths_and_challenge_in_order():
-    acl = _code(_resource(EDGE, "aws_wafv2_web_acl", "tripplanner_web"))
-    names = re.findall(r'name     = "([A-Za-z]+)"\n\s+priority = (\d+)', acl)
-    assert names == [("RateLimitPerIp", "0"), ("RateLimitModelPaths", "1"), ("ChallengePlanner", "2")]
-    rate = _rule(acl, "RateLimitPerIp")
-    assert "limit              = var.tripplanner_web_rate_limit" in rate and "response_code            = 429" in rate
-    model = _rule(acl, "RateLimitModelPaths")
-    assert "limit              = var.tripplanner_web_model_rate_limit" in model
-    assert "for_each = local.tp_web_model_paths" in model and "uri_path {}" in model
-    challenge = _rule(acl, "ChallengePlanner")
+def test_tripplanner_rules_run_after_common_rules_and_before_both_allow_rules():
+    pr = _priorities()
+    assert len(set(pr.values())) == len(pr), "two rules share a priority"
+    order = sorted(pr, key=pr.get)
+    assert order == [
+        "common_rule_set", "tp_rate_per_ip", "tp_rate_model_paths", "tp_challenge_planner",
+        "vpc_link_internal_allow", "cloudfront_origin_allow", "rate_limit", "geo_block", "staff_web_rate_limit",
+    ]
+    acl = _acl()
+    for name, key in [
+        ("AWSManagedRulesCommonRuleSet", "common_rule_set"),
+        ("TripPlannerRateLimitPerIp", "tp_rate_per_ip"),
+        ("TripPlannerRateLimitModelPaths", "tp_rate_model_paths"),
+        ("TripPlannerChallengePlanner", "tp_challenge_planner"),
+        ("VpcLinkInternalAllow", "vpc_link_internal_allow"),
+        ("CloudFrontOriginAllow", "cloudfront_origin_allow"),
+        ("RateLimit1000", "rate_limit"),
+        ("GeoBlockNonAllowed", "geo_block"),
+        ("StaffWebRateLimit", "staff_web_rate_limit"),
+    ]:
+        i = acl.index(f'name     = "{name}"')
+        assert acl[i : i + 200].split("\n")[1].strip() == f"priority = local.rule_priorities.{key}", name
+
+
+def test_rule_priorities_are_never_literals():
+    # Only text_transformation priorities (0, 1, ...) may be literals inside the ACL.
+    acl = _acl()
+    for m in re.finditer(r"^(\s*)priority = (\d+)$", acl, re.M):
+        before = acl[: m.start()]
+        assert before.rstrip().endswith("text_transformation {"), acl[m.start() - 200 : m.end()]
+
+
+def test_every_tripplanner_rule_is_scoped_to_the_host_and_the_origin_secret():
+    acl = _acl()
+    assert "tp_on         = var.tripplanner_web != null && nonsensitive(var.origin_verify_header != null)" in WAF
+    assert 'tp_host_regex = local.tp_on ? "^${replace(lower(local.tp.host), ".", "\\\\.")}(:443)?$" : null' in WAF
+    for name in TP_RULES:
+        rule = _rule(acl, name)
+        assert "for_each = local.tp_on ? [1] : []" in acl[acl.rindex('dynamic "rule"', 0, acl.index(f'"{name}"')) :][:80]
+        assert "regex_string = local.tp_host_regex" in rule, name
+        assert 'name = "host"' in rule and 'type     = "LOWERCASE"' in rule, name
+        assert "search_string         = var.origin_verify_header.value" in rule, name
+        assert "name = lower(var.origin_verify_header.name)" in rule, name
+        # The host and the secret are ANDed with the rest of the rule (never ORed).
+        assert rule.index("and_statement {") < rule.index("regex_string = local.tp_host_regex"), name
+        assert f'metric_name                = "{name}"' in rule
+
+
+def test_rate_rules_key_on_the_viewer_address_header_with_the_same_limits():
+    acl = _acl()
+    rate = _rule(acl, "TripPlannerRateLimitPerIp")
+    model = _rule(acl, "TripPlannerRateLimitModelPaths")
+    assert "limit              = local.tp.rate_limit" in rate
+    assert "limit              = local.tp.model_rate_limit" in model
+    for rule in (rate, model):
+        assert 'aggregate_key_type = "FORWARDED_IP"' in rule
+        assert "header_name       = local.tp.viewer_ip_header" in rule
+        assert 'fallback_behavior = "MATCH"' in rule
+        assert "response_code            = 429" in rule and 'custom_response_body_key = "rate_limited"' in rule
+    assert "for_each = local.tp.model_paths" in model and "uri_path {}" in model
+    # The 429 body exists exactly when the rules do.
+    body = _block_after(acl, acl.index('dynamic "custom_response_body"'))
+    assert "for_each = local.tp_on ? [1] : []" in body and 'key          = "rate_limited"' in body
+
+
+def test_challenge_rule_documents_of_the_planner_and_the_model_paths_with_its_own_token_lifetime():
+    challenge = _rule(_acl(), "TripPlannerChallengePlanner")
     assert "challenge {}" in challenge
+    assert "immunity_time = local.tp.challenge_immunity_s" in challenge
     assert 'name = "sec-fetch-dest"' in challenge and 'search_string         = "document"' in challenge
+    assert 'search_string         = "GET"' in challenge
     # Only planner documents are challenged (the catalog pages never see an interstitial).
     assert 'search_string         = "/plan"' in challenge and 'positional_constraint = "ENDS_WITH"' in challenge
     assert 'search_string         = "/plan/"' in challenge
-    assert "for_each = local.tp_web_model_paths" in challenge
-    assert "immunity_time = var.tripplanner_web_challenge_immunity_s" in acl
+    assert "for_each = local.tp.model_paths" in challenge
+    # No ACL-wide challenge_config / token domains: the other hosts keep the ACL defaults.
+    acl = _acl()
+    assert acl.count("challenge_config {") == 1 and "token_domains" not in acl
+
+
+def test_root_passes_the_edge_settings_to_the_alb_web_acl():
+    mod = _block_after(MAIN, MAIN.index('module "waf" {'))
+    tp = _block_after(mod, mod.index("tripplanner_web = local.tp_web_edge_on == 1 ? {"))
+    for line in [
+        "host                 = local.tp_web_host",
+        "viewer_ip_header     = local.tp_web_viewer_ip_header",
+        "rate_limit           = var.tripplanner_web_rate_limit",
+        "model_rate_limit     = var.tripplanner_web_model_rate_limit",
+        "challenge_immunity_s = var.tripplanner_web_challenge_immunity_s",
+        "model_paths          = local.tp_web_model_paths",
+        "path_transformations = local.tp_web_path_normalize",
+    ]:
+        assert line in tp, line
+    assert 'variable "tripplanner_web"' in WAF_VARS and "default = null" in WAF_VARS
+
+
+def test_viewer_request_function_writes_the_viewer_address_on_every_behaviour():
+    assert 'tp_web_viewer_ip_header = "x-aa-viewer-ip"' in EDGE
+    fn = _code(_resource(EDGE, "aws_cloudfront_function", "tripplanner_web_viewer_ip"))
+    assert 'runtime = "cloudfront-js-2.0"' in fn and "publish = true" in fn
+    assert "header_name = local.tp_web_viewer_ip_header" in fn
+    assert "tripplanner_web_viewer_ip.js" in fn
+    dist = _code(_resource(EDGE, "aws_cloudfront_distribution", "tripplanner_web"))
+    # Default + the two ordered behaviours: a cache miss of a chunk or a photo reaches the ALB too.
+    assert dist.count("function_arn = aws_cloudfront_function.tripplanner_web_viewer_ip[0].arn") == 3
+    assert dist.count('event_type   = "viewer-request"') == 3
+    js = VIEWER_IP_JS.read_text(encoding="utf-8")
+    assert "request.headers[HEADER_NAME] = { value: event.viewer.ip };" in js
+    assert js.count("${") == 1  # templatefile: only the header name
+
+
+def test_viewer_request_function_overwrites_a_viewer_supplied_value():
+    import json
+    import shutil
+    import subprocess
+
+    import pytest
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not installed")
+    js = VIEWER_IP_JS.read_text(encoding="utf-8").replace("${header_name}", "x-aa-viewer-ip")
+    event = {
+        "viewer": {"ip": "198.51.100.7"},
+        "request": {"uri": "/plan", "headers": {"x-aa-viewer-ip": {"value": "203.0.113.9"}, "host": {"value": "h"}}},
+    }
+    script = js + f"\nprocess.stdout.write(JSON.stringify(handler({json.dumps(event)})));\n"
+    out = json.loads(subprocess.run([node, "-e", script], check=True, capture_output=True, text=True).stdout)
+    assert out["headers"]["x-aa-viewer-ip"] == {"value": "198.51.100.7"}
+    assert out["headers"]["host"] == {"value": "h"} and out["uri"] == "/plan"
 
 
 def test_every_path_match_decodes_and_normalizes_before_comparing():
@@ -166,12 +303,13 @@ def test_every_path_match_decodes_and_normalizes_before_comparing():
     # transformation NONE let /api/browse/%2e/search skip the model rate and the Challenge (review S272).
     m = re.search(r"tp_web_path_normalize = \[(.*?)\]", EDGE)
     assert m and re.findall(r'"([^"]+)"', m.group(1)) == ["URL_DECODE", "NORMALIZE_PATH"]
-    acl = _code(_resource(EDGE, "aws_wafv2_web_acl", "tripplanner_web"))
-    uri_matches = [m.start() for m in re.finditer(r"uri_path \{\}", acl)]
+    acl = _acl()
+    tp = "".join(_rule(acl, name) for name in TP_RULES)
+    uri_matches = [m.start() for m in re.finditer(r"uri_path \{\}", tp)]
     assert len(uri_matches) == 4, "model rate x1, plan document x2, challenge model x1"
     for start in uri_matches:
-        stmt = _block_after(acl, acl.rindex("byte_match_statement {", 0, start))
-        assert 'dynamic "text_transformation"' in stmt and "for_each = local.tp_web_path_normalize" in stmt, stmt
+        stmt = _block_after(tp, tp.rindex("byte_match_statement {", 0, start))
+        assert 'dynamic "text_transformation"' in stmt and "for_each = local.tp.path_transformations" in stmt, stmt
         assert "priority = text_transformation.key" in stmt and "type     = text_transformation.value" in stmt
         assert '"NONE"' not in stmt
 
@@ -253,11 +391,13 @@ def test_photo_cache_key_carries_the_version_query():
     assert "max_ttl     = 31536000" in policy
 
 
-def test_waf_integration_url_is_an_output_for_the_planner_build():
-    # The planner loads this web ACL's challenge.js (AA-TripPlanner-Web lib/wafToken.ts, build arg from the repository
-    # variable TP_WAF_INTEGRATION_URL), so a client-side navigation into the planner still gets a token.
+def test_output_names_the_alb_web_acl_and_its_tripplanner_rules():
     out = _block_after(EDGE, EDGE.index('output "tripplanner_web_edge"'))
-    assert "waf_integration_url = aws_wafv2_web_acl.tripplanner_web[0].application_integration_url" in out
+    assert "web_acl_name        = module.waf.web_acl_name" in out
+    assert "waf_rules           = module.waf.tripplanner_web_rule_names" in out
+    outs = (ROOT / "modules" / "waf" / "outputs.tf").read_text(encoding="utf-8")
+    for name in TP_RULES:
+        assert f'"{name}"' in outs
 
 
 def test_distribution_reuses_the_shared_origin_secret_and_the_wildcard_certificate():

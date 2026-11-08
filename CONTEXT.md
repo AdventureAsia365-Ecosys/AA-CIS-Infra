@@ -341,8 +341,11 @@ accounts/
                                    aa-cis-preview. were deleted at the AA-911 Vercel retirement, S272))
     tripplanner_web_edge.tf       (AA-1038 R5 hosting: CloudFront tripplanner.<zone> on the shared VPC origin and
                                    origin secret (crm_edge.tf) and the us-east-1 wildcard certificate
-                                   (crm_agency_edge.tf); CLOUDFRONT-scope web ACL aa-tripplanner-<env>-web (rate per IP,
-                                   rate on the two model paths, Challenge; replaces BotID); ALB :80 host rule
+                                   (crm_agency_edge.tf); a viewer-request function writing the viewer address
+                                   (x-aa-viewer-ip); WAF: three rules in the ALB web ACL aa-<env>-waf (modules/waf
+                                   input tripplanner_web: rate per viewer IP, rate on the two model paths,
+                                   Challenge on planner documents + model paths; replaces BotID; no CLOUDFRONT web
+                                   ACL and no Bot Control, S272 cost decision); ALB :80 host rule
                                    tripplanner_web; the tripplanner. CNAME (moved from custom_domains.tf) with the DNS
                                    switch var.tripplanner_web_dns_on_cloudfront (default false = Vercel) and the 60 s
                                    window var.tripplanner_web_dns_switch_window; root runbook
@@ -630,7 +633,9 @@ and the durable job worker.
 admits only :80 from the VPC CIDR (NLB), so it cannot be called directly. The REGIONAL web ACL
 `aa-cis-dev-waf` evaluates CommonRuleSet (enforced since AA-806 S239; `SizeRestrictions_BODY`,
 `CrossSiteScripting_BODY` and `GenericLFI_BODY` stay COUNT; credential headers redacted in the WAF log)
-→ VpcLinkInternalAllow → RateLimit → GeoBlock; rate and
+→ the three TripPlanner web rules (AA-1038, TripPlanner host + origin secret only) → VpcLinkInternalAllow →
+CloudFrontOriginAllow → RateLimit → GeoBlock (→ StaffWebRateLimit), in the order of `modules/waf`
+`local.rule_priorities`; rate and
 geo only bite on REST API stages (`var.waf_protect_rest_api_stages`, needs `apigateway:SetWebACL`
 on the CI role). RDS `aa-cis-dev-db` has deletion protection on.
 
@@ -639,7 +644,7 @@ same internal NLB → ALB :80. CloudFront adds the secret header `X-AA-Origin` t
 traffic keeps a CloudFront source address end to end (an NLB with an `alb` target group preserves the client IP),
 so the NLB group admits the `com.amazonaws.global.cloudfront.origin-facing` prefix list and a second ALB group
 (`aa-cis-dev-sg-alb-from-nlb`) admits the NLB group; the ALB group itself stays VPC-only (the ALB is still
-internet-facing). WAF rule `CloudFrontOriginAllow` (priority 3, exact secret) lets these requests past rate + geo,
+internet-facing). WAF rule `CloudFrontOriginAllow` (exact secret, after the TripPlanner rules) lets these requests past rate + geo,
 which would otherwise judge the CloudFront edge instead of the viewer; `x-aa-origin` is redacted in the WAF log.
 ALB rules (`alb_rules.tf`): partner host + secret → partner target group; client host `go-dev.` + secret →
 `/crm/public/*` to the CRM API, everything else to the CRM web (AA-936, its own distribution); any `X-AA-Origin` → 403, before the
