@@ -184,6 +184,31 @@ resource "aws_security_group" "staff_web" {
   tags = merge(local.staff_web_tags, { Name = "${local.name_prefix}-sg-staff-web" })
 }
 
+# ── TripPlanner web (ECS service aa-tripplanner-dev-web, modules/environment/tripplanner_web.tf, AA-1038) ─────────
+resource "aws_security_group" "tripplanner_web" {
+  name        = "${local.name_prefix}-sg-tp-web"
+  description = "TripPlanner web task behind CloudFront and the ALB host rule (ADR 0004b, AA-1038)"
+  vpc_id      = module.vpc.vpc_id
+
+  ingress {
+    description     = "TripPlanner web port from the ALB (CloudFront VPC origin host rule)"
+    from_port       = module.environment.tripplanner_web_port
+    to_port         = module.environment.tripplanner_web_port
+    protocol        = "tcp"
+    security_groups = [module.vpc.sg_alb_id]
+  }
+
+  egress {
+    description = "All outbound (NAT: the TripPlanner HTTP API host, Cognito, the photo CDN)"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = merge(local.tp_tags, { Component = "web", Name = "${local.name_prefix}-sg-tp-web" })
+}
+
 # ── TripPlanner Lambdas (browse + assembly + jobs, modules/environment/tripplanner*.tf): no ingress ─────────
 resource "aws_security_group" "tp_lambda" {
   name        = "${local.name_prefix}-sg-tp-lambda"

@@ -3,7 +3,7 @@
 #
 # The ALB :80 listener is reached by two paths, both through the internal NLB:
 #   - API Gateway REST (CIS, Booking) -> VPC link -> NLB -> ALB   (Host = the NLB name, set by API GW)
-#   - CloudFront (AA-Partner)         -> VPC origin -> NLB -> ALB (Host = the viewer's host; CloudFront
+#   - CloudFront (AA-Partner, TripPlanner web) -> VPC origin -> NLB -> ALB (Host = the viewer's host; CloudFront
 #                                                                   always adds the X-AA-Origin header)
 # A lower number is evaluated first and the first match wins, so ORDER IS THE CONTROL:
 #
@@ -31,6 +31,7 @@ locals {
     crm_partner_default = 10  # crm_edge.tf: partner-dev. host, any other path -> AA-Partner web (AA-935; was a fixed 404, AA-933)
     crm_client_default  = 11  # crm_client_edge.tf: go-dev. host, any other path -> AA-Partner web (AA-936)
     crm_agency_default  = 12  # crm_agency_edge.tf: portal. host, any other path -> AA-Partner web (AA-979)
+    tripplanner_web     = 13  # tripplanner_web_edge.tf: tripplanner. host, any path -> TripPlanner web (AA-1038)
     crm_origin_deny     = 20  # crm_edge.tf: any X-AA-Origin -> 403 (AA-931)
     booking             = 100 # below: /booking, /booking/* (AA-678)
   }

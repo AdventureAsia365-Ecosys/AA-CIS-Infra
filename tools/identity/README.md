@@ -127,3 +127,22 @@ python3 tools/identity/staff_web_secret.py --apply
 ```
 
 Tests: `tools/identity/tests/test_staff_web_secret.py` (fakes, no AWS).
+
+## tripplanner_web_secret.py — TripPlanner frontend on ECS (AA-1038, root ADR 0019 d23)
+
+Fills the secret shell `tripplanner/<env>/web` of `modules/environment/tripplanner_web.tf` (values in memory, never
+printed): `session_secret` (kept when one of 32+ characters exists, else a new random key), `catalog_revalidate_secret`
+(copied from the CIS purge key `aa-cis/<env>/tripplanner-revalidate-hmac`) and `sentry_dsn` (`--sentry-dsn`, else the
+stored value, else empty = Sentry off). DRY RUN unless `--apply`; other keys are kept; a re-run with nothing to change
+writes nothing.
+
+Order: Terraform apply (creates the shell) -> this tool `--apply` -> the first AA-TripPlanner-Web Deploy Web Dev ->
+scale `aa-tripplanner-<env>-web` to 1. After a rotation of the CIS purge key: run it again, then force a new
+deployment of the service.
+
+```bash
+python3 tools/identity/tripplanner_web_secret.py                       # dry run: which keys would change
+python3 tools/identity/tripplanner_web_secret.py --apply --sentry-dsn "$DSN"
+```
+
+Tests: `tools/identity/tests/test_tripplanner_web_secret.py` (fakes, no AWS).

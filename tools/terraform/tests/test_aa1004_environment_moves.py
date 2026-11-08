@@ -299,6 +299,21 @@ SLICE_3_SETTINGS = {
     "tripplanner_jobs_retention_override_enabled",
 }
 
+# AA-1038 (R5 hosting): the TripPlanner web stack's module inputs (modules/environment/tripplanner_web.tf) and the root
+# expressions they take; and the edge settings that live in the root only (accounts/aa365/tripplanner_web_edge.tf, read
+# there, never passed to the module).
+AA1038_WEB_INPUTS = {
+    "tripplanner_web_security_group_id": "aws_security_group.tripplanner_web.id",
+    "tripplanner_web_edge_on": "local.tp_web_edge_on",
+    "tripplanner_web_listener_rule_gate": "aws_lb_listener_rule.tripplanner_web[*].arn",
+    "tripplanner_web_identity_secret_arns": "merge(",
+}
+AA1038_ROOT_EDGE_SETTINGS = {
+    "tripplanner_web_edge_enabled", "tripplanner_web_dns_on_cloudfront", "tripplanner_web_dns_switch_window",
+    "tripplanner_web_vercel_target", "tripplanner_web_rate_limit", "tripplanner_web_model_rate_limit",
+    "tripplanner_web_challenge_immunity_s",
+}
+
 # The root outputs of the old tripplanner.tf / tripplanner_jobs.tf, re-exported by environment.tf under the same names.
 SLICE_3_OUTPUTS = {
     "tripplanner_api_base_url", "tripplanner_lambda_exec_role_arn", "tripplanner_app_deploy_role_arn",
@@ -528,8 +543,19 @@ def test_slice_3_settings_are_declared_identically_and_passed_through():
         assert root_vars[name] == module_vars[name], f"{name}: root and module declarations differ"
         assert inputs.get(name) == f"var.{name}", f"{name}: passed through as var.{name}"
     # Every TripPlanner setting of either side is one of these (a new one must be declared on both sides and passed).
-    assert {n for n in module_vars if n.startswith("tripplanner_") and n not in SLICE_3_INPUTS} == SLICE_3_SETTINGS
-    assert {n for n in root_vars if n.startswith("tripplanner_")} == SLICE_3_SETTINGS
+    assert {
+        n for n in module_vars if n.startswith("tripplanner_") and n not in SLICE_3_INPUTS and n not in AA1038_WEB_INPUTS
+    } == SLICE_3_SETTINGS
+    assert {n for n in root_vars if n.startswith("tripplanner_") and n not in AA1038_ROOT_EDGE_SETTINGS} == SLICE_3_SETTINGS
+
+
+def test_aa1038_web_inputs_take_the_root_objects_and_the_edge_settings_stay_in_the_root():
+    root_vars, module_vars, inputs = _variable_blocks(AA365), _variable_blocks(ENV_MODULE), _inputs()
+    for name, expr in AA1038_WEB_INPUTS.items():
+        assert name in module_vars and name not in root_vars, f"{name}: a module input, not a root variable"
+        assert (inputs.get(name) or "").startswith(expr), f"{name}: the root passes {inputs.get(name)!r}, expected {expr!r}"
+    for name in AA1038_ROOT_EDGE_SETTINGS:
+        assert name in root_vars and name not in module_vars and name not in inputs, f"{name}: a root-only edge setting"
 
 
 def test_the_tripplanner_module_files_read_no_root_object():

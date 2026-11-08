@@ -47,6 +47,7 @@ IDENTITY = (AA365 / "identity.tf").read_text(encoding="utf-8")
 IDENTITY_VARS = (AA365 / "identity_variables.tf").read_text(encoding="utf-8")
 SES_VARS = (AA365 / "ses_variables.tf").read_text(encoding="utf-8")
 WAF = (ROOT / "modules" / "waf" / "main.tf").read_text(encoding="utf-8")
+TP_WEB_EDGE = (AA365 / "tripplanner_web_edge.tf").read_text(encoding="utf-8")
 
 
 def _block_after(text: str, start: int) -> str:
@@ -257,7 +258,11 @@ def test_preview_clients_and_vercel_callbacks_are_gone():
 
 
 def _vercel_cname_labels() -> set[str]:
-    labels = set(re.findall(r'^\s*([a-z0-9-]+)\s*=\s*"[^"]*vercel-dns[^"]*"', VERCEL_VARS, re.M))
+    labels = set(re.findall(r'^\s*([a-z0-9-]+)\s*=\s*"[^"]*vercel-dns[^"]*"', VERCEL_VARS, re.M)) - {"description"}
+    # AA-1038: tripplanner. keeps its Vercel target in tripplanner_web_edge.tf until the DNS switch.
+    m = re.search(r'^variable "tripplanner_web_vercel_target" \{', TP_WEB_EDGE, re.M)
+    if m and "vercel-dns" in _block_after(TP_WEB_EDGE, m.start()):
+        labels.add("tripplanner")
     for m in re.finditer(r'"([a-z0-9-]+)\|CNAME" = \{', DNS):
         if "vercel" in _block_after(DNS, m.start()):
             labels.add(m.group(1))

@@ -195,9 +195,11 @@ resource "aws_route53_record" "tripplanner_api" {
 }
 
 # -----------------------------------------------------------------------------
-# Gated: Vercel frontends (tripplanner.). No ACM: Vercel issues its own certificate once the CNAME
+# Gated: Vercel frontends (none left). No ACM: Vercel issues its own certificate once the CNAME
 # resolves. Add the domain to the Vercel project before turning this on. booking. (the staff admin) left this map at
 # the AA-911 Vercel retirement: it is aws_route53_record.staff_web["booking"] (staff_web_edge.tf, moved block).
+# tripplanner. left it for AA-1038: aws_route53_record.tripplanner_web (tripplanner_web_edge.tf, moved block), which
+# keeps the Vercel target until the DNS switch.
 # -----------------------------------------------------------------------------
 resource "aws_route53_record" "vercel_frontend" {
   for_each = var.custom_domains_enabled ? var.custom_domain_vercel_hosts : {}
@@ -233,6 +235,7 @@ output "custom_domain_urls" {
     frontends = concat(
       [for label in keys(var.custom_domain_vercel_hosts) : "https://${label}.${var.dns_zone_name}"],
       [for host in values(local.staff_web_hosts) : "https://${host}"],
+      ["https://${local.tp_web_host}"],
       ["https://${local.crm_agency_host}"],
     )
   } : null

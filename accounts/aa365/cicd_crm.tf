@@ -101,6 +101,8 @@ data "aws_iam_policy_document" "tf_apply_crm" {
   }
 
   # CRM-04: ECR x2 (api, web). Same verbs as BookingEcrRepoManage, scoped to aa-crm-<env>-*.
+  # AA-1038: + the one TripPlanner web image repository (modules/environment/tripplanner_web.tf), the same verbs. Here
+  # and not in cicd.tf: the apply role's inline policy is near its 10,240-character limit (AA-911 notes).
   statement {
     sid = "CrmEcrRepoManage"
     actions = [
@@ -108,7 +110,10 @@ data "aws_iam_policy_document" "tf_apply_crm" {
       "ecr:DeleteLifecyclePolicy", "ecr:PutImageScanningConfiguration", "ecr:PutImageTagMutability",
       "ecr:TagResource", "ecr:UntagResource",
     ]
-    resources = ["arn:aws:ecr:${var.aws_region}:${var.account_id}:repository/${local.crm_name_prefix}-*"]
+    resources = [
+      "arn:aws:ecr:${var.aws_region}:${var.account_id}:repository/${local.crm_name_prefix}-*",
+      "arn:aws:ecr:${var.aws_region}:${var.account_id}:repository/aa-tripplanner-${var.environment}-web",
+    ]
   }
 
   # CRM-04 keys: create only with the App = crm tag (CreateKey with Tags also needs TagResource).
