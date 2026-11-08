@@ -9,6 +9,7 @@ scripts/
 /scripts/*
 !/scripts/pre-push.sh
 !/scripts/install-hooks.sh
+!/scripts/test_git_env_isolation.py
 
 *.tfstate
 *.tfstate.backup

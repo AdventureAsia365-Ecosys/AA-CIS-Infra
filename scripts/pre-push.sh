@@ -59,6 +59,12 @@ fi
 
 TOP=$(git rev-parse --show-toplevel 2>/dev/null) || { echo "pre-push: not inside a git work tree" >&2; exit 2; }
 cd "$TOP" || exit 2
+# S273 (AA-1024): the hook drops git's repo-local variables, but this script is also run by hand and by other wrappers.
+# With GIT_DIR inherited, every test that runs git in a temporary repo works on THIS clone instead (a worktree's
+# GIT_DIR made `git init` write core.bare=true into the shared config). Drop them once cwd is the top level, so git
+# finds the repo by itself; --self-test checks it.
+# shellcheck disable=SC2046 # word splitting wanted: one variable name per word
+unset $(git rev-parse --local-env-vars)
 GIT_DIR_ABS=$(git rev-parse --absolute-git-dir)
 COMMON_DIR=$(cd "$(git rev-parse --git-common-dir)" && pwd)
 MAIN_TOP=$(dirname "$COMMON_DIR")
@@ -123,7 +129,8 @@ patterns_for() {
         '.github/workflows/terraform-drift.yml' '.github/workflows/terraform-plan.yml' 'tools/docs/aws_mask.py' \
         'accounts/management/**' ;;
     hook-self-test) # this hook
-      printf '%s\n' 'scripts/pre-push.sh' 'scripts/install-hooks.sh' '.githooks/**' ;;
+      printf '%s\n' 'scripts/pre-push.sh' 'scripts/install-hooks.sh' 'scripts/test_git_env_isolation.py' '.githooks/**' \
+        'tools/terraform/tests/test_workflow_lint.py' ;;
   esac
 }
 
@@ -278,6 +285,8 @@ self_test() {
   expect "management root (AA-1004)" "accounts/management/cicd.tf" "tf-fmt tf-validate:management docs-gen tf-plan-guard"
   expect "ci helper script" ".github/scripts/migrator-task.sh" "migration-guard"
   expect "this hook" "scripts/pre-push.sh,.githooks/pre-push" "hook-self-test"
+  expect "git env isolation (S273)" "scripts/test_git_env_isolation.py" "hook-self-test"
+  expect "git-init test (S273)" "tools/terraform/tests/test_workflow_lint.py" "alb-rule-order tf-plan-guard hook-self-test"
   expect "untracked-like path" "dist/whatever.zip" ""
   expect "two roots" "accounts/aa365/lambda.tf,accounts/acc3-bedrock/batch.tf" \
     "tf-fmt tf-validate:aa365 tf-validate:acc3-bedrock alb-rule-order connection-budget docs-gen managed-login-branding"
@@ -310,11 +319,17 @@ self_test() {
   if [ "$got" = "accounts/aa365/variables.tf" ]; then pass=$((pass + 1)); else
     fail=$((fail + 1)); printf 'FAIL fmt_targets: got %s\n' "$got"; fi
 
+  # The scratch repos below and every check inherit this environment: none of git's repo-local variables may be set.
+  local leaked=() v
+  for v in $(git rev-parse --local-env-vars); do [ -n "${!v+x}" ] && leaked+=("$v"); done
+  if [ "${#leaked[@]}" -eq 0 ]; then pass=$((pass + 1))
+    echo "ok   no GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE in the environment"; else
+    fail=$((fail + 1)); printf 'FAIL git repo variables still set: %s\n' "${leaked[*]}"; fi
+
   # changed_files on scratch git repos (git only): odd names come through unquoted, no merge base is an error.
   local scratch out
   scratch=$(mktemp -d) || { echo "FAIL scratch repo: mktemp"; return 1; }
   out=$(
-    unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_COMMON_DIR GIT_PREFIX
     cd "$scratch" || exit 1
     g() { git -c core.hooksPath=/dev/null -c commit.gpgsign=false -c user.name=t -c user.email=t@example.invalid "$@"; }
     { g init -q . && g checkout -q -b main && mkdir -p docs accounts/aa365 && echo a >docs/a.md &&
@@ -472,8 +487,7 @@ exit "$status"'
 
 # Root repo checkout that holds the DM-7 retention registry (for scoped CRM copies), when it sits next to us.
 root_registry() {
-  # Called in a command substitution (subshell): a hook environment must not point these git calls at this repo.
-  unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_COMMON_DIR GIT_PREFIX
+  # git's repo-local variables were dropped at the top, so `git -C "$root"` reads the root repo, not this one.
   local root=${AA_ECOSYS_ROOT:-$(cd "$MAIN_TOP/../.." 2>/dev/null && pwd)} path=docs/architecture/data-standards/02-data-management.md
   [ -n "$root" ] && git -C "$root" rev-parse --verify -q origin/master >/dev/null 2>&1 || return 1
   git -C "$root" show "origin/master:$path" >"$LOG_DIR/registry.md" 2>/dev/null && printf '%s' "$LOG_DIR/registry.md"
@@ -565,6 +579,8 @@ run_check() {
         "set +e; $PYQ -B tools/terraform/plan_guard.py tools/terraform/tests/fixtures/plan_guarded.json; rc=\$?; set -e; [ \"\$rc\" -eq 1 ] || { echo \"expected exit 1 (refused), got \$rc\" >&2; exit 1; }" ;;
     hook-self-test)
       step "$c" "--self-test" "" "bash scripts/pre-push.sh --self-test"
+      # S273 (AA-1024): hook, this script and the git-init test drop git's repo-local variables (sentinel clone)
+      step "$c" "git env isolation" py:pytest,py:yaml "$PYQ -B -m unittest scripts/test_git_env_isolation.py"
       step "$c" "shellcheck" bin:shellcheck "shellcheck -S warning scripts/pre-push.sh scripts/install-hooks.sh .githooks/pre-push" ;;
   esac
 }

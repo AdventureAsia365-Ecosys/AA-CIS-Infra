@@ -7,6 +7,13 @@
 set -uo pipefail
 
 top=$(git rev-parse --show-toplevel) || exit 1
+# S273 (AA-1024): git exports GIT_DIR (and in some setups GIT_WORK_TREE / GIT_INDEX_FILE) to hooks. A test the checks
+# run that creates a temporary repo would inherit them and rewrite THIS clone: in a worktree GIT_DIR is
+# .git/worktrees/<name>, so `git init` there guessed a bare repo and wrote core.bare=true into the config every worktree
+# shares. Run everything from the top level with none of git's repo-local variables set (same fix as the root repo).
+cd "$top" || exit 1
+# shellcheck disable=SC2046 # word splitting wanted: one variable name per word
+unset $(git rev-parse --local-env-vars)
 script="$top/scripts/pre-push.sh"
 if [ ! -f "$script" ]; then
   echo "pre-push hook: $script not found on this branch; no local checks run." >&2
