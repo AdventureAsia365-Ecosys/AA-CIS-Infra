@@ -251,8 +251,8 @@ accounts/
                                    and default assume (trust = IAM user nghiep-admin + MFA, sts:AssumeRole; 12 h max
                                    session; AdministratorAccess + Billing + AWSBillingConductorFullAccess; no boundary;
                                    prevent_destroy). It replaced the hand-made nghiep-admin-8h-session; every policy that
-                                   names the MFA admin role uses local.id_admin_role_arns (identity_alerts.tf), which
-                                   also holds var.identity_admin_role_legacy_names during the switch. LOCAL-APPLY ONLY
+                                   names the MFA admin role uses local.id_admin_role_arns (identity_alerts.tf; the
+                                   hand-made role is deleted, S273). LOCAL-APPLY ONLY
                                    (bootstrap object); guard tools/terraform/tests/test_aa1004_admin_role.py)
     identity_alerts.tf             (AA-854 I1: break-glass secret resource policy — Get/PutSecretValue
                                    only for the MFA admin role; EventBridge rule on CloudTrail
