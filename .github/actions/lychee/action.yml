@@ -1,0 +1,94 @@
+name: lychee (cached, hash-checked)
+description: >-
+  Runs the lychee link checker like lycheeverse/lychee-action v2.9.0 did (same lychee v0.24.2, same args, same report,
+  same exit code), but takes the binary from an actions/cache copy keyed on version + platform + the release sha256
+  (.github/actions/lychee/pins.txt). Only on a cache miss is the release tarball downloaded, over HTTP/1.1 with retries
+  and backoff; every copy is checked against the pinned sha256 (.github/scripts/lychee_bin.py). S273: the action's
+  one-shot download from github.com failed several runs and ejected pull requests from the merge queues.
+inputs:
+  args:
+    description: lychee arguments (as lychee-action's `args`; quotes are kept, so a quoted glob reaches lychee as is).
+    required: false
+    default: ""
+  fail:
+    description: Fail the step when lychee exits non-zero (as lychee-action's `fail`).
+    required: false
+    default: "true"
+  failIfEmpty:
+    description: Fail the step when no links were found (as lychee-action's `failIfEmpty`).
+    required: false
+    default: "true"
+  jobSummary:
+    description: Write the Markdown report to the step summary (as lychee-action's `jobSummary`).
+    required: false
+    default: "true"
+  output:
+    description: Report file path (as lychee-action's `output`).
+    required: false
+    default: lychee/out.md
+  install-only:
+    description: "'true' puts lychee on the PATH (and saves the cache) without running it: the default-branch warm job."
+    required: false
+    default: "false"
+outputs:
+  exit_code:
+    description: The exit code lychee returned (empty with install-only).
+    value: ${{ steps.run.outputs.exit_code }}
+  cache-hit:
+    description: "'true' when the tarball came from the cache."
+    value: ${{ steps.restore.outputs.cache-hit }}
+runs:
+  using: composite
+  steps:
+    - name: lychee pin (cache key)
+      id: key
+      shell: bash
+      run: python3 "$GITHUB_ACTION_PATH/../../scripts/lychee_bin.py" key --pins "$GITHUB_ACTION_PATH/pins.txt" >> "$GITHUB_OUTPUT"
+
+    # One path for every job (the cache version hashes the path). An entry saved on the default branch (the Docs lint
+    # warm job on push / schedule) is readable by every pull request and merge-queue run; a run on another ref that
+    # misses saves its own copy right after the verified download, so a later failing check does not lose it.
+    - name: Restore lychee
+      id: restore
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/lychee-cache
+        key: lychee-v1-${{ steps.key.outputs.key }}
+
+    - name: Fetch and verify lychee (download only on a cache miss)
+      id: fetch
+      shell: bash
+      env:
+        # S273: an authenticated `gh release download` first (GitHub throttled unauthenticated downloads).
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        python3 "$GITHUB_ACTION_PATH/../../scripts/lychee_bin.py" fetch --pins "$GITHUB_ACTION_PATH/pins.txt" \
+          --dest "$RUNNER_TEMP/lychee-cache" --bin "$RUNNER_TEMP/lychee/bin"
+        echo "$RUNNER_TEMP/lychee/bin" >> "$GITHUB_PATH"
+        "$RUNNER_TEMP/lychee/bin/lychee" --version
+
+    - name: Save lychee
+      if: steps.restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/lychee-cache
+        key: lychee-v1-${{ steps.key.outputs.key }}
+
+    - name: Run lychee
+      id: run
+      if: inputs.install-only != 'true'
+      shell: bash
+      env:
+        INPUT_ARGS: ${{ inputs.args }}
+        INPUT_FAIL: ${{ inputs.fail }}
+        INPUT_FAILIFEMPTY: ${{ inputs.failIfEmpty }}
+        INPUT_JOBSUMMARY: ${{ inputs.jobSummary }}
+        INPUT_OUTPUT: ${{ inputs.output }}
+      run: |
+        set -uo pipefail
+        ARGS=(run --args "$INPUT_ARGS" --lychee "$RUNNER_TEMP/lychee/bin/lychee" --output "$INPUT_OUTPUT")
+        if [ "$INPUT_FAIL" != "true" ]; then ARGS+=(--no-fail); fi
+        if [ "$INPUT_FAILIFEMPTY" != "true" ]; then ARGS+=(--no-fail-if-empty); fi
+        if [ "$INPUT_JOBSUMMARY" = "true" ]; then ARGS+=(--job-summary); fi
+        python3 "$GITHUB_ACTION_PATH/../../scripts/lychee_bin.py" "${ARGS[@]}"

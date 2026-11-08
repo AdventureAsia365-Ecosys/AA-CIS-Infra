@@ -409,7 +409,7 @@ install_hint() {
   case "$1" in
     terraform) printf 'install Terraform %s (HashiCorp apt repo, or: tfenv install %s)' "${TF_PINNED:-<CI version>}" "${TF_PINNED:-<CI version>}" ;;
     jq|shellcheck) printf 'sudo apt-get install -y %s' "$1" ;;
-    lychee) printf 'download the release binary from github.com/lycheeverse/lychee/releases (or: cargo install lychee)' ;;
+    lychee) printf 'install lychee v0.24.2 (the CI binary, sha256-checked: python3 .github/scripts/lychee_bin.py fetch --dest /tmp/lychee-cache --bin ~/.local/bin)' ;;
     py:*) printf 'scripts/install-hooks.sh --venv (or: %s %s)' "$PYQ" "$PIP_LINE" ;;
     *) printf 'install %s' "$1" ;;
   esac

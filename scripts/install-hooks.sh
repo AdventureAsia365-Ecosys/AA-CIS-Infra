@@ -85,7 +85,7 @@ fi
 for t in jq lychee shellcheck; do
   if command -v "$t" >/dev/null 2>&1; then echo "  $t: ok"; continue; fi
   case "$t" in
-    lychee) hint="download the release binary from github.com/lycheeverse/lychee/releases (or: cargo install lychee)" ;;
+    lychee) hint="install lychee v0.24.2 (the CI binary, sha256-checked: python3 .github/scripts/lychee_bin.py fetch --dest /tmp/lychee-cache --bin ~/.local/bin)" ;;
     *) hint="sudo apt-get install -y $t" ;;
   esac
   echo "  $t: missing. Install: $hint"
