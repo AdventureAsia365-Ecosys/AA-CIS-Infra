@@ -551,7 +551,8 @@ statement in a savepoint (locks released at once), counts and names only, tenant
   granting it the listed table / sequence / function privileges, with no FOR ROLE master row left once
   transferred (the failure an owner transfer most likely causes: a runtime role without a grant on the
   next object, 42501 after deploy); contract consumer grants on single objects (`booking` →
-  `tripplanner.v_inquiry_outbox`, `geo.name_norm`, `tripplanner` → `shared.llm_call_log` INSERT);
+  `geo.name_norm`, `tripplanner` → `shared.llm_call_log` INSERT; `booking`'s read of
+  `tripplanner.v_inquiry_outbox` is revoked by tp-027 (AA-1046), so a cross-app cell asserts 42501 on it from tp-027);
   `bk_owner`/`tp_owner` registry grants; `cis_app` cannot write
   `shared.schema_versions`; every ENABLE-without-FORCE CIS table has a permissive policy `TO cis_app`
   (or `rls_enable_only_allowlist`); `aa_app_user` tenant matrix (GUC unset / empty / forged / each
