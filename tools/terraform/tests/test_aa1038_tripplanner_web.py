@@ -17,6 +17,8 @@
 4. Caching: pages and /api/* never cached at the edge; only the immutable chunks and the photo proxy are.
 5. DNS: the record moved from custom_domains.tf (never destroyed) and, since the Vercel retirement (root runbook
    section 4), is always a CNAME to the distribution: no switch, no Vercel target, the TTL window closed (300 s).
+   The EXTERNAL pool's public tripplanner client (PKCE, no secret) lists no vercel.app callback or sign-out URL: a
+   deleted project's name can be claimed by anyone, who would then receive the authorization codes.
 6. The ALB host rule is a CloudFront-path rule (host + origin secret, priority from the map, below the deny rule).
 7. The CIS catalog purge goes to the public host (TRIPPLANNER_REVALIDATE_URL always set, never "").
 8. The apply role may create the web repository (bootstrap grant in cicd_crm.tf).
@@ -40,6 +42,7 @@ MAIN = (AA365 / "main.tf").read_text(encoding="utf-8")
 CUSTOM = (AA365 / "custom_domains.tf").read_text(encoding="utf-8")
 TFVARS = (AA365 / "terraform.tfvars").read_text(encoding="utf-8")
 VERCEL_VARS = (AA365 / "custom_domains_variables.tf").read_text(encoding="utf-8")
+IDENTITY_VARS = (AA365 / "identity_variables.tf").read_text(encoding="utf-8")
 CICD_CRM = (AA365 / "cicd_crm.tf").read_text(encoding="utf-8")
 WAF = (ROOT / "modules" / "waf" / "main.tf").read_text(encoding="utf-8")
 WAF_VARS = (ROOT / "modules" / "waf" / "variables.tf").read_text(encoding="utf-8")
@@ -620,6 +623,22 @@ def test_record_always_points_at_the_distribution_after_the_vercel_retirement():
         assert gone not in code, gone
         assert not re.search(rf"^{gone}\s*=", TFVARS, re.M), gone
     assert "vercel-dns" not in EDGE
+
+
+def test_no_cognito_client_url_on_a_vercel_host():
+    # Every app client's callback / sign-out URLs (identity_client_urls default); the tripplanner client keeps the
+    # public host and local dev only.
+    block = _block_after(IDENTITY_VARS, IDENTITY_VARS.index('variable "identity_client_urls"'))
+    urls = re.findall(r'"(https?://[^"]+)"', _code(block))
+    assert urls, "no client URL parsed"
+    assert not [u for u in urls if "vercel.app" in u], "a Cognito client still allows a vercel.app URL"
+    tp = _code(_block_after(IDENTITY_VARS, IDENTITY_VARS.index('"tripplanner" = {')))
+    assert re.findall(r'"(https?://[^"]+)"', tp) == [
+        "https://tripplanner.lumiguides.it.com/auth/callback",
+        "http://localhost:3003/auth/callback",
+        "https://tripplanner.lumiguides.it.com/",
+        "http://localhost:3003/",
+    ]
 
 
 def test_switch_window_closed_ttl_300():
