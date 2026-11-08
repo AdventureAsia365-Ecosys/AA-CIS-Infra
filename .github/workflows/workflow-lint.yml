@@ -11,7 +11,7 @@ name: Workflow Lint
 #      with a git-tracked lockfile.
 #   Also the unit tests of .github/scripts/lychee_bin.py and the shape of the Docs lint link step (S273: the lychee
 #   binary from a cached, hash-checked copy, .github/actions/lychee).
-# Offline apart from the actionlint download; no secret, no AWS. Not a required check yet (the ruleset is changed by the
+# Offline apart from the actionlint download on a cache miss; no secret, no AWS. Not a required check yet (the ruleset is changed by the
 # tech lead).
 
 on:
@@ -22,6 +22,10 @@ on:
       - ".github/actions/**"
       - ".github/actionlint.yaml"
       - ".github/scripts/workflow_lint.py"
+      - ".github/scripts/release_bin.py"
+      - ".github/scripts/test_release_bin.py"
+      - ".github/scripts/cache_cleanup.py"
+      - ".github/scripts/test_cache_cleanup.py"
       - ".github/scripts/lychee_bin.py"
       - ".github/scripts/test_lychee_bin.py"
   push:
@@ -31,6 +35,10 @@ on:
       - ".github/actions/**"
       - ".github/actionlint.yaml"
       - ".github/scripts/workflow_lint.py"
+      - ".github/scripts/release_bin.py"
+      - ".github/scripts/test_release_bin.py"
+      - ".github/scripts/cache_cleanup.py"
+      - ".github/scripts/test_cache_cleanup.py"
       - ".github/scripts/lychee_bin.py"
       - ".github/scripts/test_lychee_bin.py"
 
@@ -47,29 +55,20 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
 
-    env:
-      ACTIONLINT_VERSION: "1.7.12"
-      # sha256 of actionlint_1.7.12_linux_amd64.tar.gz, from the release's actionlint_1.7.12_checksums.txt (S271).
-      ACTIONLINT_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
-
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
+      # S273 (AA-1024): actionlint v1.7.12 from .github/actions/release-bin (pins.txt: version + sha256 of the release
+      # tarball, the same as the release's actionlint_1.7.12_checksums.txt), cached; downloaded only on a miss, through
+      # an authenticated `gh release download`, and checked against the pin on every run.
       - name: Install actionlint (pinned, checksum verified)
-        run: |
-          set -euo pipefail
-          DIR="$RUNNER_TEMP/actionlint"
-          mkdir -p "$DIR"
-          TGZ="$DIR/actionlint.tar.gz"
-          curl -fsSL --retry 3 -o "$TGZ" \
-            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
-          echo "${ACTIONLINT_SHA256}  $TGZ" | sha256sum -c -
-          tar -xzf "$TGZ" -C "$DIR" actionlint
-          "$DIR/actionlint" -version
-          echo "$DIR" >> "$GITHUB_PATH"
+        id: actionlint
+        uses: ./.github/actions/release-bin
+        with:
+          tool: actionlint
 
       - name: actionlint
         run: actionlint -color -shellcheck= -pyflakes=
@@ -83,4 +82,6 @@ jobs:
         run: |
           python -m pip install --quiet pyyaml==6.0.2
           python -B -m unittest discover -s .github/scripts -p 'test_lychee_bin.py'
+          python -B -m unittest discover -s .github/scripts -p 'test_release_bin.py'
+          python -B -m unittest discover -s .github/scripts -p 'test_cache_cleanup.py'
           python -B .github/scripts/workflow_lint.py

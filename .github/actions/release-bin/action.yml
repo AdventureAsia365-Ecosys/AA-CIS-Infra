@@ -1,0 +1,64 @@
+name: Release binary (cached, hash-checked)
+description: >-
+  Puts one pinned release binary (syft, trivy, actionlint, oasdiff, ...; .github/actions/release-bin/pins.txt) on the
+  PATH from an actions/cache copy keyed on tool + version + platform + the release sha256. Only on a cache miss is the
+  release file downloaded (an authenticated `gh release download` first, then plain HTTPS, with retries and backoff);
+  every copy is checked against the pinned sha256 (.github/scripts/release_bin.py). S273: GitHub throttled
+  unauthenticated release downloads and the actions that fetched their own binary (anchore/sbom-action's syft,
+  trivy-action's setup-trivy) failed CI runs with HTTP 504.
+inputs:
+  tool:
+    description: The tool name as pins.txt spells it (syft, trivy, actionlint, oasdiff, session-manager-plugin).
+    required: true
+outputs:
+  path:
+    description: The installed binary (or, for a pin whose member is '-', the verified release file).
+    value: ${{ steps.fetch.outputs.path }}
+  version:
+    description: The pinned version.
+    value: ${{ steps.key.outputs.version }}
+  cache-hit:
+    description: "'true' when the release file came from the cache."
+    value: ${{ steps.restore.outputs.cache-hit }}
+runs:
+  using: composite
+  steps:
+    - name: Release pin (cache key)
+      id: key
+      shell: bash
+      env:
+        TOOL: ${{ inputs.tool }}
+      run: python3 "$GITHUB_ACTION_PATH/../../scripts/release_bin.py" key --tool "$TOOL" --pins "$GITHUB_ACTION_PATH/pins.txt" >> "$GITHUB_OUTPUT"
+
+    # One path per tool for every job (the cache version hashes the path). The entry saved on the default branch (a
+    # push run, or the Cache warm workflow in the repos whose CI does not run on main) is readable by every pull
+    # request and merge-queue run. A run on another ref that misses saves its own copy right after the verified
+    # download (a binary of a few tens of MB, keyed on the pin), so a later failing check or a retry does not download
+    # again; the Cache cleanup workflow deletes it when the pull request closes.
+    - name: Restore release file
+      id: restore
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/release-bin-cache/${{ steps.key.outputs.tool }}
+        key: release-bin-v1-${{ steps.key.outputs.key }}
+
+    - name: Fetch and verify (download only on a cache miss)
+      id: fetch
+      shell: bash
+      env:
+        TOOL: ${{ inputs.tool }}
+        # S273: an authenticated `gh release download` first (GitHub throttled unauthenticated downloads).
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        python3 "$GITHUB_ACTION_PATH/../../scripts/release_bin.py" fetch --tool "$TOOL" \
+          --pins "$GITHUB_ACTION_PATH/pins.txt" --dest "$RUNNER_TEMP/release-bin-cache/$TOOL" \
+          --bin "$RUNNER_TEMP/release-bin/bin" >> "$GITHUB_OUTPUT"
+        echo "$RUNNER_TEMP/release-bin/bin" >> "$GITHUB_PATH"
+
+    - name: Save release file
+      if: steps.restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/release-bin-cache/${{ steps.key.outputs.tool }}
+        key: release-bin-v1-${{ steps.key.outputs.key }}
