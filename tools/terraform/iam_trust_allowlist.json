@@ -29,6 +29,12 @@
       "kind": "AWS",
       "principal": "arn:*:iam::*:role/aa-cis-dev-ecs-task-role",
       "reason": "AA-623: the acc2 CIS ECS task role reads acc3 Cost Explorer (ExternalId pinned)"
+    },
+    {
+      "match": "accounts/aa365:aws_iam_role.org_access",
+      "kind": "AWS",
+      "principal": "arn:*:iam::*:role/aa-org-member-access",
+      "reason": "AA-1004 (S273): the organization admin role OrganizationAccountAccessRole trusts only the management account's aa-org-member-access role (Identity Center AA-Admin sessions only), with aws:PrincipalOrgID of the AA organization"
     }
   ]
 }
