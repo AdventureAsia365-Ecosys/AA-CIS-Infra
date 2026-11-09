@@ -47,6 +47,14 @@ data "aws_iam_policy_document" "tf_apply_sec" {
     resources = ["*"]
   }
 
+  # S274: admin_role.tf brought the tech lead's inline user policy AssumeAdminSessionRole under Terraform (S273,
+  # imported). Every CI apply since then failed at refresh (iam:GetUserPolicy AccessDenied, run 42599949632): read
+  # only, on that one user. Writes stay a local MFA apply (the boundary denies iam:PutUserPolicy).
+  statement {
+    sid       = "AdminUserPolicyRead"
+    actions   = ["iam:GetUser", "iam:GetUserPolicy", "iam:ListUserPolicies"]
+    resources = ["arn:aws:iam::${var.account_id}:user/${var.identity_admin_user_name}"]
+  }
   # PR 1: IAM Access Analyzer (Create/Get/Update/DeleteAnalyzer, Tag/Untag/ListTagsForResource).
   # S256 triage: its archive rules (security_access_analyzer_archive.tf; Create/Get/Update/Delete/ApplyArchiveRule,
   # ListArchiveRules). An archive-rule ARN is analyzer/<name>/archive-rule/<rule>, inside analyzer/*.
