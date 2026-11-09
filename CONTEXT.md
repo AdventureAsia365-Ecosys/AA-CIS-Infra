@@ -494,6 +494,23 @@ accounts/
                                    (two host rules + the apex redirect; the :443 default is a fixed 404), modules/waf StaffWebRateLimit (staff hosts
                                    out of RateLimit1000), sg-staff-web (ALB -> 3000/3001, not admitted by RDS), cicd_split.tf
                                    cis_app_deploy_staff_web (bootstrap, CIS family only))
+    test_wp.tf                    (AA-1060, S274: the permanent WordPress TEST site as a non-essential SIDECAR container
+                                   `test-wp` of the Booking admin task (appended by staff_web.tf to the booking family
+                                   only; the task stays 256 / 512, sidecar memory soft 128 / hard 256 MB, no cpu).
+                                   Official wordpress php-apache image pinned by digest; start script test_wp/start.sh
+                                   (apache first on a static fallback root, then in the background the SQLite plugin +
+                                   wp-cli at pinned versions with checksums, install if missing, random passwords, ONE
+                                   application password from the WHOLE existing test secret aa-cis/<env>/e2e-wordpress-test
+                                   (data source, no new secret), then WordPress is switched in; DISALLOW_FILE_MODS,
+                                   noindex, no browser sign-in). Logs in the Booking admin log group (stream prefix
+                                   test-wp). Target group aa-booking-<env>-test-wp-tg, health on the static
+                                   /license.txt (a WordPress fault must not fail the target group: ECS would replace
+                                   the Booking admin task). Switches var.test_wp_enabled (container, target group, edge)
+                                   and var.test_wp_service_attached (second load_balancer block, only after a Booking
+                                   admin deploy has put a revision with the container on the service). Edge in the
+                                   root: test_wp_edge.tf (CNAME test-wp. -> the ALB, under the :443 wildcard certificate),
+                                   alb_rules.tf test_wp_block (403 on /wp-login.php, /wp-admin, /xmlrpc.php) and
+                                   test_wp, sg-staff-web port 80 from the ALB. $0 Fargate, no new secret)
     crm_scrub.tf                  (AA-938 CRM-10, AA-Partner F3 scrubber pass 3, all behind
                                    var.crm_scrub_guardrail_enabled (default false): Bedrock guardrail aa-crm-<env>-scrub
                                    in acc2 (every PII entity on action NONE = detect only; no URL / AGE, no regex, no

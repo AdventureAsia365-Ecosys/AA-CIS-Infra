@@ -110,7 +110,10 @@ module "environment" {
   cognito_workforce_booking_staff_client_id = aws_cognito_user_pool_client.workforce["booking-staff"].id
   cis_admin_secret_arn                      = var.secret_admin_arn
   staff_web_security_group_id               = aws_security_group.staff_web.id
-  staff_web_listener_rule_gate              = [aws_lb_listener_rule.staff_cis_admin.arn, aws_lb_listener_rule.staff_booking_admin.arn]
+  staff_web_listener_rule_gate              = concat([aws_lb_listener_rule.staff_cis_admin.arn, aws_lb_listener_rule.staff_booking_admin.arn], aws_lb_listener_rule.test_wp[*].arn)
+  # AA-1060: the WordPress test site sidecar of the Booking admin task (test_wp.tf of the module, test_wp_edge.tf here).
+  test_wp_enabled          = var.test_wp_enabled
+  test_wp_service_attached = var.test_wp_service_attached
   # AA-1038: the TripPlanner frontend on ECS (tripplanner_web.tf of the module, tripplanner_web_edge.tf + alb_rules.tf
   # here). The traveller identity keys exist only while their identity.tf switches are on.
   tripplanner_web_security_group_id  = aws_security_group.tripplanner_web.id
