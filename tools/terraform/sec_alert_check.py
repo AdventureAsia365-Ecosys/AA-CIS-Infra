@@ -126,6 +126,13 @@ def cases(account: str, region: str, env: str) -> list:
                                                              detail_type="AWS Console Sign In via CloudTrail"), True))
     out.append(("root.GetCallerIdentity", rt, region,
                 trail_event(account, region, "sts", "GetCallerIdentity", root, read_only=True), True))
+    # S274: a root console tab polls read-only APIs by itself; those no longer alert one by one (the sign-in did).
+    console_read = trail_event(account, EAST, "notifications", "ListManagedNotificationEvents", root, read_only=True)
+    console_read["detail"]["sessionCredentialFromConsole"] = "true"
+    out.append(("root.console-read.ListManagedNotificationEvents", rt, region, console_read, False))
+    console_write = trail_event(account, EAST, "support", "CreateCase", root)
+    console_write["detail"]["sessionCredentialFromConsole"] = "true"
+    out.append(("root.console-write.CreateCase", rt, region, console_write, True))
     out.append(("root.admin-ConsoleLogin", rt, region, trail_event(account, EAST, "signin", "ConsoleLogin", admin,
                                                                    detail_type="AWS Console Sign In via CloudTrail"),
                 False))

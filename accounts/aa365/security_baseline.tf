@@ -158,14 +158,24 @@ resource "aws_cloudwatch_event_rule" "sec_iam_change" {
   tags = local.sec_tags
 }
 
-# Root: any API call (read-only ones too) or console sign-in. Root has no sessionIssuer, so it is its own rule.
+# Root: console sign-in, every write call, and every read-only call that did NOT come from a console session (root
+# access keys or another non-console path). Root has no sessionIssuer, so it is its own rule.
+# S274: the read-only calls a root console tab makes by itself (ListManagedNotificationEvents polled every ~2 min,
+# billing / support page reads) sent one e-mail each: 525 root events on 09/11/2026 for one support-case session.
+# A root console session is still announced by its sign-in alert, and every write it makes still alerts.
 resource "aws_cloudwatch_event_rule" "sec_root_activity" {
   name        = "${local.sec_prefix}-root-activity"
-  description = "Any root user activity, console sign-in included (local or forwarded from us-east-1). AA-873.${local.runbook_suffix.incident}"
+  description = "Root sign-in, root write calls, root read-only calls outside a console session (local or forwarded from us-east-1). AA-873.${local.runbook_suffix.incident}"
   state       = "ENABLED_WITH_ALL_CLOUDTRAIL_MANAGEMENT_EVENTS"
   event_pattern = jsonencode({
-    "detail-type" = ["AWS API Call via CloudTrail", "AWS Console Sign In via CloudTrail"]
-    detail        = { userIdentity = { type = ["Root"] } }
+    "$or" = [
+      { "detail-type" = ["AWS Console Sign In via CloudTrail"], detail = { userIdentity = { type = ["Root"] } } },
+      { "detail-type" = ["AWS API Call via CloudTrail"], detail = { userIdentity = { type = ["Root"] }, readOnly = [false] } },
+      {
+        "detail-type" = ["AWS API Call via CloudTrail"]
+        detail        = { userIdentity = { type = ["Root"] }, sessionCredentialFromConsole = [{ exists = false }] }
+      },
+    ]
   })
   tags = local.sec_tags
 }
