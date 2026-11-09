@@ -116,3 +116,10 @@ tripplanner_web_dns_switch_window = false
 # that apply would make every CI apply of this root fail on the role it may not write.
 org_access_role_enabled        = false
 org_access_adopt_existing_role = false
+
+# AA-1060 (test_wp_edge.tf, modules/environment test_wp.tf): the WordPress test site sidecar on the Booking admin task.
+# Step 1 (this value): container in the task definition, target group, ALB rules, DNS record, security group port.
+# Step 2 (a one-line PR after a Booking admin deploy has put a revision with the container on the service):
+# test_wp_service_attached = true.
+test_wp_enabled          = true
+test_wp_service_attached = false

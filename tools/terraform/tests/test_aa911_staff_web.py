@@ -110,6 +110,13 @@ def test_every_https_rule_is_a_mapped_host_rule_to_a_staff_target_group():
             code = _code(body)
             assert 'type = "redirect"' in code and "target_group_arn" not in code
             assert "values = [var.dns_zone_name]" in code and "host        = local.staff_web_hosts.cis" in code
+        elif m.group(1) == "test_wp_block":
+            # AA-1060: the WordPress test site's sign-in / admin / XML-RPC paths answer 403 (test_aa1060_test_wp.py).
+            code = _code(body)
+            assert 'type = "fixed-response"' in code and "target_group_arn" not in code
+        elif m.group(1) == "test_wp":
+            # AA-1060: the WordPress test site sidecar of the Booking admin task (test_aa1060_test_wp.py).
+            assert "module.environment.test_wp_target_group_arn" in body
         else:
             assert "module.environment.staff_web_target_group_arns[" in body
     assert sorted(found) == sorted(k for k, _ in keys)
@@ -138,7 +145,13 @@ def test_one_arm64_spot_service_family_and_execution_role_per_app():
     assert "desired_count   = 0" in svc
     assert "ignore_changes = [desired_count, task_definition]" in svc
     assert "enable_execute_command = false" in svc
-    assert svc.count("load_balancer {") == 1 and 'dynamic "load_balancer"' not in svc
+    assert svc.count("load_balancer {") == 1
+    # AA-1060: the only second load balancer is the WordPress test site sidecar of the Booking admin task, behind its
+    # switch (test_aa1060_test_wp.py).
+    assert svc.count('dynamic "load_balancer"') == 1
+    dyn = _block_after(svc, svc.index('dynamic "load_balancer"'))
+    assert "each.key == local.test_wp_host_app && var.test_wp_service_attached" in dyn
+    assert "aws_lb_target_group.test_wp[*].arn" in dyn
     # No task role anywhere in the stack (nothing for ECS Exec to use).
     assert 'resource "aws_iam_role" "staff_web_ecs_task"' not in STAFF
 
@@ -146,9 +159,12 @@ def test_one_arm64_spot_service_family_and_execution_role_per_app():
 def test_each_execution_role_reads_only_its_own_app_secrets():
     arns = _block_after(STAFF, STAFF.index("staff_web_secret_arns = {"))
     cis = re.search(r"cis\s*=\s*\[([^\]]*)\]", arns).group(1)
-    booking = re.search(r"booking\s*=\s*\[([^\]]*)\]", arns).group(1)
+    booking = re.search(r"booking\s*=\s*(.*)$", arns, re.M).group(1)
     assert "var.cis_admin_secret_arn" in cis and "staff_web_cis" in cis and "staff_web_booking" not in cis
-    assert "staff_web_booking" in booking and "cis" not in booking
+    # AA-1060: besides its own secret, the Booking task reads only the test-only WordPress secret of its sidecar.
+    assert booking == (
+        "concat([aws_secretsmanager_secret.staff_web_booking.arn], data.aws_secretsmanager_secret.test_wp_credentials[*].arn)"
+    )
     pol = _code(_resource(STAFF, "aws_iam_role_policy", "staff_web_ecs_execution"))
     assert "Resource = local.staff_web_secret_arns[each.key]" in pol
     assert "Resource = aws_ecr_repository.staff_web[each.key].arn" in pol

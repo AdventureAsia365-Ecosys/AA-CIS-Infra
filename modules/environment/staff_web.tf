@@ -19,6 +19,8 @@
 #       (`cis-admin` :3000, `booking-admin` :3001), placeholder tag `bootstrap`. No task role: the apps call no AWS API.
 #     - target group (health /api/healthz) and service <service>: FARGATE_SPOT, desired 0 at create, ECS Exec OFF
 #     - alarm: no healthy target
+#     - AA-1060: the Booking admin task also carries the WordPress test site sidecar (test_wp.tf: a second, non-essential
+#       container and, once attached, a second load_balancer block); the CIS admin task does not.
 #   Plus the secret shells aa-cis/<env>/admin-web {cis_admin_client_secret, breakglass_client_secret} and
 #   booking/<env>/admin-web {booking_staff_client_secret}. NO secret_version: AA-CIS-Infra
 #   tools/identity/staff_web_secret.py copies the WORKFORCE client secrets in (Terraform and the plan role never read
@@ -129,9 +131,11 @@ locals {
       { name = "COGNITO_BOOKING_STAFF_CLIENT_SECRET", valueFrom = "${aws_secretsmanager_secret.staff_web_booking.arn}:booking_staff_client_secret::" },
     ]
   }
+  # AA-1060: the Booking admin task also runs the WordPress test site sidecar (test_wp.tf), whose container reads the
+  # test-only secret aa-cis/<env>/e2e-wordpress-test while test_wp_enabled is on.
   staff_web_secret_arns = {
     cis     = [aws_secretsmanager_secret.staff_web_cis.arn, var.cis_admin_secret_arn]
-    booking = [aws_secretsmanager_secret.staff_web_booking.arn]
+    booking = concat([aws_secretsmanager_secret.staff_web_booking.arn], data.aws_secretsmanager_secret.test_wp_credentials[*].arn)
   }
 
   # Deploy scope per app, from names only (no resource attribute): accounts/aa365 cicd_split.tf applies the CIS
@@ -283,7 +287,8 @@ resource "aws_ecs_task_definition" "staff_web" {
     cpu_architecture        = "ARM64"
   }
 
-  container_definitions = jsonencode([
+  # AA-1060: the Booking admin task carries the WordPress test site sidecar while test_wp_enabled is on (test_wp.tf).
+  container_definitions = jsonencode(concat([
     {
       name         = each.value.container
       image        = "${aws_ecr_repository.staff_web[each.key].repository_url}:bootstrap"
@@ -309,7 +314,7 @@ resource "aws_ecs_task_definition" "staff_web" {
       }
       stopTimeout = 20
     }
-  ])
+  ], each.key == local.test_wp_host_app ? local.test_wp_container_definitions : []))
 
   tags = merge(local.staff_web_tags, { App = each.value.app_tag })
 }
@@ -382,6 +387,16 @@ resource "aws_ecs_service" "staff_web" {
     target_group_arn = aws_lb_target_group.staff_web[each.key].arn
     container_name   = each.value.container
     container_port   = each.value.port
+  }
+
+  # AA-1060: the WordPress test site sidecar of the Booking admin task (test_wp.tf), once test_wp_service_attached is on.
+  dynamic "load_balancer" {
+    for_each = each.key == local.test_wp_host_app && var.test_wp_service_attached ? aws_lb_target_group.test_wp[*].arn : []
+    content {
+      target_group_arn = load_balancer.value
+      container_name   = local.test_wp_container
+      container_port   = local.test_wp_port
+    }
   }
 
   # OFF on purpose (header): an exec session reads the task env, i.e. the app's secrets.
