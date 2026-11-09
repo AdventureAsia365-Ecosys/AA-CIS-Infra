@@ -173,6 +173,19 @@ resource "aws_security_group" "staff_web" {
     }
   }
 
+  # AA-1060: the WordPress test site sidecar of the Booking admin task (modules/environment test_wp.tf), HTTPS host rule
+  # test_wp of alb_rules.tf. Only while test_wp_enabled is on.
+  dynamic "ingress" {
+    for_each = var.test_wp_enabled ? [module.environment.test_wp_port] : []
+    content {
+      description     = "WordPress test site sidecar port from the ALB (HTTPS host rule, AA-1060)"
+      from_port       = ingress.value
+      to_port         = ingress.value
+      protocol        = "tcp"
+      security_groups = [module.vpc.sg_alb_id]
+    }
+  }
+
   egress {
     description = "All outbound (NAT: Cognito token endpoint, the CIS and Booking API hosts)"
     from_port   = 0
