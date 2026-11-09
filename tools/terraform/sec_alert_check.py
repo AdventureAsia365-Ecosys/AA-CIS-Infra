@@ -126,6 +126,13 @@ def cases(account: str, region: str, env: str) -> list:
                                                              detail_type="AWS Console Sign In via CloudTrail"), True))
     out.append(("root.GetCallerIdentity", rt, region,
                 trail_event(account, region, "sts", "GetCallerIdentity", root, read_only=True), True))
+    # S274: a root console tab polls read-only APIs by itself; those no longer alert one by one (the sign-in did).
+    console_read = trail_event(account, EAST, "notifications", "ListManagedNotificationEvents", root, read_only=True)
+    console_read["detail"]["sessionCredentialFromConsole"] = "true"
+    out.append(("root.console-read.ListManagedNotificationEvents", rt, region, console_read, False))
+    console_write = trail_event(account, EAST, "support", "CreateCase", root)
+    console_write["detail"]["sessionCredentialFromConsole"] = "true"
+    out.append(("root.console-write.CreateCase", rt, region, console_write, True))
     out.append(("root.admin-ConsoleLogin", rt, region, trail_event(account, EAST, "signin", "ConsoleLogin", admin,
                                                                    detail_type="AWS Console Sign In via CloudTrail"),
                 False))
@@ -142,6 +149,14 @@ def cases(account: str, region: str, env: str) -> list:
                 False))
     out.append(("forward.root-login", fwd, EAST, trail_event(account, EAST, "signin", "ConsoleLogin", root,
                                                              detail_type="AWS Console Sign In via CloudTrail"), True))
+    # S274 review F1: root sign-ins recorded in us-east-2 / us-west-2 have their own forward rule.
+    rfwd = f"{p}-root-forward"
+    for r in ("us-east-2", "us-west-2"):
+        out.append((f"forward.root-login.{r}", rfwd, r, trail_event(account, r, "signin", "ConsoleLogin", root,
+                                                                    detail_type="AWS Console Sign In via CloudTrail"),
+                    True))
+        out.append((f"forward.root-read.{r}", rfwd, r,
+                    trail_event(account, r, "ec2", "DescribeRegions", root, read_only=True), False))
     out.append(("forward.admin-sts", fwd, EAST, trail_event(account, EAST, "sts", "GetCallerIdentity", admin,
                                                             read_only=True), False))
     # AA-1022: Identity Center administrator sessions, one rule per permission set, plus the us-east-1 forward.

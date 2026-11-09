@@ -158,19 +158,39 @@ resource "aws_cloudwatch_event_rule" "sec_iam_change" {
   tags = local.sec_tags
 }
 
-# Root: any API call (read-only ones too) or console sign-in. Root has no sessionIssuer, so it is its own rule.
+# Root: console sign-in, every write call, and every read-only call that did NOT come from a console session (root
+# access keys or another non-console path). Root has no sessionIssuer, so it is its own rule.
+# S274: the read-only calls a root console tab makes by itself (ListManagedNotificationEvents polled every ~2 min,
+# billing / support page reads) sent one e-mail each: 525 root events on 09/11/2026 for one support-case session.
+# A root console session is still announced by its sign-in alert, and every write it makes still alerts.
 resource "aws_cloudwatch_event_rule" "sec_root_activity" {
   name        = "${local.sec_prefix}-root-activity"
-  description = "Any root user activity, console sign-in included (local or forwarded from us-east-1). AA-873.${local.runbook_suffix.incident}"
+  description = "Root sign-in, root write calls, root read-only calls outside a console session (local or forwarded from us-east-1). AA-873.${local.runbook_suffix.incident}"
   state       = "ENABLED_WITH_ALL_CLOUDTRAIL_MANAGEMENT_EVENTS"
+  # readOnly is optional in CloudTrail: a root call with it missing or null alerts too. "AWS Console Action" covers
+  # billing-console actions that are not API calls (S274 review F2, F3).
   event_pattern = jsonencode({
-    "detail-type" = ["AWS API Call via CloudTrail", "AWS Console Sign In via CloudTrail"]
-    detail        = { userIdentity = { type = ["Root"] } }
+    "$or" = [
+      { "detail-type" = ["AWS Console Sign In via CloudTrail"], detail = { userIdentity = { type = ["Root"] } } },
+      {
+        "detail-type" = local.sec_root_call_types
+        detail        = { userIdentity = { type = ["Root"] }, readOnly = [false, null] }
+      },
+      {
+        "detail-type" = local.sec_root_call_types
+        detail        = { userIdentity = { type = ["Root"] }, readOnly = [{ exists = false }] }
+      },
+      {
+        "detail-type" = local.sec_root_call_types
+        detail        = { userIdentity = { type = ["Root"] }, sessionCredentialFromConsole = [{ exists = false }] }
+      },
+    ]
   })
   tags = local.sec_tags
 }
 
 locals {
+  sec_root_call_types = ["AWS API Call via CloudTrail", "AWS Console Action via CloudTrail"]
   sec_cloudtrail_rules = {
     trail_tamper = aws_cloudwatch_event_rule.sec_trail_tamper.name
     sg_change    = aws_cloudwatch_event_rule.sec_sg_change.name
@@ -193,8 +213,9 @@ resource "aws_cloudwatch_event_target" "sec_cloudtrail_rules" {
       region    = "$.detail.awsRegion"
       time      = "$.detail.eventTime"
       error     = "$.detail.errorCode"
+      outcome   = "$.detail.responseElements.ConsoleLogin"
     }
-    input_template = "\"[aa-sec] ${each.key}: <event> by <principal> from <ip> in <region> at <time> (errorCode: <error>). ${local.sec_alert_footer}${local.runbook_suffix.incident}\""
+    input_template = "\"[aa-sec] ${each.key}: <event> <outcome> by <principal> from <ip> in <region> at <time> (errorCode: <error>). ${local.sec_alert_footer}${local.runbook_suffix.incident}\""
   }
 }
 
@@ -247,7 +268,7 @@ resource "aws_cloudwatch_event_rule" "sec_global_forward" {
   event_pattern = jsonencode({
     "$or" = [
       { source = ["aws.iam"], "detail-type" = ["AWS API Call via CloudTrail"], detail = { readOnly = [false] } },
-      { "detail-type" = ["AWS API Call via CloudTrail", "AWS Console Sign In via CloudTrail"], detail = { userIdentity = { type = ["Root"] } } },
+      { "detail-type" = ["AWS API Call via CloudTrail", "AWS Console Sign In via CloudTrail", "AWS Console Action via CloudTrail"], detail = { userIdentity = { type = ["Root"] } } },
       {
         source        = ["aws.sts"]
         "detail-type" = ["AWS API Call via CloudTrail"]
@@ -264,6 +285,52 @@ resource "aws_cloudwatch_event_rule" "sec_global_forward" {
 resource "aws_cloudwatch_event_target" "sec_global_forward" {
   provider  = aws.us_east_1
   rule      = aws_cloudwatch_event_rule.sec_global_forward.name
+  target_id = "${replace(var.aws_region, "-", "")}-default-bus"
+  arn       = "arn:aws:events:${var.aws_region}:${var.account_id}:event-bus/default"
+  role_arn  = aws_iam_role.sec_forwarder.arn
+}
+
+# S274 review F1: a root console sign-in is recorded in us-east-1, us-east-2 or us-west-2 (AWS docs). The support-case
+# session of 09/11/2026 signed in through us-west-2 and no sign-in alert went out. These two rules forward root
+# sign-ins and root write calls from those regions (sign-in events carry readOnly = false, so plain ENABLED is enough).
+locals {
+  sec_root_signin_forward_pattern = jsonencode({
+    "$or" = [
+      { "detail-type" = ["AWS Console Sign In via CloudTrail"], detail = { userIdentity = { type = ["Root"] } } },
+      { "detail-type" = local.sec_root_call_types, detail = { userIdentity = { type = ["Root"] }, readOnly = [false] } },
+    ]
+  })
+}
+
+resource "aws_cloudwatch_event_rule" "sec_root_forward_use2" {
+  provider    = aws.us_east_2
+  name        = "${local.sec_prefix}-root-forward"
+  description = "Forward root console sign-ins and root write calls (us-east-2) to ${var.aws_region}. AA-873."
+
+  event_pattern = local.sec_root_signin_forward_pattern
+  tags          = local.sec_tags
+}
+
+resource "aws_cloudwatch_event_target" "sec_root_forward_use2" {
+  provider  = aws.us_east_2
+  rule      = aws_cloudwatch_event_rule.sec_root_forward_use2.name
+  target_id = "${replace(var.aws_region, "-", "")}-default-bus"
+  arn       = "arn:aws:events:${var.aws_region}:${var.account_id}:event-bus/default"
+  role_arn  = aws_iam_role.sec_forwarder.arn
+}
+
+resource "aws_cloudwatch_event_rule" "sec_root_forward_usw2" {
+  provider    = aws.us_west_2
+  name        = "${local.sec_prefix}-root-forward"
+  description = "Forward root console sign-ins and root write calls (us-west-2) to ${var.aws_region}. AA-873."
+
+  event_pattern = local.sec_root_signin_forward_pattern
+  tags          = local.sec_tags
+}
+
+resource "aws_cloudwatch_event_target" "sec_root_forward_usw2" {
+  provider  = aws.us_west_2
+  rule      = aws_cloudwatch_event_rule.sec_root_forward_usw2.name
   target_id = "${replace(var.aws_region, "-", "")}-default-bus"
   arn       = "arn:aws:events:${var.aws_region}:${var.account_id}:event-bus/default"
   role_arn  = aws_iam_role.sec_forwarder.arn
