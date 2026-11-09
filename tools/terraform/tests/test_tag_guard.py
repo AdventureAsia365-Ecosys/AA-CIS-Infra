@@ -267,7 +267,7 @@ def test_every_root_default_tags_carry_the_mandatory_keys(policy, path):
     if path.endswith("aa365/versions.tf"):
         # App and Component stay out of the default: a forgotten one must fail the guard, not bill one app.
         assert "App" not in tags and "Component" not in tags
-        assert text.count("tags = local.tag_defaults") == 2  # both providers (us-west-1, us-east-1)
+        assert text.count("tags = local.tag_defaults") == 4  # every provider (us-west-1, us-east-1, us-east-2, us-west-2; S274)
 
 
 def _tf_files(*dirs: str):

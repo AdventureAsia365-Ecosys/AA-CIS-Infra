@@ -76,3 +76,23 @@ provider "aws" {
     tags = local.tag_defaults
   }
 }
+
+# S274 (AA-873): CloudTrail records a root console sign-in in us-east-1, us-east-2 OR us-west-2 (AWS docs; acc2 in the
+# last 90 days: 55 / 3 / 3). Only the EventBridge forward rules of security_baseline.tf use these two providers.
+provider "aws" {
+  alias  = "us_east_2"
+  region = "us-east-2"
+
+  default_tags {
+    tags = local.tag_defaults
+  }
+}
+
+provider "aws" {
+  alias  = "us_west_2"
+  region = "us-west-2"
+
+  default_tags {
+    tags = local.tag_defaults
+  }
+}
