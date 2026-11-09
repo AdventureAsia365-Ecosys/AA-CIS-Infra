@@ -43,6 +43,8 @@ locals {
     staff_cis_admin     = 10 # aa-cis. host -> CIS admin service (modules/environment staff_web.tf)
     staff_booking_admin = 11 # booking. host -> Booking admin service
     staff_apex_redirect = 12 # the apex -> 301 https://aa-cis.<zone>/ (dns.tf apex alias)
+    test_wp_block       = 13 # test-wp. host + sign-in / admin / XML-RPC paths -> 403 (AA-1060, test_wp_edge.tf)
+    test_wp             = 14 # test-wp. host, any other path -> the WordPress test site sidecar (AA-1060)
   }
 }
 
@@ -180,6 +182,63 @@ resource "aws_lb_listener_rule" "staff_apex_redirect" {
   }
 
   tags = local.staff_web_tags
+
+  depends_on = [aws_lb_listener_certificate.staff_web]
+}
+
+# AA-1060: the WordPress test site (test_wp_edge.tf). The block rule sits above the forward rule: no browser sign-in,
+# no dashboard, no XML-RPC from outside (the mu-plugin of modules/environment test_wp/start.sh refuses sign-in too).
+resource "aws_lb_listener_rule" "test_wp_block" {
+  count = local.test_wp_on
+
+  listener_arn = module.alb.https_listener_arn
+  priority     = local.alb_https_rule_priorities.test_wp_block
+
+  action {
+    type = "fixed-response"
+
+    fixed_response {
+      content_type = "text/plain"
+      message_body = "Not available on this test site."
+      status_code  = "403"
+    }
+  }
+
+  condition {
+    host_header {
+      values = [local.test_wp_host]
+    }
+  }
+
+  condition {
+    path_pattern {
+      values = local.test_wp_blocked_paths
+    }
+  }
+
+  tags = local.test_wp_tags
+
+  depends_on = [aws_lb_listener_certificate.staff_web]
+}
+
+resource "aws_lb_listener_rule" "test_wp" {
+  count = local.test_wp_on
+
+  listener_arn = module.alb.https_listener_arn
+  priority     = local.alb_https_rule_priorities.test_wp
+
+  action {
+    type             = "forward"
+    target_group_arn = module.environment.test_wp_target_group_arn
+  }
+
+  condition {
+    host_header {
+      values = [local.test_wp_host]
+    }
+  }
+
+  tags = local.test_wp_tags
 
   depends_on = [aws_lb_listener_certificate.staff_web]
 }
