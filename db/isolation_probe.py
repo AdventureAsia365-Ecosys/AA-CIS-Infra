@@ -67,6 +67,14 @@ both ways (crm_app -> booking / tripplanner / shared; every AA app role -> crm.j
 reader holds a privilege on an F1 vault table, crm.trip_traveler included (Fix A1), and crm_ai_reader / crm_insights
 hold none on any base table of crm (catalog facts).
 
+TripPlanner tenant cell (AA-1038, tp-028 FORCE slice): tripplanner.sessions, trip_drafts, trip_events and outbox are
+FORCE row-level security with a strict tenant policy for the runtime role. Cell tenant.tripplanner_isolation runs the
+tenant matrix of every RLS table of schema tripplanner through `tripplanner`'s own login (GUC unset / '' / forged /
+each tenant of shared.tenants: no row without a real tenant, no other tenant's row under one) and asserts the four are
+forced; cell rls.tripplanner_system_scope checks the jobs Lambda's path (GUC app.tenant_scope = 'system', policy
+<table>_system) reads every row (= the catalog login's reference count, taken before and after). Both expected from
+tp-028.
+
 Mirrors db/owners.yaml (schemas, anchor schemas, owner roles, transfer keys, runtime secrets, view
 owners, runtime privileges, contract consumer grants on single objects, RLS allowlist, master role):
 db/tests/test_owners_registry.py fails when they disagree.
@@ -223,6 +231,14 @@ UNJUDGED = "not judged: no tenant column and not PARENT_SCOPED"
 SHARED_SCOPE_CONSTANTS = frozenset({MASTER_TENANT, PLATFORM_SCOPE})
 
 CIS_SCHEMAS = OWNERS["cis"].schemas
+# AA-1038 (TripPlanner tp-028, FORCE slice): the tenant tables of schema tripplanner and the runtime role judged on them
+# (cell tenant.tripplanner_isolation, its own login), and the GUC of the jobs Lambda's cross-tenant path (policy
+# <table>_system, cell rls.tripplanner_system_scope). Every RLS table of the schema is matrixed; these four must be
+# among them, forced.
+TP_RUNTIME = "tripplanner"
+TP_SCHEMAS = OWNERS["tripplanner"].schemas
+TP_TENANT_TABLES = ("tripplanner.outbox", "tripplanner.sessions", "tripplanner.trip_drafts", "tripplanner.trip_events")
+TP_SCOPE_SQL = "SELECT pg_catalog.set_config('app.tenant_scope', 'system', true)"
 CIS_APP = "cis_app"
 CIS_APP_SECRET = dict(OWNERS["cis"].runtime_secrets)[CIS_APP]
 TENANT_POOL = "aa_app_user"
@@ -283,7 +299,7 @@ CROSS_APP = (
 )
 
 VERSION_KEYS = ("rl-001", "243", "bk-014", "tp-013", "244", "rl-002", "245", "rl-003", "rl-004", "269",
-                "crm-001", "crm-006", "tp-027") + CONSUMER_GRANT_KEYS
+                "crm-001", "crm-006", "tp-027", "tp-028") + CONSUMER_GRANT_KEYS
 TRANSFER_KEYS = {name: f"{name}_transferred" for name in OWNERS}
 KEY_TEXT = {
     "rl-001": "rl-001 registered (X1 S3, first apply of the S8 train)",
@@ -299,6 +315,8 @@ KEY_TEXT = {
     "crm-001": "crm-001 registered (AA-932: crm.job, crm_app grants and default privileges)",
     "crm-006": "crm-006 registered (AA-937: F1 / F2 complete, the F2 views and the first reader grants)",
     "tp-027": "tp-027 registered (AA-1046: role booking lost the tripplanner.v_inquiry_outbox read and schema USAGE)",
+    "tp-028": "tp-028 registered (AA-1038: FORCE row-level security and strict tenant policies on the TripPlanner trip "
+              "tables, system scope for the jobs Lambda)",
     "crm_transferred": "crm-001 registered and schema crm owned by crm_owner (AA-932)",
     "crm_app_secret_ready": "crm/dev/database-url holds a crm_app DSN (Nghiệp's hand edit, AA-932)",
     "crm_app_password_set": (f"role crm_app carries the '{PASSWORD_MARKER}' comment of DB Migrate "
@@ -820,6 +838,52 @@ def _crm_vault_cells(info: dict) -> list:
     return cells
 
 
+def tp_tenant_cells(facts: dict) -> list:
+    """AA-1038 (tp-028): the TripPlanner tenant matrix through `tripplanner`'s own login, and its system scope."""
+    tm = facts.get("tp_matrix", {})
+    cross, errors = [], []
+    for fq, modes in sorted(tm.get("tables", {}).items()):
+        for mode, r in modes.items():
+            if r.get("error"):
+                errors.append(f"{fq} [{mode}] {r['error']}")
+            elif (r.get("cross") or 0) > 0:
+                cross.append(f"{fq} [{mode}] cross={r['cross']} visible={r['visible']}")
+            elif r.get("cross") is None and (r.get("visible") or 0) > 0:
+                errors.append(f"{fq} [{mode}] {UNJUDGED} ({r['visible']} visible rows)")
+    rls = {t["fq"]: t for t in facts.get("_tp_rls_tables", [])}
+    not_forced = [t for t in TP_TENANT_TABLES if not rls.get(t, {}).get("forced")]
+    matrixed = set(tm.get("tables", {}))
+    unmatrixed = [t for t in TP_TENANT_TABLES if t not in matrixed]
+    login = facts["logins"].get(TP_RUNTIME, {})
+    err = tm.get("error", "") or login.get("error", "") or ("; ".join(errors[:3]) if errors else "")
+    cells = [Cell("tenant.tripplanner_isolation", "tenant",
+                  f"{TP_RUNTIME} (own login) sees no tenant row under unset/empty/forged GUC and no other tenant's row "
+                  f"under each tenant GUC, on every RLS table of schema tripplanner; "
+                  f"{', '.join(t.split('.', 1)[1] for t in TP_TENANT_TABLES)} FORCE row-level security (tp-028)",
+                  ("tp-028",), ok=not err and not cross and not not_forced and not unmatrixed,
+                  error=err,
+                  detail={"tables": len(matrixed), "modes": tm.get("modes", []), "cross_tenant": cross[:SAMPLE],
+                          "errors": errors[:SAMPLE], "not_forced": not_forced, "not_matrixed": unmatrixed,
+                          "matrix": f"see the `matrix` records of role {TP_RUNTIME}"})]
+    ts = facts.get("tp_system", {})
+    ref, got = ts.get("reference", {}), ts.get(TP_RUNTIME, {})
+    mismatch = []
+    for t in TP_TENANT_TABLES:
+        r, g = ref.get(t, []), got.get(t, {})
+        if g.get("error") or not r or "system" not in g:
+            mismatch.append(f"{t}: {g.get('error') or ('no reference count' if not r else 'not counted')}")
+        elif g["system"] not in r:
+            mismatch.append(f"{t}: {TP_RUNTIME} {g['system']} under the system scope, reference {r}")
+    cells.append(Cell("rls.tripplanner_system_scope", "rls",
+                      f"{TP_RUNTIME} (own login) under app.tenant_scope = 'system' (the jobs Lambda's path, policy "
+                      f"<table>_system) reads every row of the {len(TP_TENANT_TABLES)} tenant tables (= catalog login "
+                      f"count; tp-028)", ("tp-028",),
+                      ok=not ts.get("error") and not login.get("error") and not mismatch,
+                      error=ts.get("error", "") or login.get("error", ""),
+                      detail={"tables": len(TP_TENANT_TABLES), "mismatch": mismatch[:SAMPLE]}))
+    return cells
+
+
 def build_cells(facts: dict, keys: dict) -> list:
     cells: list = []
     roles = facts["roles"]
@@ -988,6 +1052,8 @@ def build_cells(facts: dict, keys: dict) -> list:
                       ("244",) + CIS_APP_LOGIN_KEYS, ok=not fp.get("error") and not mismatch,
                       error=fp.get("error", ""), detail={"tables": len(RLS_PARITY_TABLES),
                                                          "mismatch": mismatch[:SAMPLE]}))
+
+    cells.extend(tp_tenant_cells(facts))
 
     ttv = facts["ttv"]
     cells.append(Cell("tenant.cis_runtime_sees_all_ttv", "tenant",
@@ -1183,6 +1249,10 @@ async def collect_catalog(conn, cfg: dict, facts: dict, runtime_user) -> list:
     v, e = await _savepoint(conn, lambda: conn.fetch(POOL_POLICIES_SQL, list(CIS_SCHEMAS), TENANT_POOL))
     facts["_allowed_constants"] = {} if e else allowed_tenant_constants([dict(r) for r in v])
     facts["_rls_tables"] = rls_tables
+    v, e = await _savepoint(conn, lambda: conn.fetch(RLS_TABLES_SQL, list(TP_SCHEMAS), list(TENANT_SCOPE_COLUMNS)))
+    if e:
+        facts["tp_matrix"]["error"] = "RLS table list: " + safe_err(e)
+    facts["_tp_rls_tables"] = [] if e else [dict(r) for r in v]
     v, e = await _savepoint(conn, lambda: conn.fetch(TENANTS_SQL))
     tenants = [] if e else [r["tenant_id"] for r in v]
     if e:
@@ -1257,6 +1327,8 @@ async def probe_login(role: str, sid: str, cfg: dict, secrets: Secrets, facts: d
             await tenant_matrix(conn, facts, tenants)
         if role == CIS_APP:
             await parity_counts(conn, facts)
+        if role == TP_RUNTIME:
+            await tp_tenant_matrix(conn, facts, tenants)
         if role == CIS_RUNTIME:
             try:
                 facts["ttv"]["runtime"] = await ttv_count(conn)
@@ -1278,14 +1350,35 @@ async def tenant_matrix(conn, facts: dict, tenants: list) -> None:
     tm = facts["tenant_matrix"]
     if tm.get("error"):
         return
+    tm["modes"], tm["tables"] = await _matrix(conn, facts.get("_rls_tables", []), facts.get("_allowed_constants", {}),
+                                              tenants)
+
+
+async def tp_tenant_matrix(conn, facts: dict, tenants: list) -> None:
+    """AA-1038 (tp-028): the same matrix through the TripPlanner runtime role's own login, over every RLS table of
+    schema tripplanner (no shared constants: no TripPlanner row is shared between tenants), then that login's count of
+    each forced tenant table under the system scope (the jobs Lambda's path), compared with the catalog login's
+    reference count in build_cells."""
+    tm = facts["tp_matrix"]
+    if not tm.get("error"):
+        tm["modes"], tm["tables"] = await _matrix(conn, facts.get("_tp_rls_tables", []), {}, tenants)
+    out = facts["tp_system"].setdefault(TP_RUNTIME, {})
+    for t in TP_TENANT_TABLES:
+        async def count(t=t):
+            await conn.execute(TP_SCOPE_SQL)
+            return await conn.fetchval(f"SELECT count(*)::bigint FROM {t}")
+        v, e = await _savepoint(conn, count)
+        out[t] = {"error": safe_err(e)} if e else {"system": v}
+
+
+async def _matrix(conn, tables: list, allowed: dict, tenants: list) -> tuple:
+    """(modes, {table fq: {mode: {visible, cross} | {error}}}) of `tables` (RLS_TABLES_SQL rows) on `conn`."""
     labels = tenant_labels(tenants)
     forged = str(uuid.uuid4())
     modes = [("unset", None, None), ("empty", "", None), ("forged", forged, forged)] + \
             [(f"tenant:{labels[t]}", t, t) for t in tenants]
-    tm["modes"] = [m[0] for m in modes]
-    tm["tables"] = {}
-    allowed = facts.get("_allowed_constants", {})
-    for t in facts.get("_rls_tables", []):
+    out = {}
+    for t in tables:
         row_out = {}
         for mode, guc, me in modes:
             async def count(t=t, guc=guc, me=me):
@@ -1301,7 +1394,8 @@ async def tenant_matrix(conn, facts: dict, tenants: list) -> None:
                 return {"visible": n, "cross": n if mode in ("unset", "empty", "forged") else None}
             v, e = await _savepoint(conn, count)
             row_out[mode] = {"error": safe_err(e)} if e else v
-        tm["tables"][t["fq"]] = row_out
+        out[t["fq"]] = row_out
+    return [m[0] for m in modes], out
 
 
 async def collect(cfg: dict, facts: dict) -> int:
@@ -1342,6 +1436,15 @@ async def collect(cfg: dict, facts: dict) -> int:
                     refs.setdefault(t, []).append(v)
             except Exception as e:  # noqa: BLE001
                 facts["force_parity"]["error"] = "reference count: " + safe_err(e)
+            try:
+                refs = facts["tp_system"].setdefault("reference", {})
+                for t in TP_TENANT_TABLES:
+                    v, e = await _savepoint(conn, lambda t=t: conn.fetchval(f"SELECT count(*)::bigint FROM {t}"))
+                    if e:
+                        raise e
+                    refs.setdefault(t, []).append(v)
+            except Exception as e:  # noqa: BLE001
+                facts["tp_system"]["error"] = "reference count: " + safe_err(e)
             finally:
                 await tr.rollback()
 
@@ -1370,6 +1473,7 @@ def empty_facts() -> dict:
     return {"catalog": {"login": None, "registered": [], "anchor_owner": {}}, "roles": {}, "ownership": {},
             "owner_grants": {}, "runtime_grants": {}, "owner_only": {}, "default_acl": {}, "consumer": {},
             "registry_writes": {}, "rls_enable_only": {}, "tenant_matrix": {}, "ttv": {}, "force_parity": {},
+            "tp_matrix": {}, "tp_system": {},
             "sessions": {}, "logins": {}, "cis_runtime": {}, "crm_readers": {}}
 
 
@@ -1405,6 +1509,8 @@ async def main(argv=None) -> int:
         emit("cell", c.as_json(keys))
     for fq, modes in sorted(facts["tenant_matrix"].get("tables", {}).items()):
         emit("matrix", {"table": fq, "role": TENANT_POOL, "modes": modes})
+    for fq, modes in sorted(facts["tp_matrix"].get("tables", {}).items()):
+        emit("matrix", {"table": fq, "role": TP_RUNTIME, "modes": modes})
     summary = summarize(cells, keys)
     emit("summary", summary)
     return summary["exit"]
