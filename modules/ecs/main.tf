@@ -85,6 +85,16 @@ locals {
     { name = "T9_FAQ_LLM_FILTER", value = var.t9_faq_llm_filter },
   ]
 
+  # AA-1049 (CIS ADR 0020, W3): the T2 linear orchestrator and the T9 SEO builder (AA-CIS-App
+  # services/content_generation/t2_orchestrator.py T2_ORCHESTRATOR, services/acp_content_writing/service.py
+  # T9_SEO_BUILDER). Both writers run as jobs on the worker, so only the worker task definition carries them.
+  # null = no env: the app default (graph / off), the same task definition as before the variables existed.
+  # T9_REGRESSION_GUARD_MODE stays unset (off) on purpose.
+  aa1049_w3_env = concat(
+    var.t2_orchestrator != null ? [{ name = "T2_ORCHESTRATOR", value = var.t2_orchestrator }] : [],
+    var.t9_seo_builder != null ? [{ name = "T9_SEO_BUILDER", value = var.t9_seo_builder }] : [],
+  )
+
   # AA-835 (S6 review): the supply_media_purge job (AA-CIS-App services/jobs/supply_media_purge_job.py, worker only)
   # invalidates /supply/<type>/<media_id>-* on the photos CDN after it deletes a withdrawn Booking photo's CIS copies.
   # Empty ARN (CDN gated off) = no env, no grant: the job then skips the invalidation ("not_configured").
@@ -800,6 +810,7 @@ resource "aws_ecs_task_definition" "worker" {
       local.place_pipeline_auto_env,
       local.erasure_env,
       local.t9_faq_filter_env,
+      local.aa1049_w3_env,
       local.supply_photo_purge_env,
       local.s1_writer_env,
       local.llm_daily_probe_env,
