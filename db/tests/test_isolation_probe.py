@@ -1094,6 +1094,152 @@ class TenantMatrixAngleGateTest(unittest.TestCase):
             self.assertIn(f"{AGO} [tenant:t1] {p.UNJUDGED} (2 visible rows)", cell.detail["errors"])
 
 
+TP_TABLES = [{"fq": fq, "q": '"{}"."{}"'.format(*fq.split(".")), "forced": True, "tenant_col": "tenant_id"}
+             for fq in p.TP_TENANT_TABLES]
+TP_ROWS = {fq: [{"tenant_id": T1}, {"tenant_id": T1}, {"tenant_id": T2}]
+           for fq in p.TP_TENANT_TABLES}
+
+
+def tp_forced(r, guc, scope):
+    """tp-028 as written: <table>_tenant (the bound tenant only) OR <table>_system (scope 'system')."""
+    return r["tenant_id"] == guc or scope == "system"
+
+
+def tp_shadow(r, guc, scope):
+    """tp-025 (shadow): no context = every row."""
+    return guc is None or r["tenant_id"] == guc
+
+
+class _TpSavepoint:
+    def __init__(self, conn):
+        self.conn = conn
+
+    async def __aenter__(self):
+        self.saved = (self.conn.guc, self.conn.scope)
+
+    async def __aexit__(self, *exc):
+        self.conn.guc, self.conn.scope = self.saved
+        return False
+
+
+class TpConn:
+    """tripplanner's session over fixture rows; `policy(row, GUC tenant or None, scope or None) -> visible`."""
+
+    def __init__(self, rows, policy):
+        self.rows, self.policy, self.guc, self.scope = rows, policy, None, None
+
+    def transaction(self):
+        return _TpSavepoint(self)
+
+    async def execute(self, sql, *args):
+        if sql == p.TP_SCOPE_SQL:
+            self.scope = "system"
+        else:
+            self.guc = args[0]
+
+    def _table(self, sql):
+        return next(fq for fq in self.rows if '"{}"."{}"'.format(*fq.split(".")) in sql or sql.endswith(fq))
+
+    def visible(self, fq):
+        return [r for r in self.rows[fq] if self.policy(r, self.guc or None, self.scope)]
+
+    async def fetchrow(self, sql, me, allowed):
+        vis = self.visible(self._table(sql.split(" FROM ")[-1]))
+        return {"visible": len(vis), "cross": sum(r["tenant_id"] != me for r in vis)}
+
+    async def fetchval(self, sql):
+        return len(self.visible(self._table(sql)))
+
+
+class TripPlannerTenantCellTest(unittest.TestCase):
+    """AA-1038 (TripPlanner tp-028): the tenant matrix through tripplanner's own login and its system scope. Pure (TpConn);
+    the SQL ran against a throwaway PostgreSQL with the tp-028 policies (implementation notes AA-1038-tp-isolation-probe)."""
+
+    CELLS = ("tenant.tripplanner_isolation", "rls.tripplanner_system_scope")
+
+    def run_cells(self, policy=tp_forced, registered=("tp-028",), tables=None, reference=None):
+        f = today_facts()
+        f["catalog"]["registered"] = list(registered)
+        f["tp_matrix"], f["tp_system"] = {}, {}
+        f["_tp_rls_tables"] = TP_TABLES if tables is None else tables
+        rows = copy.deepcopy(TP_ROWS)
+        f["tp_system"]["reference"] = reference or {fq: [len(v)] for fq, v in rows.items()}
+        asyncio.run(p.tp_tenant_matrix(TpConn(rows, policy), f, [p.MASTER_TENANT, T1, T2]))
+        st, keys = statuses(f)
+        cells = {c.id: c for c in p.build_cells(f, keys)}
+        return {k: st[k] for k in self.CELLS}, f, cells
+
+    def test_pending_until_tp028_is_registered(self):
+        st, _keys = statuses(today_facts())                       # no TripPlanner facts at all yet
+        self.assertEqual({k: st[k] for k in self.CELLS}, {k: "pending" for k in self.CELLS})
+        st, _, _ = self.run_cells(policy=tp_shadow, registered=())  # tp-025 live: the unset branch reads every row
+        self.assertEqual(st["tenant.tripplanner_isolation"], "pending")
+        st, _, _ = self.run_cells(registered=())                   # applied but not registered yet: ready
+        self.assertEqual(st, {k: "ready" for k in self.CELLS})
+
+    def test_tp028_policies_pass(self):
+        st, f, _ = self.run_cells()
+        self.assertEqual(st, {k: "pass" for k in self.CELLS})
+        m = f["tp_matrix"]["tables"]["tripplanner.sessions"]
+        self.assertEqual(m["unset"], {"visible": 0, "cross": 0})
+        self.assertEqual(m["empty"], {"visible": 0, "cross": 0})
+        self.assertEqual(m["forged"], {"visible": 0, "cross": 0})
+        self.assertEqual(m["tenant:t1"], {"visible": 2, "cross": 0})
+        self.assertEqual(m["tenant:master"], {"visible": 0, "cross": 0})
+        self.assertEqual(f["tp_system"]["tripplanner"]["tripplanner.outbox"], {"system": 3})
+
+    def test_the_shadow_unset_branch_fails_once_tp028_is_registered(self):
+        st, f, cells = self.run_cells(policy=tp_shadow)
+        self.assertEqual(st["tenant.tripplanner_isolation"], "FAIL")
+        self.assertEqual(f["tp_matrix"]["tables"]["tripplanner.trip_events"]["unset"], {"visible": 3, "cross": 3})
+        self.assertTrue(any("[unset]" in x for x in cells["tenant.tripplanner_isolation"].detail["cross_tenant"]))
+        self.assertEqual(st["rls.tripplanner_system_scope"], "pass")       # every row, if for the wrong reason
+
+    def test_another_tenants_row_under_a_tenant_fails(self):
+        st, f, _ = self.run_cells(policy=lambda r, g, s: g is not None and r["tenant_id"] in (g, T2) or s == "system")
+        self.assertEqual(st["tenant.tripplanner_isolation"], "FAIL")
+        self.assertEqual(f["tp_matrix"]["tables"]["tripplanner.outbox"]["tenant:t1"], {"visible": 3, "cross": 1})
+
+    def test_a_table_not_forced_or_not_matrixed_fails(self):
+        tables = [dict(t, forced=t["fq"] != "tripplanner.outbox") for t in TP_TABLES]
+        st, _, cells = self.run_cells(tables=tables)
+        self.assertEqual(st["tenant.tripplanner_isolation"], "FAIL")
+        self.assertEqual(cells["tenant.tripplanner_isolation"].detail["not_forced"], ["tripplanner.outbox"])
+        st, _, cells = self.run_cells(tables=[t for t in TP_TABLES if t["fq"] != "tripplanner.sessions"])
+        self.assertEqual(st["tenant.tripplanner_isolation"], "FAIL")
+        self.assertEqual(cells["tenant.tripplanner_isolation"].detail["not_matrixed"], ["tripplanner.sessions"])
+
+    def test_a_missing_system_path_fails_the_system_cell(self):
+        st, _, cells = self.run_cells(policy=lambda r, g, s: r["tenant_id"] == g)
+        self.assertEqual(st, {"tenant.tripplanner_isolation": "pass", "rls.tripplanner_system_scope": "FAIL"})
+        self.assertTrue(cells["rls.tripplanner_system_scope"].detail["mismatch"][0].endswith("reference [3]"))
+
+    def test_a_concurrent_insert_between_the_reference_counts_still_passes(self):
+        ref = {fq: [3, 4] for fq in p.TP_TENANT_TABLES}
+        st, _, _ = self.run_cells(reference=ref)
+        self.assertEqual(st["rls.tripplanner_system_scope"], "pass")
+
+    def test_a_failed_login_fails_both_cells(self):
+        f = today_facts()
+        f["catalog"]["registered"] = ["tp-028"]
+        f["logins"]["tripplanner"] = {"secret": "tripplanner/dev/database-url", "error": "login failed: 28P01 x"}
+        f["tp_matrix"], f["tp_system"], f["_tp_rls_tables"] = {}, {}, TP_TABLES
+        st, _keys = statuses(f)
+        self.assertEqual({k: st[k] for k in self.CELLS}, {k: "FAIL" for k in self.CELLS})
+
+    def test_matrix_records_name_the_role(self):
+        f = p.empty_facts()
+        f["tp_matrix"] = {"modes": ["unset"], "tables": {"tripplanner.sessions": {"unset": {"visible": 0, "cross": 0}}}}
+        out = io.StringIO()
+        with redirect_stdout(out), mock.patch.object(p, "collect", new=mock.AsyncMock(
+                side_effect=lambda cfg, facts: facts.update(copy.deepcopy(f)) or 0)), \
+                mock.patch.object(p, "state_keys", return_value={}), mock.patch.object(p, "build_cells", return_value=[]):
+            asyncio.run(p.main(["isolation_probe.py", "{}"]))
+        recs = [json.loads(ln.split(" ", 2)[2]) for ln in out.getvalue().splitlines() if ln.startswith("PROBE matrix")]
+        self.assertEqual(recs, [{"table": "tripplanner.sessions", "role": "tripplanner",
+                                 "modes": {"unset": {"visible": 0, "cross": 0}}}])
+
+
 class MainTest(unittest.TestCase):
     def run_main(self, collect):
         out = io.StringIO()
