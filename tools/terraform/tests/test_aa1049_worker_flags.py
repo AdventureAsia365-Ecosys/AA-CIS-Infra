@@ -98,8 +98,10 @@ def test_regression_guard_mode_is_not_set():
         assert "t9_regression_guard" not in text
 
 
-# --- 5. the S1 train's switch stays off on the live root ---------------------------------------------------------------
+# --- 5. the S1 train's switch on the live root (S276, tech lead: smoke, then keep it on) -----------------------------
 
-def test_live_root_does_not_set_the_s1_switch():
-    assert "s1_control" not in _module_ecs()
+def test_live_root_sets_the_s1_switch_to_contract_only():
+    import re
+    vals = re.findall(r's1_control\s*=\s*"([^"]*)"', _module_ecs())
+    assert vals == ["contract"]
     assert "S1_CONTROL" not in _code(MAIN)
