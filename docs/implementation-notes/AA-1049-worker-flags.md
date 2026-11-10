@@ -36,3 +36,12 @@ worker after the trials the tech lead asked for (decision: trial-then-on for bot
 - The task definition change reaches the running worker only through a new revision: Terraform apply registers the
   template revision; CIS deploy-dev copies the latest revision, so the env also survives the next app deploy.
 - Rollback: set both to null (or "graph" / "off"), apply, then CIS deploy-dev.
+
+## S276 — the S1 train's switch (`s1_control`)
+
+- Same pattern: nullable `s1_control` (contract | graph) in `modules/ecs/variables.tf`, `S1_CONTROL` in the worker's
+  `aa1049_w3_env` only when set (the A1 rewrite runs as an `s1_rewrite` job on the worker).
+- The live root does NOT set it: the CIS S1 train ships default off and is turned on only after the tech lead's go
+  (the ~1 USD S1 smoke first). No plan change on apply while it is null.
+- Turn on later: `s1_control = "contract"` in `accounts/aa365/main.tf` module "ecs", apply, then CIS deploy-dev; the
+  test's section 5 then changes with it.

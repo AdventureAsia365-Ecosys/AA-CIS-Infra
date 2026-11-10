@@ -7,6 +7,8 @@ Offline, no Terraform run. What must hold:
    definition (both writers run as jobs there); the api task definition carries neither.
 3. The live root (accounts/aa365) turns both on: linear and on (tech lead decision S275, trial-then-on).
 4. T9_REGRESSION_GUARD_MODE stays unset everywhere (tech lead: keep off).
+5. (S276) the S1 train's switch s1_control (contract | graph) is nullable like the others, worker only, and the live
+   root does not set it (off until the tech lead's go; the paid S1 smoke comes first).
 """
 from __future__ import annotations
 
@@ -48,7 +50,8 @@ def _module_ecs() -> str:
 # --- 1. nullable variables -------------------------------------------------------------------------------------------
 
 def test_variables_are_nullable_with_a_closed_value_set():
-    for name, values in (("t2_orchestrator", ("linear", "graph")), ("t9_seo_builder", ("on", "off"))):
+    for name, values in (("t2_orchestrator", ("linear", "graph")), ("t9_seo_builder", ("on", "off")),
+                         ("s1_control", ("contract", "graph"))):
         var = _block_after(ECS_VARS, ECS_VARS.index(f'variable "{name}"'))
         assert "default     = null" in var, name
         assert "type        = string" in var, name
@@ -65,6 +68,7 @@ def test_env_is_emitted_only_when_the_variable_is_set():
     local = _code(ECS[start : ECS.index("\n  )", start)])
     assert 'var.t2_orchestrator != null ? [{ name = "T2_ORCHESTRATOR", value = var.t2_orchestrator }] : []' in local
     assert 'var.t9_seo_builder != null ? [{ name = "T9_SEO_BUILDER", value = var.t9_seo_builder }] : []' in local
+    assert 'var.s1_control != null ? [{ name = "S1_CONTROL", value = var.s1_control }] : []' in local
 
 
 def test_only_the_worker_task_definition_carries_the_switches():
@@ -72,7 +76,7 @@ def test_only_the_worker_task_definition_carries_the_switches():
     api = _task_definition("api")
     assert "local.aa1049_w3_env," in worker
     assert "aa1049_w3_env" not in api
-    for env_name in ("T2_ORCHESTRATOR", "T9_SEO_BUILDER"):
+    for env_name in ("T2_ORCHESTRATOR", "T9_SEO_BUILDER", "S1_CONTROL"):
         assert env_name not in api
     # One use in the whole module: the worker container's environment list.
     assert _code(ECS).count("local.aa1049_w3_env") == 1
@@ -92,3 +96,12 @@ def test_regression_guard_mode_is_not_set():
     for text in (_code(ECS), _code(ECS_VARS), _code(MAIN)):
         assert "T9_REGRESSION_GUARD_MODE" not in text
         assert "t9_regression_guard" not in text
+
+
+# --- 5. the S1 train's switch on the live root (S276, tech lead: smoke, then keep it on) -----------------------------
+
+def test_live_root_sets_the_s1_switch_to_contract_only():
+    import re
+    vals = re.findall(r's1_control\s*=\s*"([^"]*)"', _module_ecs())
+    assert vals == ["contract"]
+    assert "S1_CONTROL" not in _code(MAIN)
