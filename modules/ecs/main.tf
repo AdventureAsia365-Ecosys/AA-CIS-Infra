@@ -90,9 +90,12 @@ locals {
   # T9_SEO_BUILDER). Both writers run as jobs on the worker, so only the worker task definition carries them.
   # null = no env: the app default (graph / off), the same task definition as before the variables existed.
   # T9_REGRESSION_GUARD_MODE stays unset (off) on purpose.
+  # S276: the S1 train's switch (services/content_generation/s1_train.py S1_CONTROL; the A1 rewrite runs as an
+  # s1_rewrite job on the worker), null until the tech lead turns it on.
   aa1049_w3_env = concat(
     var.t2_orchestrator != null ? [{ name = "T2_ORCHESTRATOR", value = var.t2_orchestrator }] : [],
     var.t9_seo_builder != null ? [{ name = "T9_SEO_BUILDER", value = var.t9_seo_builder }] : [],
+    var.s1_control != null ? [{ name = "S1_CONTROL", value = var.s1_control }] : [],
   )
 
   # AA-835 (S6 review): the supply_media_purge job (AA-CIS-App services/jobs/supply_media_purge_job.py, worker only)

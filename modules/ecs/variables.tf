@@ -327,6 +327,17 @@ variable "t9_seo_builder" {
   }
 }
 
+variable "s1_control" {
+  description = "AA-1049 (CIS ADR 0020, S1 train): env S1_CONTROL on the worker — contract (the S1 train: code-composed contract fields, the s1 route rows, the deterministic local fix, the class router; services/content_generation/s1_train.py) or graph (main's A1 path). null = not set (the app default, graph); no env on the task definition."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.s1_control == null ? true : contains(["contract", "graph"], var.s1_control)
+    error_message = "s1_control must be null, contract or graph."
+  }
+}
+
 variable "tripplanner_revalidate_url" {
   description = "AA-1038: TRIPPLANNER_REVALIDATE_URL of the CIS api and worker (the TripPlanner catalog purge endpoint). null = not set (the app default, the public TripPlanner host since the Vercel retirement); the root sets the public host of its zone. Never empty (\"\" switches delivery off)."
   type        = string
