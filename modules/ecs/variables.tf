@@ -305,6 +305,28 @@ variable "t9_faq_llm_filter" {
   }
 }
 
+variable "t2_orchestrator" {
+  description = "AA-1049 (CIS ADR 0020): env T2_ORCHESTRATOR on the worker — linear (the small linear T2 orchestrator, services/content_generation/t2_orchestrator.py) or graph (main's LangGraph + T3 path). null = not set (the app default, graph); no env on the task definition."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.t2_orchestrator == null ? true : contains(["linear", "graph"], var.t2_orchestrator)
+    error_message = "t2_orchestrator must be null, linear or graph."
+  }
+}
+
+variable "t9_seo_builder" {
+  description = "AA-1049 (CIS ADR 0020): env T9_SEO_BUILDER on the worker — on (code composes the T9 meta and slug first, services/acp_content_writing/seo_builder.py) or off (main's SEO fit call). null = not set (the app default, off); no env on the task definition."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.t9_seo_builder == null ? true : contains(["on", "off"], var.t9_seo_builder)
+    error_message = "t9_seo_builder must be null, on or off."
+  }
+}
+
 variable "tripplanner_revalidate_url" {
   description = "AA-1038: TRIPPLANNER_REVALIDATE_URL of the CIS api and worker (the TripPlanner catalog purge endpoint). null = not set (the app default, the public TripPlanner host since the Vercel retirement); the root sets the public host of its zone. Never empty (\"\" switches delivery off)."
   type        = string

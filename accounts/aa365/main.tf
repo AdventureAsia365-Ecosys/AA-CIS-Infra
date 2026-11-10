@@ -203,6 +203,12 @@ module "ecs" {
   # AA-645: S1 writer v2 on the worker, on since S248 (set by hand until S250, now carried here so a template
   # revision keeps it). Rollback to writer v1: false, apply, then CIS deploy-dev.
   s1_writer_v2_enabled = true
+  # AA-1049 W3 (S275, tech lead: trial-then-on): the T2 linear orchestrator (Dev trial 5/5 succeeded, linear path,
+  # final contract agrees, 0 block codes, 0.17 USD) and the T9 SEO builder (Dev trial 3/3 approved, 0 meta-length
+  # holds, 0.21 USD), worker only. T9_REGRESSION_GUARD_MODE stays off. Rollback: null (or "graph" / "off"), apply,
+  # then CIS deploy-dev.
+  t2_orchestrator = "linear"
+  t9_seo_builder  = "on"
   # AA-1018: the daily LLM connection probe (gateway design decision 2, S261: under 1 USD a month). Catalog estimate
   # with every enabled text deployment answering: about 0.0063 USD a day (acc3 9 models 0.0049, acc2 5 candidates
   # 0.00095, openai-direct 2 models 0.0004), about 0.20 USD a month; a refused call costs 0. Rollback: false.
