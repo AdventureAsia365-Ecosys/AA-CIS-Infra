@@ -98,6 +98,13 @@ locals {
     var.s1_control != null ? [{ name = "S1_CONTROL", value = var.s1_control }] : [],
   )
 
+  # AA-1081 (AA-1077 memo, option C): the T7 Blog minimum seed in words (AA-CIS-App services/acp_shared/blog_seed.py
+  # T7_BLOG_MIN_SEED_WORDS, read by slate.propose_slate in the t7_slate job on the worker), so only the worker task
+  # definition carries it. null = no env: the app default (off), the same task definition as before the variable.
+  t7_blog_seed_env = var.t7_blog_min_seed_words != null ? [
+    { name = "T7_BLOG_MIN_SEED_WORDS", value = tostring(var.t7_blog_min_seed_words) },
+  ] : []
+
   # AA-835 (S6 review): the supply_media_purge job (AA-CIS-App services/jobs/supply_media_purge_job.py, worker only)
   # invalidates /supply/<type>/<media_id>-* on the photos CDN after it deletes a withdrawn Booking photo's CIS copies.
   # Empty ARN (CDN gated off) = no env, no grant: the job then skips the invalidation ("not_configured").
@@ -814,6 +821,7 @@ resource "aws_ecs_task_definition" "worker" {
       local.erasure_env,
       local.t9_faq_filter_env,
       local.aa1049_w3_env,
+      local.t7_blog_seed_env,
       local.supply_photo_purge_env,
       local.s1_writer_env,
       local.llm_daily_probe_env,

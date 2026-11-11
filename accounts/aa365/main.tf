@@ -213,6 +213,10 @@ module "ecs" {
   # showed 0 undeclared diffs (D-s1-compose 280, D-s1-status 1); the ~1 USD S1 smoke runs with it on. Rollback: null
   # (or "graph"), apply, then CIS deploy-dev.
   s1_control = "contract"
+  # AA-1081 / AA-1077 (S277, tech lead: on at 600 words): the T7 Blog minimum seed. A Subject whose seed + walk is under
+  # 600 words is not proposed on Blog (it stays on the shorter Channels); the phase 3 audit's short seeds gave most F4
+  # (too short) holds. DB reads only, no LLM cost. Rollback: null, apply, then CIS deploy-dev.
+  t7_blog_min_seed_words = 600
   # AA-1018: the daily LLM connection probe (gateway design decision 2, S261: under 1 USD a month). Catalog estimate
   # with every enabled text deployment answering: about 0.0063 USD a day (acc3 9 models 0.0049, acc2 5 candidates
   # 0.00095, openai-direct 2 models 0.0004), about 0.20 USD a month; a refused call costs 0. Rollback: false.

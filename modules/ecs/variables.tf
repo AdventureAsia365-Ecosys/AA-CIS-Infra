@@ -338,6 +338,17 @@ variable "s1_control" {
   }
 }
 
+variable "t7_blog_min_seed_words" {
+  description = "AA-1081 (AA-1077 memo, option C): env T7_BLOG_MIN_SEED_WORDS on the worker — the Blog minimum seed in words (a Subject whose seed + walk is shorter is not proposed on Blog by the t7_slate job; services/acp_shared/blog_seed.py). A whole number from 1 to 5000. null = not set (the app default, off); no env on the task definition."
+  type        = number
+  default     = null
+
+  validation {
+    condition     = var.t7_blog_min_seed_words == null ? true : (floor(var.t7_blog_min_seed_words) == var.t7_blog_min_seed_words && var.t7_blog_min_seed_words >= 1 && var.t7_blog_min_seed_words <= 5000)
+    error_message = "t7_blog_min_seed_words must be null or a whole number from 1 to 5000 (null, not 0, switches it off)."
+  }
+}
+
 variable "tripplanner_revalidate_url" {
   description = "AA-1038: TRIPPLANNER_REVALIDATE_URL of the CIS api and worker (the TripPlanner catalog purge endpoint). null = not set (the app default, the public TripPlanner host since the Vercel retirement); the root sets the public host of its zone. Never empty (\"\" switches delivery off)."
   type        = string
