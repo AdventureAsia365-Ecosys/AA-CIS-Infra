@@ -338,7 +338,7 @@ resource "aws_wafv2_web_acl" "main" {
   }
 
   # Challenge (silent JavaScript proof, no puzzle) on a document navigation of a planner page (GET with
-  # sec-fetch-dest: document on /plan, /{tenant}/plan and below) and on the protected paths (the two model calls and
+  # sec-fetch-dest: document on /plan, /{tenant}/plan and below) and on the protected paths (the model calls and
   # Send to advisor, var.tripplanner_web.protected_paths). The app opens the planner
   # with a full page load from every in-site link (AA-TripPlanner-Web), so this rule hands the browser its
   # aws-waf-token before the planner calls a protected path; a script without the token gets HTTP 202 +

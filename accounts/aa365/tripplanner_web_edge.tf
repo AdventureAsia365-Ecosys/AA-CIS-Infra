@@ -33,9 +33,10 @@
 # Each rule is scoped to Host tripplanner.<zone> AND the exact origin secret, and runs after CommonRuleSet and before
 # VpcLinkInternalAllow / CloudFrontOriginAllow (modules/waf local.rule_priorities); no other host is touched.
 #   2 TripPlannerRateLimitPerIp       per viewer address, var.tripplanner_web_rate_limit per 5 minutes -> 429 JSON
-#   3 TripPlannerRateLimitModelPaths  the protected paths (local.tp_web_protected_paths): GET /api/browse/search +
-#                                     POST /api/trip/narrate (the two calls that reach a model) and POST
-#                                     /api/trip/send ("Send to advisor": stores a traveller's contact for an agency),
+#   3 TripPlannerRateLimitModelPaths  the protected paths (local.tp_web_protected_paths): GET /api/browse/search,
+#                                     POST /api/trip/narrate and POST /api/trip/chat (the calls that reach a model;
+#                                     chat: AA-1041) and POST /api/trip/send ("Send to advisor": stores a traveller's
+#                                     contact for an agency),
 #                                     per viewer address, var.tripplanner_web_model_rate_limit -> 429
 #   4 TripPlannerChallengePlanner     Challenge (silent JavaScript proof, no puzzle) on a document navigation of a
 #                                     planner page (GET with sec-fetch-dest: document on /plan, /{tenant}/plan and
@@ -108,7 +109,7 @@ variable "tripplanner_web_rate_limit" {
 }
 
 variable "tripplanner_web_model_rate_limit" {
-  description = "AA-1038: requests per 5 minutes per viewer IP on the protected paths, the two model calls and Send to advisor (WAF rule TripPlannerRateLimitModelPaths in the ALB web ACL). The app's own per-session / per-IP / per-agency limits and the daily spend cap stay underneath."
+  description = "AA-1038: requests per 5 minutes per viewer IP on the protected paths, the model calls and Send to advisor (WAF rule TripPlannerRateLimitModelPaths in the ALB web ACL). The app's own per-session / per-IP / per-agency limits and the daily spend cap stay underneath."
   type        = number
   default     = 100
 
@@ -137,11 +138,11 @@ locals {
   # The header the viewer-request function writes with the viewer's address: the key of the two WAF rate rules.
   tp_web_viewer_ip_header = "x-aa-viewer-ip"
 
-  # The protected BFF paths (AA-TripPlanner-Web lib/botCheck.ts SEARCH_PATH / NARRATE_PATH / SEND_PATH): the two calls
-  # that reach a model and "Send to advisor", which stores a traveller's contact for an agency (review S272: on Vercel
-  # BotID guarded it; on ECS only these rules do). Rate rule 3 and the Challenge rule 4 match a path that CONTAINS one
+  # The protected BFF paths (AA-TripPlanner-Web lib/botCheck.ts SEARCH_PATH / NARRATE_PATH / SEND_PATH / CHAT_PATH):
+  # the calls that reach a model (search, narration and, AA-1041, the planning chat) and "Send to advisor", which
+  # stores a traveller's contact for an agency (review S272: on Vercel BotID guarded it; on ECS only these rules do). Rate rule 3 and the Challenge rule 4 match a path that CONTAINS one
   # of these after the transformations below (a leading /../ survives NORMALIZE_PATH; review S272).
-  tp_web_protected_paths = ["/api/browse/search", "/api/trip/narrate", "/api/trip/send"]
+  tp_web_protected_paths = ["/api/browse/search", "/api/trip/narrate", "/api/trip/send", "/api/trip/chat"]
 
   # Text transformations on every uri_path match of the TripPlanner WAF rules, in this order (priority = index):
   # URL_DECODE, then NORMALIZE_PATH (drops /./, resolves /x/../, folds //; a leading /../ or /./ stays). CloudFront

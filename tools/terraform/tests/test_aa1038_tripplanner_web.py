@@ -50,10 +50,11 @@ VIEWER_IP_JS = AA365 / "cloudfront_functions" / "tripplanner_web_viewer_ip.js"
 ECS = (ROOT / "modules" / "ecs" / "main.tf").read_text(encoding="utf-8")
 ECS_VARS = (ROOT / "modules" / "ecs" / "variables.tf").read_text(encoding="utf-8")
 
-# AA-TripPlanner-Web frontend/lib/botCheck.ts SEARCH_PATH / NARRATE_PATH / SEND_PATH (lib/edgeGate.test.ts pins the
-# same values). Send to advisor stores a traveller's contact for an agency: on ECS these rules are its only bot check
-# (review S272), so it is challenged and rate-limited like the two model calls.
-PROTECTED_PATHS = ["/api/browse/search", "/api/trip/narrate", "/api/trip/send"]
+# AA-TripPlanner-Web frontend/lib/botCheck.ts SEARCH_PATH / NARRATE_PATH / SEND_PATH / CHAT_PATH (lib/edgeGate.test.ts
+# pins the same values). Send to advisor stores a traveller's contact for an agency: on ECS these rules are its only bot
+# check (review S272), so it is challenged and rate-limited like the model calls. AA-1041: the planning chat (a model
+# call per message) is the fourth.
+PROTECTED_PATHS = ["/api/browse/search", "/api/trip/narrate", "/api/trip/send", "/api/trip/chat"]
 
 
 def _block_after(text: str, start: int) -> str:
@@ -373,7 +374,7 @@ PROTECTED_REGEX = _protected_regex(PROTECTED_PATHS)
 
 def test_the_path_regexes_are_the_ones_in_the_module():
     assert PLANNER_REGEX == "/plan/|/plan$"
-    assert PROTECTED_REGEX == "/api/browse/search|/api/trip/narrate|/api/trip/send"
+    assert PROTECTED_REGEX == "/api/browse/search|/api/trip/narrate|/api/trip/send|/api/trip/chat"
     # The Terraform expression the Python mirror copies (escape every metacharacter, join with "|", no anchor).
     assert (
         'for p in local.tp.protected_paths : replace(p, "/([.^$*+?()\\\\[\\\\]{}|\\\\\\\\])/", "\\\\$1")'
@@ -440,6 +441,8 @@ DOT_SPELLINGS = {
     "/%2e/api/trip/send": "/api/trip/send",
     "/../../api/trip/send": "/api/trip/send",
     "/api/trip/send#x": "/api/trip/send",
+    "/api/trip/%2e/chat": "/api/trip/chat",
+    "/%2e%2e/api/trip/chat": "/api/trip/chat",
 }
 
 
@@ -500,7 +503,7 @@ def test_the_regexes_match_exactly_what_the_old_byte_matches_did():
     neighbours = [
         "/api/trip", "/api/browse", "/api/health", "/api/trip/sen", "/api/browse/searc", "/api/trip/sendx",
         "/xapi/trip/send", "/api/trip/send/", "/api/trip/send/.", "/api/trip/send%23x", "/api/browse/%73earch",
-        "/api/TRIP/send", "/api//browse/search", "/api/trip/narrate/1", "/api/trip/narrated",
+        "/api/TRIP/send", "/api//browse/search", "/api/trip/narrate/1", "/api/trip/narrated", "/api/trip/cha",
     ]
     corpus = list(DOT_SPELLINGS) + neighbours + PLANNER_SPELLINGS
     for raw in corpus:
