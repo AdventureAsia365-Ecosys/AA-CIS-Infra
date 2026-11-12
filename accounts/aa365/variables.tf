@@ -221,6 +221,9 @@ variable "cost_anomaly_alert_usd" {
 # API Gateway method throttles (modules/api_gateway) plus the CIS app's per-IP login throttle. Reusing this web
 # ACL on the stages adds no ACL or rule fee, only ~0.60 USD per million requests inspected (blocker (2) above
 # still applies).
+# AA-1092 (S278 audit M24, pre-PII): turned on in terraform.tfvars. Blocker (1) is gone (cicd_split.tf
+# APIGatewaySetWebACL); blocker (2) is answered by scoping the API hosts out of GeoBlock (main.tf geo_exempt_hosts),
+# and the NAT egress out of RateLimit1000 (rate_limit_exempt_cidrs).
 variable "waf_protect_rest_api_stages" {
   type    = bool
   default = false

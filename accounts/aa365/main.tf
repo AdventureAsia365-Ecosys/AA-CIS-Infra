@@ -347,10 +347,15 @@ module "waf" {
   # AA-806 S239 (var.waf_common_rules_count_only = false) after the count review + pre-flip test.
   common_rules_count_only = var.waf_common_rules_count_only
 
+  # AA-1092: on the REST API stages every server-to-server call (CRM, staff web -> api-cis / api-booking) leaves through
+  # the NAT instance EIP, so RateLimit1000 scopes that one address out; the API hosts are scoped out of GeoBlock
+  # (travellers anywhere load catalogue images from api-cis; partner agencies are not limited to the staff list).
+  rate_limit_exempt_cidrs = ["${module.vpc.nat_instance_eip}/32"]
+  geo_exempt_hosts        = ["api-cis.${var.dns_zone_name}", var.domain_name, local.cd_booking_api_host]
+
   # S235 Phase 0: same web ACL on the CIS and Booking REST API stages (real client IP -> rate + geo
-  # actually apply). Gated OFF by default: associating a web ACL with an API Gateway stage needs
-  # apigateway:SetWebACL, which the CI role (cicd.tf APIGatewayManage) does not have yet. Turn on
-  # after that grant is applied (separate cicd.tf PR), see var.waf_protect_rest_api_stages.
+  # actually apply). The apply role holds apigateway:SetWebACL (cicd_split.tf APIGatewaySetWebACL). AA-1092 (S278
+  # audit M24) turns it on in terraform.tfvars, with the two scope-outs above; see var.waf_protect_rest_api_stages.
   rest_api_stage_arns = var.waf_protect_rest_api_stages ? {
     cis     = module.api_gateway.stage_arn
     booking = module.environment.booking_stage_arn

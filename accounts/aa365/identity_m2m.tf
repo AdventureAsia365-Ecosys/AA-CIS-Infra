@@ -236,6 +236,16 @@ resource "aws_cognito_user_pool_domain" "m2m_prefix" {
   managed_login_version = 2
 }
 
+# AA-1092 (S278 audit M24): the token endpoint of the aa-m2m pool joins the shared Cognito web ACL (identity.tf), like
+# the PARTNER pool: GlobalRatePerIp caps any caller per IP; the other rules are scoped to the managed login and
+# sign-up paths this pool does not serve. The CRM fetches one token per lifetime (cached), far under the cap. No new
+# ACL and no new rule: about 0.60 USD per million requests inspected.
+resource "aws_wafv2_web_acl_association" "identity_m2m" {
+  count        = var.identity_waf_enabled ? 1 : 0
+  resource_arn = aws_cognito_user_pool.m2m.arn
+  web_acl_arn  = aws_wafv2_web_acl.identity[0].arn
+}
+
 resource "aws_secretsmanager_secret" "m2m_crm_client" {
   name                    = "aa-crm/${var.environment}/m2m-booking-client"
   description             = "AA-Partner (CRM) client credentials of the aa-m2m pool (JSON: client_id, client_secret, token_url, scopes). Value set after apply, never by Terraform. AA-972."
