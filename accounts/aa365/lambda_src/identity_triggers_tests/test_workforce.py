@@ -383,6 +383,11 @@ CRM_STAFF_E2E = "e2e-crm-staff@e2e-mail.lumiguides.it.com"
 CRM_STAFF_E2E_ATTRS = {"email": CRM_STAFF_E2E, "email_verified": "true"}
 CIS_CS_E2E = "e2e-cis-cs@e2e-mail.lumiguides.it.com"
 CIS_CS_E2E_ATTRS = {"email": CIS_CS_E2E, "email_verified": "true"}
+BK_STAFF_E2E = "e2e-booking-staff@e2e-mail.lumiguides.it.com"
+BK_MAKER_E2E = "e2e-booking-maker@e2e-mail.lumiguides.it.com"
+BK_CHECKER_E2E = "e2e-booking-checker@e2e-mail.lumiguides.it.com"
+BK_WRITERS = {BK_STAFF_E2E: ("booking-sales",), BK_MAKER_E2E: ("booking-finance",),
+              BK_CHECKER_E2E: ("booking-finance",)}
 
 
 @pytest.fixture
@@ -402,6 +407,9 @@ def test_cis_admin_e2e_constants_and_dev_only_map():
         CIS_ADMIN_E2E: ("cis-admin",),
         CRM_STAFF_E2E: ("crm-ops", "crm-support"),
         CIS_CS_E2E: ("cis-customer_success",),
+        BK_STAFF_E2E: ("booking-sales",),
+        BK_MAKER_E2E: ("booking-finance",),
+        BK_CHECKER_E2E: ("booking-finance",),
     }
     assert CIS_ADMIN_E2E not in workforce.E2E_TEST_STAFF
     assert set(workforce.E2E_TEST_STAFF) == {E2E, BOOKING_E2E}
@@ -580,8 +588,12 @@ def test_cis_admin_e2e_address_has_its_own_rule_and_prefix():
 
     admin = _resource_block(tf, "aws_ses_receipt_rule", "e2e_cognito_admin")
     assert "count         = local.e2e_admin_enabled ? 1 : 0" in admin
-    assert re.search(r"recipients\s*=\s*\[local\.e2e_mail_admin_recipient, local\.e2e_mail_crm_staff_recipient, "
-                     r"local\.e2e_mail_cis_cs_recipient\]", admin)
+    assert re.search(r"recipients\s*=\s*concat\(\[local\.e2e_mail_admin_recipient, local\.e2e_mail_crm_staff_recipient, "
+                     r"local\.e2e_mail_cis_cs_recipient\], local\.e2e_mail_booking_writer_recipients\)", admin)
+    # A10e (AA-1087): the Booking writers share the admin rule and prefix, never e2e-cognito (CI-readable inbound/).
+    writers = re.search(r"e2e_mail_booking_writer_recipients = \[(.*?)\]", tf, re.S).group(1)
+    assert re.findall(r'"([^"]+)"', writers) == [f"{e.split('@', 1)[0]}@${{local.e2e_mail_domain}}" for e in BK_WRITERS]
+    assert "booking_writer" not in recipients
     assert locals_["e2e_mail_crm_staff_recipient"] == "e2e-crm-staff@${local.e2e_mail_domain}"
     assert "crm_staff_recipient" not in recipients
     # A10d (AA-1035): the cs address shares the admin rule and prefix, never e2e-cognito (CI-readable inbound/).
@@ -769,7 +781,88 @@ def test_the_cis_cs_account_cannot_borrow_another_e2e_group_set(groups, dev_flag
 
 
 def test_every_e2e_address_maps_to_its_own_group_set():
-    # No address borrows another address's groups: the five tuples are pairwise distinct.
+    # No address borrows another address's groups: the tuples are pairwise distinct, except the A10e finance maker /
+    # checker pair, which shares booking-finance on purpose (AA-Booking separates the two by address).
     tuples = list(workforce.E2E_TEST_STAFF.values()) + list(workforce.E2E_DEV_ONLY_TEST_STAFF.values())
-    assert len(tuples) == len(set(tuples)) == 5
+    assert len(tuples) == 8 and len(set(tuples)) == 7
+    shared = [e for e, g in workforce.E2E_DEV_ONLY_TEST_STAFF.items() if g == ("booking-finance",)]
+    assert sorted(shared) == sorted([BK_MAKER_E2E, BK_CHECKER_E2E])
     assert not set(workforce.E2E_TEST_STAFF) & set(workforce.E2E_DEV_ONLY_TEST_STAFF)
+
+
+# ------------------------------------------------------------------ A10e: Dev-only Booking write E2E addresses (AA-1087, S278)
+def test_booking_writer_constants():
+    assert workforce.E2E_BOOKING_STAFF_TEST_STAFF_EMAIL == BK_STAFF_E2E
+    assert workforce.E2E_BOOKING_MAKER_TEST_STAFF_EMAIL == BK_MAKER_E2E
+    assert workforce.E2E_BOOKING_CHECKER_TEST_STAFF_EMAIL == BK_CHECKER_E2E
+    for email in BK_WRITERS:
+        assert email not in workforce.E2E_TEST_STAFF   # Dev-only map only
+    for groups in BK_WRITERS.values():
+        assert set(groups) <= set(workforce.DEFAULT_STAFF_GROUPS.split(","))
+
+
+@pytest.mark.parametrize("email", list(BK_WRITERS))
+@pytest.mark.parametrize("source", ["TokenGeneration_HostedAuth", "TokenGeneration_RefreshTokens"])
+def test_booking_writer_gets_exactly_its_group_with_the_flag(email, source, dev_flag_on, capsys):
+    assert workforce.pre_sign_up(admin_create(email))["response"]["autoConfirmUser"] is False
+    (group,) = BK_WRITERS[email]
+    out = workforce.pre_token_generation(token_event({"email": email, "email_verified": "true"}, [group, "rogue"],
+                                                     source=source, client_id="booking"))
+    details = out["response"]["claimsAndScopeOverrideDetails"]
+    assert details["groupOverrideDetails"]["groupsToOverride"] == [group]
+    assert details["accessTokenGeneration"]["claimsToAddOrOverride"] == {"email": email}
+    assert {"event": "workforce_e2e_test_token_issued", "trigger": source, "client_id": "booking",
+            "email": email} in _events(capsys)
+
+
+@pytest.mark.parametrize("email", list(BK_WRITERS))
+@pytest.mark.parametrize("groups", [
+    ["booking-admin"],
+    ["booking-sales", "booking-finance"],
+    ["booking-contracting"],
+    ["cis-admin"],
+    ["crm-ops", "crm-support"],
+    [],
+])
+def test_booking_writer_with_any_other_group_set_is_denied(email, groups, dev_flag_on):
+    if groups == list(BK_WRITERS[email]):
+        return
+    denied(workforce.pre_token_generation, token_event({"email": email, "email_verified": "true"}, groups))
+
+
+@pytest.mark.parametrize("email", [BK_STAFF_E2E, BK_MAKER_E2E])
+def test_the_staff_and_finance_writers_cannot_swap_groups(email, dev_flag_on):
+    other = ["booking-finance"] if email == BK_STAFF_E2E else ["booking-sales"]
+    denied(workforce.pre_token_generation, token_event({"email": email, "email_verified": "true"}, other))
+
+
+@pytest.mark.parametrize("email", list(BK_WRITERS))
+@pytest.mark.parametrize("flag", [None, "false", "TRUE", " true", "1", ""])
+def test_booking_writer_is_denied_unless_the_flag_is_exactly_true(email, flag, monkeypatch):
+    if flag is None:
+        monkeypatch.delenv(FLAG, raising=False)
+    else:
+        monkeypatch.setenv(FLAG, flag)
+    denied(workforce.pre_sign_up, admin_create(email))
+    denied(workforce.pre_token_generation,
+           token_event({"email": email, "email_verified": "true"}, list(BK_WRITERS[email])))
+
+
+@pytest.mark.parametrize("email", [
+    "e2e-booking-staff2@e2e-mail.lumiguides.it.com",
+    "e2e-booking-maker@e2e-mail.lumiguides.it.com.evil.com",
+    "e2e-booking-checker@lumiguides.it.com",
+    "e2e-booking-staff@e2e-mail.lumiguides.it.com\u200b",
+    "e2e-booking-ma\u212aer@e2e-mail.lumiguides.it.com",
+])
+def test_look_alikes_of_the_booking_writer_addresses_are_denied(email, dev_flag_on):
+    denied(workforce.pre_sign_up, admin_create(email))
+    denied(workforce.pre_token_generation,
+           token_event({"email": email, "email_verified": "true"}, ["booking-finance"]))
+
+
+@pytest.mark.parametrize("attrs", [E2E_ATTRS, BOOKING_E2E_ATTRS, CIS_ADMIN_E2E_ATTRS, CRM_STAFF_E2E_ATTRS,
+                                   CIS_CS_E2E_ATTRS])
+@pytest.mark.parametrize("group", ["booking-sales", "booking-finance"])
+def test_the_other_e2e_accounts_cannot_borrow_the_booking_writer_groups(attrs, group, dev_flag_on):
+    denied(workforce.pre_token_generation, token_event(attrs, [group]))
