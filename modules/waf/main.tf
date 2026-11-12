@@ -1,7 +1,7 @@
 # =============================================================================
 # AA-59 — WAF Module
 # Rules: AWSManagedRulesCommonRuleSet + the TripPlanner web rules + VpcLinkInternalAllow + CloudFrontOriginAllow +
-# RateLimit + GeoBlock (+ StaffWebRateLimit). Order: local.rule_priorities (S235 order; CloudFrontOriginAllow inserted
+# RateLimit + GeoBlock (+ StaffWebRateLimit). AA-1092: RateLimit scopes out our own egress, GeoBlock the API hosts. Order: local.rule_priorities (S235 order; CloudFrontOriginAllow inserted
 # by AA-931; the three TripPlanner web rules by AA-1038, S272)
 # Imported from existing manually-created WAF: aa-cis-dev-waf
 # Country list matches AWS state at import time; priority order changed in S235 (see below).
@@ -28,6 +28,10 @@ locals {
   #   planner: the old ENDS_WITH "/plan" OR CONTAINS "/plan/" (/plan, /{tenant}/plan and anything below them).
   #     PCRE's $ also matches before a final newline, so a decoded "/plan\n" is challenged too (more, never less).
   #   protected: the old CONTAINS of each protected path, unanchored, every regex metacharacter escaped.
+  # AA-1092: the internal egress IP set (rate exemption) and the geo-exempt hosts (one anchored regex, optional :443).
+  rate_exempt_on   = length(var.rate_limit_exempt_cidrs) > 0
+  geo_exempt_regex = length(var.geo_exempt_hosts) > 0 ? "^(${join("|", [for h in var.geo_exempt_hosts : replace(lower(h), ".", "\\.")])})(:443)?$" : null
+
   tp_planner_path_regex = "/plan/|/plan$"
   tp_protected_path_regex = local.tp_on ? join("|", [
     for p in local.tp.protected_paths : replace(p, "/([.^$*+?()\\[\\]{}|\\\\])/", "\\$1")
@@ -50,6 +54,24 @@ locals {
     geo_block               = 8
     staff_web_rate_limit    = 9
   }
+}
+
+# AA-1092: our own public egress (the NAT instance EIP). On the REST API stages every server-to-server call (CRM and
+# the staff web -> api-cis / api-booking) arrives from this one address; RateLimit1000 scopes it out. Free (WAF IP sets
+# carry no fee).
+resource "aws_wafv2_ip_set" "internal_egress" {
+  count = local.rate_exempt_on ? 1 : 0
+
+  name               = "${local.name_prefix}-internal-egress"
+  description        = "AA-1092 NAT egress of our own services, scoped out of RateLimit1000"
+  scope              = "REGIONAL"
+  ip_address_version = "IPV4"
+  addresses          = var.rate_limit_exempt_cidrs
+
+  tags = merge(var.tags, {
+    Module = "waf"
+    Issue  = "AA-1092"
+  })
 }
 
 # Optional ip_set for internal VPC Link traffic (AA-272) — only created when
@@ -560,8 +582,10 @@ resource "aws_wafv2_web_acl" "main" {
         limit              = var.rate_limit
         aggregate_key_type = "IP"
 
+        # Scope-down (one of three shapes, at most 2 logical levels): NOT staff host (AA-911), NOT our own egress
+        # (AA-1092), or NOT (staff host OR our own egress) when both exist.
         dynamic "scope_down_statement" {
-          for_each = local.staff_host_regex != null ? [1] : []
+          for_each = local.staff_host_regex != null && !local.rate_exempt_on ? [1] : []
           content {
             not_statement {
               statement {
@@ -577,6 +601,52 @@ resource "aws_wafv2_web_acl" "main" {
                   text_transformation {
                     priority = 0
                     type     = "LOWERCASE"
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        dynamic "scope_down_statement" {
+          for_each = local.staff_host_regex == null && local.rate_exempt_on ? [1] : []
+          content {
+            not_statement {
+              statement {
+                ip_set_reference_statement {
+                  arn = aws_wafv2_ip_set.internal_egress[0].arn
+                }
+              }
+            }
+          }
+        }
+
+        dynamic "scope_down_statement" {
+          for_each = local.staff_host_regex != null && local.rate_exempt_on ? [1] : []
+          content {
+            not_statement {
+              statement {
+                or_statement {
+                  statement {
+                    regex_match_statement {
+                      regex_string = local.staff_host_regex
+
+                      field_to_match {
+                        single_header {
+                          name = "host"
+                        }
+                      }
+
+                      text_transformation {
+                        priority = 0
+                        type     = "LOWERCASE"
+                      }
+                    }
+                  }
+                  statement {
+                    ip_set_reference_statement {
+                      arn = aws_wafv2_ip_set.internal_egress[0].arn
+                    }
                   }
                 }
               }
@@ -603,11 +673,50 @@ resource "aws_wafv2_web_acl" "main" {
       block {}
     }
 
+    # AA-1092: with var.geo_exempt_hosts, NOT allowed country AND NOT an API host (2 logical levels); else as before.
     statement {
-      not_statement {
-        statement {
-          geo_match_statement {
-            country_codes = var.geo_allowed_countries
+      dynamic "not_statement" {
+        for_each = local.geo_exempt_regex == null ? [1] : []
+        content {
+          statement {
+            geo_match_statement {
+              country_codes = var.geo_allowed_countries
+            }
+          }
+        }
+      }
+
+      dynamic "and_statement" {
+        for_each = local.geo_exempt_regex != null ? [1] : []
+        content {
+          statement {
+            not_statement {
+              statement {
+                geo_match_statement {
+                  country_codes = var.geo_allowed_countries
+                }
+              }
+            }
+          }
+          statement {
+            not_statement {
+              statement {
+                regex_match_statement {
+                  regex_string = local.geo_exempt_regex
+
+                  field_to_match {
+                    single_header {
+                      name = "host"
+                    }
+                  }
+
+                  text_transformation {
+                    priority = 0
+                    type     = "LOWERCASE"
+                  }
+                }
+              }
+            }
           }
         }
       }

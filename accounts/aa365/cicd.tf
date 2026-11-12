@@ -180,8 +180,9 @@ locals {
         "wafv2:DeleteLoggingConfiguration",
         "wafv2:ListTagsForResource",
         "wafv2:TagResource",
-        "wafv2:GetIPSet",
-        "wafv2:ListIPSets",
+        # AA-1092: Create/Update/Delete/Get/List of IP sets (modules/waf internal_egress, vpc_allow); one wildcard
+        # entry, shorter than the two read verbs it replaced (the inline policy's 10,240-character limit).
+        "wafv2:*IPSet*",
         # AA-703: the Cognito web ACL (was Sid WAFv2WebACLCreate in cicd_split.tf, merged AA-846).
         "wafv2:CreateWebACL",
         "wafv2:DeleteWebACL",
