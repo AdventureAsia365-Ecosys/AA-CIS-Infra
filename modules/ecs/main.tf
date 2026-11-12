@@ -27,9 +27,11 @@ locals {
   ]
 
   # AA-902: the Bedrock / Cost Explorer satellite account ID (shared/llm_client/bedrock_satellite.py
-  # builds every satellite ARN from it; the public repo carries no account ID). acc3 only (AA-998).
+  # builds every satellite ARN from it; the public repo carries no account ID). AA-1095 (S278): plus acc1, the account
+  # that serves Bedrock chat models while acc3 is blocked (CIS connection `acc1`, account_id_env BEDROCK_ACCT_PAYER).
   bedrock_satellite_env = [
     { name = "BEDROCK_ACCT_PRIMARY", value = var.bedrock_acct_primary },
+    { name = "BEDROCK_ACCT_PAYER", value = var.bedrock_acct_payer },
   ]
 
   # AA-847 lines: the place_shape job's kill switch (AA-CIS-App services/jobs/place_shape_job.py; the job runs on the

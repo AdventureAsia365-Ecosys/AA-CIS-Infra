@@ -244,6 +244,7 @@ ROOT_DEFAULTS = {
     "accounts/aa365/versions.tf": {"Project", "Environment", "Owner", "ManagedBy", "CostCenter", "DataClassification"},
     "accounts/management/versions.tf": set(GOOD),
     "accounts/acc3-bedrock/versions.tf": set(GOOD),
+    "accounts/acc1-bedrock/versions.tf": set(GOOD),   # AA-1095 (S278)
 }
 
 
@@ -284,7 +285,8 @@ def test_no_tag_map_overrides_the_defaults_with_an_old_spelling():
     """Resource tags win over default_tags, so a map that repeats Project / ManagedBy / Service would bring them back."""
     bad = []
     pat = re.compile(r'^\s*(Project|ManagedBy|Service|Account)\s*=\s*"', re.M)
-    for path in _tf_files("accounts/aa365", "accounts/management", "accounts/acc3-bedrock", "modules"):
+    for path in _tf_files("accounts/aa365", "accounts/management", "accounts/acc3-bedrock", "accounts/acc1-bedrock",
+                          "modules"):
         if path.endswith("versions.tf"):
             continue
         with open(path, encoding="utf-8") as fh:

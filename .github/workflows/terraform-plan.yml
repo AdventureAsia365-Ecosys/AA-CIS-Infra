@@ -69,6 +69,8 @@ jobs:
           # admin role's trust. Secrets, so GitHub masks them in this public log; never repo variables.
           TF_VAR_org_management_account_id: ${{ secrets.MGMT_ACCOUNT_ID }}
           TF_VAR_org_management_org_id: ${{ secrets.MGMT_ORG_ID }}
+          # AA-1095 (accounts/aa365/bedrock_satellite_assume.tf): acc1's ID (a personal account, never committed).
+          TF_VAR_bedrock_acct_payer_id: ${{ secrets.BEDROCK_ACCT_PAYER_ID }}
         run: terraform plan -lock-timeout=20m -out=tfplan
 
       # S271: tagging standard (root docs/architecture/tagging-standard.md, FIN-03). Fails this required check when a
