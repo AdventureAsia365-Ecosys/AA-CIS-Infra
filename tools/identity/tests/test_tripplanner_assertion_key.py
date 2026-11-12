@@ -149,3 +149,42 @@ def test_main_prints_no_key_and_guards_the_account(capsys):
     sm = FakeSm({NAME: None})
     assert tool.main(["--apply"], clients=(FakeSts("111111111111"), sm)) == 1
     assert "refused" in capsys.readouterr().err and sm.puts == []
+
+
+def test_end_cutover_drops_the_edge_window_and_keeps_the_key():
+    sm = FakeSm({NAME: json.dumps({"current": OLD, "edge_derived_until": NOW + 3600})})
+    got = _write(sm, end_cutover=True)
+    assert sm.puts == [(NAME, {"current": OLD})]
+    assert got["mode"] == "end_cutover" and got["refused_from"] == NOW + tool.LAMBDA_SECRET_CACHE_S
+
+
+def test_end_cutover_keeps_a_running_previous_and_drops_an_expired_one():
+    sm = FakeSm({NAME: json.dumps({"current": NEW, "previous": OLD, "previous_until": NOW + 60,
+                                   "edge_derived_until": NOW + 3600})})
+    _write(sm, end_cutover=True)
+    assert sm.puts[0][1] == {"current": NEW, "previous": OLD, "previous_until": NOW + 60}
+    sm = FakeSm({NAME: json.dumps({"current": NEW, "previous": OLD, "previous_until": NOW - 60,
+                                   "edge_derived_until": NOW + 3600})})
+    _write(sm, end_cutover=True)
+    assert sm.puts[0][1] == {"current": NEW}
+
+
+@pytest.mark.parametrize("stored", [None, json.dumps({"current": OLD}),
+                                    json.dumps({"current": OLD, "edge_derived_until": NOW - 1})])
+def test_end_cutover_refuses_when_there_is_nothing_to_end(stored):
+    sm = FakeSm({NAME: stored})
+    with pytest.raises(tool.ToolError):
+        _write(sm, end_cutover=True)
+    assert sm.puts == []
+
+
+def test_end_cutover_and_rotate_are_separate_steps():
+    sm = FakeSm({NAME: json.dumps({"current": OLD, "edge_derived_until": NOW + 3600})})
+    with pytest.raises(tool.ToolError, match="separate"):
+        _write(sm, end_cutover=True, rotate=True)
+
+
+def test_end_cutover_dry_run_writes_nothing():
+    sm = FakeSm({NAME: json.dumps({"current": OLD, "edge_derived_until": NOW + 3600})})
+    got = _write(sm, end_cutover=True, apply=False)
+    assert got["action"] == "would_write" and got["fields"] == ["current"] and sm.puts == []
