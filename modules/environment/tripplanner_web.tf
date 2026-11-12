@@ -14,7 +14,8 @@
 #       secret_version: AA-CIS-Infra tools/identity/tripplanner_web_secret.py fills it (Terraform and the plan role
 #       never read it)
 #     - execution role aa-tripplanner-<env>-web-ecs-execution-role: pull ITS repo, write ITS log group, read ITS secrets
-#       only (the shell above, the edge key tripplanner/<env>/api-key and the traveller identity keys the root passes)
+#       only (the shell above, the edge key tripplanner/<env>/api-key, the tenant assertion key
+#       tripplanner/<env>/tenant-assertion-key (AA-1092) and the traveller identity keys the root passes)
 #     - task definition aa-tripplanner-<env>-web: Fargate ARM64, 512 CPU / 1024 MB (SSR of the catalog pages and the
 #       in-process ISR cache; the staff admins' 256 / 512 has no headroom for them), one container `web` :3000,
 #       placeholder tag `bootstrap`. No task role: the BFF calls no AWS API (the Lambdas behind the HTTP API do).
@@ -93,6 +94,9 @@ locals {
   tp_web_secrets = concat(
     [
       { name = "TRIPPLANNER_API_KEY", valueFrom = aws_secretsmanager_secret.tripplanner_api_key.arn },
+      # AA-1092: the tenant assertion key, its "current" value only (tripplanner.tf; filled by
+      # tools/identity/tripplanner_assertion_key.py before the first deploy that uses this revision).
+      { name = "TP_TENANT_ASSERTION_KEY", valueFrom = "${aws_secretsmanager_secret.tripplanner_tenant_assertion_key.arn}:current::" },
       { name = "TP_SESSION_SECRET", valueFrom = "${aws_secretsmanager_secret.tripplanner_web.arn}:session_secret::" },
       { name = "CATALOG_REVALIDATE_SECRET", valueFrom = "${aws_secretsmanager_secret.tripplanner_web.arn}:catalog_revalidate_secret::" },
       { name = "SENTRY_DSN", valueFrom = "${aws_secretsmanager_secret.tripplanner_web.arn}:sentry_dsn::" },
@@ -102,7 +106,11 @@ locals {
 
   # The ONLY secret ARNs the execution role may read.
   tp_web_secret_arns = concat(
-    [aws_secretsmanager_secret.tripplanner_web.arn, aws_secretsmanager_secret.tripplanner_api_key.arn],
+    [
+      aws_secretsmanager_secret.tripplanner_web.arn,
+      aws_secretsmanager_secret.tripplanner_api_key.arn,
+      aws_secretsmanager_secret.tripplanner_tenant_assertion_key.arn,
+    ],
     [for name in sort(keys(var.tripplanner_web_identity_secret_arns)) : var.tripplanner_web_identity_secret_arns[name]],
   )
 }
