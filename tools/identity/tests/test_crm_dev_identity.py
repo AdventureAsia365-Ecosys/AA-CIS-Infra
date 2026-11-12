@@ -439,3 +439,70 @@ def test_e2e_staff_refuses_other_groups_and_other_environments(capsys):
     assert "cis-admin" in capsys.readouterr().err and idp.added == []
     assert run(["--env", "stg", "e2e-staff", "--apply"], FakeWorkforceIdp()) == 1
     assert "Dev only" in capsys.readouterr().err
+
+
+# ── AA-1087: the Dev-only write-capable AA-Booking E2E users (root ADR 0006a A10e) ───────────────────────────────────
+BOOKING_WRITERS = {
+    "e2e-booking-staff@e2e-mail.lumiguides.it.com": ["booking-sales"],
+    "e2e-booking-maker@e2e-mail.lumiguides.it.com": ["booking-finance"],
+    "e2e-booking-checker@e2e-mail.lumiguides.it.com": ["booking-finance"],
+}
+
+
+class PerUserWorkforceIdp(FakeWorkforceIdp):
+    """The WORKFORCE pool with group memberships per user (three users here)."""
+
+    def __init__(self, existing: dict[str, str] | None = None, groups: dict[str, set[str]] | None = None) -> None:
+        super().__init__(existing)
+        self.by_user: dict[str, set[str]] = {k: set(v) for k, v in (groups or {}).items()}
+
+    def admin_list_groups_for_user(self, UserPoolId, Username):  # noqa: N803
+        assert UserPoolId == "w"
+        return {"Groups": [{"GroupName": g} for g in sorted(self.by_user.get(Username, set()))]}
+
+    def admin_add_user_to_group(self, UserPoolId, Username, GroupName):  # noqa: N803
+        assert UserPoolId == "w"
+        self.by_user.setdefault(Username, set()).add(GroupName)
+        self.added.append(f"{Username}:{GroupName}")
+
+
+def test_e2e_booking_writers_create_three_users_with_suppress_and_exact_groups(capsys):
+    idp = PerUserWorkforceIdp()
+    assert run(["e2e-booking-writers"], idp) == 0
+    dry = lines(capsys)
+    assert [(r["email"], r["action"], r["groups"]) for r in dry] == [
+        (email, "would_create", groups) for email, groups in BOOKING_WRITERS.items()]
+    assert idp.created == [] and idp.added == []
+    assert run(["e2e-booking-writers", "--apply"], idp) == 0
+    rows = lines(capsys)
+    assert [r["action"] for r in rows] == ["created"] * 3
+    assert len(idp.created) == 3
+    for created in idp.created:
+        assert created["UserPoolId"] == "w" and created["MessageAction"] == "SUPPRESS"
+        assert "TemporaryPassword" not in created
+        assert {a["Name"]: a["Value"] for a in created["UserAttributes"]}["email_verified"] == "true"
+    assert {u: sorted(g) for u, g in idp.by_user.items()} == BOOKING_WRITERS
+    assert run(["e2e-booking-writers", "--apply"], idp) == 0
+    again = lines(capsys)
+    assert [r["action"] for r in again] == ["exists"] * 3 and all(r["groups_added"] == [] for r in again)
+    assert len(idp.created) == 3
+
+
+def test_e2e_booking_writers_match_the_trigger_the_mailbox_and_booking():
+    workforce = (REPO / "accounts" / "aa365" / "lambda_src" / "identity_triggers" / "workforce.py").read_text()
+    mailbox = (REPO / "accounts" / "aa365" / "e2e_mailbox.tf").read_text()
+    for (local, groups, _), key in zip(tool.E2E_BOOKING_WRITERS, ("STAFF", "MAKER", "CHECKER"), strict=True):
+        assert f'E2E_BOOKING_{key}_TEST_STAFF_EMAIL = "{local}@e2e-mail.lumiguides.it.com"' in workforce
+        assert f'E2E_BOOKING_{key}_TEST_STAFF_GROUPS = ("{groups[0]}",)' in workforce
+        assert f'"{local}@${{local.e2e_mail_domain}}"' in mailbox
+    assert [(local, list(groups)) for local, groups, _ in tool.E2E_BOOKING_WRITERS] == [
+        (email.split("@")[0], groups) for email, groups in BOOKING_WRITERS.items()]
+
+
+def test_e2e_booking_writers_refuse_other_groups_and_other_environments(capsys):
+    staff = "e2e-booking-staff@e2e-mail.lumiguides.it.com"
+    idp = PerUserWorkforceIdp({staff: "sub-7"}, groups={staff: {"booking-sales", "booking-admin"}})
+    assert run(["e2e-booking-writers", "--apply"], idp) == 1
+    assert "booking-admin" in capsys.readouterr().err and idp.added == []
+    assert run(["--env", "stg", "e2e-booking-writers", "--apply"], PerUserWorkforceIdp()) == 1
+    assert "Dev only" in capsys.readouterr().err
