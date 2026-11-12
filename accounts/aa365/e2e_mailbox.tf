@@ -112,6 +112,15 @@ locals {
   e2e_mail_admin_prefix     = "inbound-admin/"
   e2e_mail_admin_rule       = "e2e-cognito-admin"
   e2e_mail_admin_rule_arn   = "arn:aws:ses:${var.aws_region}:${var.account_id}:receipt-rule-set/${local.e2e_mail_rule_set}:receipt-rule/${local.e2e_mail_admin_rule}"
+
+  # A10e (AA-1087, S278): the Dev-only write-capable AA-Booking E2E users (staff; finance maker; finance checker); must
+  # equal workforce.py E2E_BOOKING_{STAFF,MAKER,CHECKER}_TEST_STAFF_EMAIL. Same rule and prefix as A10b (MFA admin reads
+  # only), never on e2e-cognito: their sessions write (on synthetic agencies only), so no CI role may read the codes.
+  e2e_mail_booking_writer_recipients = [
+    "e2e-booking-staff@${local.e2e_mail_domain}",
+    "e2e-booking-maker@${local.e2e_mail_domain}",
+    "e2e-booking-checker@${local.e2e_mail_domain}",
+  ]
 }
 
 # ── 1. DNS: MX for the sub-domain ────────────────────────────────────────────
@@ -341,7 +350,7 @@ resource "aws_ses_receipt_rule" "e2e_cognito_admin" {
   name          = local.e2e_mail_admin_rule
   rule_set_name = aws_ses_receipt_rule_set.e2e.rule_set_name
   after         = aws_ses_receipt_rule.crm_ingest.name
-  recipients    = [local.e2e_mail_admin_recipient, local.e2e_mail_crm_staff_recipient, local.e2e_mail_cis_cs_recipient]
+  recipients    = concat([local.e2e_mail_admin_recipient, local.e2e_mail_crm_staff_recipient, local.e2e_mail_cis_cs_recipient], local.e2e_mail_booking_writer_recipients)
   enabled       = true
   scan_enabled  = true
   tls_policy    = "Require"

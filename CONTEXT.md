@@ -339,7 +339,9 @@ accounts/
                                    (AA-910), the CRM e2e users and AA-908's two e2e travellers) -> S3 aa-cis-dev-e2e-mail-<acct>/inbound/ (1-day expiry), and
                                    the read-only GitHub OIDC role aa-cis-dev-e2e-mail-reader (AA-CIS-App, env e2e,
                                    main). A10b (AA-816, S252, dev only): rule e2e-cognito-admin (recipient
-                                   e2e-cis-admin@, after aa-crm-dev-ingest) -> inbound-admin/, object reads there denied
+                                   e2e-cis-admin@, after aa-crm-dev-ingest; A10c e2e-crm-staff@, A10d e2e-cis-cs@ and,
+                                   AA-1087 A10e, the Booking write users e2e-booking-staff@ / -maker@ / -checker@ too)
+                                   -> inbound-admin/, object reads there denied
                                    to every principal except the MFA admin role (the reader role included). Any future
                                    SES receiving in us-west-1 adds rules to this set)
     docs_reader.tf                (AA-898: GitHub OIDC role aa-cis-<env>-docs-sync, trusted only by the root repo

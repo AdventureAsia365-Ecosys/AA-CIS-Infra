@@ -40,6 +40,10 @@ Subcommands
       which lands in the e2e mailbox prefix inbound-admin/, MFA admin reads only), then AdminAddUserToGroup for each
       missing group. A re-run creates nothing new. The pre sign-up trigger accepts the address only while its Dev
       flag is on (workforce.py E2E_DEV_ONLY_TEST_STAFF), and the pre token trigger refuses any other group set.
+  e2e-booking-writers [--apply]   (AA-1087, root ADR 0006a A10e; WORKFORCE pool, dev only)
+      The three Dev-only write-capable AA-Booking E2E users, the same way as e2e-staff: e2e-booking-staff@ in
+      booking-sales, e2e-booking-maker@ and e2e-booking-checker@ in booking-finance (exactly). Codes land in
+      inbound-admin/ (MFA admin reads only). AA-Booking holds each one to its own writes on synthetic agencies.
 
   invitee-reset [--invitee crm|studio-viewer|studio-editor] [--apply]   (AA-939, --pool partner)
       Deletes the partner-pool account of an invitee address (AdminDeleteUser) so its next invitation starts from no
@@ -87,6 +91,13 @@ WEB_CLIENT = {"external": "cis-portal", "partner": "partner-web"}
 E2E_STAFF_LOCAL = "e2e-crm-staff"
 E2E_STAFF_GROUPS = ("crm-ops", "crm-support")
 STAFF_CLIENT = "crm-staff"
+# AA-1087 (root ADR 0006a A10e): the Dev-only write-capable AA-Booking E2E users (local part, exact groups, name); must
+# equal workforce.py E2E_BOOKING_{STAFF,MAKER,CHECKER}_TEST_STAFF_EMAIL / _GROUPS and AA-Booking app/auth/e2e_staff.py.
+E2E_BOOKING_WRITERS: tuple[tuple[str, tuple[str, ...], str], ...] = (
+    ("e2e-booking-staff", ("booking-sales",), "E2E Booking staff"),
+    ("e2e-booking-maker", ("booking-finance",), "E2E Booking finance maker"),
+    ("e2e-booking-checker", ("booking-finance",), "E2E Booking finance checker"),
+)
 PASSWORD_SYMBOLS = "!#$%&*+-=?@^_"
 
 
@@ -488,19 +499,37 @@ def e2e_staff(idp: Any, workforce_pool_id: str, *, env: str, zone: str, apply: b
     """AA-1019 (A10c): the Dev-only staff E2E user in crm-ops + crm-support (SUPPRESS, no password, idempotent)."""
     if env != "dev":
         raise ToolError("e2e-staff is Dev only (root ADR 0006a A10c)")
-    email = f"{E2E_STAFF_LOCAL}@e2e-mail.{zone}"
+    return _ensure_workforce_e2e_user(idp, workforce_pool_id, f"{E2E_STAFF_LOCAL}@e2e-mail.{zone}", E2E_STAFF_GROUPS,
+                                      "E2E CRM staff", apply=apply)
+
+
+def e2e_booking_writers(idp: Any, workforce_pool_id: str, *, env: str, zone: str, apply: bool) -> list[dict[str, Any]]:
+    """AA-1087 (A10e): the three Dev-only write-capable AA-Booking E2E users (staff; finance maker; finance checker),
+    each in exactly its group (SUPPRESS, no password, idempotent)."""
+    if env != "dev":
+        raise ToolError("e2e-booking-writers is Dev only (root ADR 0006a A10e)")
+    return [
+        _ensure_workforce_e2e_user(idp, workforce_pool_id, f"{local}@e2e-mail.{zone}", groups, name, apply=apply)
+        for local, groups, name in E2E_BOOKING_WRITERS
+    ]
+
+
+def _ensure_workforce_e2e_user(idp: Any, workforce_pool_id: str, email: str, groups: tuple[str, ...], name: str, *,
+                               apply: bool) -> dict[str, Any]:
+    """One WORKFORCE E2E user in exactly ``groups``: AdminCreateUser (SUPPRESS, email_verified, no password) when
+    missing, then AdminAddUserToGroup for each missing group. Refuses a user that holds any other group."""
     found = find_user(idp, workforce_pool_id, email)
     action = "exists"
     if found is None:
         if not apply:
-            return {"email": email, "action": "would_create", "groups": list(E2E_STAFF_GROUPS), "sub": None}
+            return {"email": email, "action": "would_create", "groups": list(groups), "sub": None}
         created = idp.admin_create_user(
             UserPoolId=workforce_pool_id,
             Username=email,
             UserAttributes=[
                 {"Name": "email", "Value": email},
                 {"Name": "email_verified", "Value": "true"},
-                {"Name": "name", "Value": "E2E CRM staff"},
+                {"Name": "name", "Value": name},
             ],
             # Never mail a temporary password (identity.tf: every AdminCreateUser passes SUPPRESS).
             MessageAction="SUPPRESS",
@@ -512,11 +541,11 @@ def e2e_staff(idp: Any, workforce_pool_id: str, *, env: str, zone: str, apply: b
         raise ToolError(f"{email}: no sub attribute")
     username = found.get("Username") or email
     have = {g["GroupName"] for g in idp.admin_list_groups_for_user(UserPoolId=workforce_pool_id, Username=username).get("Groups", [])}
-    extra = sorted(have - set(E2E_STAFF_GROUPS))
+    extra = sorted(have - set(groups))
     if extra:
         # The token trigger would refuse every token anyway; say so instead of adding more.
         raise ToolError(f"{email} is in other groups too ({', '.join(extra)}): remove them by hand first")
-    missing = [g for g in E2E_STAFF_GROUPS if g not in have]
+    missing = [g for g in groups if g not in have]
     if missing and apply:
         for g in missing:
             idp.admin_add_user_to_group(UserPoolId=workforce_pool_id, Username=username, GroupName=g)
@@ -524,7 +553,7 @@ def e2e_staff(idp: Any, workforce_pool_id: str, *, env: str, zone: str, apply: b
         "email": email,
         "action": action,
         "sub": sub,
-        "groups": list(E2E_STAFF_GROUPS),
+        "groups": list(groups),
         "groups_added": missing if apply else [],
         "groups_missing": [] if apply else missing,
     }
@@ -551,6 +580,8 @@ def build_parser() -> argparse.ArgumentParser:
     ws.add_argument("--rotate-staff-session", action="store_true")
     es = sub.add_parser("e2e-staff", help="AA-1019: the Dev-only staff E2E user (crm-ops + crm-support)")
     es.add_argument("--apply", action="store_true")
+    eb = sub.add_parser("e2e-booking-writers", help="AA-1087: the Dev-only write-capable Booking E2E users")
+    eb.add_argument("--apply", action="store_true")
     r = sub.add_parser("invitee-reset", help="delete the invitee account(s) before the timed invitation E2E (--pool partner)")
     r.add_argument("--invitee", choices=INVITEE_TARGETS, default="crm",
                    help="crm (default): the CRM invitation E2E address; studio-<role>: one AA-979 studio invitee")
@@ -571,12 +602,17 @@ def main(argv: list[str] | None = None, clients: tuple[Any, Any, Any] | None = N
         account = sts.get_caller_identity()["Account"]
         if args.expect_account and account != args.expect_account:
             raise ToolError(f"refused: credentials are for account {account}, expected {args.expect_account}")
-        if args.command in ("staff-web-secret", "e2e-staff"):
+        if args.command in ("staff-web-secret", "e2e-staff", "e2e-booking-writers"):
             if args.command == "e2e-staff" and args.env != "dev":
                 raise ToolError("e2e-staff is Dev only (root ADR 0006a A10c)")
+            if args.command == "e2e-booking-writers" and args.env != "dev":
+                raise ToolError("e2e-booking-writers is Dev only (root ADR 0006a A10e)")
             workforce_pool = f"aa-workforce-{args.env}"
             workforce_id = find_pool_id(idp, workforce_pool)
-            if args.command == "e2e-staff":
+            if args.command == "e2e-booking-writers":
+                for row in e2e_booking_writers(idp, workforce_id, env=args.env, zone=args.zone, apply=args.apply):
+                    out(row)
+            elif args.command == "e2e-staff":
                 out(e2e_staff(idp, workforce_id, env=args.env, zone=args.zone, apply=args.apply))
             else:
                 out(staff_web_secret(idp, sm, workforce_id, f"{workforce_pool}-{STAFF_CLIENT}", env=args.env,

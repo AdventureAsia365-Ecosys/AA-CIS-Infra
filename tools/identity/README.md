@@ -72,6 +72,7 @@ pool, MFA required).
 | `$PY tools/identity/crm_dev_identity.py web-secret [--apply] [--rotate-session]` | Writes `crm/dev/web` (the `crm_web.tf` secret shell) = `{cognito_client_secret, session_secret}`: the client secret read from the `cis-portal` client (or, with `--pool partner`, the `partner-web` client: run it right after `crm_partner_signin_enabled = true` is applied, then deploy the web), the session secret random and kept on re-runs unless `--rotate-session` (signs every CRM web user out). Run it before the first web task starts. |
 | `$PY tools/identity/crm_dev_identity.py staff-web-secret [--apply] [--rotate-staff-session]` | AA-1019: adds the AA staff console's two keys to `crm/dev/web`: `staff_cognito_client_secret` (read from the WORKFORCE client `aa-workforce-dev-crm-staff`) and `staff_session_secret` (random, kept on re-runs unless `--rotate-staff-session`, never equal to the agency `session_secret`). The agency keys stay as they are (and `web-secret` now keeps the staff keys). Run it BEFORE the AA-1019 Terraform apply (the `aa-workforce-dev-crm-staff` client already exists; the apply only changes its URLs). Either order works, because the running service ignores task definition changes, but the runbook below uses this one: the task maps both keys and does not start without them. |
 | `$PY tools/identity/crm_dev_identity.py e2e-staff [--apply]` | AA-1019 (root ADR 0006a A10c), Dev only: the AA-Partner staff E2E user `e2e-crm-staff@e2e-mail.lumiguides.it.com` in the WORKFORCE pool, groups exactly `crm-ops` + `crm-support`: AdminCreateUser with `MessageAction=SUPPRESS` and `email_verified=true`, no password, then AdminAddUserToGroup for the missing groups; refuses a user that holds any other group. Needs the AA-1019 trigger (Dev flag on) applied first, or the pre sign-up trigger refuses the address. Sign-in is the e-mail code: it lands in the e2e mailbox prefix `inbound-admin/` (rule `e2e-cognito-admin`), which only the MFA admin role reads. The CRM API lets this identity reach synthetic agencies only. |
+| `$PY tools/identity/crm_dev_identity.py e2e-booking-writers [--apply]` | AA-1087 (root ADR 0006a A10e), Dev only: the three write-capable AA-Booking E2E users in the WORKFORCE pool, each in exactly one group: `e2e-booking-staff@` (`booking-sales`), `e2e-booking-maker@` and `e2e-booking-checker@` (`booking-finance`), all `@e2e-mail.lumiguides.it.com`. Same steps and refusals as `e2e-staff` (SUPPRESS, `email_verified=true`, no password, refuses a user in any other group). Needs the AA-1087 trigger (Dev flag on) applied first. Codes land in `inbound-admin/` (MFA admin role only). AA-Booking holds each user to its own writes on synthetic agencies only. |
 
 ### Runbook: an invitee lost the one-time password (AA-939)
 
@@ -109,6 +110,24 @@ Expected alerts: none from creating the user (SUPPRESS, no password). Every toke
 
 Removal (with A10 / A10a / A10b): `aws cognito-idp admin-delete-user` of the address, drop the trigger entry, the mailbox
 recipient, the AA-Partner `E2E_CRM_STAFF_EMAIL` rule and the `e2e-staff` command; Terraform Apply.
+
+### Runbook: the Dev Booking E2E write users (AA-1087, root ADR 0006a A10e)
+
+Run by the orchestrator with the MFA admin role, after the AA-1087 Infra PR is merged:
+
+1. Terraform Apply (publishes the WORKFORCE triggers with the three A10e entries and the three mailbox recipients of
+   `e2e-cognito-admin`).
+2. `$PY tools/identity/crm_dev_identity.py e2e-booking-writers` (dry run: three `would_create`), then `--apply`; note
+   the three printed `sub` values.
+3. Sign in at `https://booking.lumiguides.it.com/login` with one of the addresses and read its code under
+   `inbound-admin/` as in the A10c runbook step 5. The first sign-in creates its `booking.staff_users` row.
+
+Expected alerts: none (SUPPRESS, no password). Every token issue logs `workforce_e2e_test_token_issued`. The CIS staff
+reconcile may list the users as not in the CIS directory, like A10a / A10c.
+
+Removal (with A10 / A10a / A10b / A10c / A10d, AA-1054): `aws cognito-idp admin-delete-user` of the three addresses,
+drop the trigger entries, the mailbox recipients and the `e2e-booking-writers` command; Terraform Apply; AA-Booking
+drops `app/auth/e2e_staff.py`. Faster stop on Dev: `aws cognito-idp admin-disable-user` of an address.
 
 ## staff_web_secret.py — staff frontends on ECS (AA-911, root ADR 0019 d23)
 

@@ -49,6 +49,15 @@ A10d (AA-1035, S270, root ADR 0006a A10d): a fifth address in the same Dev-only 
     staff_directory._E2E_TEST_STAFF_ROLES) holds the same rule, refuses it unless the API's ENVIRONMENT is exactly
     "dev", caps its session at reads with NO write allow-list, and assigns it synthetic tenants only. Its codes land in
     the A10b mailbox prefix inbound-admin/ (rule e2e-cognito-admin), readable by the MFA admin role only.
+A10e (AA-1087, S278, root ADR 0006a A10e): three more addresses in the same Dev-only map, the write-capable AA-Booking
+E2E identities of the synthetic pilot rehearsal:
+  - E2E_BOOKING_STAFF_TEST_STAFF_EMAIL, exactly booking-sales (send and confirm a supplier booking);
+  - E2E_BOOKING_MAKER_TEST_STAFF_EMAIL and E2E_BOOKING_CHECKER_TEST_STAFF_EMAIL, each exactly booking-finance (record
+    an agency payment; approve or reject it). Same group tuple on purpose: AA-Booking separates them by address.
+  AA-Booking (app/auth/e2e_staff.py) refuses them outside ENVIRONMENT dev, with any other group set, on any write
+  outside the address's own allow-list, and on a record of an agency that CIS does not mark synthetic. Not in the CIS
+  directory: created with AdminCreateUser + SUPPRESS, no password (tools/identity/crm_dev_identity.py
+  e2e-booking-writers), like A10a / A10c. Codes in the A10b prefix inbound-admin/ (MFA admin role only).
 The map is consulted only while the Lambda env E2E_DEV_ONLY_STAFF_ENABLED is exactly the string "true" (read per call,
 no strip / lower; missing or anything else = off, fail closed). identity.tf sets it to "true" only when
 var.environment == "dev" and a precondition refuses "true" anywhere else. The flag can only switch ON an entry whose
@@ -96,10 +105,22 @@ E2E_CRM_STAFF_TEST_STAFF_GROUPS = ("crm-ops", "crm-support")
 # AA-CIS-App e2e_staff.E2E_CIS_CS_TEST_STAFF_EMAIL and AA-Partner e2e_staff.E2E_CIS_CS_EMAIL.
 E2E_CIS_CS_TEST_STAFF_EMAIL = "e2e-cis-cs@e2e-mail.lumiguides.it.com"
 E2E_CIS_CS_TEST_STAFF_GROUPS = ("cis-customer_success",)
+# A10e (AA-1087, S278): Dev-only write-capable AA-Booking E2E addresses; must equal AA-Booking app/auth/e2e_staff.py.
+# Booking holds each one to its own allow-listed writes on synthetic agencies only. The maker and the checker share
+# booking-finance on purpose: Booking separates them by address (allow-list) and the agency_payment maker-checker CHECK.
+E2E_BOOKING_STAFF_TEST_STAFF_EMAIL = "e2e-booking-staff@e2e-mail.lumiguides.it.com"
+E2E_BOOKING_STAFF_TEST_STAFF_GROUPS = ("booking-sales",)
+E2E_BOOKING_MAKER_TEST_STAFF_EMAIL = "e2e-booking-maker@e2e-mail.lumiguides.it.com"
+E2E_BOOKING_MAKER_TEST_STAFF_GROUPS = ("booking-finance",)
+E2E_BOOKING_CHECKER_TEST_STAFF_EMAIL = "e2e-booking-checker@e2e-mail.lumiguides.it.com"
+E2E_BOOKING_CHECKER_TEST_STAFF_GROUPS = ("booking-finance",)
 E2E_DEV_ONLY_TEST_STAFF = MappingProxyType({
     E2E_CIS_ADMIN_TEST_STAFF_EMAIL: E2E_CIS_ADMIN_TEST_STAFF_GROUPS,
     E2E_CRM_STAFF_TEST_STAFF_EMAIL: E2E_CRM_STAFF_TEST_STAFF_GROUPS,
     E2E_CIS_CS_TEST_STAFF_EMAIL: E2E_CIS_CS_TEST_STAFF_GROUPS,
+    E2E_BOOKING_STAFF_TEST_STAFF_EMAIL: E2E_BOOKING_STAFF_TEST_STAFF_GROUPS,
+    E2E_BOOKING_MAKER_TEST_STAFF_EMAIL: E2E_BOOKING_MAKER_TEST_STAFF_GROUPS,
+    E2E_BOOKING_CHECKER_TEST_STAFF_EMAIL: E2E_BOOKING_CHECKER_TEST_STAFF_GROUPS,
 })
 # The Lambda env switch for E2E_DEV_ONLY_TEST_STAFF and the one value that turns it on (compared exactly).
 DEV_ONLY_E2E_FLAG = "E2E_DEV_ONLY_STAFF_ENABLED"
