@@ -21,8 +21,14 @@ Modes:
   (default)   first fill. Refuses when the secret already holds a key (use --rotate). Writes current and
               edge_derived_until = now + --grace-hours (default 24).
   --rotate    new current; previous = the old current; previous_until = now + --grace-hours. Drops any expired
-              edge_derived_until. After --apply, force a new deployment of aa-tripplanner-<env>-web: the Lambdas
-              accept both keys until previous_until (they re-read the secret within 10 minutes).
+              edge_derived_until. After --apply, WAIT at least LAMBDA_SECRET_CACHE_S (10 minutes, the Lambdas'
+              secret cache, AA-TripPlanner-Web config.API_KEY_CACHE_SECONDS), then force a new deployment of
+              aa-tripplanner-<env>-web: the Lambdas accept both keys until previous_until. A web task that signs with
+              the new key before a warm Lambda re-read the secret would be refused (401) until that Lambda's cache
+              expires; the Lambdas also re-read once on a signature miss (throttled), but the wait is the rule.
+
+The first fill has the same wait: the web deploy that maps the new current runs at least LAMBDA_SECRET_CACHE_S after
+the write. The output carries deploy_not_before (epoch seconds) for both modes.
 
 Values are never printed: the output is one JSON line with the secret name, the action, the fields written and the
 version id. Account guard: refuses to run unless the credentials are for --expect-account.
@@ -47,6 +53,9 @@ PLACEHOLDER = "REPLACE_ME"
 MIN_KEY_LENGTH = 32  # AA-TripPlanner-Web config.TENANT_ASSERTION_KEY_MIN_LENGTH
 MAX_GRACE_HOURS = 7 * 24  # AA-TripPlanner-Web config.TENANT_ASSERTION_MAX_GRACE_S
 DEFAULT_GRACE_HOURS = 24
+# AA-TripPlanner-Web config.API_KEY_CACHE_SECONDS: how long a warm Lambda keeps the secret it read. A web deploy that
+# starts signing with a new current must wait this long after the write.
+LAMBDA_SECRET_CACHE_S = 600
 FIELDS = ("current", "previous", "previous_until", "edge_derived_until")
 
 
@@ -134,7 +143,9 @@ def write_secret(sm: Any, env: str, *, rotate: bool, grace_hours: int, apply: bo
     resp = sm.put_secret_value(SecretId=name, SecretString=json.dumps(wanted))
     result["action"] = "written"
     result["version_id"] = resp.get("VersionId")
-    result["next"] = (
+    result["deploy_not_before"] = t + LAMBDA_SECRET_CACHE_S
+    wait = f"wait {LAMBDA_SECRET_CACHE_S // 60} minutes (until deploy_not_before, the Lambdas' secret cache), then "
+    result["next"] = wait + (
         "deploy AA-TripPlanner-Web (Deploy Web Dev) so the web task maps the key"
         if not rotate else f"force a new deployment of aa-tripplanner-{env}-web before grace_until"
     )

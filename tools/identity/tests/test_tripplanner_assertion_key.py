@@ -95,6 +95,16 @@ def test_rotate_keeps_the_old_key_as_previous_for_the_grace():
     assert got["grace_until"] == NOW + 6 * 3600
 
 
+@pytest.mark.parametrize("rotate", [False, True])
+def test_the_next_step_waits_for_the_lambda_secret_cache(rotate):
+    # A web task that signs with the new current before a warm Lambda re-read the secret would be refused (401).
+    sm = FakeSm({NAME: json.dumps({"current": OLD})} if rotate else {NAME: None})
+    got = _write(sm, rotate=rotate)
+    assert tool.LAMBDA_SECRET_CACHE_S == 600  # AA-TripPlanner-Web config.API_KEY_CACHE_SECONDS
+    assert got["deploy_not_before"] == NOW + tool.LAMBDA_SECRET_CACHE_S
+    assert got["next"].startswith("wait 10 minutes")
+
+
 def test_rotate_inside_the_cut_over_keeps_the_edge_window_and_drops_an_expired_one():
     sm = FakeSm({NAME: json.dumps({"current": OLD, "edge_derived_until": NOW + 60})})
     _write(sm, rotate=True)
