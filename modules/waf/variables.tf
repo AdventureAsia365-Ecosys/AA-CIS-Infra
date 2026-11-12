@@ -103,3 +103,20 @@ variable "tripplanner_web" {
   })
   default = null
 }
+
+variable "rate_limit_exempt_cidrs" {
+  description = "AA-1092: public egress addresses of our own services (the NAT instance EIP, /32) whose server-to-server calls to the REST APIs (CRM and staff web -> api-cis / api-booking) all share one source IP. Scoped out of RateLimit1000, which would otherwise count every internal caller as one client. They still pass CommonRuleSet. Empty = no IP set (the ACL as before AA-1092)."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for c in var.rate_limit_exempt_cidrs : can(cidrhost(c, 0)) && endswith(c, "/32")])
+    error_message = "rate_limit_exempt_cidrs takes single IPv4 addresses as /32 CIDRs only."
+  }
+}
+
+variable "geo_exempt_hosts" {
+  description = "AA-1092: hosts scoped out of GeoBlockNonAllowed: the public REST API hosts (api-cis, api-booking) once the ACL is on their stages. Travellers anywhere load catalogue images from api-cis and partner agencies call Booking from anywhere; the geo list was made for the staff hosts on the ALB. Empty = geo applies to every host (the ACL as before AA-1092)."
+  type        = list(string)
+  default     = []
+}

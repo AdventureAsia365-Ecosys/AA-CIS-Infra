@@ -122,3 +122,9 @@ org_access_adopt_existing_role = false
 # Step 2 (on since the Booking admin runs a revision with the container): the service registers it in the target group.
 test_wp_enabled          = true
 test_wp_service_attached = true
+
+# AA-1092 (S278 audit M24, pre-PII): the shared REGIONAL web ACL (modules/waf) on the CIS and Booking REST API stages,
+# where WAF sees the real client IP: per-IP RateLimit1000 for api-cis / api-booking (NAT egress scoped out), the API
+# hosts scoped out of GeoBlock. No new ACL and no new rule (no fixed fee): about 0.60 USD per million requests
+# inspected (Dev: well under 1 million a month, estimate < 0.60 USD/month). The IP set is free.
+waf_protect_rest_api_stages = true
