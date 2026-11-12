@@ -25,6 +25,12 @@
       "reason": "LLM satellite: the acc2 CIS ECS task role and the TripPlanner Lambda role assume the acc3 Bedrock invoker (ExternalId pinned; CONTEXT.md account model)"
     },
     {
+      "match": "accounts/acc1-bedrock:aws_iam_role.bedrock_invoker",
+      "kind": "AWS",
+      "principal": "arn:*:iam::*:role/aa-cis-dev-ecs-task-role",
+      "reason": "AA-1095 (S278): the acc2 CIS ECS task role assumes the acc1 Bedrock invoker while acc3 is blocked (ExternalId pinned; Bedrock chat models only; root ADR 0001a Note S278)"
+    },
+    {
       "match": "accounts/acc3-bedrock:aws_iam_role.cost_explorer_reader",
       "kind": "AWS",
       "principal": "arn:*:iam::*:role/aa-cis-dev-ecs-task-role",

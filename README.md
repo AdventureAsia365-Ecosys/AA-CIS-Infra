@@ -14,7 +14,8 @@ applies reviewed app migrations to the shared RDS.
 | Root | Account | What | Applied by |
 |---|---|---|---|
 | `accounts/aa365/` | acc2 `005097885195`, us-west-1 | **Live stack**: CIS (ECS api + worker, RDS, ALB, API GW, WAF, S3, ops-probe Lambda, alarms) and TripPlanner (2 Lambdas, HTTP API, artifacts, OIDC role) | CI workflow `Terraform Apply Dev` |
-| `accounts/acc3-bedrock/` | acc3 `786888028788` | Bedrock invoker role (the only LLM satellite), Bedrock Batch, Cost Explorer reader | a human, locally (profile `nghiep_aa365`) |
+| `accounts/acc3-bedrock/` | acc3 `786888028788` | Bedrock invoker role (kept behind acc1 while AWS refuses models there), Bedrock Batch, Cost Explorer reader | a human, locally (profile `nghiep_aa365`) |
+| `accounts/acc1-bedrock/` | acc1 (ID and profile: root account map; never in this repo) | Bedrock invoker role only (AA-1095: serves the gateway's chat models while acc3 is blocked) | a human, locally (acc1 SSO profile; ID from an untracked `terraform.tfvars`, see `versions.tf`) |
 
 ```
 accounts/aa365/   main.tf, cicd.tf, environment.tf (module "environment": the Booking, CRM and TripPlanner stacks), observability.tf, observability_ecosys.tf, dfs_balance.tf, … (+ lambda_src/)
