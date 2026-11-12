@@ -53,6 +53,7 @@ on:
       - "accounts/management/**"
       - "accounts/aa365/versions.tf" # S271: provider default_tags (test_tag_guard.py)
       - "accounts/acc3-bedrock/versions.tf"
+      - "accounts/acc1-bedrock/versions.tf" # AA-1095: test_tag_guard.py ROOT_DEFAULTS
       - ".github/scripts/workflow_lint.py" # S271 G15: test_workflow_lint.py
   push:
     branches: [main]
@@ -79,6 +80,7 @@ on:
       - "accounts/management/**"
       - "accounts/aa365/versions.tf" # S271: provider default_tags (test_tag_guard.py)
       - "accounts/acc3-bedrock/versions.tf"
+      - "accounts/acc1-bedrock/versions.tf" # AA-1095: test_tag_guard.py ROOT_DEFAULTS
       - ".github/scripts/workflow_lint.py" # S271 G15: test_workflow_lint.py
 
 permissions:

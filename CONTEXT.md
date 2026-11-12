@@ -41,7 +41,7 @@ Account IDs: the account map in the root repo's onboarding page; never in this p
 
 | Account | Role in ecosystem | Managed here |
 |---------|-------------------|--------------|
-| acc1 | **Retired (AA-998)**: former Bedrock fallback; no grant from acc2, root destroyed and removed 28/10/2026 | (root removed) |
+| acc1 | Payer of acc3's organization (S277). **Since S278 (AA-1095): `AA1-Bedrock-Invoker`, the Bedrock chat account while acc3 is blocked** (root ADR 0001a, Note S278); nothing else of the ecosystem runs there | `accounts/acc1-bedrock/` |
 | acc2 (aa365) | **Main dev stack** (VPC/RDS/ECS/ALB/API GW/…) + CI/CD OIDC; Bedrock embeddings, the CRM guardrail and the acc2 candidate chat models (no route) | `accounts/aa365/` |
 | acc3 | `AA3-Bedrock-Invoker`: the **main** Bedrock chat account (root ADR 0009 decision 14: acc2 may also serve eval, judge and validate stages after the qualification ladder) | `accounts/acc3-bedrock/` |
 | management (`aa-management`) | The AA organization: OUs, SCPs, organization trail, budgets, anomaly monitors, IAM Identity Center; **no workload** | `accounts/management/` |
@@ -63,7 +63,7 @@ One root and one state bucket per account, nothing crossing accounts on the stat
 variable in every provider block (ADR 0018 decision 5; data standards C7.2c v1.9). No new account ID goes into this
 repo (public): roots take them as variables or secrets, like `MGMT_ACCOUNT_ID`.
 
-Bedrock chat routing is on **acc3** (acc2 native models, such as Cohere embeddings, stay on acc2). Root ADR 0009
+Bedrock chat routing is on **acc1** since S278 (AA-1095, root ADR 0001a Note S278: AWS refuses 7 chat models on acc3 at account level; acc1 answered every chat model of the gateway on 12/11/2026), with **acc3** kept configured behind it until its AWS case is solved (acc2 native models, such as Cohere embeddings, stay on acc2). Root ADR 0009
 decision 14 (accepted 31/10/2026) lets acc2 also serve chat models for eval, judge and validate stages once a model
 passes the qualification ladder: CIS migration 324 catalogues five acc2 candidate models (Amazon Nova, Meta Llama 4,
 Moonshot Kimi K3) with an acc2 deployment each, and no route names them. acc3 refuses every Bedrock model since
@@ -79,11 +79,11 @@ hand outside Terraform (value never in state); the CIS task role reads them by n
 the next model on the same account, or the job retries. The cross-account assume-role wiring that
 lets the main stack (acc2) and TripPlanner reach Bedrock in acc3 lives in
 `accounts/aa365/bedrock_satellite_assume.tf` (caller side) and the `acc3-bedrock` root (trust side).
-`accounts/acc1-bedrock/` was destroyed on 28/10/2026 (7 resources, state bucket deleted) and removed from the repo (AA-998).
+The former `accounts/acc1-bedrock/` was destroyed on 28/10/2026 (7 resources, state bucket deleted) and removed from the repo (AA-998). AA-1095 (S278) brings a new, minimal `accounts/acc1-bedrock/` back: the role `AA1-Bedrock-Invoker` only (trust: the CIS ECS task role, ExternalId pinned; invoke on the 13 chat models of the gateway through their `global.` profiles, plus `ListFoundationModels`), its own state bucket on acc1, applied locally with the acc1 SSO profile. The caller side is the `AssumeSatelliteBedrockInvokerAcc1` statement of `accounts/aa365/bedrock_satellite_assume.tf` and the env `BEDROCK_ACCT_PAYER` on the CIS api and worker (`modules/ecs`), which the CIS connection `acc1` names. acc1 is a personal account, so its ID follows the `MGMT_ACCOUNT_ID` pattern and never appears in this repo: `TF_VAR_bedrock_acct_payer_id` from the repo secret `BEDROCK_ACCT_PAYER_ID` in the three Terraform workflows (unset: no acc1 statement, empty env), and for the acc1 root `-backend-config` plus an untracked `terraform.tfvars` (`tools/terraform/tests/test_aa1095_acc1_no_id.py`). No Batch, Cost Explorer reader, TripPlanner grant or spend guard on acc1 (the gateway's connection cap holds the spend; budgets on acc1 wait for an explicit yes).
 The satellite invoker roles trust only the ECS task role (`aa-cis-dev-ecs-task-role`), not an
 admin session — Claude cannot be called from a local shell.
 Model lifecycle read (AA-1024 D2): `bedrock:ListFoundationModels` (read only, free) on the CIS task role (`modules/ecs`,
-Sid `BedrockModelLifecycleRead`) and on `AA3-Bedrock-Invoker` (Sid `ListFoundationModelsForLifecycle`), for the CIS
+Sid `BedrockModelLifecycleRead`) and on `AA3-Bedrock-Invoker` / `AA1-Bedrock-Invoker` (Sid `ListFoundationModelsForLifecycle`), for the CIS
 nightly job that fills `shared.llm_model_catalog.lifecycle_status` / `eol_date`.
 
 Cross-account pieces added 15-25/09/2026 (same assume-role pattern as the Bedrock satellite):
@@ -542,6 +542,7 @@ accounts/
                                   (tripplanner_variables.tf: tripplanner_daily_spend_cap_usd -> TP_DAILY_SPEND_CAP_USD
                                    on the browse and assembly Lambdas, 5 USD on Dev; modules/ecs llm_daily_probe ->
                                    LLM_DAILY_PROBE on the CIS api and worker, on on Dev since #574)
+  acc1-bedrock/   ← acc1 Bedrock invoker role only (AA-1095, S278: serves chat models while acc3 is blocked)
   acc3-bedrock/   ← acc3 Bedrock invoker role (the main chat account) + Bedrock Batch (batch.tf)
                     + Cost Explorer reader + spend guards (cost_guard.tf: monthly budget,
                     daily anomaly e-mail; cost_anomaly_immediate.tf: SNS topic aa3-cost-alerts +

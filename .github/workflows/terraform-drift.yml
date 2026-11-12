@@ -164,6 +164,8 @@ jobs:
           # AA-1004 (accounts/aa365/org_access.tf): IDs of the organization admin role's trust, from secrets (masked).
           TF_VAR_org_management_account_id: ${{ matrix.root == 'accounts/aa365' && secrets.MGMT_ACCOUNT_ID || '' }}
           TF_VAR_org_management_org_id: ${{ matrix.root == 'accounts/aa365' && secrets.MGMT_ORG_ID || '' }}
+          # AA-1095 (accounts/aa365/bedrock_satellite_assume.tf): acc1's ID (a personal account, never committed).
+          TF_VAR_bedrock_acct_payer_id: ${{ matrix.root == 'accounts/aa365' && secrets.BEDROCK_ACCT_PAYER_ID || '' }}
         run: |
           umask 077
           LOG="$RUNNER_TEMP/drift-plan.jsonl"
