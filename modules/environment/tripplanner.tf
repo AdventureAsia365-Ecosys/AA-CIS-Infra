@@ -183,6 +183,30 @@ resource "aws_secretsmanager_secret_version" "tripplanner_lead_webhook_key" {
   secret_string_wo_version = local.tp_lead_webhook_key_version
 }
 
+# -----------------------------------------------------------------------------
+# AA-1092 (S278 system audit M19): the tenant assertion signing key. The TripPlanner BFF signs the tenant of a
+# /{slug} request (x-tp-tenant, AA-TripPlanner-Web backend/shared/tenant_assertion.py + frontend/lib/tenantAssertion.ts);
+# until AA-1092 its key was derived from the edge key (tripplanner/<env>/api-key). Now its own secret, rotated on its
+# own schedule, JSON {current, previous, previous_until, edge_derived_until}
+# (epoch seconds): the BFF signs with "current" (web task env TP_TENANT_ASSERTION_KEY, tripplanner_web.tf); both
+# Lambdas (one role) read it by name at run time (cached 10 minutes) and accept "previous" / the edge-derived key only
+# inside their grace windows (at most 7 days).
+#
+# SHELL ONLY (no secret_version): Terraform and the plan role never read the key; AA-CIS-Infra
+# tools/identity/tripplanner_assertion_key.py fills it (first fill: current + edge_derived_until = now + 24 h) and
+# rotates it (--rotate: previous = old current, previous_until = now + grace). Order: this apply -> the tool --apply
+# -> the TripPlanner deploy (its web deploy copies the task revision that maps the key; a task whose secret has no
+# value fails to start). Without a value the Lambdas keep the edge-derived key (the behaviour before AA-1092).
+# The CIS task role cannot read it (modules/ecs DenyMasterAndOtherAppSecrets, tripplanner/*).
+# Cost: one secret, 0.40 USD per month; reads are cached in the Lambdas.
+# -----------------------------------------------------------------------------
+resource "aws_secretsmanager_secret" "tripplanner_tenant_assertion_key" {
+  name                    = "tripplanner/${var.environment}/tenant-assertion-key"
+  description             = "AA-TripPlanner tenant assertion signing key, JSON current/previous/previous_until/edge_derived_until, read by the browse + assembly Lambdas and mapped into the web task. Set by AA-CIS-Infra tools/identity/tripplanner_assertion_key.py, never by Terraform. AA-1092."
+  recovery_window_in_days = var.environment == "dev" ? 0 : 30
+  tags                    = merge(local.tp_tags, { Issue = "AA-1092", DataClassification = "restricted" })
+}
+
 # AA-878 (S243): the Mapbox geocoding token secret and its version are forgotten by two `removed` blocks; they name
 # root addresses, so they stay in the account root (accounts/aa365/tripplanner_removed.tf).
 
@@ -345,6 +369,14 @@ resource "aws_iam_role_policy" "tripplanner_lambda_permissions" {
         Effect   = "Allow"
         Action   = ["secretsmanager:GetSecretValue"]
         Resource = [aws_secretsmanager_secret.tripplanner_sentry_dsn.arn]
+      },
+      {
+        # AA-1092: the tenant assertion key, read by name (tripplanner/<ENVIRONMENT>/tenant-assertion-key) by both
+        # Lambdas when a request carries x-tp-tenant (backend/shared/tenant_assertion.py in AA-TripPlanner-Web).
+        Sid      = "ReadTenantAssertionKeySecret"
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = [aws_secretsmanager_secret.tripplanner_tenant_assertion_key.arn]
       },
       {
         # AA-1038: the lead webhook master key, read by name (tripplanner/<ENVIRONMENT>/lead-webhook-key) for the
