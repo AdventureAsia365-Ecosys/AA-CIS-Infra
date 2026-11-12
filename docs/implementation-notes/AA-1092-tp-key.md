@@ -48,3 +48,14 @@ S278 system audit M19. App part: AA-TripPlanner-Web `docs/implementation-notes/A
 - Rotation: `--rotate --apply`, wait until `deploy_not_before` (10 minutes), then force a new deployment of
   `aa-tripplanner-<env>-web` before `grace_until`.
 - Cost: one secret, 0.40 USD per month (estimate, list price); Lambda reads cached 10 minutes.
+
+## S278 follow-up: `--end-cutover`
+
+- **Decision:** the first fill's cut-over window (`edge_derived_until`, 24 h) can be ended early with
+  `--end-cutover` once the web task signs with `current`. Dev has no traffic to protect, so the old
+  edge-derived key should not stay valid for a day just to wait the window out.
+- **Changed:** the tool gains a third mode. It keeps `current`, keeps `previous` only while its grace runs,
+  and drops `edge_derived_until`. It mints no key and needs no deploy. The Lambdas refuse the edge-derived
+  key once their secret cache expires (at most 10 minutes; `refused_from` in the output).
+- **Should know:** it refuses when there is no window to end, and it refuses together with `--rotate`.
+  DRY RUN by default, like the other modes.

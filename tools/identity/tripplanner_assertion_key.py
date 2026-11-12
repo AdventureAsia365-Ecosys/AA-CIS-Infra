@@ -26,6 +26,10 @@ Modes:
               aa-tripplanner-<env>-web: the Lambdas accept both keys until previous_until. A web task that signs with
               the new key before a warm Lambda re-read the secret would be refused (401) until that Lambda's cache
               expires; the Lambdas also re-read once on a signature miss (throttled), but the wait is the rule.
+  --end-cutover  ends the first-fill cut-over early: keeps current (and an unexpired previous) and drops
+              edge_derived_until, so the Lambdas refuse the pre-AA-1092 edge-derived key once their secret cache
+              expires (at most LAMBDA_SECRET_CACHE_S). No new key, no deploy. Run it only after the web task signs
+              with current (its deploy after the first fill). Refuses when there is no cut-over window to end.
 
 The first fill has the same wait: the web deploy that maps the new current runs at least LAMBDA_SECRET_CACHE_S after
 the write. The output carries deploy_not_before (epoch seconds) for both modes.
@@ -124,16 +128,40 @@ def wanted_value(current: dict[str, Any], *, rotate: bool, grace_hours: int, now
     return value
 
 
+def _epoch(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def ended_cutover_value(current: dict[str, Any], *, now: int) -> dict[str, Any]:
+    """The stored value without edge_derived_until: current kept, previous kept only while its grace runs."""
+    if not current:
+        raise ToolError("the secret holds no key yet: run the first fill (without --rotate)")
+    if (_epoch(current.get("edge_derived_until")) or 0) <= now:
+        raise ToolError("there is no cut-over window to end (edge_derived_until is absent or already past)")
+    value: dict[str, Any] = {"current": current["current"]}
+    prev_until = _epoch(current.get("previous_until"))
+    if current.get("previous") and prev_until and prev_until > now:
+        value["previous"], value["previous_until"] = current["previous"], prev_until
+    return value
+
+
 def write_secret(sm: Any, env: str, *, rotate: bool, grace_hours: int, apply: bool,
-                 now: int | None = None, make_key: Callable[[], str] = new_key) -> dict[str, Any]:
+                 now: int | None = None, make_key: Callable[[], str] = new_key,
+                 end_cutover: bool = False) -> dict[str, Any]:
     name = SECRET.format(env=env)
     if not _secret_exists(sm, name):
         raise ToolError(f"{name} does not exist: apply AA-CIS-Infra modules/environment/tripplanner.tf first (the shell)")
+    if end_cutover and rotate:
+        raise ToolError("--end-cutover and --rotate are separate steps: run one at a time")
     t = int(time.time() if now is None else now)
-    wanted = wanted_value(current_value(sm, name), rotate=rotate, grace_hours=grace_hours, now=t, make_key=make_key)
+    stored = current_value(sm, name)
+    if end_cutover:
+        wanted = ended_cutover_value(stored, now=t)
+    else:
+        wanted = wanted_value(stored, rotate=rotate, grace_hours=grace_hours, now=t, make_key=make_key)
     result: dict[str, Any] = {
         "secret": name,
-        "mode": "rotate" if rotate else "first_fill",
+        "mode": "end_cutover" if end_cutover else "rotate" if rotate else "first_fill",
         "fields": sorted(wanted),
         "grace_until": wanted.get("previous_until", wanted.get("edge_derived_until")),
     }
@@ -143,6 +171,11 @@ def write_secret(sm: Any, env: str, *, rotate: bool, grace_hours: int, apply: bo
     resp = sm.put_secret_value(SecretId=name, SecretString=json.dumps(wanted))
     result["action"] = "written"
     result["version_id"] = resp.get("VersionId")
+    if end_cutover:
+        result["refused_from"] = t + LAMBDA_SECRET_CACHE_S
+        result["next"] = (f"the edge-derived key is refused once the Lambdas' secret cache expires (at most "
+                          f"{LAMBDA_SECRET_CACHE_S // 60} minutes, refused_from); no deploy needed")
+        return result
     result["deploy_not_before"] = t + LAMBDA_SECRET_CACHE_S
     wait = f"wait {LAMBDA_SECRET_CACHE_S // 60} minutes (until deploy_not_before, the Lambdas' secret cache), then "
     result["next"] = wait + (
@@ -160,6 +193,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--env", default=DEFAULT_ENV)
     p.add_argument("--rotate", action="store_true", help="replace current; the old one stays valid for --grace-hours")
     p.add_argument("--grace-hours", type=int, default=DEFAULT_GRACE_HOURS)
+    p.add_argument("--end-cutover", action="store_true",
+                   help="drop edge_derived_until now (after the web task signs with current); no new key")
     p.add_argument("--apply", action="store_true")
     return p
 
@@ -177,7 +212,8 @@ def main(argv: list[str] | None = None, clients: tuple[Any, Any] | None = None) 
         account = sts.get_caller_identity()["Account"]
         if args.expect_account and account != args.expect_account:
             raise ToolError(f"refused: credentials are for account {account}, expected {args.expect_account}")
-        out(write_secret(sm, args.env, rotate=args.rotate, grace_hours=args.grace_hours, apply=args.apply))
+        out(write_secret(sm, args.env, rotate=args.rotate, grace_hours=args.grace_hours, apply=args.apply,
+                         end_cutover=args.end_cutover))
         return 0
     except ToolError as exc:
         print(f"error: {exc}", file=sys.stderr)
