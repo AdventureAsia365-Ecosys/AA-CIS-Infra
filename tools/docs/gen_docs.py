@@ -6,7 +6,8 @@ Renders four reference pages from a Terraform JSON document of accounts/aa365 â€
 (`terraform show -json tfplan`, its planned values; handy to preview a branch):
 
   alarms.md     OPS-07           every aws_cloudwatch_metric_alarm and every EventBridge rule that
-                                 notifies an SNS topic: name, app, condition, topic, runbook link
+                                 notifies an SNS topic: name, app, condition, topic, runbook link; and
+                                 the root output platform_limits (AA-1096 L6: edge, budget and alarm values)
   network.md    ARCH-02-tables   VPC, subnets, route tables, NAT, security groups, load balancers,
                                  API Gateway, DNS records
   inventory.md  ARCH-03          resources per App tag, plus the root outputs (non-sensitive only)
@@ -462,7 +463,53 @@ def render_alarms(doc: TfDoc, root_dir: Optional[Path], problems: Problems) -> s
         )
     lines += ["", "## EventBridge alarm rules", "", "Rules whose target is an SNS topic (the e-mail is the target's input template)."]
     lines += ["", table(["Rule", "App", "Event", "Notifies", "Runbook", "What it means"], ev_rows) if ev_rows else "None."]
+    lines += render_platform_limits(doc)
     return "\n".join(lines) + "\n"
+
+
+# AA-1096 L6 (S279 thresholds audit, section 4): the edge, budget and alarm values that stay in Terraform, published
+# read-only. The root output (accounts/aa365/outputs_platform_limits.tf) is a map of groups; each group becomes one
+# table. The alarm page is staff tier on the CIS admin docs reader, so an administrator can read them there.
+PLATFORM_LIMITS_OUTPUT = "platform_limits"
+
+
+def flatten_limits(value: Any, prefix: str = "") -> list[tuple[str, str]]:
+    """Nested maps as dotted keys, sorted; a list as its items joined by ", "; booleans as on / off."""
+    if isinstance(value, dict):
+        rows: list[tuple[str, str]] = []
+        for k in sorted(value):
+            rows += flatten_limits(value[k], f"{prefix}.{k}" if prefix else str(k))
+        return rows
+    if isinstance(value, bool):
+        return [(prefix, "on" if value else "off")]
+    if isinstance(value, (list, tuple)):
+        return [(prefix, ", ".join(str(v) for v in value) or "(none)")]
+    if value is None:
+        return [(prefix, "(not set)")]
+    return [(prefix, number(value) if isinstance(value, (int, float)) else str(value))]
+
+
+def render_platform_limits(doc: TfDoc) -> list[str]:
+    o = doc.outputs.get(PLATFORM_LIMITS_OUTPUT)
+    if not isinstance(o, dict) or o.get("sensitive"):
+        return []
+    head = [
+        "",
+        "## Edge, budget and alarm limits",
+        "",
+        "The values that stay in Terraform on purpose (root thresholds audit S279, section 4): WAF rate rules, API Gateway",
+        "throttles, Lambda reserved concurrency, the acc2 AWS Budgets and the alarm thresholds. Read-only here; a change is",
+        "an AA-CIS-Infra PR (`accounts/aa365/outputs_platform_limits.tf` names the variable behind each value). The",
+        "admin-editable limits of the apps are on the CIS admin page Platform > Settings.",
+    ]
+    value = o.get("value")
+    if not isinstance(value, dict):
+        return head + ["", "(known after apply)"]
+    lines = list(head)
+    for group in sorted(value):
+        rows = [[code(k), code(v)] for k, v in flatten_limits(value[group])]
+        lines += ["", f"### {group}", "", table(["Setting", "Value"], rows) if rows else "None."]
+    return lines
 
 
 # --------------------------------------------------------------------------- network
@@ -707,6 +754,8 @@ def render_inventory(doc: TfDoc) -> str:
             rows.append([code(name), "(sensitive, not shown)"])
         elif "value" not in o:
             rows.append([code(name), "(known after apply)"])
+        elif name == PLATFORM_LIMITS_OUTPUT:
+            rows.append([code(name), "see [alarms.md](alarms.md), section Edge, budget and alarm limits"])
         else:
             rows.append([code(name), code(output_value(o.get("value")))])
     lines += ["", "## Terraform outputs", "", "Read live with `terraform -chdir=accounts/aa365 output -json` (AA-CIS-Infra).", ""]

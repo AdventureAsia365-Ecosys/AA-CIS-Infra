@@ -75,11 +75,16 @@ locals {
   # AA-839: the data_erasure job's apply switch and the tenant retention window (AA-CIS-App
   # services/jobs/erasure_job.py). The api checks the flag before it enqueues an apply (403) and the job
   # re-checks both on the worker, so api and worker carry the same values. Apply is on only for the
-  # string "true"; "false" behaves like unset. Retention 30 = the code default.
-  erasure_env = [
-    { name = "ERASURE_APPLY_ENABLED", value = var.erasure_apply_enabled ? "true" : "false" },
-    { name = "ERASURE_TENANT_RETENTION_DAYS", value = tostring(var.erasure_tenant_retention_days) },
-  ]
+  # string "true"; "false" behaves like unset.
+  # AA-1096 L6 (S279): the retention window is the admin-editable setting cis.erasure.tenant_retention_days (CIS 407,
+  # seed 30); ERASURE_TENANT_RETENTION_DAYS is its emergency override, which wins over the setting, so it is set only
+  # when the variable is (the Dev erasure drill sets 0). null = no env: the setting is served.
+  erasure_env = concat(
+    [{ name = "ERASURE_APPLY_ENABLED", value = var.erasure_apply_enabled ? "true" : "false" }],
+    var.erasure_tenant_retention_days != null ? [
+      { name = "ERASURE_TENANT_RETENTION_DAYS", value = tostring(var.erasure_tenant_retention_days) },
+    ] : [],
+  )
 
   # AA-779 (CIS ADR 0011): the T9 blog FAQ question filter's mode (AA-CIS-App services/acp_content_writing/faq_filter.py).
   # The T9 write runs as a job on the worker, so only the worker task definition carries it.
@@ -99,13 +104,6 @@ locals {
     var.t9_seo_builder != null ? [{ name = "T9_SEO_BUILDER", value = var.t9_seo_builder }] : [],
     var.s1_control != null ? [{ name = "S1_CONTROL", value = var.s1_control }] : [],
   )
-
-  # AA-1081 (AA-1077 memo, option C): the T7 Blog minimum seed in words (AA-CIS-App services/acp_shared/blog_seed.py
-  # T7_BLOG_MIN_SEED_WORDS, read by slate.propose_slate in the t7_slate job on the worker), so only the worker task
-  # definition carries it. null = no env: the app default (off), the same task definition as before the variable.
-  t7_blog_seed_env = var.t7_blog_min_seed_words != null ? [
-    { name = "T7_BLOG_MIN_SEED_WORDS", value = tostring(var.t7_blog_min_seed_words) },
-  ] : []
 
   # AA-835 (S6 review): the supply_media_purge job (AA-CIS-App services/jobs/supply_media_purge_job.py, worker only)
   # invalidates /supply/<type>/<media_id>-* on the photos CDN after it deletes a withdrawn Booking photo's CIS copies.
@@ -611,7 +609,6 @@ resource "aws_ecs_task_definition" "api" {
       { name = "PROJECT", value = var.project },
       { name = "AWS_REGION", value = var.aws_region },
       { name = "STEP_FUNCTIONS_ARN", value = var.step_functions_arn },
-      { name = "SF_BATCH_THRESHOLD", value = tostring(var.sf_batch_threshold) },
       { name = "BRONZE_BUCKET", value = var.bronze_bucket_name },
       # AA-651 — the durable job runner now has its own ECS service (aws_ecs_service.worker
       # below). Turn OFF the API's in-process worker so jobs are claimed only by the worker
@@ -801,16 +798,12 @@ resource "aws_ecs_task_definition" "worker" {
       { name = "PROJECT", value = var.project },
       { name = "AWS_REGION", value = var.aws_region },
       { name = "STEP_FUNCTIONS_ARN", value = var.step_functions_arn },
-      { name = "SF_BATCH_THRESHOLD", value = tostring(var.sf_batch_threshold) },
       { name = "BRONZE_BUCKET", value = var.bronze_bucket_name },
-      # AA-801 (S236): T2 judge with tenant score anchors; gate on brand_fit only, mission logged
-      # as a diagnostic (anchors: spread <= 1 on 9/9; brand-swap control: brand_fit 7-8 -> 5.67).
+      # AA-801 (S236): T2 judge with tenant score anchors (anchors: spread <= 1 on 9/9; brand-swap control:
+      # brand_fit 7-8 -> 5.67). AA-1096 L6 (S279): the gate (brand_fit) and the T3 background facts switch (on) are
+      # admin-editable settings now (CIS 412: cis.quality_modes.t2_judge_gate / .t3_background_facts); the worker no
+      # longer reads T2_JUDGE_GATE or T3_BACKGROUND_FACTS, so neither is set here.
       { name = "T2_JUDGE_ANCHORS", value = "on" },
-      { name = "T2_JUDGE_GATE", value = "brand_fit" },
-      # AA-793 (S237): T3 grounding accepts background facts about named places (past years,
-      # centuries, elevations) instead of flagging them; never tour activities, services or times
-      # the source lacks (writer source-fidelity policy). Best draft wins + targeted repair default on.
-      { name = "T3_BACKGROUND_FACTS", value = "on" },
       # AA-993 G1: the drain window on SIGTERM (shared/jobs/worker.py). It must leave 15 s of the 120 s stopTimeout
       # below; a running job that does not finish in time is released (not counted while a newer revision is alive).
       { name = "JOB_WORKER_GRACE_SECONDS", value = "100" },
@@ -823,7 +816,6 @@ resource "aws_ecs_task_definition" "worker" {
       local.erasure_env,
       local.t9_faq_filter_env,
       local.aa1049_w3_env,
-      local.t7_blog_seed_env,
       local.supply_photo_purge_env,
       local.s1_writer_env,
       local.llm_daily_probe_env,

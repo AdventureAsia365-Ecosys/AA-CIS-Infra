@@ -17,7 +17,9 @@
 #       CRM_LLM_ROLE_ARN stays unset).
 #     - task env (local.crm_llm_env, read by crm_app.tf): CRM_LLM_PROVIDER=bedrock, CRM_LLM_MODEL_ID = the profile,
 #       CRM_LLM_USD_PER_MTOK_IN / _OUT = the CIS catalogue prices of 'nova-lite' (equal to the crm-042 route prices,
-#       so the ledger price matches the catalogue whichever source prices the row), CRM_LLM_REGION, CRM_LLM_MAX_TOKENS.
+#       so the ledger price matches the catalogue whichever source prices the row), CRM_LLM_REGION. No
+#       CRM_LLM_MAX_TOKENS since AA-1096 L6: the output cap is the admin-editable setting crm.ai.draft_reply_max_tokens
+#       (crm-064, 800) and the env var is its emergency override, which would win over it.
 #   Off = no env and no policy: the app falls back to its stub provider (cost 0), as before.
 #
 # Who pays, and the guards that stay in the app (AA-Partner app/llm/gateway.py, unchanged): an agency's draft reaches
@@ -52,7 +54,6 @@ locals {
   crm_llm_foundation_model = "amazon.nova-lite-v1:0"
   crm_llm_usd_per_mtok_in  = "0.077"
   crm_llm_usd_per_mtok_out = "0.308"
-  crm_llm_max_tokens       = "800"
 
   # A us. cross-region profile authorizes InvokeModel against the foundation model in the member region that serves
   # the request (tripplanner.tf, observed live for Cohere): grant the US commercial regions the profile routes to.
@@ -70,7 +71,6 @@ locals {
     { name = "CRM_LLM_USD_PER_MTOK_IN", value = local.crm_llm_usd_per_mtok_in },
     { name = "CRM_LLM_USD_PER_MTOK_OUT", value = local.crm_llm_usd_per_mtok_out },
     { name = "CRM_LLM_REGION", value = var.aws_region },
-    { name = "CRM_LLM_MAX_TOKENS", value = local.crm_llm_max_tokens },
   ] : []
 }
 

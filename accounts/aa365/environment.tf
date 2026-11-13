@@ -149,12 +149,16 @@ module "environment" {
   crm_mail_oauth_enabled       = var.crm_mail_oauth_enabled
   crm_scrub_guardrail_enabled  = var.crm_scrub_guardrail_enabled
   crm_llm_bedrock_enabled      = var.crm_llm_bedrock_enabled
+  crm_slo                      = var.crm_slo
 
   # Booking settings (booking_variables.tf of this root, passed through unchanged).
   booking_github_repo_id     = var.booking_github_repo_id
   booking_staff_notify_email = var.booking_staff_notify_email
   booking_staff_admin_url    = var.booking_staff_admin_url
   booking_sentry_enabled     = var.booking_sentry_enabled
+  # AA-1096 L6: the stage throttle (was a literal in the module).
+  booking_throttle_rate_limit  = var.booking_throttle_rate_limit
+  booking_throttle_burst_limit = var.booking_throttle_burst_limit
 
   # Slice 3 (TripPlanner) platform inputs (tripplanner_inputs.tf of the module).
   tripplanner_lambda_security_group_id = aws_security_group.tp_lambda.id
@@ -172,7 +176,6 @@ module "environment" {
   tripplanner_browse_reserved_concurrency           = var.tripplanner_browse_reserved_concurrency
   tripplanner_lambda_reserved_concurrency           = var.tripplanner_lambda_reserved_concurrency
   tripplanner_jobs_reserved_concurrency             = var.tripplanner_jobs_reserved_concurrency
-  tripplanner_daily_spend_cap_usd                   = var.tripplanner_daily_spend_cap_usd
   tripplanner_jobs_schedule_expression              = var.tripplanner_jobs_schedule_expression
   tripplanner_jobs_erasure_feed_schedule_expression = var.tripplanner_jobs_erasure_feed_schedule_expression
   tripplanner_jobs_retention_override_enabled       = var.tripplanner_jobs_retention_override_enabled

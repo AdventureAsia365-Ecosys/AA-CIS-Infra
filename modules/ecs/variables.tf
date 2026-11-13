@@ -110,12 +110,6 @@ variable "step_functions_arn" {
   default     = ""
 }
 
-variable "sf_batch_threshold" {
-  description = "Tour count above which ingest-s3 routes to Step Functions instead of direct background tasks"
-  type        = number
-  default     = 15
-}
-
 variable "execution_role_secrets_arn_pattern" {
   description = "ARN pattern granting the ECS execution role secretsmanager:GetSecretValue, needed to inject task-def secrets. Optional — leave null when the execution role already has this permission out-of-band."
   type        = string
@@ -291,13 +285,12 @@ variable "erasure_apply_enabled" {
 }
 
 variable "erasure_tenant_retention_days" {
-  description = "AA-839: env ERASURE_TENANT_RETENTION_DAYS on api and worker, days a tenant stays offboarded before an erasure apply may run. Default 30 = the code default."
+  description = "AA-839 / AA-1096 L6: env ERASURE_TENANT_RETENTION_DAYS on api and worker, the emergency override of the admin-editable setting cis.erasure.tenant_retention_days (CIS 407, seed 30): days a tenant stays offboarded before an erasure apply may run. null (default) = no env, the setting is served; the Dev erasure drill sets 0."
   type        = number
-  default     = 30
-  nullable    = false # null from the caller = this default
+  default     = null
   validation {
-    condition     = var.erasure_tenant_retention_days >= 0 && floor(var.erasure_tenant_retention_days) == var.erasure_tenant_retention_days
-    error_message = "erasure_tenant_retention_days must be a whole number >= 0."
+    condition     = var.erasure_tenant_retention_days == null ? true : (var.erasure_tenant_retention_days >= 0 && floor(var.erasure_tenant_retention_days) == var.erasure_tenant_retention_days)
+    error_message = "erasure_tenant_retention_days must be null or a whole number >= 0."
   }
 }
 
@@ -341,17 +334,6 @@ variable "s1_control" {
   validation {
     condition     = var.s1_control == null ? true : contains(["contract", "graph"], var.s1_control)
     error_message = "s1_control must be null, contract or graph."
-  }
-}
-
-variable "t7_blog_min_seed_words" {
-  description = "AA-1081 (AA-1077 memo, option C): env T7_BLOG_MIN_SEED_WORDS on the worker — the Blog minimum seed in words (a Subject whose seed + walk is shorter is not proposed on Blog by the t7_slate job; services/acp_shared/blog_seed.py). A whole number from 1 to 5000. null = not set (the app default, off); no env on the task definition."
-  type        = number
-  default     = null
-
-  validation {
-    condition     = var.t7_blog_min_seed_words == null ? true : (floor(var.t7_blog_min_seed_words) == var.t7_blog_min_seed_words && var.t7_blog_min_seed_words >= 1 && var.t7_blog_min_seed_words <= 5000)
-    error_message = "t7_blog_min_seed_words must be null or a whole number from 1 to 5000 (null, not 0, switches it off)."
   }
 }
 

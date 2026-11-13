@@ -388,12 +388,12 @@ resource "aws_iam_role_policy" "crm_ecs_task" {
 # reaches the task on the next deploy.
 #
 # Env names read by the app (api/app/settings.py): DATABASE_URL (secret, role crm_app), DB_SSL, ENVIRONMENT,
-# WORKER_ENABLED, JOB_RETENTION_DRY_RUN (DM-7.2: counts only until a human turns it off), RATE_LIMIT_PUBLIC_PER_MINUTE,
+# WORKER_ENABLED, JOB_RETENTION_DRY_RUN (DM-7.2: counts only until a human turns it off),
 # RATE_LIMIT_XFF_HOPS (2 = CloudFront viewer address appended, then the NLB's; verify on the first live request),
 # SENTRY_DSN / SENTRY_REQUIRED (only with var.crm_sentry_enabled), the identity values (local.crm_identity_env),
 # the F3 scrub guardrail (AA-938, local.crm_scrub_env of crm_scrub.tf: SCRUB_GUARDRAIL_ID / _VERSION / _REGION, only
 # when crm_scrub_guardrail_enabled), the AI gateway model (AA-1027 F4, local.crm_llm_env of crm_llm.tf: CRM_LLM_PROVIDER /
-# _MODEL_ID / _USD_PER_MTOK_IN / _OUT / _REGION / _MAX_TOKENS, only when crm_llm_bedrock_enabled), and the key provider (AA-934): KEY_PROVIDER=kms and KMS_DATA_KEY_ID = the alias of the CRM data key (an alias, not the
+# _MODEL_ID / _USD_PER_MTOK_IN / _OUT / _REGION, only when crm_llm_bedrock_enabled), and the key provider (AA-934): KEY_PROVIDER=kms and KMS_DATA_KEY_ID = the alias of the CRM data key (an alias, not the
 # key ARN, so the public app repo never needs the account id; the app stores the ARN KMS returns per wrapped DEK);
 # DOCUMENTS_BUCKET (AA-937): the documents bucket name (task role grant CrmDocumentsObjects above);
 # AUDIT_BUCKET_COMPLIANCE / AUDIT_BUCKET_GOVERNANCE / AUDIT_RETENTION_DRY_RUN (AA-940): the two audit tiers and the
@@ -452,18 +452,17 @@ resource "aws_ecs_task_definition" "crm_api" {
       { name = "JOB_RETENTION_DRY_RUN", value = "true" },
       { name = "LIFECYCLE_DRY_RUN", value = "true" },
       { name = "PARTNER_ACCOUNT_CLEANUP_DRY_RUN", value = "false" },
-      { name = "RATE_LIMIT_PUBLIC_PER_MINUTE", value = "60" },
       { name = "RATE_LIMIT_XFF_HOPS", value = "2" },
       { name = "KEY_PROVIDER", value = "kms" },
       { name = "KMS_DATA_KEY_ID", value = aws_kms_alias.crm["data"].name },
       # AA-955: the platform seal of signed envelopes (CrmSealSignVerify).
       { name = "KMS_SEAL_KEY_ID", value = aws_kms_alias.crm["seal"].name },
-      # AA-936: the public inquiry form (app.intake.public): pages on the client host may post; limit per address
-      # per minute. AA-1096 L4: the per-form hourly quota is an admin-editable CRM setting (crm-064,
-      # crm.rate.intake_form_per_hour, default 200, with a per-agency override); its env var is not set here, because
-      # an env override in force wins over every agency's own value.
+      # AA-936: the public inquiry form (app.intake.public): pages on the client host may post. AA-1096 L4 / L6: the
+      # rate limits are admin-editable CRM settings (crm-064: crm.rate.public_per_minute 60, crm.rate.intake_per_minute
+      # 5, crm.rate.intake_form_per_hour 200 with a per-agency override). Their env vars (RATE_LIMIT_PUBLIC_PER_MINUTE,
+      # RATE_LIMIT_INTAKE_PER_MINUTE, RATE_LIMIT_INTAKE_FORM_PER_HOUR) are emergency overrides that win over the
+      # setting, so none is set here.
       { name = "INTAKE_PAGE_ORIGINS", value = var.crm_intake_origin },
-      { name = "RATE_LIMIT_INTAKE_PER_MINUTE", value = "5" },
       { name = "DOCUMENTS_BUCKET", value = aws_s3_bucket.crm["documents"].bucket },
       # AA-940 (CRM-12): the hourly audit export to both Object Lock tiers (crm_storage.tf crm_ecs_task_audit_export);
       # the daily audit retention only reports partitions it would drop until a human turns the dry run off (DM-7.2).

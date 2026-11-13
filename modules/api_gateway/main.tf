@@ -716,72 +716,10 @@ resource "aws_api_gateway_method_settings" "content_throttle" {
 }
 
 # =============================================================================
-# Usage Plans — mapped to plan_tier values in shared.tenants
+# Usage plans: none. AA-1096 L6 (S279 thresholds audit, defect 4): the four plans starter / growth / business /
+# internal (1-100 rps, monthly quotas) were attached to no API key and no method required a key, so nothing ever
+# enforced them; the plan limits live in the CIS plans (shared.plan_feature, admin page Tenants > Plans & add-ons).
 # =============================================================================
-
-resource "aws_api_gateway_usage_plan" "starter" {
-  name = "${var.project}-${var.environment}-starter"
-  tags = var.tags # S271: tagging standard (App and Component from the root)
-  api_stages {
-    api_id = aws_api_gateway_rest_api.this.id
-    stage  = aws_api_gateway_stage.dev.stage_name
-  }
-  throttle_settings {
-    rate_limit  = 1
-    burst_limit = 10
-  }
-  quota_settings {
-    limit  = 1000
-    period = "MONTH"
-  }
-}
-
-resource "aws_api_gateway_usage_plan" "growth" {
-  name = "${var.project}-${var.environment}-growth"
-  tags = var.tags # S271: tagging standard (App and Component from the root)
-  api_stages {
-    api_id = aws_api_gateway_rest_api.this.id
-    stage  = aws_api_gateway_stage.dev.stage_name
-  }
-  throttle_settings {
-    rate_limit  = 5
-    burst_limit = 50
-  }
-  quota_settings {
-    limit  = 5000
-    period = "MONTH"
-  }
-}
-
-resource "aws_api_gateway_usage_plan" "business" {
-  name = "${var.project}-${var.environment}-business"
-  tags = var.tags # S271: tagging standard (App and Component from the root)
-  api_stages {
-    api_id = aws_api_gateway_rest_api.this.id
-    stage  = aws_api_gateway_stage.dev.stage_name
-  }
-  throttle_settings {
-    rate_limit  = 17
-    burst_limit = 100
-  }
-  quota_settings {
-    limit  = 20000
-    period = "MONTH"
-  }
-}
-
-resource "aws_api_gateway_usage_plan" "internal" {
-  name = "${var.project}-${var.environment}-internal"
-  tags = var.tags # S271: tagging standard (App and Component from the root)
-  api_stages {
-    api_id = aws_api_gateway_rest_api.this.id
-    stage  = aws_api_gateway_stage.dev.stage_name
-  }
-  throttle_settings {
-    rate_limit  = 100
-    burst_limit = 500
-  }
-}
 
 # =============================================================================
 # Custom Domain + Base Path Mapping

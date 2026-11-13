@@ -43,3 +43,18 @@ variable "booking_sentry_enabled" {
   type        = bool
   default     = false
 }
+
+# AA-1096 L6 (S279): the Booking REST API stage throttle (every method, `*/*`), a capacity backstop under the app's own
+# limits (the RDS connection budget). Was the literal 20 / 40 in booking.tf; same values. Declared identically in the
+# root (accounts/aa365/booking_variables.tf) and passed through.
+variable "booking_throttle_rate_limit" {
+  description = "Booking REST API stage default (*/*) requests per second, applied to each method."
+  type        = number
+  default     = 20
+}
+
+variable "booking_throttle_burst_limit" {
+  description = "Booking REST API stage default (*/*) burst, applied to each method."
+  type        = number
+  default     = 40
+}

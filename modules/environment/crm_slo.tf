@@ -14,13 +14,39 @@
 # no custom metric, no dashboard. Missing data never alarms (desired 0 is the normal Dev state).
 # =============================================================================
 
+# AA-1096 L6 (S279): the thresholds are a variable (declared identically in accounts/aa365/crm_variables.tf and passed
+# through), not literals; the defaults are the values in force. min_requests 20: below it a window is too small to judge
+# (a single 500 would be 5 %); 2 of 3 windows: a single slow deploy window stays quiet.
+variable "crm_slo" {
+  description = "AA-969 / AA-1096 L6: the AA-Partner SLO alarm thresholds (AA-Partner docs/operations/slo.md, keep both in step): five_xx_percent = 5xx share of requests in a 5-minute window, min_requests = smallest window judged, p95_latency_s = target group p95, alarm_periods / alarm_breaching = windows evaluated / breaching to alarm."
+  type = object({
+    five_xx_percent = number
+    min_requests    = number
+    p95_latency_s   = number
+    alarm_periods   = number
+    alarm_breaching = number
+  })
+  default = {
+    five_xx_percent = 2
+    min_requests    = 20
+    p95_latency_s   = 1.5
+    alarm_periods   = 3
+    alarm_breaching = 2
+  }
+
+  validation {
+    condition     = var.crm_slo.five_xx_percent > 0 && var.crm_slo.five_xx_percent <= 100 && var.crm_slo.min_requests >= 1 && var.crm_slo.p95_latency_s > 0 && var.crm_slo.alarm_breaching >= 1 && var.crm_slo.alarm_breaching <= var.crm_slo.alarm_periods
+    error_message = "crm_slo: five_xx_percent in (0, 100], min_requests >= 1, p95_latency_s > 0, 1 <= alarm_breaching <= alarm_periods."
+  }
+}
+
 locals {
-  # The SLO thresholds of AA-Partner docs/operations/slo.md (keep both in step).
-  crm_slo_5xx_percent     = 2   # 5-minute window, at least crm_slo_min_requests requests
-  crm_slo_min_requests    = 20  # below this a window is too small to judge (a single 500 would be 5 %)
-  crm_slo_p95_latency_s   = 1.5 # target group p95 over 5 minutes, all routes
-  crm_slo_alarm_periods   = 3   # three 5-minute windows ...
-  crm_slo_alarm_breaching = 2   # ... of which two breach (a single slow deploy window stays quiet)
+  # The SLO thresholds of AA-Partner docs/operations/slo.md (keep both in step), from var.crm_slo.
+  crm_slo_5xx_percent     = var.crm_slo.five_xx_percent
+  crm_slo_min_requests    = var.crm_slo.min_requests
+  crm_slo_p95_latency_s   = var.crm_slo.p95_latency_s
+  crm_slo_alarm_periods   = var.crm_slo.alarm_periods
+  crm_slo_alarm_breaching = var.crm_slo.alarm_breaching
 }
 
 resource "aws_cloudwatch_metric_alarm" "crm_api_5xx_rate" {

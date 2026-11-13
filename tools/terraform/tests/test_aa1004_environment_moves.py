@@ -222,6 +222,7 @@ SLICE_2_SETTINGS = {
     "crm_partner_signin_enabled", "crm_web_client_hosts", "crm_portal_sentry_enabled", "crm_portal_api_key_signin",
     "crm_audit_compliance_enabled", "crm_ingest_subdomain", "crm_mail_oauth_enabled", "crm_scrub_guardrail_enabled",
     "crm_llm_bedrock_enabled",
+    "crm_slo",                                                 # AA-1096 L6 (S279): the SLO alarm thresholds
 }
 
 # Slice 3 (S267, AA-1004 P1): the former tripplanner.tf and tripplanner_jobs.tf of accounts/aa365 (the two Mapbox
@@ -295,7 +296,7 @@ SLICE_3_SETTINGS = {
     "tripplanner_narrate_throttle_burst_limit", "tripplanner_search_throttle_rate_limit",
     "tripplanner_search_throttle_burst_limit", "tripplanner_browse_reserved_concurrency",
     "tripplanner_lambda_reserved_concurrency", "tripplanner_jobs_reserved_concurrency",
-    "tripplanner_daily_spend_cap_usd", "tripplanner_jobs_schedule_expression",
+    "tripplanner_jobs_schedule_expression",       # AA-1096 L6: tripplanner_daily_spend_cap_usd removed (app profile)
     "tripplanner_jobs_retention_override_enabled", "tripplanner_jobs_tenant_erase_apply_enabled",
     "tripplanner_jobs_erasure_feed_schedule_expression",       # AA-1093 follow-up (S279): the 5-minute feed read
 }
