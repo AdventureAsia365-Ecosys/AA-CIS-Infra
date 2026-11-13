@@ -58,6 +58,13 @@ E2E identities of the synthetic pilot rehearsal:
   outside the address's own allow-list, and on a record of an agency that CIS does not mark synthetic. Not in the CIS
   directory: created with AdminCreateUser + SUPPRESS, no password (tools/identity/crm_dev_identity.py
   e2e-booking-writers), like A10a / A10c. Codes in the A10b prefix inbound-admin/ (MFA admin role only).
+A10e-2 (AA-1091, S279, root ADR 0006a A10e-2): the pricing pair of the AA-1091 live check with SYNTHETIC prices:
+  - E2E_CIS_CS_TEST_STAFF_EMAIL (A10d) may also hold exactly cis-customer_success + booking-contracting, the CIS Staff
+    page "Pricing team" preset (E2E_DEV_ONLY_EXTRA_GROUP_SETS): the maker. Its A10d set alone stays valid, so the
+    account keeps signing in after the preset is removed. The CIS directory allows that one Booking grant on Dev only;
+  - E2E_BOOKING_PRICING_CHECKER_TEST_STAFF_EMAIL, exactly booking-contracting: the checker. Not in the CIS directory
+    (tools/identity/crm_dev_identity.py e2e-booking-writers), codes in inbound-admin/ like A10e.
+  AA-Booking (app/auth/e2e_staff.py) holds both to the pricing steps on synthetic trip plans, Dev only.
 The map is consulted only while the Lambda env E2E_DEV_ONLY_STAFF_ENABLED is exactly the string "true" (read per call,
 no strip / lower; missing or anything else = off, fail closed). identity.tf sets it to "true" only when
 var.environment == "dev" and a precondition refuses "true" anywhere else. The flag can only switch ON an entry whose
@@ -114,6 +121,12 @@ E2E_BOOKING_MAKER_TEST_STAFF_EMAIL = "e2e-booking-maker@e2e-mail.lumiguides.it.c
 E2E_BOOKING_MAKER_TEST_STAFF_GROUPS = ("booking-finance",)
 E2E_BOOKING_CHECKER_TEST_STAFF_EMAIL = "e2e-booking-checker@e2e-mail.lumiguides.it.com"
 E2E_BOOKING_CHECKER_TEST_STAFF_GROUPS = ("booking-finance",)
+# A10e-2 (AA-1091, S279): the pricing checker (Dev only, booking-contracting); must equal AA-Booking
+# app/auth/e2e_staff.E2E_PRICING_CHECKER_EMAIL and AA-CIS-App e2e_staff.E2E_BOOKING_PRICING_CHECKER_TEST_STAFF_EMAIL.
+E2E_BOOKING_PRICING_CHECKER_TEST_STAFF_EMAIL = "e2e-booking-pricing-checker@e2e-mail.lumiguides.it.com"
+E2E_BOOKING_PRICING_CHECKER_TEST_STAFF_GROUPS = ("booking-contracting",)
+# A10e-2: the A10d address with the "Pricing team" preset (the pricing maker): exactly these groups, as well as its own.
+E2E_CIS_CS_PRICING_TEST_STAFF_GROUPS = ("cis-customer_success", "booking-contracting")
 E2E_DEV_ONLY_TEST_STAFF = MappingProxyType({
     E2E_CIS_ADMIN_TEST_STAFF_EMAIL: E2E_CIS_ADMIN_TEST_STAFF_GROUPS,
     E2E_CRM_STAFF_TEST_STAFF_EMAIL: E2E_CRM_STAFF_TEST_STAFF_GROUPS,
@@ -121,6 +134,12 @@ E2E_DEV_ONLY_TEST_STAFF = MappingProxyType({
     E2E_BOOKING_STAFF_TEST_STAFF_EMAIL: E2E_BOOKING_STAFF_TEST_STAFF_GROUPS,
     E2E_BOOKING_MAKER_TEST_STAFF_EMAIL: E2E_BOOKING_MAKER_TEST_STAFF_GROUPS,
     E2E_BOOKING_CHECKER_TEST_STAFF_EMAIL: E2E_BOOKING_CHECKER_TEST_STAFF_GROUPS,
+    E2E_BOOKING_PRICING_CHECKER_TEST_STAFF_EMAIL: E2E_BOOKING_PRICING_CHECKER_TEST_STAFF_GROUPS,
+})
+# Other exact group sets a Dev-only address may hold, besides its own tuple above (read-only, code constants). Any set
+# that is neither still DENIES the token.
+E2E_DEV_ONLY_EXTRA_GROUP_SETS = MappingProxyType({
+    E2E_CIS_CS_TEST_STAFF_EMAIL: (E2E_CIS_CS_PRICING_TEST_STAFF_GROUPS,),
 })
 # The Lambda env switch for E2E_DEV_ONLY_TEST_STAFF and the one value that turns it on (compared exactly).
 DEV_ONLY_E2E_FLAG = "E2E_DEV_ONLY_STAFF_ENABLED"
@@ -151,6 +170,15 @@ def _e2e_groups(raw_email: Any, email: str) -> tuple[str, ...] | None:
     if groups is None and _dev_only_e2e_enabled():
         groups = E2E_DEV_ONLY_TEST_STAFF.get(email)
     return groups
+
+
+def _e2e_groups_match(email: str, kept: list[str], e2e_groups: tuple[str, ...]) -> bool:
+    """True when the kept staff groups are exactly the address's tuple or, for a Dev-only address while the flag is on,
+    exactly one of its E2E_DEV_ONLY_EXTRA_GROUP_SETS (A10e-2)."""
+    if kept == sorted(e2e_groups):
+        return True
+    extra = E2E_DEV_ONLY_EXTRA_GROUP_SETS.get(email, ()) if _dev_only_e2e_enabled() else ()
+    return any(kept == sorted(g) for g in extra)
 
 
 def _dev_only_e2e_enabled() -> bool:
@@ -235,7 +263,7 @@ def _pre_token_generation(event: dict) -> dict:
         raise Deny("user is in no staff group")
     if e2e_test:
         # Refuse, do not strip: a wider group on this account means the directory rule was bypassed.
-        if kept != sorted(e2e_groups):
+        if not _e2e_groups_match(email, kept, e2e_groups):
             raise Deny("E2E test account outside its allowed groups")
         log("workforce_e2e_test_token_issued", trigger=event.get("triggerSource"),
             client_id=(event.get("callerContext") or {}).get("clientId"), email=email)

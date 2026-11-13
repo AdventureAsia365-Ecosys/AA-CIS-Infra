@@ -120,6 +120,9 @@ locals {
     "e2e-booking-staff@${local.e2e_mail_domain}",
     "e2e-booking-maker@${local.e2e_mail_domain}",
     "e2e-booking-checker@${local.e2e_mail_domain}",
+    # AA-1091 (root ADR 0006a A10e-2): the Dev-only pricing checker (booking-contracting); workforce.py
+    # E2E_BOOKING_PRICING_CHECKER_TEST_STAFF_EMAIL.
+    "e2e-booking-pricing-checker@${local.e2e_mail_domain}",
   ]
 }
 
