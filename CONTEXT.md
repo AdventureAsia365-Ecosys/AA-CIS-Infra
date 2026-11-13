@@ -343,7 +343,8 @@ accounts/
                                    the read-only GitHub OIDC role aa-cis-dev-e2e-mail-reader (AA-CIS-App, env e2e,
                                    main). A10b (AA-816, S252, dev only): rule e2e-cognito-admin (recipient
                                    e2e-cis-admin@, after aa-crm-dev-ingest; A10c e2e-crm-staff@, A10d e2e-cis-cs@ and,
-                                   AA-1087 A10e, the Booking write users e2e-booking-staff@ / -maker@ / -checker@ too)
+                                   AA-1087 A10e, the Booking write users e2e-booking-staff@ / -maker@ / -checker@,
+                                   AA-1091 A10e-2 the pricing checker e2e-booking-pricing-checker@ too)
                                    -> inbound-admin/, object reads there denied
                                    to every principal except the MFA admin role (the reader role included). Any future
                                    SES receiving in us-west-1 adds rules to this set)
