@@ -122,6 +122,9 @@ ALLOWLIST: dict[str, dict[str, str]] = {
         "shared.tenant_entitlement_override": f"per-tenant entitlement exceptions (AA-1028, 353); {_CIS_ONLY}",
         "shared.tenant_entitlement": f"materialised entitlements (AA-1028, 353), HTTP only; {_CIS_ONLY}",
         "shared.tenant_account_event": f"tenant.entitlements.v1 feed (AA-1028, 353), HTTP only; {_CIS_ONLY}",
+        # AA-1093 (CIS 408): the offboarding erasure saga's requests (ids, hashes, counts), CIS saga + HTTP only; the
+        # apps read them through catalog.v_tenant_erasure_v1 (410) or GET /tenant/v1/erasure-requests.
+        "shared.tenant_erasure_request": f"tenant erasure saga requests (AA-1093, 408), CIS only; {_CIS_ONLY}",
         # AA-1035 R2 (CIS 364): staff tables, read and written only by the staff API.
         "shared.staff_tenant_assignment": f"staff -> tenant assignment, staff API only (AA-1035, 364); {_CIS_ONLY}",
         "shared.staff_view_as_session": f"staff view-as access log, staff API only (AA-1035, 364); {_CIS_ONLY}",
