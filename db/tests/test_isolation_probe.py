@@ -376,7 +376,10 @@ class BuildCellsTest(unittest.TestCase):
         self.assertIn("AND NOT (s.nspname || '.' || c.relname) = ANY($6::text[])", relation)
         self.assertEqual(p.RUNTIME_MISSING_SQL.count("$6"), 1)
         self.assertEqual(p.OWNERS["booking"].runtime_privileges[0].owner_only, ("booking.retired_b2c_record",))
-        for name in ("cis", "tripplanner", "crm"):
+        # AA-1093 (tp-030/031): the erasure report view is cis_app only (tenant.erasure.v1).
+        self.assertEqual(p.OWNERS["tripplanner"].runtime_privileges[0].owner_only,
+                         ("tripplanner.v_tenant_erasure_report_v1",))
+        for name in ("cis", "crm"):
             self.assertEqual(p.OWNERS[name].runtime_privileges[0].owner_only, (), name)
 
     def test_owner_only_cell(self):
@@ -409,7 +412,7 @@ class BuildCellsTest(unittest.TestCase):
         st, _ = statuses(f)
         self.assertEqual(st["owner_only.booking"], "FAIL")
         # only owners with owner-only relations get the cell
-        self.assertNotIn("owner_only.tripplanner", st)
+        self.assertNotIn("owner_only.crm", st)       # tripplanner has one since tp-030 (AA-1093)
         self.assertNotIn("owner_only.cis", st)
 
     def test_default_acl_findings(self):
