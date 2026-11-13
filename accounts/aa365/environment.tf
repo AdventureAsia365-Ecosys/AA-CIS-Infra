@@ -77,6 +77,8 @@ module "environment" {
   vpc_link_id                    = module.alb.vpc_link_id
   nlb_dns_name                   = module.alb.nlb_dns_name
   bronze_bucket_arn              = module.s3.bronze_bucket_arn
+  gold_bucket_arn                = module.s3.gold_bucket_arn
+  gold_bucket_name               = module.s3.gold_bucket_name
   booking_listener_rule_gate     = aws_lb_listener_rule.booking.arn
   booking_security_group_id      = aws_security_group.booking_api.id
   ses_from_address               = var.ses_from_address
@@ -173,6 +175,7 @@ module "environment" {
   tripplanner_daily_spend_cap_usd             = var.tripplanner_daily_spend_cap_usd
   tripplanner_jobs_schedule_expression        = var.tripplanner_jobs_schedule_expression
   tripplanner_jobs_retention_override_enabled = var.tripplanner_jobs_retention_override_enabled
+  tripplanner_jobs_tenant_erase_apply_enabled = var.tripplanner_jobs_tenant_erase_apply_enabled
 }
 
 locals {
