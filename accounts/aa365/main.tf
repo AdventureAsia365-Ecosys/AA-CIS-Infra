@@ -48,7 +48,8 @@ locals {
   sfn_pipeline_arn     = "arn:aws:states:${var.aws_region}:${var.account_id}:stateMachine:${local.name_prefix}-pipeline"
 
   # AA-839: the Dev erasure drill switch, the ONLY line a drill PR changes. false = DRY RUN only
-  # (ERASURE_APPLY_ENABLED=false, retention = the code default 30 days). true = apply on and retention 0
+  # (ERASURE_APPLY_ENABLED=false, retention = the admin setting cis.erasure.tenant_retention_days, seed 30 days; no
+  # ERASURE_TENANT_RETENTION_DAYS env since AA-1096 L6). true = apply on and retention 0
   # days, for the approved drill on a synthetic tenant only (root docs/legal/dsar-erasure-runbook.md
   # section 5). A change reaches the tasks only after Terraform Apply AND a CIS Deploy Dev dispatch
   # (the services ignore task_definition; the deploy copies the latest revision and swaps the image).
