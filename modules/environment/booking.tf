@@ -622,15 +622,16 @@ resource "aws_api_gateway_stage" "booking" {
 }
 
 # Unauthenticated edge: cap the stage so a scan cannot run up the shared ALB/RDS. Throttling only
-# (no execution logging, which needs nothing new but is not wanted for Dev).
+# (no execution logging, which needs nothing new but is not wanted for Dev). AA-1096 L6: values from
+# booking_variables.tf (was the literal 20 / 40).
 resource "aws_api_gateway_method_settings" "booking_throttle" {
   rest_api_id = aws_api_gateway_rest_api.booking.id
   stage_name  = aws_api_gateway_stage.booking.stage_name
   method_path = "*/*"
 
   settings {
-    throttling_rate_limit  = 20
-    throttling_burst_limit = 40
+    throttling_rate_limit  = var.booking_throttle_rate_limit
+    throttling_burst_limit = var.booking_throttle_burst_limit
   }
 }
 

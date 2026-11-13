@@ -299,6 +299,60 @@ class PageTests(unittest.TestCase):
             self.assertIn("network.md", gd.changed_pages(new, old, 30, dt.date(2026, 10, 20)))
 
 
+class PlatformLimitsTests(unittest.TestCase):
+    """AA-1096 L6: the root output platform_limits becomes the section "Edge, budget and alarm limits" of alarms.md."""
+
+    LIMITS = {
+        "waf": {"alb_acl_rate_limit_per_5min_per_ip": 1000, "geo_allowed_countries": ["US", "VN"], "common_rules_count_only": False},
+        "budgets": {"acc2_total_monthly_usd": 300, "acc2_per_app_monthly_usd": {"cis": 90, "shared": 120}},
+        "alarms": {"crm_slo_p95_latency_s": 1.5, "rds_free_storage_bytes_below": 10737418240.0},
+    }
+
+    def doc(self, output: dict | None) -> dict:
+        d = state_doc()
+        if output is not None:
+            d["values"]["outputs"]["platform_limits"] = output
+        return d
+
+    def render(self, doc: dict) -> tuple[str, str]:
+        with tempfile.TemporaryDirectory() as t:
+            tf = gd.load_tf_json(write_json(Path(t), "s.json", doc))
+        return gd.render_alarms(tf, None, gd.Problems()), gd.render_inventory(tf)
+
+    def test_flatten_limits(self):
+        self.assertEqual(
+            gd.flatten_limits({"b": {"y": 2, "x": [1, 2]}, "a": True, "c": None, "d": 1.5}),
+            [("a", "on"), ("b.x", "1, 2"), ("b.y", "2"), ("c", "(not set)"), ("d", "1.5")],
+        )
+
+    def test_one_table_per_group_on_the_alarm_page(self):
+        alarms, inv = self.render(self.doc({"sensitive": False, "value": self.LIMITS, "type": "object"}))
+        self.assertIn("## Edge, budget and alarm limits", alarms)
+        for group in ("### alarms", "### budgets", "### waf"):
+            self.assertIn(group, alarms)
+        self.assertLess(alarms.index("### alarms"), alarms.index("### budgets"))
+        self.assertIn("| `alb_acl_rate_limit_per_5min_per_ip` | `1000` |", alarms)
+        self.assertIn("| `geo_allowed_countries` | `US, VN` |", alarms)
+        self.assertIn("| `common_rules_count_only` | `off` |", alarms)
+        self.assertIn("| `acc2_per_app_monthly_usd.cis` | `90` |", alarms)
+        self.assertIn("| `rds_free_storage_bytes_below` | `10737418240` |", alarms)
+        # The inventory points at the alarm page instead of repeating the map.
+        self.assertIn("| `platform_limits` | see [alarms.md](alarms.md), section Edge, budget and alarm limits |", inv)
+        self.assertNotIn("acc2_total_monthly_usd", inv)
+
+    def test_no_section_without_the_output_or_when_sensitive(self):
+        alarms, _ = self.render(self.doc(None))
+        self.assertNotIn("Edge, budget and alarm limits", alarms)
+        alarms, _ = self.render(self.doc({"sensitive": True, "value": self.LIMITS}))
+        self.assertNotIn("Edge, budget and alarm limits", alarms)
+        self.assertNotIn("1000", alarms.split("## EventBridge alarm rules")[1])
+
+    def test_unknown_value_says_so(self):
+        alarms, _ = self.render(self.doc({"sensitive": False}))
+        self.assertIn("## Edge, budget and alarm limits", alarms)
+        self.assertIn("(known after apply)", alarms)
+
+
 class SourceGuardTests(unittest.TestCase):
     def check(self, text: str) -> list[str]:
         with tempfile.TemporaryDirectory() as t:

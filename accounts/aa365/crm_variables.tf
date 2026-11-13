@@ -120,3 +120,27 @@ variable "crm_llm_bedrock_enabled" {
   type        = bool
   default     = false
 }
+
+# as in modules/environment/crm_slo.tf (AA-1096 L6)
+variable "crm_slo" {
+  description = "AA-969 / AA-1096 L6: the AA-Partner SLO alarm thresholds (AA-Partner docs/operations/slo.md, keep both in step): five_xx_percent = 5xx share of requests in a 5-minute window, min_requests = smallest window judged, p95_latency_s = target group p95, alarm_periods / alarm_breaching = windows evaluated / breaching to alarm."
+  type = object({
+    five_xx_percent = number
+    min_requests    = number
+    p95_latency_s   = number
+    alarm_periods   = number
+    alarm_breaching = number
+  })
+  default = {
+    five_xx_percent = 2
+    min_requests    = 20
+    p95_latency_s   = 1.5
+    alarm_periods   = 3
+    alarm_breaching = 2
+  }
+
+  validation {
+    condition     = var.crm_slo.five_xx_percent > 0 && var.crm_slo.five_xx_percent <= 100 && var.crm_slo.min_requests >= 1 && var.crm_slo.p95_latency_s > 0 && var.crm_slo.alarm_breaching >= 1 && var.crm_slo.alarm_breaching <= var.crm_slo.alarm_periods
+    error_message = "crm_slo: five_xx_percent in (0, 100], min_requests >= 1, p95_latency_s > 0, 1 <= alarm_breaching <= alarm_periods."
+  }
+}

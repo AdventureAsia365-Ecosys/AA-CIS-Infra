@@ -83,13 +83,15 @@ class CrmLlmEnv(unittest.TestCase):
                 "CRM_LLM_USD_PER_MTOK_IN",
                 "CRM_LLM_USD_PER_MTOK_OUT",
                 "CRM_LLM_REGION",
-                "CRM_LLM_MAX_TOKENS",
             ],
         )
         self.assertIn('{ name = "CRM_LLM_PROVIDER", value = "bedrock" }', env.group(1))
         self.assertNotIn("ROLE_ARN", env.group(1).replace("No CRM_LLM_ROLE_ARN", ""))
         self.assertEqual((_local("crm_llm_usd_per_mtok_in"), _local("crm_llm_usd_per_mtok_out")), CATALOGUE_PRICES)
-        self.assertTrue(50 <= int(_local("crm_llm_max_tokens")) <= 4000)  # AA-Partner settings bounds
+        # AA-1096 L6: no CRM_LLM_MAX_TOKENS; the cap is the AA-Partner setting crm.ai.draft_reply_max_tokens (crm-064),
+        # and its env var is an override that would win over the admin page.
+        self.assertNotIn("CRM_LLM_MAX_TOKENS", env.group(1))
+        self.assertNotIn("crm_llm_max_tokens", LLM)
 
     def test_the_crm_api_container_gets_the_env(self) -> None:
         task = _resource(APP, "aws_ecs_task_definition", "crm_api")
