@@ -130,3 +130,16 @@ variable "tripplanner_jobs_retention_override_enabled" {
     error_message = "tripplanner_jobs_retention_override_enabled must be \"true\" or \"false\"."
   }
 }
+
+variable "tripplanner_jobs_tenant_erase_apply_enabled" {
+  description = "AA-1093 — \"true\" (exact string) lets tp_tenant_erase APPLY an approved erasure plan on this deployment (TENANT_ERASE_APPLY_ENABLED); a DRY RUN, a verify, a backup and a restore drill never need it"
+  type        = string
+  # Closed by default: an apply deletes every TripPlanner row of a tenant. Open it only for an approved erasure (on Dev:
+  # a synthetic tenant, the end-to-end offboarding drill), then close it again.
+  default = "false"
+
+  validation {
+    condition     = contains(["true", "false"], var.tripplanner_jobs_tenant_erase_apply_enabled)
+    error_message = "tripplanner_jobs_tenant_erase_apply_enabled must be \"true\" or \"false\"."
+  }
+}

@@ -193,6 +193,7 @@ CONSUMER_GRANTS = (
     ("cis_app", ("USAGE", "SELECT"), "tripplanner.v_ops_pin_components", "tp-020"),
     ("cis_app", ("USAGE", "SELECT"), "tripplanner.v_ops_component_id_map", "tp-020"),
     ("cis_app", ("USAGE", "SELECT"), "tripplanner.v_ops_inquiry_keys", "tp-022"),    # AA-1003 TP-03 key view
+    ("cis_app", ("USAGE", "SELECT"), "tripplanner.v_tenant_erasure_report_v1", "tp-030"),  # AA-1093 erasure report
     ("tripplanner", ("USAGE", "SELECT"), "booking.v_from_prices", "bk-039"),       # AA-1029 price.from.v1
     ("cis_app", ("USAGE", "SELECT"), "booking.v_from_prices", "bk-040"),           # AA-1029 studio Marketplace
     ("cis_app", ("USAGE", "SELECT"), "booking.v_tenant_billing_status", "bk-042"), # AA-1037 billing tick

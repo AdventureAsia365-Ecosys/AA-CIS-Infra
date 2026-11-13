@@ -255,6 +255,8 @@ owners:
       - {grantee: cis_app, privilege: "USAGE, SELECT", object: tripplanner.v_ops_pin_components, status: contract, source: "tp-020 (AA-992)", expected_from: tp-020}
       - {grantee: cis_app, privilege: "USAGE, SELECT", object: tripplanner.v_ops_component_id_map, status: contract, source: "tp-020 (AA-992)", expected_from: tp-020}
       - {grantee: cis_app, privilege: "USAGE, SELECT", object: tripplanner.v_ops_inquiry_keys, status: contract, source: "tp-022 (AA-1003)", expected_from: tp-022}
+      # AA-1093: the TripPlanner tenant erasure report the CIS offboarding saga reads (contract tenant.erasure.v1).
+      - {grantee: cis_app, privilege: "USAGE, SELECT", object: tripplanner.v_tenant_erasure_report_v1, status: contract, source: "tp-030 (AA-1093)", expected_from: tp-030}
 
   crm:
     # Partner CRM (AA-Partner, ADR 0010 / 0008a, data standards DM-6.8; AA-932 = design v3 card CRM-04). Born under

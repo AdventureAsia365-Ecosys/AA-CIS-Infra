@@ -13,6 +13,8 @@
 #
 # Least privilege: its OWN role, not the browse / assembly one: the DB DSN secret and the Sentry DSN secret by ARN, VPC
 # ENIs (AWS managed policy, as the other TripPlanner Lambdas), logs. No Bedrock, no satellite assume, no edge key.
+# AA-1093 (tenant offboarding): + s3:PutObject / GetObject on the CIS gold bucket's exports/tenants/*/tripplanner/*
+# (tp_tenant_backup, tp_tenant_restore_drill) and the TENANT_ERASE_APPLY_ENABLED switch of tp_tenant_erase (off).
 # AA-1038 R5 slice 3 (tp_lead_deliver retries undelivered webhook / e-mail leads): + the lead webhook master key by ARN
 # (ReadLeadWebhookKeySecret), SES send as var.ses_from_address only (accounts/aa365 ses.tf tripplanner_jobs_ses_send,
 # the same grant as the assembly role) and TP_LEAD_EMAIL_FROM. Both Lambdas get these in the same apply: a retry
@@ -49,6 +51,19 @@ variable "tripplanner_jobs_retention_override_enabled" {
   validation {
     condition     = contains(["true", "false"], var.tripplanner_jobs_retention_override_enabled)
     error_message = "tripplanner_jobs_retention_override_enabled must be \"true\" or \"false\"."
+  }
+}
+
+variable "tripplanner_jobs_tenant_erase_apply_enabled" {
+  description = "AA-1093 — \"true\" (exact string) lets tp_tenant_erase APPLY an approved erasure plan on this deployment (TENANT_ERASE_APPLY_ENABLED); a DRY RUN, a verify, a backup and a restore drill never need it"
+  type        = string
+  # Closed by default: an apply deletes every TripPlanner row of a tenant. Open it only for an approved erasure (on Dev:
+  # a synthetic tenant, the end-to-end offboarding drill), then close it again.
+  default = "false"
+
+  validation {
+    condition     = contains(["true", "false"], var.tripplanner_jobs_tenant_erase_apply_enabled)
+    error_message = "tripplanner_jobs_tenant_erase_apply_enabled must be \"true\" or \"false\"."
   }
 }
 
@@ -128,6 +143,15 @@ resource "aws_iam_role_policy" "tripplanner_jobs_permissions" {
         Resource = [aws_secretsmanager_secret.tripplanner_lead_webhook_key.arn]
       },
       {
+        # AA-1093 part 3: tp_tenant_backup writes and tp_tenant_restore_drill reads one tenant's TripPlanner backup in
+        # the CIS gold bucket, its own prefix only (the bucket rule exports-expire deletes exports/ after 7 days). No
+        # ListBucket: every object name is fixed and the backup job names its prefix. SSE-S3 is the bucket default.
+        Sid      = "TenantExportObjects"
+        Effect   = "Allow"
+        Action   = ["s3:PutObject", "s3:GetObject"]
+        Resource = ["${var.gold_bucket_arn}/exports/tenants/*/tripplanner/*"]
+      },
+      {
         Sid      = "WriteOwnLogs"
         Effect   = "Allow"
         Action   = ["logs:CreateLogStream", "logs:PutLogEvents"]
@@ -177,6 +201,10 @@ resource "aws_lambda_function" "tripplanner_jobs" {
       RETENTION_OVERRIDE_ENABLED = var.tripplanner_jobs_retention_override_enabled
       # AA-1038: the From of the lead e-mail retries (same value and grant as the assembly Lambda, tripplanner.tf).
       TP_LEAD_EMAIL_FROM = var.ses_from_address
+      # AA-1093: the bucket of the per-tenant backups (backend/jobs/tenant_store.py) and the apply switch of
+      # tp_tenant_erase (backend/jobs/tenant_erase.py; default off, an apply also needs an approved plan hash).
+      TENANT_EXPORT_BUCKET       = var.gold_bucket_name
+      TENANT_ERASE_APPLY_ENABLED = var.tripplanner_jobs_tenant_erase_apply_enabled
     }
   }
 

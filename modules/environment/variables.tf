@@ -110,6 +110,16 @@ variable "bronze_bucket_arn" {
   type        = string
 }
 
+variable "gold_bucket_arn" {
+  description = "CIS gold bucket (module.s3.gold_bucket_arn); the TripPlanner jobs role may put / get exports/tenants/*/tripplanner/* only (AA-1093)."
+  type        = string
+}
+
+variable "gold_bucket_name" {
+  description = "CIS gold bucket name (module.s3.gold_bucket_name): TENANT_EXPORT_BUCKET of the TripPlanner jobs Lambda (AA-1093)."
+  type        = string
+}
+
 variable "ses_from_address" {
   description = "The only From address the app task roles may send as (ses.tf)."
   type        = string
