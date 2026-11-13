@@ -457,8 +457,9 @@ class BuildCellsTest(unittest.TestCase):
         # 379: AA-1038 R5 slice 2, TripPlanner's tenant view (a CIS key, plain NNN).
         # 404: AA-1094, TripPlanner's per-tenant tour view catalog.v_tenant_tour_v1.
         # tp-030: AA-1093, the TripPlanner tenant erasure report the CIS offboarding saga reads.
+        # bk-057: AA-1093 the Booking erasure report the CIS tenant_erasure_saga reads.
         self.assertEqual(p.CONSUMER_GRANT_KEYS, ("379", "404", "bk-017", "bk-023", "bk-025", "bk-039", "bk-040", "bk-042",
-                                                 "tp-015", "tp-020", "tp-022", "tp-030"))
+                                                 "bk-057", "tp-015", "tp-020", "tp-022", "tp-030"))
         for k in p.CONSUMER_GRANT_KEYS:
             self.assertIn(k, p.VERSION_KEYS)
             self.assertIn(k, p.KEY_TEXT)
@@ -622,6 +623,21 @@ class BuildCellsTest(unittest.TestCase):
                 c["missing"] = []
         st, _ = statuses(f)
         self.assertEqual(st["consumer.contract_grants.379"], "pass")
+
+    def test_erasure_report_cis_reader_grant_is_its_own_cell(self):
+        # AA-1093 L3: the CIS tenant_erasure_saga reads booking.v_tenant_erasure_report_v1; the grant comes with the
+        # contract file bk-057, so its cell waits for that apply and passes once bk-057 is registered.
+        objs = {c[2]: (c[0], c[3]) for c in p.CONSUMER_GRANTS if c[3] == "bk-057"}
+        self.assertEqual(objs, {"booking.v_tenant_erasure_report_v1": ("cis_app", "bk-057")})
+        f = today_facts()
+        st, _ = statuses(f)
+        self.assertEqual(st["consumer.contract_grants.bk-057"], "pending")
+        f["catalog"]["registered"] = ["bk-057"]
+        for c in f["consumer"]["grants"]:
+            if c["from"] == "bk-057":
+                c["missing"] = []
+        st, _ = statuses(f)
+        self.assertEqual(st["consumer.contract_grants.bk-057"], "pass")
 
     def test_cis_app_login_waits_for_set_password(self):
         f = today_facts()

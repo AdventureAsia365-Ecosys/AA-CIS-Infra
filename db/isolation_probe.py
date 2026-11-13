@@ -197,6 +197,7 @@ CONSUMER_GRANTS = (
     ("tripplanner", ("USAGE", "SELECT"), "booking.v_from_prices", "bk-039"),       # AA-1029 price.from.v1
     ("cis_app", ("USAGE", "SELECT"), "booking.v_from_prices", "bk-040"),           # AA-1029 studio Marketplace
     ("cis_app", ("USAGE", "SELECT"), "booking.v_tenant_billing_status", "bk-042"), # AA-1037 billing tick
+    ("cis_app", ("USAGE", "SELECT"), "booking.v_tenant_erasure_report_v1", "bk-057"),  # AA-1093 erasure saga
     ("tripplanner", ("USAGE", "SELECT"), "catalog.v_tenant_tripplanner_v1", "379"), # AA-1038 R5 /{slug} tenants
     ("tripplanner", ("USAGE", "SELECT"), "catalog.v_tenant_tour_v1", "404"),        # AA-1094 a tenant's own tours
 )
