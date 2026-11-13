@@ -163,19 +163,20 @@ module "environment" {
   tripplanner_placeholder_zip          = "${path.module}/artifacts/placeholder.zip"
 
   # TripPlanner settings (tripplanner_variables.tf of this root, passed through unchanged).
-  tripplanner_throttle_rate_limit             = var.tripplanner_throttle_rate_limit
-  tripplanner_throttle_burst_limit            = var.tripplanner_throttle_burst_limit
-  tripplanner_narrate_throttle_rate_limit     = var.tripplanner_narrate_throttle_rate_limit
-  tripplanner_narrate_throttle_burst_limit    = var.tripplanner_narrate_throttle_burst_limit
-  tripplanner_search_throttle_rate_limit      = var.tripplanner_search_throttle_rate_limit
-  tripplanner_search_throttle_burst_limit     = var.tripplanner_search_throttle_burst_limit
-  tripplanner_browse_reserved_concurrency     = var.tripplanner_browse_reserved_concurrency
-  tripplanner_lambda_reserved_concurrency     = var.tripplanner_lambda_reserved_concurrency
-  tripplanner_jobs_reserved_concurrency       = var.tripplanner_jobs_reserved_concurrency
-  tripplanner_daily_spend_cap_usd             = var.tripplanner_daily_spend_cap_usd
-  tripplanner_jobs_schedule_expression        = var.tripplanner_jobs_schedule_expression
-  tripplanner_jobs_retention_override_enabled = var.tripplanner_jobs_retention_override_enabled
-  tripplanner_jobs_tenant_erase_apply_enabled = var.tripplanner_jobs_tenant_erase_apply_enabled
+  tripplanner_throttle_rate_limit                   = var.tripplanner_throttle_rate_limit
+  tripplanner_throttle_burst_limit                  = var.tripplanner_throttle_burst_limit
+  tripplanner_narrate_throttle_rate_limit           = var.tripplanner_narrate_throttle_rate_limit
+  tripplanner_narrate_throttle_burst_limit          = var.tripplanner_narrate_throttle_burst_limit
+  tripplanner_search_throttle_rate_limit            = var.tripplanner_search_throttle_rate_limit
+  tripplanner_search_throttle_burst_limit           = var.tripplanner_search_throttle_burst_limit
+  tripplanner_browse_reserved_concurrency           = var.tripplanner_browse_reserved_concurrency
+  tripplanner_lambda_reserved_concurrency           = var.tripplanner_lambda_reserved_concurrency
+  tripplanner_jobs_reserved_concurrency             = var.tripplanner_jobs_reserved_concurrency
+  tripplanner_daily_spend_cap_usd                   = var.tripplanner_daily_spend_cap_usd
+  tripplanner_jobs_schedule_expression              = var.tripplanner_jobs_schedule_expression
+  tripplanner_jobs_erasure_feed_schedule_expression = var.tripplanner_jobs_erasure_feed_schedule_expression
+  tripplanner_jobs_retention_override_enabled       = var.tripplanner_jobs_retention_override_enabled
+  tripplanner_jobs_tenant_erase_apply_enabled       = var.tripplanner_jobs_tenant_erase_apply_enabled
 }
 
 locals {

@@ -297,6 +297,7 @@ SLICE_3_SETTINGS = {
     "tripplanner_lambda_reserved_concurrency", "tripplanner_jobs_reserved_concurrency",
     "tripplanner_daily_spend_cap_usd", "tripplanner_jobs_schedule_expression",
     "tripplanner_jobs_retention_override_enabled", "tripplanner_jobs_tenant_erase_apply_enabled",
+    "tripplanner_jobs_erasure_feed_schedule_expression",       # AA-1093 follow-up (S279): the 5-minute feed read
 }
 
 # AA-1038 (R5 hosting): the TripPlanner web stack's module inputs (modules/environment/tripplanner_web.tf) and the root

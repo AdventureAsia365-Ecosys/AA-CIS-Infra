@@ -163,7 +163,10 @@ accounts/
                                    own logs; AA-1038: + the lead webhook key and SES send (ses.tf) for the
                                    tp_lead_deliver retries, env TP_LEAD_EMAIL_FROM; no Bedrock / edge key), reserved concurrency 1, daily
                                    EventBridge Scheduler tick 19:30 UTC, no Lambda retry, alarms errors >= 1
-                                   and not-run 2 days, log group 30 d. Live override of the outbox
+                                   and not-run 2 days (since AA-1093: no daily tick log line, metric filter
+                                   AA/TripPlanner JobsTickRuns), log group 30 d. AA-1093: a second schedule
+                                   every 5 minutes sends {"op":"erasure_feed"} only (the CIS erasure requests,
+                                   tp_tenant_erase only). Live override of the outbox
                                    redaction closed unless var.tripplanner_jobs_retention_override_enabled)
     tripplanner_web.tf            (AA-1038 R5 hosting: the TripPlanner frontend on ECS, service
                                    aa-tripplanner-<env>-web: ECR (IMMUTABLE), secret shell tripplanner/<env>/web
