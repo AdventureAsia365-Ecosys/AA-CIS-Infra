@@ -139,6 +139,15 @@ def test_user_list_matches_the_seeder_catalogue_and_the_receipt_rule():
     assert users[0].email("example.test") == "e2e-test-crm-sen-vang-owner@e2e-mail.example.test"
 
 
+def test_the_pilot_rehearsal_agency_has_an_owner_and_an_agent():
+    """AA-1086 G1: the rehearsal agency's two E2E users, made by e2e-users like the others (never invitees)."""
+    users = {(u.agency, u.role): u for u in tool.load_users()}
+    owner, agent = users[("pilot-rehearsal-01", "owner")], users[("pilot-rehearsal-01", "agent")]
+    assert not owner.invitee and not agent.invitee
+    assert owner.email("example.test") == "e2e-test-crm-pilot-rehearsal-01-owner@e2e-mail.example.test"
+    assert agent.secret_name("dev") == "crm/dev/e2e-test-crm/pilot-rehearsal-01-agent"
+
+
 def test_dry_run_writes_nothing(capsys):
     idp, sm = FakeIdp(), FakeSm()
     assert run(["e2e-users", "--write-secrets"], idp, sm) == 0

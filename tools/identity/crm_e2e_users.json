@@ -8,8 +8,11 @@
     {"agency": "southern-cross", "role": "agent"},
     {"agency": "harbour-lights", "role": "owner"},
     {"agency": "harbour-lights", "role": "assistant", "invitee": true},
-    {"agency": "lt", "role": "agent"}
+    {"agency": "lt", "role": "agent"},
+    {"agency": "pilot-rehearsal-01", "role": "owner"},
+    {"agency": "pilot-rehearsal-01", "role": "agent"}
   ],
+  "_comment_rehearsal": "AA-1086 G1: the owner and agent of the pilot rehearsal agency pilot-rehearsal-01 (AA-Partner api/app/seed/catalogue.py, a synthetic CRM agency under the CIS tenant AA-CIS-App e2e_fixtures rehearsal-tenant provisions; root docs/ops/runbooks/pilot-rehearsal.md). Partner-pool users like the others: password + authenticator in crm/dev/e2e-test-crm/pilot-rehearsal-01-<role>.",
   "_comment_load_test": "AA-969 (CRM-37a): e2e-test-crm-lt-agent is the identity of the bounded load test (AA-Partner loadtest/README.md). It is an agent of the 50 load-test agencies lt-01..lt-50 only (AA-Partner seeder --load-test 50 --load-test-sub <sub>), never of the e2e agencies above, so the e2e agency picker does not change.",
   "_comment_studio": "AA-979 (S252, root ADR 0006a A10b-1): the Content studio invitees of the phase 2 re-enrolment E2E (a CIS tenant, not a CRM agency). Mail e2e-test-studio-<role>@e2e-mail.<zone>, role = the Content studio role the invitation grants (viewer / editor). Mailbox recipients only: never created by e2e-users; invitee-reset --invitee studio-<role> deletes the partner-pool account.",
   "studio_invitees": [
