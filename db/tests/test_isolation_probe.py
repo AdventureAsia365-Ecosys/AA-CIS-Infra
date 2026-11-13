@@ -456,8 +456,9 @@ class BuildCellsTest(unittest.TestCase):
         # bk-042: AA-1037 the agency billing status the CIS tenant_billing_tick reads.
         # 379: AA-1038 R5 slice 2, TripPlanner's tenant view (a CIS key, plain NNN).
         # 404: AA-1094, TripPlanner's per-tenant tour view catalog.v_tenant_tour_v1.
+        # tp-030: AA-1093, the TripPlanner tenant erasure report the CIS offboarding saga reads.
         self.assertEqual(p.CONSUMER_GRANT_KEYS, ("379", "404", "bk-017", "bk-023", "bk-025", "bk-039", "bk-040", "bk-042",
-                                                 "tp-015", "tp-020", "tp-022"))
+                                                 "tp-015", "tp-020", "tp-022", "tp-030"))
         for k in p.CONSUMER_GRANT_KEYS:
             self.assertIn(k, p.VERSION_KEYS)
             self.assertIn(k, p.KEY_TEXT)
