@@ -355,6 +355,10 @@ resource "aws_s3_bucket_public_access_block" "gold" {
 resource "aws_s3_bucket_lifecycle_configuration" "gold" {
   bucket = aws_s3_bucket.gold.id
 
+  # AA-1093 part 3: exports/ also holds the per-tenant CIS backups (exports/tenants/<tenant>/cis/, job tenant_backup,
+  # kept 7 days by plan decision D11). The bucket is versioned, so the 7-day expiration only adds a delete marker and
+  # S3 kept the old version forever; the noncurrent copy now goes 1 day later (an object is gone within ~8-9 days of
+  # its write, lifecycle runs once a day). A backup uploads large tables in parts: an unfinished upload goes after 1 day.
   rule {
     id     = "exports-expire"
     status = "Enabled"
@@ -365,6 +369,14 @@ resource "aws_s3_bucket_lifecycle_configuration" "gold" {
 
     expiration {
       days = 7
+    }
+
+    noncurrent_version_expiration {
+      noncurrent_days = 1
+    }
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 1
     }
   }
 
