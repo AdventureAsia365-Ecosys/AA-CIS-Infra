@@ -156,6 +156,8 @@ module "environment" {
   booking_staff_notify_email = var.booking_staff_notify_email
   booking_staff_admin_url    = var.booking_staff_admin_url
   booking_sentry_enabled     = var.booking_sentry_enabled
+  # AA-1093: the bk_tenant_erase kill switch (default "false").
+  booking_tenant_erase_apply_enabled = var.booking_tenant_erase_apply_enabled
   # AA-1096 L6: the stage throttle (was a literal in the module).
   booking_throttle_rate_limit  = var.booking_throttle_rate_limit
   booking_throttle_burst_limit = var.booking_throttle_burst_limit

@@ -383,6 +383,8 @@ resource "aws_ecs_task_definition" "booking" {
       { name = "JOB_TEST_KINDS", value = var.environment == "dev" ? "1" : "0" },
       # S263 (AA-1025): the in-app job checks (app/jobs/ops_checks.py) publish their alerts to this topic.
       { name = "ALERTS_TOPIC_ARN", value = var.alerts_topic_arn },
+      # AA-1093 (S279): the bk_tenant_erase kill switch (booking_variables.tf); "false" unless an approved erasure runs.
+      { name = "TENANT_ERASE_APPLY_ENABLED", value = var.booking_tenant_erase_apply_enabled },
       ], var.booking_sentry_enabled ? [
       { name = "SENTRY_REQUIRED", value = "true" },
     ] : [])
