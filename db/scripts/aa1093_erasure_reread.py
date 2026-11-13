@@ -1,8 +1,8 @@
 """AA-1093 (S279): independent re-read, as the master, of the first real tenant erasure on Dev (synthetic tenant only).
 
-Copy to AA-CIS-Infra db/scripts/aa1093_erasure_reread.py, set TENANT_ID (and AGENCY_NAME) below to the run's synthetic
-tenant, review, merge, then run DB Migrate mode=run-script script=aa1093_erasure_reread.py environment=dev, once
-before the apply (baseline) and once after it. READ_ONLY: the runner opens the session read-only.
+Pinned to the synthetic tenant of the AA-1093 Dev run (aa1093-erase-01). Run with DB Migrate mode=run-script
+script=aa1093_erasure_reread.py environment=dev, once before the apply (baseline) and once after it. READ_ONLY: the
+runner opens the session read-only.
 
 Why the master: TripPlanner's tenant tables are owner-only for the runtime roles (FORCE RLS; cis_app reads only the
 report view), the CRM's need an agency context. Counts only: no row value leaves the database (db/scripts/README.md
@@ -11,8 +11,9 @@ personal-data guard: count(...), and personal-data columns only in WHERE).
 What it prints (lines start with SCRIPT):
   TripPlanner  rows of the tenant in sessions, trip_drafts, trip_events, outbox (must be 0 after the apply; D4 delete),
                its ai_spend_month rows (scope tenant:<id>, must be 0: merged into the app scope), the customers its
-               sessions link (0), the tenant_erasure_log rows (kept: the erasure record), and each table's total rows
-               as seen by this session (a visibility check: a 0 on a table this session cannot see is not a 0).
+               sessions link (0), the customers no session links any more (after the apply: not higher than the
+               baseline), the tenant_erasure_log rows (kept: the erasure record), and each table's total rows as
+               seen by this session (a visibility check: sessions with 0 visible rows makes the verdict INCONCLUSIVE).
   Booking      the free-text census of the agency's rows (D3 anonymise: rows stay, the cleared columns must be empty),
                the partner row's erased name and status, and (with AGENCY_NAME) name hits in audit rows,
                notifications and partner rows (must be 0).
@@ -26,7 +27,7 @@ import re
 
 READ_ONLY = True
 
-# Set to the run's synthetic tenant before the PR (a uuid); AGENCY_NAME = its synthetic name ("" skips the name search).
+# The synthetic tenant of the AA-1093 Dev run and its synthetic agency name ("" would skip the name search).
 TENANT_ID = "9310c702-eebd-44bd-9c52-133a7d2a4af9"
 AGENCY_NAME = "E2E Erasure Drill 01"
 
@@ -82,12 +83,14 @@ def _ident(t: str) -> str:
     return f'"{s}"."{n}"'
 
 
-async def _tripplanner(conn, tid: str) -> int:
-    bad = 0
+async def _tripplanner(conn, tid: str) -> tuple[int, bool]:
+    bad, blind = 0, False
     for t in TP_TABLES:
         n = await conn.fetchval(f"SELECT count(*)::int FROM {t} WHERE tenant_id = $1::uuid", tid)
         total = await conn.fetchval(f"SELECT count(*)::int FROM {t}")
         bad += bool(n)
+        if t == "tripplanner.sessions" and total == 0:
+            blind = True  # this session sees no session row at all: a 0 here proves nothing
         _say(f"TP {t} tenant_rows={n} visible_total={total}")
     n = await conn.fetchval("SELECT count(*)::int FROM tripplanner.ai_spend_month WHERE scope = 'tenant:' || $1", tid)
     bad += bool(n)
@@ -96,11 +99,14 @@ async def _tripplanner(conn, tid: str) -> int:
                             "WHERE tenant_id = $1::uuid AND customer_id IS NOT NULL", tid)
     bad += bool(n)
     _say(f"TP tripplanner.customers linked_by_tenant_sessions={n}")
+    orphans = await conn.fetchval("SELECT count(*)::int FROM tripplanner.customers c WHERE NOT EXISTS "
+                                  "(SELECT 1 FROM tripplanner.sessions s WHERE s.customer_id = c.id)")
+    _say(f"TP tripplanner.customers unlinked_total={orphans} (after the apply: not higher than the baseline)")
     rows = await conn.fetch("SELECT mode, status, count(*)::int AS n FROM tripplanner.tenant_erasure_log "
                             "WHERE tenant_id = $1::uuid GROUP BY mode, status ORDER BY mode, status", tid)
     _say("TP tripplanner.tenant_erasure_log (kept, the record): "
          + (", ".join(f"{r['mode']}/{r['status']}={r['n']}" for r in rows) or "none"))
-    return bad
+    return bad, blind
 
 
 async def _booking(conn, tid: str) -> int:
@@ -121,6 +127,10 @@ async def _booking(conn, tid: str) -> int:
             hits = await conn.fetchval(sql, like)
             bad += bool(hits)
             _say(f"BK name_hits {table}={hits}")
+    rows = await conn.fetch("SELECT mode, status, count(*)::int AS n FROM booking.tenant_erasure_log "
+                            "WHERE tenant_id = $1::uuid GROUP BY mode, status ORDER BY mode, status", tid)
+    _say("BK booking.tenant_erasure_log (kept, the record): "
+         + (", ".join(f"{r['mode']}/{r['status']}={r['n']}" for r in rows) or "none"))
     return bad
 
 
@@ -142,9 +152,13 @@ async def main(conn):
         _say("FAIL TENANT_ID is not set to the run's tenant uuid")
         return 1
     _say(f"tenant {tid[:8]}")
-    tp_bad = await _tripplanner(conn, tid)
+    tp_bad, tp_blind = await _tripplanner(conn, tid)
     bk_bad = await _booking(conn, tid)
-    await _crm(conn, tid)
-    _say(f"VERDICT tripplanner after-erase {'PASS' if tp_bad == 0 else 'FAIL'} (non-zero checks: {tp_bad})")
+    tp_v = "INCONCLUSIVE (no visible session row)" if tp_blind else ("PASS" if tp_bad == 0 else "FAIL")
+    _say(f"VERDICT tripplanner after-erase {tp_v} (non-zero checks: {tp_bad})")
     _say(f"VERDICT booking after-erase {'PASS' if bk_bad == 0 else 'FAIL'} (non-zero checks: {bk_bad})")
+    try:
+        await _crm(conn, tid)
+    except Exception as exc:  # information only: never hide the verdicts above
+        _say(f"CRM skipped: {type(exc).__name__}")
     return 0
