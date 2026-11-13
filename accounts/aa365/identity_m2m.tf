@@ -100,6 +100,10 @@ locals {
     # agency whose owner has no Content studio membership. Same client; an in-place update of the resource server and
     # of the client's allowed scopes (re-plan after the apply: the client takes the new scope on the second apply).
     addons = "Read an agency's add-ons and request one for its CRM owner (CIS /tenant/v1, tenant.addons.v1)"
+    # AA-1093 lane L2 (root contract tenant.erasure.v1): the CRM reads the tenant offboarding erasure requests and
+    # reports its own DRY RUN, apply and census (GET /tenant/v1/erasure-requests, POST .../{id}/reports). Same client;
+    # an in-place update of the resource server and of the client's allowed scopes (re-plan after the apply).
+    erasure = "Read the tenant erasure requests and report the CRM's own erasure step (CIS /tenant/v1, tenant.erasure.v1)"
   }
 
   # AA-1038 R5 slice 3 (root ADR 0019 d11 + its S272 amendment, root contract lead.submitted.v1): the CRM pulls each
