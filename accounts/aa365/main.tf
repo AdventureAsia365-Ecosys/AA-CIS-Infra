@@ -216,10 +216,9 @@ module "ecs" {
   # showed 0 undeclared diffs (D-s1-compose 280, D-s1-status 1); the ~1 USD S1 smoke runs with it on. Rollback: null
   # (or "graph"), apply, then CIS deploy-dev.
   s1_control = "contract"
-  # AA-1081 / AA-1077 (S277, tech lead: on at 600 words): the T7 Blog minimum seed. A Subject whose seed + walk is under
-  # 600 words is not proposed on Blog (it stays on the shorter Channels); the phase 3 audit's short seeds gave most F4
-  # (too short) holds. DB reads only, no LLM cost. Rollback: null, apply, then CIS deploy-dev.
-  t7_blog_min_seed_words = 600
+  # AA-1081 / AA-1077 (S277): the T7 Blog minimum seed (600 words) is the admin-editable setting
+  # cis.t7.blog_min_seed_words since S279 (CIS 407, seeded 600); the worker no longer reads T7_BLOG_MIN_SEED_WORDS, so
+  # the variable is gone (AA-1096 L6).
   # AA-1018: the daily LLM connection probe (gateway design decision 2, S261: under 1 USD a month). Catalog estimate
   # with every enabled text deployment answering: about 0.0063 USD a day (acc3 9 models 0.0049, acc2 5 candidates
   # 0.00095, openai-direct 2 models 0.0004), about 0.20 USD a month; a refused call costs 0. Rollback: false.
@@ -233,7 +232,7 @@ module "ecs" {
   photos_cdn_distribution_arn = local.photos_cdn_on == 1 ? aws_cloudfront_distribution.photos_cdn[0].arn : ""
   # AA-839: data_erasure apply switch + tenant retention window, driven by local.erasure_drill above.
   erasure_apply_enabled         = local.erasure_drill
-  erasure_tenant_retention_days = local.erasure_drill ? 0 : null # null = module default (30)
+  erasure_tenant_retention_days = local.erasure_drill ? 0 : null # null = no env: the setting cis.erasure.tenant_retention_days (AA-1096 L6)
 
   task_cpu              = var.task_cpu
   task_memory           = var.task_memory
@@ -252,7 +251,7 @@ module "ecs" {
   bronze_bucket_name    = module.s3.bronze_bucket_name
 
   step_functions_arn = local.sfn_pipeline_arn
-  sf_batch_threshold = 15
+  # AA-1096 L6: SF_BATCH_THRESHOLD (15) is gone, no app reads it.
 
   # AmazonECSTaskExecutionRolePolicy alone doesn't grant secretsmanager:GetSecretValue —
   # account 1's execution role has this attached out-of-band; account 2 needs it explicit.
@@ -314,7 +313,7 @@ module "waf" {
   project        = var.project
   environment    = var.environment
   alb_arn        = module.alb.alb_arn
-  rate_limit     = 1000
+  rate_limit     = var.waf_rate_limit # AA-1096 L6: was the literal 1000 (rule RateLimit1000 keeps its name)
   vpc_allow_cidr = var.vpc_cidr
 
   # AA-911 (staff_web_edge.tf): the staff hosts get their own rate rule instead of RateLimit1000.
@@ -385,13 +384,14 @@ module "api_gateway" {
 
   # AA-876 — throttling without the WAF (deferred per S241). Sized from 14 days of execution logs (21/10/2026):
   # busiest second per method — /content 100, other /auth 20, the two login routes 6. Stage default 50/100 per
-  # method; logins 3x their peak; /content 3x its peak (TripPlanner cover images).
-  stage_throttle_rate_limit    = 50
-  stage_throttle_burst_limit   = 100
-  login_throttle_rate_limit    = 20
-  login_throttle_burst_limit   = 40
-  content_throttle_rate_limit  = 300
-  content_throttle_burst_limit = 600
+  # method; logins 3x their peak; /content 3x its peak (TripPlanner cover images). AA-1096 L6: root variables
+  # (variables.tf cis_api_*_throttle_*, same values), published read-only in output platform_limits.
+  stage_throttle_rate_limit    = var.cis_api_stage_throttle_rate_limit
+  stage_throttle_burst_limit   = var.cis_api_stage_throttle_burst_limit
+  login_throttle_rate_limit    = var.cis_api_login_throttle_rate_limit
+  login_throttle_burst_limit   = var.cis_api_login_throttle_burst_limit
+  content_throttle_rate_limit  = var.cis_api_content_throttle_rate_limit
+  content_throttle_burst_limit = var.cis_api_content_throttle_burst_limit
 
   depends_on = [module.alb, aws_api_gateway_account.this]
 }

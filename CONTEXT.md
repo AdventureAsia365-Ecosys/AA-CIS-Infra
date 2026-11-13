@@ -542,9 +542,12 @@ accounts/
     agent_session.tf              (AA-730: the narrow role agent shells assume, profile aa365-agent)
     security_access_analyzer_archive.tf (AA-873: archive rules for the triaged Access Analyzer findings)
     variables.tf / tripplanner_variables.tf / booking_variables.tf / custom_domains_variables.tf / ses_variables.tf
-                                  (tripplanner_variables.tf: tripplanner_daily_spend_cap_usd -> TP_DAILY_SPEND_CAP_USD
-                                   on the browse and assembly Lambdas, 5 USD on Dev; modules/ecs llm_daily_probe ->
-                                   LLM_DAILY_PROBE on the CIS api and worker, on on Dev since #574)
+                                  (modules/ecs llm_daily_probe -> LLM_DAILY_PROBE on the CIS api and worker, on on Dev
+                                   since #574. AA-1096 L6 (S279): variables.tf waf_rate_limit and cis_api_*_throttle_*,
+                                   booking_variables.tf booking_throttle_*, crm_variables.tf crm_slo replace literals;
+                                   tripplanner_daily_spend_cap_usd is gone, the cap is the CIS app profile)
+    outputs_platform_limits.tf    (AA-1096 L6: output platform_limits, the edge, budget and alarm values, values
+                                   only; rendered on the generated alarms page, section Edge, budget and alarm limits)
   acc1-bedrock/   ← acc1 Bedrock invoker role (AA-1095, S278: serves chat models while acc3 is blocked) + alert-only spend guard (cost_guard.tf, AA-1096)
   acc3-bedrock/   ← acc3 Bedrock invoker role (the main chat account) + Bedrock Batch (batch.tf)
                     + Cost Explorer reader + spend guards (cost_guard.tf: monthly budget,
@@ -657,11 +660,15 @@ boundary denies `GetSecretValue` on those two prefixes to every bounded role (`D
 `aws_ecs_service`, `aws_ecs_task_definition` or `aws_lambda_function` rolls services and has no job guard: run the
 manual idle gate first (root `skill/aa-ship`, X1 plan standing rules). Env on the CIS task definitions comes only
 from `modules/ecs/main.tf` (e.g. AA-847 `PLACE_SHAPES_ENABLED` from `place_shapes_enabled`; AA-839
-`ERASURE_APPLY_ENABLED` / `ERASURE_TENANT_RETENTION_DAYS` from `local.erasure_drill` in `accounts/aa365`); CIS Deploy Dev copies
+`ERASURE_APPLY_ENABLED` / `ERASURE_TENANT_RETENTION_DAYS` from `local.erasure_drill` in `accounts/aa365`, the retention env only
+while the drill is on since AA-1096 L6); CIS Deploy Dev copies
 the latest revision and swaps the image, so a Terraform env change ships with the next CIS deploy. The reverse also
 holds: an env set by hand on a running revision is lost when any apply touching `module.ecs` registers a new
 template revision, so every runtime switch lives in the module (AA-645 `S1_WRITER_V2` from `s1_writer_v2_enabled`,
-added after the S250 near miss; AA-905 / AA-989 `PLACE_PIPELINE_AUTO` from `place_pipeline_auto`, on since S252; AA-1018 `LLM_DAILY_PROBE` from `llm_daily_probe`, api and worker, on since S262; AA-1081 `T7_BLOG_MIN_SEED_WORDS` from `t7_blog_min_seed_words`, worker only, 600 since S277); after such an apply, diff the env names of the newest revision against the running
+added after the S250 near miss; AA-905 / AA-989 `PLACE_PIPELINE_AUTO` from `place_pipeline_auto`, on since S252; AA-1018 `LLM_DAILY_PROBE` from `llm_daily_probe`, api and worker, on since S262). No env var of an admin-editable setting is set here (AA-1096 L6, S279: the apps serve such an env var
+before the admin page's value; `T7_BLOG_MIN_SEED_WORDS`, `T2_JUDGE_GATE`, `T3_BACKGROUND_FACTS`, `SF_BATCH_THRESHOLD`
+and the CRM / TripPlanner settings env vars were removed; guard `tools/terraform/tests/test_aa1096_l6_infra_cleanup.py`
+reads the names from the migration copies); after such an apply, diff the env names of the newest revision against the running
 one before the next deploy. Redis (AA-874 S5): api and worker get `REDIS_HOST` = the TLS primary endpoint of
 `aws_elasticache_replication_group.main` (`aa-cis-dev-cache`, Valkey, AUTH + TLS + at-rest), `REDIS_TLS=true`,
 `REDIS_CLUSTER_ID` = its member node and the secret `REDIS_AUTH_TOKEN` (`aa-cis/dev/redis-auth`, write-only, never
@@ -1057,6 +1064,8 @@ makes CI Terraform Plan fail with 403.
   changed. A missing or broken alarm runbook link fails the run after the PR is updated. The root
   outputs in `accounts/aa365/outputs_inventory.tf` (VPC, subnets, security groups, NAT, RDS, ECS, load
   balancers, API Gateway, photos CDN) are listed on the inventory page; look IDs up there or with `terraform output`.
+  The output `platform_limits` (AA-1096 L6) is rendered on the alarms page instead, section "Edge, budget and alarm
+  limits" (staff tier on the CIS admin docs reader; the inventory page is owner only).
   The same run renders `docs/generated/env-config.md` (AA-894, `tools/docs/gen_env_config.py`): the env var names
   of every ECS service (primary deployment's task definition, secrets by Secrets Manager name) and Lambda function,
   read live with the same read-only role (`ReadOnlyAccess`), names only. No ecosystem runtime is on Vercel since the

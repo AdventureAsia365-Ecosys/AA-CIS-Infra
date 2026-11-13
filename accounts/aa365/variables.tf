@@ -241,6 +241,60 @@ variable "waf_common_rules_count_only" {
   default = false
 }
 
+# -----------------------------------------------------------------------------
+# AA-1096 L6 (S279 thresholds audit, section 4): edge limits stay in Terraform (the app roles never hold
+# wafv2:UpdateWebACL or apigateway write access), but as named variables instead of literals in the module calls, and
+# published read-only in output platform_limits (outputs_platform_limits.tf). The defaults are the values in force.
+# -----------------------------------------------------------------------------
+variable "waf_rate_limit" {
+  description = "Requests per 5 minutes per client IP on the ALB web ACL rule RateLimit1000 (every host except the staff and TripPlanner hosts, which have their own rules; the NAT egress is scoped out). The rule keeps its historical name."
+  type        = number
+  default     = 1000
+
+  validation {
+    condition     = floor(var.waf_rate_limit) == var.waf_rate_limit && var.waf_rate_limit >= 100 && var.waf_rate_limit <= 2000000000
+    error_message = "waf_rate_limit must be a whole number from 100 to 2,000,000,000."
+  }
+}
+
+# AA-876: the CIS REST API stage throttles, sized from 14 days of execution logs (21/10/2026; main.tf module
+# "api_gateway"). Rates are requests per second per method, bursts the token bucket size.
+variable "cis_api_stage_throttle_rate_limit" {
+  description = "CIS REST API stage default (*/*) requests per second, applied to each method."
+  type        = number
+  default     = 50
+}
+
+variable "cis_api_stage_throttle_burst_limit" {
+  description = "CIS REST API stage default (*/*) burst, applied to each method."
+  type        = number
+  default     = 100
+}
+
+variable "cis_api_login_throttle_rate_limit" {
+  description = "CIS REST API requests per second on each of the two login routes (all callers together)."
+  type        = number
+  default     = 20
+}
+
+variable "cis_api_login_throttle_burst_limit" {
+  description = "CIS REST API burst on each of the two login routes."
+  type        = number
+  default     = 40
+}
+
+variable "cis_api_content_throttle_rate_limit" {
+  description = "CIS REST API requests per second on GET /content/{content_proxy+} (photos, tour reads, TripPlanner cover images)."
+  type        = number
+  default     = 300
+}
+
+variable "cis_api_content_throttle_burst_limit" {
+  description = "CIS REST API burst on GET /content/{content_proxy+}."
+  type        = number
+  default     = 600
+}
+
 # AA-806: phase 3 of the CI role split (docs/ci-role-split.md). When true, the Terraform apply
 # role's boundary also requires the workload boundary on role policy writes (Put/Delete/Attach/
 # DetachRolePolicy), not only on CreateRole. Requires every aa-*-dev-* role the apply role writes to

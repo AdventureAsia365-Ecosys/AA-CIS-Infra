@@ -449,8 +449,8 @@ resource "aws_lambda_function" "tripplanner_browse" {
       # AA-902: account IDs left the public TripPlanner repo; browse embeds through the same satellite
       # (acc3 only, AA-998).
       BEDROCK_ACCT_PRIMARY = var.bedrock_acct_primary
-      # AA-1015: the customer-facing daily AI spend cap, set explicitly (was the app's implicit 5.0 default).
-      TP_DAILY_SPEND_CAP_USD = var.tripplanner_daily_spend_cap_usd
+      # AA-1096 L6: no TP_DAILY_SPEND_CAP_USD. The daily cap is the CIS app profile's default_daily_budget_usd (5.0,
+      # CIS 414); the env var is only the app's fallback, whose code default is the same 5.0.
     }
   }
 
@@ -495,9 +495,10 @@ resource "aws_lambda_function" "tripplanner_assembly" {
       BEDROCK_ROLE_NAME_PRIMARY   = "AA3-Bedrock-Invoker"
       BEDROCK_EXTERNAL_ID_PRIMARY = "aa296-satellite-bedrock-acc3"
       # No ADVISOR_NOTIFY_EMAIL: the advisor e-mail is sent by AA-Booking (bk_notify_email, AA-811 S238).
-      REQUIRE_REGISTRATION_BEFORE_HANDOFF = "true"
-      # AA-1015: the customer-facing daily AI spend cap, set explicitly (same value on browse).
-      TP_DAILY_SPEND_CAP_USD = var.tripplanner_daily_spend_cap_usd
+      # AA-1096 L6 (S279): no REQUIRE_REGISTRATION_BEFORE_HANDOFF and no TP_DAILY_SPEND_CAP_USD. Registration before
+      # the hand-off is the admin-editable setting tripplanner.handoff.require_registration (CIS 414, read through
+      # catalog.v_app_settings_v1), the daily cap the CIS app profile's budget (see browse); both env vars are only the
+      # app's fallbacks, whose code defaults (true, 5.0) are the values Terraform used to set.
       # AA-878: no TRIPPLANNER_API_KEY here (read by name from Secrets Manager, see browse) and no
       # MAPBOX_GEOCODING_TOKEN_ARN (no reader since AA-712 slice 6a).
       # AA-1038 R5 slice 3 (lead.submitted.v1). TP_LEAD_EMAIL_FROM: the From of the lead e-mail channel, the one
