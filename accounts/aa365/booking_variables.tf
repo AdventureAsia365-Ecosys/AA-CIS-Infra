@@ -44,6 +44,22 @@ variable "booking_sentry_enabled" {
   default     = false
 }
 
+# AA-1093 (S279): the kill switch of bk_tenant_erase (AA-Booking backend/app/b2b/tenant_erase.py, env
+# TENANT_ERASE_APPLY_ENABLED, read by app/settings.py). "false" (default): the Booking step of the tenant offboarding
+# erasure saga runs DRY RUN and verify only; an approved apply is refused (apply_disabled). "true" only for an approved
+# erasure (on Dev: a synthetic tenant), then back to "false". Declared identically in the root
+# (accounts/aa365/booking_variables.tf) and passed through. The next AA-Booking deploy carries the new revision.
+variable "booking_tenant_erase_apply_enabled" {
+  description = "AA-1093: \"true\" (exact string) lets bk_tenant_erase APPLY an approved tenant erasure plan (TENANT_ERASE_APPLY_ENABLED); DRY RUN and verify never need it"
+  type        = string
+  default     = "false"
+
+  validation {
+    condition     = contains(["true", "false"], var.booking_tenant_erase_apply_enabled)
+    error_message = "booking_tenant_erase_apply_enabled must be \"true\" or \"false\"."
+  }
+}
+
 # AA-1096 L6 (S279): the Booking REST API stage throttle (every method, `*/*`), a capacity backstop under the app's own
 # limits (the RDS connection budget). Was the literal 20 / 40 in booking.tf; same values. Declared identically in the
 # root (accounts/aa365/booking_variables.tf) and passed through.

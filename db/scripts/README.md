@@ -425,3 +425,11 @@ effort low; skipped when a row already exists), read the view as `tripplanner` w
 (else as the master), roll back; then check no probe row is left. Ends with `SCRIPT verdict view_carries_params=…
 clean=…` and exits 1 unless both are true. No Lambda ever sees the row (it is never committed). Test:
 `db/tests/test_aa1027_e4_stage_params_probe.py`.
+
+`aa1093_erasure_reread.py` (AA-1093, S279; read-only): the independent re-read, as the master, of the first real
+tenant erasure on Dev, pinned to the run's synthetic tenant (`aa1093-erase-01`). Run it once before the apply
+(baseline; the verdicts print FAIL, as expected) and once after it. Prints `SCRIPT TP …` (the tenant's rows in the
+TripPlanner tenant tables and their visible totals, the linked and unlinked customers, the erasure log),
+`SCRIPT BK …` (the free-text census of the agency's Booking rows, the partner's erased name and status, name hits, the
+erasure log), `SCRIPT VERDICT …` for TripPlanner (INCONCLUSIVE when no session row is visible) and Booking, then
+`SCRIPT CRM …` as information only (the CRM erasure stage is not built). Counts, modes and statuses only.
