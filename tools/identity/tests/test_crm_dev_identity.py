@@ -455,6 +455,7 @@ BOOKING_WRITERS = {
     "e2e-booking-staff@e2e-mail.lumiguides.it.com": ["booking-sales"],
     "e2e-booking-maker@e2e-mail.lumiguides.it.com": ["booking-finance"],
     "e2e-booking-checker@e2e-mail.lumiguides.it.com": ["booking-finance"],
+    "e2e-booking-pricing-checker@e2e-mail.lumiguides.it.com": ["booking-contracting"],
 }
 
 
@@ -475,7 +476,7 @@ class PerUserWorkforceIdp(FakeWorkforceIdp):
         self.added.append(f"{Username}:{GroupName}")
 
 
-def test_e2e_booking_writers_create_three_users_with_suppress_and_exact_groups(capsys):
+def test_e2e_booking_writers_create_the_users_with_suppress_and_exact_groups(capsys):
     idp = PerUserWorkforceIdp()
     assert run(["e2e-booking-writers"], idp) == 0
     dry = lines(capsys)
@@ -484,8 +485,8 @@ def test_e2e_booking_writers_create_three_users_with_suppress_and_exact_groups(c
     assert idp.created == [] and idp.added == []
     assert run(["e2e-booking-writers", "--apply"], idp) == 0
     rows = lines(capsys)
-    assert [r["action"] for r in rows] == ["created"] * 3
-    assert len(idp.created) == 3
+    assert [r["action"] for r in rows] == ["created"] * len(BOOKING_WRITERS)
+    assert len(idp.created) == len(BOOKING_WRITERS)
     for created in idp.created:
         assert created["UserPoolId"] == "w" and created["MessageAction"] == "SUPPRESS"
         assert "TemporaryPassword" not in created
@@ -493,14 +494,15 @@ def test_e2e_booking_writers_create_three_users_with_suppress_and_exact_groups(c
     assert {u: sorted(g) for u, g in idp.by_user.items()} == BOOKING_WRITERS
     assert run(["e2e-booking-writers", "--apply"], idp) == 0
     again = lines(capsys)
-    assert [r["action"] for r in again] == ["exists"] * 3 and all(r["groups_added"] == [] for r in again)
-    assert len(idp.created) == 3
+    assert [r["action"] for r in again] == ["exists"] * len(BOOKING_WRITERS)
+    assert all(r["groups_added"] == [] for r in again) and len(idp.created) == len(BOOKING_WRITERS)
 
 
 def test_e2e_booking_writers_match_the_trigger_the_mailbox_and_booking():
     workforce = (REPO / "accounts" / "aa365" / "lambda_src" / "identity_triggers" / "workforce.py").read_text()
     mailbox = (REPO / "accounts" / "aa365" / "e2e_mailbox.tf").read_text()
-    for (local, groups, _), key in zip(tool.E2E_BOOKING_WRITERS, ("STAFF", "MAKER", "CHECKER"), strict=True):
+    keys = ("STAFF", "MAKER", "CHECKER", "PRICING_CHECKER")
+    for (local, groups, _), key in zip(tool.E2E_BOOKING_WRITERS, keys, strict=True):
         assert f'E2E_BOOKING_{key}_TEST_STAFF_EMAIL = "{local}@e2e-mail.lumiguides.it.com"' in workforce
         assert f'E2E_BOOKING_{key}_TEST_STAFF_GROUPS = ("{groups[0]}",)' in workforce
         assert f'"{local}@${{local.e2e_mail_domain}}"' in mailbox

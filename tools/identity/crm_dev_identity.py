@@ -41,9 +41,10 @@ Subcommands
       missing group. A re-run creates nothing new. The pre sign-up trigger accepts the address only while its Dev
       flag is on (workforce.py E2E_DEV_ONLY_TEST_STAFF), and the pre token trigger refuses any other group set.
   e2e-booking-writers [--apply]   (AA-1087, root ADR 0006a A10e; WORKFORCE pool, dev only)
-      The three Dev-only write-capable AA-Booking E2E users, the same way as e2e-staff: e2e-booking-staff@ in
-      booking-sales, e2e-booking-maker@ and e2e-booking-checker@ in booking-finance (exactly). Codes land in
-      inbound-admin/ (MFA admin reads only). AA-Booking holds each one to its own writes on synthetic agencies.
+      The Dev-only write-capable AA-Booking E2E users, the same way as e2e-staff: e2e-booking-staff@ in
+      booking-sales, e2e-booking-maker@ and e2e-booking-checker@ in booking-finance, and (AA-1091, A10e-2)
+      e2e-booking-pricing-checker@ in booking-contracting (exactly). Codes land in inbound-admin/ (MFA admin reads
+      only). AA-Booking holds each one to its own writes on synthetic agencies (the pricing checker: synthetic plans).
 
   invitee-reset [--invitee crm|studio-viewer|studio-editor] [--apply]   (AA-939, --pool partner)
       Deletes the partner-pool account of an invitee address (AdminDeleteUser) so its next invitation starts from no
@@ -97,6 +98,9 @@ E2E_BOOKING_WRITERS: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ("e2e-booking-staff", ("booking-sales",), "E2E Booking staff"),
     ("e2e-booking-maker", ("booking-finance",), "E2E Booking finance maker"),
     ("e2e-booking-checker", ("booking-finance",), "E2E Booking finance checker"),
+    # AA-1091 (root ADR 0006a A10e-2): the pricing checker of the synthetic price check; must equal workforce.py
+    # E2E_BOOKING_PRICING_CHECKER_TEST_STAFF_EMAIL / _GROUPS and AA-Booking e2e_staff.E2E_PRICING_CHECKER_EMAIL.
+    ("e2e-booking-pricing-checker", ("booking-contracting",), "E2E Booking pricing checker"),
 )
 PASSWORD_SYMBOLS = "!#$%&*+-=?@^_"
 
@@ -504,8 +508,8 @@ def e2e_staff(idp: Any, workforce_pool_id: str, *, env: str, zone: str, apply: b
 
 
 def e2e_booking_writers(idp: Any, workforce_pool_id: str, *, env: str, zone: str, apply: bool) -> list[dict[str, Any]]:
-    """AA-1087 (A10e): the three Dev-only write-capable AA-Booking E2E users (staff; finance maker; finance checker),
-    each in exactly its group (SUPPRESS, no password, idempotent)."""
+    """AA-1087 (A10e): the Dev-only write-capable AA-Booking E2E users (staff; finance maker; finance checker; since
+    AA-1091 A10e-2 the pricing checker), each in exactly its group (SUPPRESS, no password, idempotent)."""
     if env != "dev":
         raise ToolError("e2e-booking-writers is Dev only (root ADR 0006a A10e)")
     return [
