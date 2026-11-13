@@ -230,8 +230,11 @@ jobs:
               gh api -H "Accept: application/vnd.github.raw" "repos/$REPO/contents/$F?ref=$BR" > cur.sql || : > cur.sql
               if cmp -s cur.sql "$SRC"; then echo "#$N $F: up to date"; continue; fi
               BLOB=$(gh api "repos/$REPO/contents/$F?ref=$BR" --jq .sha)
-              gh api -X PUT "repos/$REPO/contents/$F" -f message="$(jq -r .commit <<<"$c")" \
-                -f content="$(base64 -w0 "$SRC")" -f branch="$BR" -f sha="$BLOB" >/dev/null
+              # The content goes in a JSON file, never an argument: a large file overflows ARG_MAX (S279, CIS 412).
+              base64 -w0 "$SRC" > content.b64
+              jq -n --arg m "$(jq -r .commit <<<"$c")" --rawfile s content.b64 --arg b "$BR" --arg h "$BLOB" \
+                '{message: $m, content: $s, branch: $b, sha: $h}' > put.json
+              gh api -X PUT "repos/$REPO/contents/$F" --input put.json >/dev/null
               echo "#$N $F: updated to the owner's main bytes"
               echo "- updated #$N \`$F\` (the owner's main changed)" >> "$GITHUB_STEP_SUMMARY"
               continue
@@ -240,8 +243,10 @@ jobs:
               gh api -X DELETE "repos/$REPO/git/refs/heads/$BR" >/dev/null     # left over from a closed PR
             fi
             gh api -X POST "repos/$REPO/git/refs" -f ref="refs/heads/$BR" -f sha="$MAIN_SHA" >/dev/null
-            gh api -X PUT "repos/$REPO/contents/$F" -f message="$(jq -r .commit <<<"$c")" \
-              -f content="$(base64 -w0 "$SRC")" -f branch="$BR" >/dev/null
+            base64 -w0 "$SRC" > content.b64
+            jq -n --arg m "$(jq -r .commit <<<"$c")" --rawfile s content.b64 --arg b "$BR" \
+              '{message: $m, content: $s, branch: $b}' > put.json
+            gh api -X PUT "repos/$REPO/contents/$F" --input put.json >/dev/null
             N=$(gh api -X POST "repos/$REPO/pulls" -f title="$(jq -r .title <<<"$c")" -f head="$BR" -f base=main \
               -f body="$(jq -r .body <<<"$c")" --jq .number)
             ARGS=(); for L in $(jq -r '.labels[]' <<<"$c"); do ARGS+=(-f "labels[]=$L"); done
