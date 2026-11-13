@@ -243,6 +243,9 @@ owners:
         schemas: [tripplanner]
         objects: {relation: [SELECT], sequence: [USAGE], function: [EXECUTE]}
         default_acl: {tables: [DELETE, INSERT, SELECT, UPDATE], sequences: [SELECT, USAGE]}   # no functions (tp-008)
+        # tp-030/tp-031 (AA-1093): the erasure report view is read by cis_app only (tenant.erasure.v1); the
+        # runtime role was revoked on purpose (the assembly Lambda shares it).
+        owner_only_relations: [tripplanner.v_tenant_erasure_report_v1]
     job_table: tripplanner.job           # tp-021 (AA-861, ADR 0003a template); worker = the jobs Lambda
     job_kind_prefix: tp_
     idle_exempt_kinds: []
