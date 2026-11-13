@@ -118,6 +118,13 @@ variable "tripplanner_jobs_schedule_expression" {
   default = "cron(30 19 * * ? *)"
 }
 
+variable "tripplanner_jobs_erasure_feed_schedule_expression" {
+  description = "AA-1093 — how often the TripPlanner jobs Lambda reads the CIS erasure request feed (op erasure_feed: queues and runs tp_tenant_erase only)"
+  type        = string
+  # Booking reads the same feed every 300 s (EraseSchedule); CIS shows each app's report on the saga page.
+  default = "rate(5 minutes)"
+}
+
 variable "tripplanner_jobs_retention_override_enabled" {
   description = "AA-861 — \"true\" (exact string) opens the LIVE manual_override of tp_retention_outbox_redact on this deployment (Dev proof runs before rows reach 90 days); a DRY RUN override never needs it"
   type        = string

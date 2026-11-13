@@ -27,6 +27,16 @@
 # Cost (us-west-1, Dev): one ~5 s run a day at 256 MB ~ 0 USD (free tier); log group 30 days, a few KB a day; two
 # alarms 0.20 USD/month; the schedule is free at this volume. About 0.20 USD/month in all.
 #
+# AA-1093 follow-up (S279, DRILL-01): a second schedule wakes the same function every 5 minutes with
+# {"op": "erasure_feed"} only: it reads the CIS erasure request feed (catalog.v_tenant_erasure_v1), queues
+# tp_tenant_erase for the new requests and runs due tp_tenant_erase jobs only (AA-TripPlanner-Web
+# backend/jobs/handler.py; every other kind keeps the daily tick). Before it, TripPlanner answered a CIS request up to a
+# day late while CIS and Booking answered within minutes. Cost: ~8,640 invocations a month of ~1 s at 256 MB (~2,200
+# GB-s) and 8,640 scheduler invocations, both far inside the free tiers (1 M requests / 400,000 GB-s; 14 M scheduler
+# invocations); a few MB of logs a month; the tick metric filter below emits one data point a day (one metric-hour a
+# day, about 0.01 USD/month). About 0 USD/month added. Reserved concurrency 1 is unchanged: the scheduler invokes
+# asynchronously, so a run that finds the function busy waits in Lambda's async queue (maximum_event_age 1 h below).
+#
 # CI apply role (aa-cis-infra-tf-apply) can create everything here: role names aa-tripplanner-dev-* with the workload
 # boundary (TripPlannerRoleTagging in cicd.tf), Lambda via AWSLambda_FullAccess, log group / alarms via
 # CloudWatchFullAccess, and the schedule sits in the module.eventbridge group (EventBridgeSchedulerScheduleManage,
@@ -39,6 +49,13 @@ variable "tripplanner_jobs_schedule_expression" {
   # 19:30 UTC = 02:30 ICT: outside VN working hours, after Booking's 19:00 retention runs, before the 20:30 CIS
   # retention enqueue and the 22:00 snapshot expiry, away from the RDS backup window (03:00-04:00 UTC).
   default = "cron(30 19 * * ? *)"
+}
+
+variable "tripplanner_jobs_erasure_feed_schedule_expression" {
+  description = "AA-1093 — how often the TripPlanner jobs Lambda reads the CIS erasure request feed (op erasure_feed: queues and runs tp_tenant_erase only)"
+  type        = string
+  # Booking reads the same feed every 300 s (EraseSchedule); CIS shows each app's report on the saga page.
+  default = "rate(5 minutes)"
 }
 
 variable "tripplanner_jobs_retention_override_enabled" {
@@ -249,16 +266,31 @@ resource "aws_cloudwatch_metric_alarm" "tripplanner_jobs_errors" {
   tags                = local.tp_jobs_tags
 }
 
-# The schedule stopped (rule disabled or deleted, invoke role broken): no invocation for two whole days. Missing data
-# is breaching, so two days without the metric alarm. It is therefore in ALARM from its creation until the first
-# invocation: after the first apply, once the app deploy has shipped the real code, invoke {"op":"status"} once
-# (AA-TripPlanner-Web docs/jobs-runbook.md "First deploy"; never before the code deploy, the placeholder fails).
+# The daily tick stopped (rule disabled or deleted, invoke role broken): no tick for two whole days. Since the 5-minute
+# erasure feed (AA-1093) invokes the function all day, Invocations no longer proves the tick runs: the alarm counts the
+# tick's own log line ({"evt": "jobs_run", "op": "tick"}, written by every tick that reached the database, also one that
+# then raises for attention). Event metric, no default_value (billed only in hours with a tick). Missing data is
+# breaching, so two days without the line alarm, and it is in ALARM from its creation until the first tick: after the
+# first apply, once the app deploy has shipped the real code, invoke {"op":"tick"} once (AA-TripPlanner-Web
+# docs/jobs-runbook.md "Alarms"; never before the code deploy, the placeholder fails).
+resource "aws_cloudwatch_log_metric_filter" "tripplanner_jobs_tick" {
+  name           = "${local.tp_jobs_fn_name}-tick-runs"
+  log_group_name = aws_cloudwatch_log_group.tripplanner_jobs.name
+  pattern        = "{ ($.evt = \"jobs_run\") && ($.op = \"tick\") }"
+
+  metric_transformation {
+    name      = "JobsTickRuns"
+    namespace = "AA/TripPlanner"
+    value     = "1"
+    unit      = "Count"
+  }
+}
+
 resource "aws_cloudwatch_metric_alarm" "tripplanner_jobs_not_run" {
   alarm_name          = "${local.tp_jobs_fn_name}-not-run"
-  alarm_description   = "AA-861: the TripPlanner jobs Lambda was not invoked for 2 days (its daily EventBridge schedule ${local.tp_jobs_fn_name}-daily stopped). Outbox PII redaction (DM-6.6) is not running.${var.runbook_suffix.queue_stuck}"
-  namespace           = "AWS/Lambda"
-  metric_name         = "Invocations"
-  dimensions          = { FunctionName = aws_lambda_function.tripplanner_jobs.function_name }
+  alarm_description   = "AA-861: the TripPlanner jobs Lambda ran no daily tick for 2 days (its daily EventBridge schedule ${local.tp_jobs_fn_name}-daily stopped, or every tick failed before the database). Outbox PII redaction (DM-6.6), the lead retries and the tenant backups are not running.${var.runbook_suffix.queue_stuck}"
+  namespace           = aws_cloudwatch_log_metric_filter.tripplanner_jobs_tick.metric_transformation[0].namespace
+  metric_name         = aws_cloudwatch_log_metric_filter.tripplanner_jobs_tick.metric_transformation[0].name
   statistic           = "Sum"
   period              = 86400
   evaluation_periods  = 2
@@ -329,6 +361,34 @@ resource "aws_scheduler_schedule" "tripplanner_jobs_daily" {
     retry_policy {
       maximum_retry_attempts       = 2
       maximum_event_age_in_seconds = 3600
+    }
+  }
+}
+
+# AA-1093 follow-up (S279): the 5-minute read of the CIS erasure request feed. Same invoke role as the daily tick (it
+# may invoke this function only). No flexible window: a drill expects the report within one period. No delivery
+# retry and a short event age: a missed run is replaced by the next one 5 minutes later (the idempotency key per
+# request, round and phase makes a late or doubled run queue nothing twice).
+resource "aws_scheduler_schedule" "tripplanner_jobs_erasure_feed" {
+  name        = "${local.tp_jobs_fn_name}-erasure-feed"
+  description = "AA-1093 — the TripPlanner jobs Lambda reads the CIS erasure request feed (op erasure_feed; tp_tenant_erase only)"
+  group_name  = var.eventbridge_schedule_group_name
+
+  schedule_expression          = var.tripplanner_jobs_erasure_feed_schedule_expression
+  schedule_expression_timezone = "UTC"
+
+  flexible_time_window {
+    mode = "OFF"
+  }
+
+  target {
+    arn      = aws_lambda_function.tripplanner_jobs.arn
+    role_arn = aws_iam_role.tripplanner_jobs_scheduler.arn
+    input    = jsonencode({ op = "erasure_feed", source = "aa-1093-erasure-feed" })
+
+    retry_policy {
+      maximum_retry_attempts       = 0
+      maximum_event_age_in_seconds = 300
     }
   }
 }
