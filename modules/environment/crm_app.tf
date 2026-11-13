@@ -458,11 +458,12 @@ resource "aws_ecs_task_definition" "crm_api" {
       { name = "KMS_DATA_KEY_ID", value = aws_kms_alias.crm["data"].name },
       # AA-955: the platform seal of signed envelopes (CrmSealSignVerify).
       { name = "KMS_SEAL_KEY_ID", value = aws_kms_alias.crm["seal"].name },
-      # AA-936: the public inquiry form (app.intake.public): pages on the client host may post; limits per
-      # address per minute and per form per hour.
+      # AA-936: the public inquiry form (app.intake.public): pages on the client host may post; limit per address
+      # per minute. AA-1096 L4: the per-form hourly quota is an admin-editable CRM setting (crm-064,
+      # crm.rate.intake_form_per_hour, default 200, with a per-agency override); its env var is not set here, because
+      # an env override in force wins over every agency's own value.
       { name = "INTAKE_PAGE_ORIGINS", value = var.crm_intake_origin },
       { name = "RATE_LIMIT_INTAKE_PER_MINUTE", value = "5" },
-      { name = "RATE_LIMIT_INTAKE_FORM_PER_HOUR", value = "200" },
       { name = "DOCUMENTS_BUCKET", value = aws_s3_bucket.crm["documents"].bucket },
       # AA-940 (CRM-12): the hourly audit export to both Object Lock tiers (crm_storage.tf crm_ecs_task_audit_export);
       # the daily audit retention only reports partitions it would drop until a human turns the dry run off (DM-7.2).
