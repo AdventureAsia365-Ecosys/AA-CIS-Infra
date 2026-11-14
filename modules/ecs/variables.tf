@@ -338,20 +338,25 @@ variable "tripplanner_revalidate_url" {
   }
 }
 
-variable "tripplanner_web_distribution_arn" {
-  description = "AA-1090 R8: ARN of the TripPlanner web CloudFront distribution (accounts/aa365/tripplanner_web_edge.tf). With tripplanner_web_base_cert_arn it gives the CIS task role the tripplanner_custom_domain policy (tagged ACM certificates in us-east-1, Get / UpdateDistribution on this distribution only) and the CIS api + worker the env TP_WEB_DISTRIBUTION_ID / TP_WEB_BASE_CERT_ARN (the agency-domain job). Empty = custom domains off: no grant, no env."
-  type        = string
-  default     = ""
-}
-
-variable "tripplanner_web_base_cert_arn" {
-  description = "AA-1090 R8: the us-east-1 ACM certificate the TripPlanner distribution serves without agency domains (the wildcard of crm_agency_edge.tf). Read only (DescribeCertificate): the job copies its names into the edge certificate and falls back to it; never deletable by the task role (untagged)."
+variable "tripplanner_agency_distribution_arn" {
+  description = "AA-1090 R8: ARN of the TripPlanner AGENCY CloudFront distribution (accounts/aa365/tripplanner_web_edge.tf, aws_cloudfront_distribution.tripplanner_agency: agency domains only, never the public TripPlanner host). Gives the CIS task role the tripplanner_custom_domain policy (tagged ACM certificates in us-east-1, Get / UpdateDistribution on this distribution only) and the CIS api + worker the env TP_AGENCY_DISTRIBUTION_ID (the agency-domain job). Empty = custom domains off: no grant, no env."
   type        = string
   default     = ""
 
   validation {
-    condition     = var.tripplanner_web_base_cert_arn == "" || can(regex("^arn:aws:acm:us-east-1:[0-9]{12}:certificate/", var.tripplanner_web_base_cert_arn))
-    error_message = "tripplanner_web_base_cert_arn must be a us-east-1 ACM certificate ARN (CloudFront reads certificates from us-east-1 only) or empty."
+    condition     = var.tripplanner_agency_distribution_arn == "" || can(regex("^arn:aws:cloudfront::[0-9]{12}:distribution/[A-Z0-9]+$", var.tripplanner_agency_distribution_arn))
+    error_message = "tripplanner_agency_distribution_arn must be a CloudFront distribution ARN or empty."
+  }
+}
+
+variable "tripplanner_custom_domain_protected_cert_arns" {
+  description = "AA-1090 R8: us-east-1 ACM certificates the agency-domain job may never tag, untag or delete (an explicit Deny on top of the ManagedBy = terraform Deny), e.g. the wildcard the public TripPlanner host serves. At least one when custom domains are on (an empty Resource list is not a valid policy)."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for a in var.tripplanner_custom_domain_protected_cert_arns : can(regex("^arn:aws:acm:us-east-1:[0-9]{12}:certificate/", a))])
+    error_message = "tripplanner_custom_domain_protected_cert_arns must hold us-east-1 ACM certificate ARNs."
   }
 }
 

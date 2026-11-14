@@ -109,15 +109,16 @@ locals {
   ]
 
   # AA-1090 R8: the agency-domain job (AA-CIS-App services/jobs/tripplanner_custom_domain_job.py, worker) and its Tenant 360
-  # editor (api, which answers 409 without them) read the TripPlanner distribution and its base certificate. Both empty
-  # = custom domains off: no env, no grant (aws_iam_role_policy.ecs_task_tripplanner_custom_domain).
-  tp_custom_domain_on = var.tripplanner_web_distribution_arn != "" && var.tripplanner_web_base_cert_arn != ""
+  # editor (api, which answers 409 without it) read the TripPlanner AGENCY distribution (its own distribution: the public
+  # TripPlanner host never shares a certificate with an agency). Empty = custom domains off: no env, no grant
+  # (aws_iam_role_policy.ecs_task_tripplanner_custom_domain).
+  tp_custom_domain_on = var.tripplanner_agency_distribution_arn != ""
   tp_custom_domain_env = local.tp_custom_domain_on ? [
-    { name = "TP_WEB_DISTRIBUTION_ID", value = element(split("/", var.tripplanner_web_distribution_arn), 1) },
-    { name = "TP_WEB_BASE_CERT_ARN", value = var.tripplanner_web_base_cert_arn },
+    { name = "TP_AGENCY_DISTRIBUTION_ID", value = element(split("/", var.tripplanner_agency_distribution_arn), 1) },
   ] : []
-  # The tag every certificate the job requests carries; the policy lets the role read and delete only those.
-  tp_custom_domain_tag = { key = "aa-managed-by", value = "tripplanner-custom-domain" }
+  # The tag every certificate the job requests carries, and the only tag keys it may write (AA-CIS-App tp_edge.tags()).
+  tp_custom_domain_tag      = { key = "aa-managed-by", value = "tripplanner-custom-domain" }
+  tp_custom_domain_tag_keys = ["aa-managed-by", "aa-domain-id", "aa-edge"]
 
   # AA-874 S5: Redis connection for api and worker (AA-CIS-App shared/cache/redis_conn.py). REDIS_TLS and the
   # REDIS_AUTH_TOKEN secret appear only when set, so a module call without them renders the old plain env.
@@ -469,13 +470,13 @@ resource "aws_iam_role_policy" "ecs_task_policy" {
 # AA-1090 R8 — the agency-domain job of the TripPlanner web (AA-CIS-App services/tenant_account/tp_edge.py). Least
 # privilege (policy text policies/tripplanner_custom_domain.json.tftpl; tools/terraform/tests/test_aa1090_tp_custom_domain.py
 # renders and checks it):
-#   RequestCertificate / AddTagsToCertificate  only in us-east-1, only with DNS validation and the job's tag (ACM has
-#                                              no resource ARN before the request, so "*" with those conditions);
-#   Describe / DeleteCertificate               only certificates carrying that tag (the job's own: one per agency
-#                                              domain and the edge certificate), so the base wildcard and every other
-#                                              certificate of the account stay untouchable;
-#   DescribeCertificate on the base certificate (read its names);
-#   Get / UpdateDistribution                   the TripPlanner distribution only (aliases + viewer certificate).
+#   RequestCertificate      only in us-east-1, only with DNS validation, the job's tag and its three tag keys (ACM has
+#                           no resource ARN before the request, so "*" with those conditions);
+#   AddTagsToCertificate    us-east-1 certificates, only writing the job's tag with those keys (needed to tag at request);
+#   Describe / Delete       only certificates carrying the job's tag (one per agency domain and the edge certificate);
+#   Get / UpdateDistribution the TripPlanner agency distribution only (aliases + viewer certificate);
+#   Deny                    tagging, untagging and deleting any certificate tagged ManagedBy = terraform (provider
+#                           default_tags: every certificate of this root) and the listed protected certificates.
 # Cost: 0 (IAM). Not merged by auto-merge: an IAM change gets its own review (repo convention).
 resource "aws_iam_role_policy" "ecs_task_tripplanner_custom_domain" {
   count = local.tp_custom_domain_on ? 1 : 0
@@ -483,11 +484,12 @@ resource "aws_iam_role_policy" "ecs_task_tripplanner_custom_domain" {
   name = "${local.name_prefix}-ecs-task-tripplanner-custom-domain"
   role = aws_iam_role.ecs_task.id
   policy = jsonencode(jsondecode(templatefile("${path.module}/policies/tripplanner_custom_domain.json.tftpl", {
-    account_id       = element(split(":", var.tripplanner_web_base_cert_arn), 4)
-    base_cert_arn    = var.tripplanner_web_base_cert_arn
-    distribution_arn = var.tripplanner_web_distribution_arn
-    tag_key          = local.tp_custom_domain_tag.key
-    tag_value        = local.tp_custom_domain_tag.value
+    account_id          = element(split(":", var.tripplanner_agency_distribution_arn), 4)
+    distribution_arn    = var.tripplanner_agency_distribution_arn
+    tag_key             = local.tp_custom_domain_tag.key
+    tag_value           = local.tp_custom_domain_tag.value
+    tag_keys            = jsonencode(local.tp_custom_domain_tag_keys)
+    protected_cert_arns = jsonencode(var.tripplanner_custom_domain_protected_cert_arns)
   })))
 }
 

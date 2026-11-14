@@ -232,9 +232,10 @@ module "ecs" {
   # AA-835 (S6 review): the supply_media_purge job invalidates withdrawn Booking photo copies on the photos CDN.
   photos_cdn_distribution_arn = local.photos_cdn_on == 1 ? aws_cloudfront_distribution.photos_cdn[0].arn : ""
   # AA-1090 R8 (tripplanner_web_edge.tf): the CIS job tripplanner_custom_domain attaches agency domains to the TripPlanner
-  # distribution; the base certificate is the wildcard it falls back to. "" = custom domains off (no grant, no env).
-  tripplanner_web_distribution_arn = local.tp_web_edge_on == 1 ? aws_cloudfront_distribution.tripplanner_web[0].arn : ""
-  tripplanner_web_base_cert_arn    = local.tp_web_edge_on == 1 ? aws_acm_certificate_validation.crm_agency[0].certificate_arn : ""
+  # AGENCY distribution (never the public host's). The wildcard the public host serves is on the job's explicit Deny
+  # list, on top of the ManagedBy = terraform Deny. "" = custom domains off (no grant, no env).
+  tripplanner_agency_distribution_arn           = local.tp_web_edge_on == 1 ? aws_cloudfront_distribution.tripplanner_agency[0].arn : ""
+  tripplanner_custom_domain_protected_cert_arns = [aws_acm_certificate.crm_agency.arn]
   # AA-839: data_erasure apply switch, driven by local.erasure_drill above (the retention window is a CIS setting).
   erasure_apply_enabled = local.erasure_drill
 

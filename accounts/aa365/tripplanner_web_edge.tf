@@ -75,28 +75,35 @@
 # Certificate: the us-east-1 wildcard *.<zone> of crm_agency_edge.tf (chosen while tripplanner. still CNAMEd to Vercel:
 # a certificate naming it would have failed CAA, critic C1). A certificate can serve several distributions.
 #
-# AA-1090 R8 (root ADR 0019 b4; tech lead S278 D10 / D13 NEW-D) — an agency's own domain for its planner. The CIS job
-# tripplanner_custom_domain (AA-CIS-App services/jobs/tripplanner_custom_domain_job.py) requests a host's ACM certificate
-# in us-east-1, waits for the agency's validation record, then keeps ONE edge certificate on this distribution naming
-# the base certificate's names plus every attached host, and swaps the aliases and the viewer certificate in one
-# UpdateDistribution. So, from the first apply of this change:
-#   * aliases and viewer_certificate are the job's (lifecycle ignore_changes below); with no agency host left the job
-#     puts back exactly local.tp_web_host and the wildcard certificate, the values Terraform set;
-#   * every alias reaches the TripPlanner web service: the distribution adds the site header
+# AA-1090 R8 (root ADR 0019 b4; tech lead S278 D10 / D13 NEW-D) — an agency's own domain for its planner. Agency domains
+# live on a SECOND distribution, aws_cloudfront_distribution.tripplanner_agency (same origin, behaviours, function and
+# headers as tripplanner_web; no alias of its own; the CloudFront default certificate), so the public host keeps its
+# Terraform wildcard and is never on a certificate that depends on an agency's DNS. The CIS job tripplanner_custom_domain
+# (AA-CIS-App services/jobs/tripplanner_custom_domain_job.py) requests a host's ACM certificate in us-east-1, waits for
+# the agency's validation record, then keeps ONE edge certificate on the agency distribution naming every attached host
+# and swaps its aliases and viewer certificate in one UpdateDistribution; a host whose validation record disappears is
+# detached by the job (pending-certificate guard, daily renewal check) so the other agencies keep a valid certificate.
+# So, from the first apply of this change:
+#   * the public distribution tripplanner_web stays fully Terraform's (aliases = local.tp_web_host, the wildcard);
+#   * on tripplanner_agency, aliases and viewer_certificate are the job's (lifecycle ignore_changes there); with no
+#     agency host left the job puts back no alias and the default certificate, the values Terraform set;
+#   * every alias reaches the TripPlanner web service: both distributions add the site header
 #     local.tp_web_site_header_name = a random secret (origin custom header: CloudFront overwrites a viewer's value)
 #     and the ALB rule tripplanner_web_alias forwards on that header + the origin secret, whatever the Host (the
 #     Host rule tripplanner_web stays for the public host);
 #   * the three TripPlanner WAF rules match the site header instead of the Host (module "waf" input
 #     tripplanner_site_header), so the rate limits and the Challenge carry over to every agency domain;
-#   * the CIS task role gets exactly the edge rights (modules/ecs policy tripplanner_custom_domain) and the CIS api and
-#     worker the env TP_WEB_DISTRIBUTION_ID / TP_WEB_BASE_CERT_ARN (main.tf module "ecs").
-# Apply order (CloudFront takes minutes to deploy the origin header): 1. -target the distribution, the site-header
-# secret and the alias rule; 2. the rest (WAF scope, IAM, ECS env). Applying everything at once only leaves the WAF
-# rules unmatched for the few minutes the distribution is deploying (fail open on the rate limit, never a 403).
-# Cost of R8 (est., docs/audits/2026-11-15-S281-tp-custom-domain in the root repo): ACM public certificates 0 USD,
-# alternate domain names 0 USD, the ALB rule inside the LCU rule allowance, the site header and the policy 0, the
-# job's API calls free (ACM / CloudFront control plane); agency traffic is billed like the public host's (always-free
-# tier on Dev). About 0 USD a month.
+#   * the CIS task role gets exactly the edge rights on the agency distribution (modules/ecs policy
+#     tripplanner_custom_domain) and the CIS api and worker the env TP_AGENCY_DISTRIBUTION_ID (main.tf module "ecs").
+# Apply order (CloudFront takes minutes to deploy the origin header): 1. -target the public distribution, the
+# site-header secret and the alias rule; 2. the rest (agency distribution, WAF scope, IAM, ECS env). Applying everything
+# at once only leaves the WAF rules unmatched for the few minutes the public distribution is deploying (fail open on
+# the rate limit, never a 403).
+# Cost of R8 (est., docs/audits/2026-11-15-S281-tp-custom-domain in the root repo): the second distribution has no fixed
+# fee (CloudFront pay-as-you-go bills requests and data only, in the always-free tier on Dev), ACM public certificates
+# 0 USD, alternate domain names 0 USD (SNI), the ALB rule inside the LCU rule allowance, the site header and the policy
+# 0, the job's API calls free (ACM / CloudFront control plane); agency traffic is billed like the public host's.
+# About 0 USD a month.
 #
 # Cost (us-west-1 / global, est., D-19): 3 rules x 1 USD/month in the existing ALB web ACL (no web ACL fee: that ACL
 # is paid already) + 0.60 USD per million requests it inspects; Challenge responses are billed per attempt (AWS WAF
@@ -348,10 +355,112 @@ resource "aws_cloudfront_distribution" "tripplanner_web" {
   }
 
   tags = merge(local.tp_web_edge_tags, { Name = "aa-tripplanner-${var.environment}-web-cdn" })
+}
 
-  # AA-1090 R8: the CIS job tripplanner_custom_domain owns the aliases and the viewer certificate (agency domains and
-  # the edge certificate naming them); with no agency domain it restores local.tp_web_host and the wildcard. A change of
-  # either here needs the job's state checked first (Tenant 360 shows every host).
+# -----------------------------------------------------------------------------
+# AA-1090 R8: the agency distribution. A copy of tripplanner_web (origin, headers, behaviours, function) without the
+# public alias: the CIS job attaches agency domains here, so an agency's certificate can never touch the public host's.
+# -----------------------------------------------------------------------------
+resource "aws_cloudfront_distribution" "tripplanner_agency" {
+  count = local.tp_web_edge_on
+
+  enabled         = true
+  comment         = "AA-1090 TripPlanner agency domains (aliases and certificate managed by the CIS job)"
+  aliases         = []
+  price_class     = var.crm_cdn_price_class
+  http_version    = "http2and3"
+  is_ipv6_enabled = true
+
+  origin {
+    origin_id   = local.crm_origin_id
+    domain_name = module.alb.nlb_dns_name
+
+    vpc_origin_config {
+      vpc_origin_id            = aws_cloudfront_vpc_origin.crm[0].id
+      origin_read_timeout      = 60
+      origin_keepalive_timeout = 60
+    }
+
+    custom_header {
+      name  = local.alb_origin_header_name
+      value = random_password.crm_origin_verify[0].result
+    }
+
+    # AA-1090 R8: the site header (see the header of this file).
+    custom_header {
+      name  = local.tp_web_site_header_name
+      value = random_password.tp_web_site_marker[0].result
+    }
+  }
+
+  # Pages and /api/*: never cached at the edge (header). Every viewer header (the Host the ALB rule matches, cookies)
+  # plus CloudFront-Viewer-Address (the app's client address, TP_CLIENT_IP_SOURCE=cloudfront) reach the task.
+  default_cache_behavior {
+    target_origin_id         = local.crm_origin_id
+    viewer_protocol_policy   = "redirect-to-https"
+    allowed_methods          = ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"]
+    cached_methods           = ["GET", "HEAD"]
+    compress                 = false # nothing is cached; keep streamed SSR chunks unbuffered
+    cache_policy_id          = data.aws_cloudfront_cache_policy.caching_disabled[0].id
+    origin_request_policy_id = data.aws_cloudfront_origin_request_policy.all_viewer_and_cf_headers[0].id
+
+    function_association {
+      event_type   = "viewer-request"
+      function_arn = aws_cloudfront_function.tripplanner_web_viewer_ip[0].arn
+    }
+  }
+
+  # Immutable build chunks (content-hashed paths): cached on the origin's Cache-Control, query not in the key.
+  ordered_cache_behavior {
+    path_pattern             = local.tp_web_static_path
+    target_origin_id         = local.crm_origin_id
+    viewer_protocol_policy   = "redirect-to-https"
+    allowed_methods          = ["GET", "HEAD", "OPTIONS"]
+    cached_methods           = ["GET", "HEAD"]
+    compress                 = true
+    cache_policy_id          = data.aws_cloudfront_cache_policy.caching_optimized[0].id
+    origin_request_policy_id = data.aws_cloudfront_origin_request_policy.all_viewer_and_cf_headers[0].id
+
+    function_association {
+      event_type   = "viewer-request"
+      function_arn = aws_cloudfront_function.tripplanner_web_viewer_ip[0].arn
+    }
+  }
+
+  # The photo proxy: versioned by ?v=, so the version is in the cache key (tripplanner_web_photos).
+  ordered_cache_behavior {
+    path_pattern             = local.tp_web_photo_path
+    target_origin_id         = local.crm_origin_id
+    viewer_protocol_policy   = "redirect-to-https"
+    allowed_methods          = ["GET", "HEAD", "OPTIONS"]
+    cached_methods           = ["GET", "HEAD"]
+    compress                 = true
+    cache_policy_id          = aws_cloudfront_cache_policy.tripplanner_web_photos[0].id
+    origin_request_policy_id = data.aws_cloudfront_origin_request_policy.all_viewer_and_cf_headers[0].id
+
+    function_association {
+      event_type   = "viewer-request"
+      function_arn = aws_cloudfront_function.tripplanner_web_viewer_ip[0].arn
+    }
+  }
+
+  restrictions {
+    geo_restriction {
+      restriction_type = "none"
+    }
+  }
+
+  # No agency host: the CloudFront default certificate. The job replaces it with the edge certificate of the attached
+  # hosts (sni-only, TLSv1.2_2021) and puts it back when the last host is removed.
+  viewer_certificate {
+    cloudfront_default_certificate = true
+  }
+
+  tags = merge(local.tp_web_edge_tags, { Name = "aa-tripplanner-${var.environment}-agency-cdn", Issue = "AA-1090" })
+
+  # The CIS job tripplanner_custom_domain owns the aliases and the viewer certificate (agency domains and the edge
+  # certificate naming them). Everything else here must stay in step with tripplanner_web (the offline test
+  # tools/terraform/tests/test_aa1090_tp_custom_domain.py compares the two).
   lifecycle {
     ignore_changes = [aliases, viewer_certificate]
   }
@@ -462,5 +571,13 @@ output "tripplanner_web_edge" {
     ecs_service         = module.environment.tripplanner_web_ecs_service_name
     ecr_repository_url  = module.environment.tripplanner_web_ecr_repository_url
     secret_name         = module.environment.tripplanner_web_secret_name
+  } : null
+}
+
+output "tripplanner_agency_edge" {
+  description = "AA-1090 R8: the TripPlanner agency distribution. Agency domains CNAME to its domain (Tenant 360 shows it); the CIS job tripplanner_custom_domain edits its aliases and viewer certificate."
+  value = local.tp_web_edge_on == 1 ? {
+    distribution_id     = aws_cloudfront_distribution.tripplanner_agency[0].id
+    distribution_domain = aws_cloudfront_distribution.tripplanner_agency[0].domain_name
   } : null
 }
