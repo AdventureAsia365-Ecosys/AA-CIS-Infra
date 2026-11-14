@@ -35,6 +35,22 @@ Secrets, Lambda plumbing, OIDC deploy roles, cross-account Bedrock trust — is 
   `*_aa_internal`) — those live in the app repos' migrations. It owns the RDS instance the
   schemas live *in*, not the schemas themselves.
 
+## Run it locally
+
+Nothing here is applied from a workstation: a change reaches AWS only through the Terraform Apply workflow after its
+plan was read ([How a change gets applied](#how-a-change-gets-applied)). Locally you format, validate and test.
+
+| Part | Command (from the repo root) | Needs |
+|---|---|---|
+| Format | `terraform fmt -check -recursive` | Terraform at the version CI pins (`required_version` in each root's `versions.tf`) |
+| Validate a root | `terraform -chdir=accounts/aa365 init -backend=false && terraform -chdir=accounts/aa365 validate` | provider downloads; no AWS credentials, no state |
+| Repo checks | `scripts/pre-push.sh --list` shows the checks your diff selects; `scripts/pre-push.sh` runs them (format, validate per touched root, the Python tool tests, docs lint) | Python 3.12 with pytest (`scripts/install-hooks.sh --venv` creates `.venv` with the CI test packages) |
+| Pre-push hook | `scripts/install-hooks.sh` once per clone (add `--venv` the first time) | |
+| Plan | CI "Terraform Plan" on the pull request. A local plan needs MFA credentials exported without printing them (root `.kiro/steering/session-workflow.md`, environment notes) and is for reading only | the tech lead's MFA session |
+
+- Run Terraform from the WSL path, never a Windows UNC path.
+- DB migrations run only through the DB Migrate workflow, never from a workstation.
+
 ## Account model
 
 Account IDs: the account map in the root repo's onboarding page; never in this public repo.
