@@ -129,6 +129,17 @@ variable "cognito_workforce_crm_staff_client_id" {
   type        = string
 }
 
+variable "cognito_workforce_academy_client_id" {
+  description = "AA-1105: WORKFORCE client academy-web (aws_cognito_user_pool_client.workforce[\"academy-web\"].id): the AA Academy host of the CRM web (root ADR 0022); CIS accepts it on /learn/v1 only."
+  type        = string
+}
+
+variable "crm_academy_hosts" {
+  description = "AA-1105: the AA Academy host(s) the CRM web serves (academy_edge.tf local.academy_host; empty without the edge): WEB_ACADEMY_HOSTS."
+  type        = list(string)
+  default     = []
+}
+
 variable "cognito_workforce_prefix_domain" {
   description = "Prefix domain of the WORKFORCE managed login (aws_cognito_user_pool_domain.workforce_prefix.domain)."
   type        = string

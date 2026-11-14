@@ -108,6 +108,9 @@ module "environment" {
   cognito_workforce_cis_admin_client_id  = aws_cognito_user_pool_client.workforce["cis-admin"].id
   cognito_workforce_breakglass_client_id = aws_cognito_user_pool_client.workforce["breakglass"].id
   cognito_workforce_crm_staff_client_id  = aws_cognito_user_pool_client.workforce["crm-staff"].id
+  # AA-1105 (root ADR 0022): the AA Academy host on the CRM web (academy_edge.tf) and its WORKFORCE client.
+  cognito_workforce_academy_client_id = aws_cognito_user_pool_client.workforce["academy-web"].id
+  crm_academy_hosts                   = local.crm_edge_on == 1 ? [local.academy_host] : []
   # AA-911: the staff frontends on ECS (staff_web.tf of the module, staff_web_edge.tf + alb_rules.tf here).
   cognito_workforce_booking_staff_client_id = aws_cognito_user_pool_client.workforce["booking-staff"].id
   cis_admin_secret_arn                      = var.secret_admin_arn

@@ -79,9 +79,11 @@ resource "aws_acm_certificate_validation" "crm_agency" {
 resource "aws_cloudfront_distribution" "crm_agency" {
   count = local.crm_edge_on
 
+  # AA-1105 (root ADR 0022, D17): the AA Academy host rides on this distribution too (academy_edge.tf); the wildcard
+  # certificate covers it.
   enabled         = true
   comment         = "AA-979 AA-Partner Dev agency host (CRM + Content studio; same VPC origin as the partner host)"
-  aliases         = [local.crm_agency_host]
+  aliases         = [local.crm_agency_host, local.academy_host]
   price_class     = var.crm_cdn_price_class
   http_version    = "http2and3"
   is_ipv6_enabled = true

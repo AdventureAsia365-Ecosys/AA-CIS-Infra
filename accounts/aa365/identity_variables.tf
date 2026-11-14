@@ -146,7 +146,7 @@ variable "identity_facebook_api_version" {
 
 # ── App client URLs ──────────────────────────────────────────────────────────
 variable "identity_client_urls" {
-  description = "Callback and sign-out URLs per app client key (cis-admin, booking-staff, breakglass, crm-staff, cis-portal, booking-customer, tripplanner). Hosts follow the S237 hostname decision (AA-818); they need not resolve yet. Paths are placeholders until each app implements its callback route. cis-admin and booking-staff point at the staff hosts aa-cis. and booking., served by ECS since AA-911 (the aa-booking-admin.vercel.app URLs and the Preview-only clients cis-admin-preview / booking-staff-preview of S246 went with the Vercel retirement, S272); breakglass stays production-only; cis-portal points at portal.lumiguides.it.com (S243, AA-885) and, since AA-935, also at the AA-Partner CRM web on partner-dev.lumiguides.it.com (/auth/callback, /signed-out); crm-staff (AA-939) points at the AA-Partner staff console on the agency host portal.lumiguides.it.com (AA-1019); booking-customer stays on localhost until its frontend host is chosen; tripplanner points at the public host tripplanner.lumiguides.it.com only (the aa-tripplanner.vercel.app URLs went with the TripPlanner Vercel retirement, AA-1038, S272)."
+  description = "Callback and sign-out URLs per app client key (cis-admin, booking-staff, breakglass, crm-staff, academy-web, cis-portal, booking-customer, tripplanner). Hosts follow the S237 hostname decision (AA-818); they need not resolve yet. Paths are placeholders until each app implements its callback route. cis-admin and booking-staff point at the staff hosts aa-cis. and booking., served by ECS since AA-911 (the aa-booking-admin.vercel.app URLs and the Preview-only clients cis-admin-preview / booking-staff-preview of S246 went with the Vercel retirement, S272); breakglass stays production-only; cis-portal points at portal.lumiguides.it.com (S243, AA-885) and, since AA-935, also at the AA-Partner CRM web on partner-dev.lumiguides.it.com (/auth/callback, /signed-out); crm-staff (AA-939) points at the AA-Partner staff console on the agency host portal.lumiguides.it.com (AA-1019); academy-web (AA-1105) points at the AA Academy host academy.lumiguides.it.com (/academy/auth/callback, /academy/signed-out); booking-customer stays on localhost until its frontend host is chosen; tripplanner points at the public host tripplanner.lumiguides.it.com only (the aa-tripplanner.vercel.app URLs went with the TripPlanner Vercel retirement, AA-1038, S272)."
   type = map(object({
     callback_urls = list(string)
     logout_urls   = list(string)
@@ -180,6 +180,12 @@ variable "identity_client_urls" {
       # callback must be on portal.); local dev port 3005.
       callback_urls = ["https://portal.lumiguides.it.com/staff/auth/callback", "http://localhost:3005/staff/auth/callback"]
       logout_urls   = ["https://portal.lumiguides.it.com/staff/signed-out", "http://localhost:3005/staff/signed-out"]
+    }
+    "academy-web" = {
+      # AA-1105 (root ADR 0022, D17): the AA Academy host on the CRM web. Its session cookie is host-only and the refresh
+      # cookie is scoped to /academy/auth, so the callback must be on academy.; local dev port 3005 (the CRM web).
+      callback_urls = ["https://academy.lumiguides.it.com/academy/auth/callback", "http://localhost:3005/academy/auth/callback"]
+      logout_urls   = ["https://academy.lumiguides.it.com/academy/signed-out", "http://localhost:3005/academy/signed-out"]
     }
     "booking-customer" = {
       callback_urls = ["http://localhost:3002/auth/callback"]

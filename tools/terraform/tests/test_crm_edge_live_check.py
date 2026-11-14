@@ -294,3 +294,27 @@ def test_function_moves_every_other_path_with_its_query(uri, qs, location):
 def test_function_leaves_the_crm_api_paths_alone(uri):
     res = _run_function(_event(uri, {"x": {"value": "1"}}))
     assert res.get("uri") == uri and "statusCode" not in res
+
+
+# ── AA-1105 (root ADR 0022): the AA Academy host on the agency distribution ─────────────────────────────────────────
+
+ACADEMY_TF = (REPO / "accounts" / "aa365" / "academy_edge.tf").read_text(encoding="utf-8")
+
+
+def test_academy_host_is_an_alias_of_the_agency_distribution():
+    assert "aliases         = [local.crm_agency_host, local.academy_host]" in AGENCY_TF
+    rule = ACADEMY_TF.split('resource "aws_lb_listener_rule" "crm_academy_default"', 1)[1].split("\nresource ", 1)[0]
+    assert _forward_target(rule) == "module.environment.crm_web_target_group_arn"
+    assert "values = [local.academy_host]" in rule and "random_password.crm_origin_verify[0].result" in rule
+    assert "path_pattern" not in rule
+    code = "\n".join(line for line in ACADEMY_TF.splitlines() if not line.lstrip().startswith("#"))
+    assert re.findall(r'resource "aws_lb_listener_rule" "(\w+)"', code) == ["crm_academy_default"]
+    assert "crm_api_target_group_arn" not in code
+
+
+def test_academy_checks_only_with_the_flag():
+    ns = chk.argparse.Namespace(host="h", client_host="c", cf_domain="cf", api_host="a", booking_host="b",
+                                agency_host="portal.example", agency_cf_domain="", agency_direct=False, academy_host="")
+    assert not any(k.startswith("academy-") for k in chk.build_checks(ns))
+    ns.academy_host = "academy.example"
+    assert {"academy-healthz", "academy-no-crm"} <= set(chk.build_checks(ns))

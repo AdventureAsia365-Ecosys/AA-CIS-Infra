@@ -83,7 +83,8 @@ owners:
     anchor_schema: shared
     # retired: the quarantine schema of DM-3.9 (CIS 294, AA-850): dead CIS objects wait there for their drop with no
     # grant to any role, so it is NOT in runtime_privileges.cis_app.schemas below.
-    schemas: [acp_contract, acp_deliver, acp_shared, catalog, geo, gold_aa_internal, retired, shared,
+    # learn: AA Academy learner records (AA-1105, root ADR 0022, decision D3), created by CIS 420.
+    schemas: [acp_contract, acp_deliver, acp_shared, catalog, geo, gold_aa_internal, learn, retired, shared,
               silver_aa_internal]
     # Schemas the owner dropped (AA-850: CIS 299 dropped the four empty ACP v1 stage schemas). Not live: the isolation
     # probe, the ownership post-check and the RLS catalogue do not look for them. The ownership lint still lets this
@@ -106,11 +107,16 @@ owners:
     # aa_app_user has no schema-wide rights (per table + RLS, CIS 241), so only cis_app is listed.
     runtime_privileges:
       cis_app:
-        schemas: [acp_contract, acp_deliver, acp_shared, geo, gold_aa_internal, shared,
+        schemas: [acp_contract, acp_deliver, acp_shared, geo, gold_aa_internal, learn, shared,
                   silver_aa_internal]   # catalog: no grant (244); the four schemas CIS 299 dropped left the list
         objects: {relation: [SELECT], sequence: [USAGE], function: [EXECUTE]}
         default_acl: {tables: [DELETE, INSERT, SELECT, UPDATE], sequences: [SELECT, UPDATE, USAGE],
                       functions: [EXECUTE]}
+        # Optional (AA-1105): a schema of this list that a later migration creates, with the schema_versions key of
+        # that migration. The probe expects its runtime grants and default privileges only once the key is
+        # registered, so merging the registry entry before the DB Migrate apply never turns the nightly probe red
+        # (the same rule as consumer_grants expected_from, AA-858).
+        schemas_from: {learn: "420"}
     runtime_privileges_from: "244"       # CIS 244 (X1 S16) grants cis_app before the 245 transfer
     # catalog.* views are owned by catalog_owner (NOLOGIN, CIS 225); the schema itself goes to cis_owner.
     # The ownership post-check accepts new objects owned by these roles besides the dir's live owner.

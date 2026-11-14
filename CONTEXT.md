@@ -369,7 +369,10 @@ accounts/
                                    Put/Delete on docs-reader/* of the bronze bucket: the root "Docs sync" workflow uploads
                                    the /admin/docs bundle (manifest.json + pages/<repo>/<path>.md); the CIS task role reads
                                    it (modules/ecs ReadDocsReader, DenyDocsReaderWrites); noncurrent versions expire after
-                                   7 days (modules/s3). < $0.10/month)
+                                   7 days (modules/s3). < $0.10/month. AA-1105: the AA Academy learn bundle goes under
+                                   docs-reader/learn/ the same way; lesson videos live under their own prefix
+                                   learn-media/ (uploaded by hand from the local tools/uat build; modules/ecs
+                                   ReadLearnMedia + DenyLearnMediaWrites: CIS presigns reads, never writes))
     custom_domains.tf             (AA-818: ACM certs api-booking./api-tripplanner. (us-west-1) and auth./staff-auth.
                                    (us-east-1, provider alias aws.us_east_1) + validation records; API GW custom
                                    domains, alias records and Vercel CNAMEs gated by var.custom_domains_enabled;
@@ -428,7 +431,12 @@ accounts/
                                    portal. CNAME (moved from custom_domains.tf vercel_frontend["portal"]) -> this
                                    distribution, TTL 300. The S253 cutover switch crm_agency_live, the Vercel target and
                                    the 60 s TTL were removed at the P2b clean-up (runbook 4.5, S256); the Vercel project
-                                   aa-cis-portal is deleted)
+                                   aa-cis-portal is deleted). AA-1105: the distribution also carries academy.<zone>
+    academy_edge.tf               (AA-1105, root ADR 0022 D17: the AA Academy host academy.lumiguides.it.com, served by
+                                   the CRM web: a second alias on the crm_agency distribution (the wildcard certificate
+                                   covers it), Route 53 ALIAS A + AAAA, ALB rule crm_academy_default (Host + secret, any
+                                   path) -> CRM web, priority 9; NO /crm/* rule on this host. $0. Live check:
+                                   crm_edge_live_check.py --academy-host)
     (crm_portal.tf                (AA-979 CRM-P2b, the separate Content studio service aa-crm-<env>-portal: retired in
                                    AA-1036 after the cut-over to the CRM web, with its ECR repository, task
                                    definition family, target group, roles, Sentry secret shell, alarm and security
@@ -486,7 +494,10 @@ accounts/
                                    staff_cognito_client_secret, staff_session_secret} written by
                                    tools/identity/crm_dev_identity.py web-secret / staff-web-secret (never by
                                    Terraform; AA-1019: the staff console's STAFF_* env = the WORKFORCE crm-staff client,
-                                   callback /staff/auth/callback on portal.), own execution role
+                                   callback /staff/auth/callback on portal.; AA-1105: the academy host's
+                                   WEB_ACADEMY_HOSTS / ACADEMY_COGNITO_DOMAIN / ACADEMY_COGNITO_CLIENT_ID = the WORKFORCE
+                                   academy-web client, and academy_cognito_client_secret / academy_session_secret of
+                                   the same secret, written by crm_dev_identity.py academy-web-secret), own execution role
                                    (web repo, CRM log group stream prefix web, that secret only; never the DSN) and task
                                    role (ECS Exec only), task definition Fargate ARM64 port 3000 (env: public origin,
                                    partner/client hosts (WEB_PUBLIC_ORIGIN = the agency host portal. since the AA-979
@@ -860,7 +871,10 @@ makes CI Terraform Plan fail with 403.
   shape, HTTP_PROXY to `/tenant/membership/{membership_proxy}`; only this subtree of `/tenant`) serves
   `tenant.membership.v1` (scope `cis.tenant/read`) to the CRM worker on the stage default; `/tenant/v1/{tenant_v1_proxy+}`
   (AA-1028 R1, same shape, HTTP_PROXY to `/tenant/v1/{tenant_v1_proxy}`) serves `tenant.entitlements.v1` (the tenant
-  account, subscriptions and entitlements; same scope) on the stage default. Per-IP login limits and per-user backoff are in
+  account, subscriptions and entitlements; same scope) on the stage default. `/learn/{learn_proxy+}` (AA-1105, root
+  ADR 0022, same shape, HTTP_PROXY to `/learn/{learn_proxy}`) serves `learn.http.v1`, the AA Academy learning API
+  (`/learn/v1/*` with a WORKFORCE `academy-web` token checked by the CIS app; `/learn/public/v1/*` the public, app
+  rate-limited certificate verify view) on the stage default. Per-IP login limits and per-user backoff are in
   the CIS app (`api/core/login_throttle.py`). The login and content overrides keep detailed metrics off where they
   would be new (~0.30 USD per metric-month). The WAF on the REST stages stays deferred (S241: on when customer
   sign-up opens); reusing the existing ALB web ACL would cost ~0.60 USD per million requests inspected, no new ACL
