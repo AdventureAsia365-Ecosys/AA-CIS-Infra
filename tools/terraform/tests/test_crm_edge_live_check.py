@@ -317,4 +317,30 @@ def test_academy_checks_only_with_the_flag():
                                 agency_host="portal.example", agency_cf_domain="", agency_direct=False, academy_host="")
     assert not any(k.startswith("academy-") for k in chk.build_checks(ns))
     ns.academy_host = "academy.example"
-    assert {"academy-healthz", "academy-no-crm"} <= set(chk.build_checks(ns))
+    assert {"academy-healthz", "academy-no-crm", "academy-root", "academy-page", "academy-no-agency",
+            "academy-verify"} <= set(chk.build_checks(ns))
+    assert "agency-no-academy" not in chk.build_checks(ns)
+    ns.agency_cf_domain = "dagency.cloudfront.net"
+    assert "agency-no-academy" in chk.build_checks(ns)
+
+
+def test_academy_gate_checks():
+    root = chk.academy_redirect("academy.example", "/academy")
+    assert root(307, b"", "", "https://academy.example/academy")[0]
+    assert root(307, b"", "", "/academy")[0]
+    assert root(503, b"", "text/html")[0]
+    assert not root(307, b"", "", "https://academy.example/portal/dashboard")[0]
+    assert not root(404, b"Not Found", "text/plain")[0]
+    page = chk.academy_redirect("academy.example", "/academy/auth/refresh?")
+    assert page(307, b"", "", "https://academy.example/academy/auth/refresh?next=%2Facademy")[0]
+    ok, detail = page(307, b"", "", "https://academy.example/academy/signed-out?reason=unavailable")
+    assert not ok and "not configured" in detail
+    assert not page(307, b"", "", "https://academy.example/auth/refresh?next=%2Facademy")[0]
+
+
+def test_academy_verify_page():
+    assert re.fullmatch(r"/verify/[A-Za-z0-9_-]{22}", chk.ACADEMY_VERIFY_PROBE)
+    assert chk.eval_academy_verify(200, b"<html>", "text/html; charset=utf-8")[0]
+    assert chk.eval_academy_verify(503, b"", "text/html")[0]
+    assert not chk.eval_academy_verify(404, b"Not Found", "text/plain")[0]
+    assert not chk.eval_academy_verify(200, b"{}", "application/json")[0]
