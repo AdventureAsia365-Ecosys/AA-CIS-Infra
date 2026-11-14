@@ -69,6 +69,7 @@ import argparse
 import http.client
 import json
 import sys
+import urllib.parse
 from typing import Callable
 
 GUESS_HEADER = {"X-AA-Origin": "aa931-live-check-guess"}  # deliberately wrong: must be refused
@@ -281,6 +282,24 @@ def eval_raw_cf(status: int, body: bytes, ctype: str, location: str = "") -> Res
     return status == 403 and body.strip() == b"Forbidden", f"status={status} body={body[:40]!r}"
 
 
+def raw_cf(redirect_host: str = "") -> Callable[..., Result]:
+    """The raw CloudFront domain serves nothing: the deny 403, or (redirect_host set) an empty 301 to that host.
+
+    Since the partner host keeps only /crm* (S272), its viewer-request function sends every other path to the agency
+    host before any host check, so the raw domain of the partner distribution answers 301 there for "/" and still 403
+    on /crm*. Both serve no content; anything else (a 200, a 404 from the web, a redirect elsewhere) fails."""
+
+    def evaluate(status: int, body: bytes, ctype: str, location: str = "") -> Result:
+        ok, detail = eval_raw_cf(status, body, ctype, location)
+        if ok or not redirect_host or status != 301 or body.strip():
+            return ok, detail
+        target = urllib.parse.urlsplit(location)
+        return (target.scheme == "https" and target.hostname == redirect_host,
+                f"status={status} location={location[:80]}")
+
+    return evaluate
+
+
 def eval_api_header(status: int, body: bytes, ctype: str, location: str = "") -> Result:
     # 403 = API Gateway forwarded the header and the ALB deny rule caught it; 200 = API Gateway dropped it (also safe).
     return status in (200, 403) and not is_partner_404(status, body, ctype), f"status={status}"
@@ -302,7 +321,7 @@ def build_checks(args: argparse.Namespace) -> dict[str, Callable[[], Result]]:
         "client-root": run(eval_client_web_404, args.client_host, "/"),
         "client-public": run(eval_client_public, args.client_host, "/crm/public/v1/forms/short"),
         "client-no-api": run(eval_client_web_404, args.client_host, "/crm/health"),
-        "raw-cf": run(eval_raw_cf, args.cf_domain, "/"),
+        "raw-cf": run(raw_cf(getattr(args, "agency_host", "") or ""), args.cf_domain, "/"),
         "api-header": run(eval_api_header, args.api_host, "/health", GUESS_HEADER),
         "api-plain": run(eval_ok, args.api_host, "/health"),
         "booking": run(eval_ok, args.booking_host, "/booking/health"),
