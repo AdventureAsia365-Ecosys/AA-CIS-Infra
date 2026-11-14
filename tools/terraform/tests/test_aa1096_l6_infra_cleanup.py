@@ -6,8 +6,9 @@ What must hold:
 1. No task definition or Lambda sets the env var of an admin-editable setting. Each app's settings reader serves a
    definition's env_override FIRST, so a Terraform-set override hides the admin page's value. The names come from the
    migration copies ("env_override": "<NAME>" in every owner's setting_definition seed) plus the env vars the apps no
-   longer read or read only as a fallback. The one exception, ERASURE_TENANT_RETENTION_DAYS, is set only while the Dev
-   erasure drill is on (variable null otherwise).
+   longer read or read only as a fallback. No exception any more: ERASURE_TENANT_RETENTION_DAYS, once set while the
+   Dev erasure drill was on, is gone with its variable (AA-1096 l5: CIS 428 retired every settings env override; the
+   drill sets the setting on Platform › Settings).
 2. Dead config is gone: the four API Gateway usage plans and SF_BATCH_THRESHOLD.
 3. The edge literals are variables with the values in force: the WAF RateLimit1000 rule, the CIS and Booking REST API
    stage throttles, the CRM SLO thresholds.
@@ -77,8 +78,6 @@ NO_LONGER_SET = {
     "TP_LEAD_HOLD_DAYS", "NARRATION_CACHE_TTL_HOURS",
     "SF_BATCH_THRESHOLD",               # no reader in any repo
 }
-# Set only under a condition that is off outside a drill.
-DRILL_ONLY = {"ERASURE_TENANT_RETENTION_DAYS"}
 
 
 def _setting_env_overrides() -> set[str]:
@@ -97,7 +96,7 @@ def test_the_migration_copies_name_the_known_overrides():
 
 
 def test_no_terraform_file_sets_a_settings_env_var():
-    forbidden = (_setting_env_overrides() | NO_LONGER_SET) - DRILL_ONLY
+    forbidden = _setting_env_overrides() | NO_LONGER_SET
     hits = []
     for f in _tf_files():
         code = _code(_read(f))
@@ -107,18 +106,14 @@ def test_no_terraform_file_sets_a_settings_env_var():
     assert not hits, "env var of an admin-editable setting set in Terraform:\n" + "\n".join(hits)
 
 
-def test_the_erasure_retention_env_is_set_only_during_the_drill():
+def test_the_erasure_retention_window_has_no_terraform_value():
+    """AA-1096 l5: the window is the CIS setting cis.erasure.tenant_retention_days; no variable, no env var."""
+    for f in _tf_files():
+        code = _code(_read(f))
+        assert "erasure_tenant_retention_days" not in code, f.relative_to(ROOT)
+        assert "ERASURE_TENANT_RETENTION_DAYS" not in code, f.relative_to(ROOT)
     ecs = _code(_read(MODULES / "ecs" / "main.tf"))
-    start = ecs.index("erasure_env = concat(")
-    local = ecs[start : ecs.index("\n  )\n", start)]
-    assert "var.erasure_tenant_retention_days != null ? [" in local
-    assert '{ name = "ERASURE_TENANT_RETENTION_DAYS", value = tostring(var.erasure_tenant_retention_days) }' in local
-    assert ecs.count("ERASURE_TENANT_RETENTION_DAYS") == 1
-    var = _block(_read(MODULES / "ecs" / "variables.tf"), 'variable "erasure_tenant_retention_days" {')
-    assert re.search(r"^\s*default\s*=\s*null\s*$", var, re.M)
-    assert "nullable    = false" not in var
-    main = _code(_read(AA365 / "main.tf"))
-    assert re.search(r"^\s*erasure_tenant_retention_days\s*=\s*local\.erasure_drill \? 0 : null\s*$", main, re.M)
+    assert '{ name = "ERASURE_APPLY_ENABLED", value = var.erasure_apply_enabled ? "true" : "false" }' in ecs
 
 
 def test_the_t2_anchor_switch_stays_on_the_worker():
