@@ -6,7 +6,8 @@ check makes that a PR failure for the owner dirs in RETENTION_OWNERS: each table
 creates, and no later copy of the same dir drops, must be named in the first column of a row of that section
 (`schema.table` in backticks). The existing owners (cis, booking, tripplanner) are not listed: their tables are
 grandfathered by DM-7.1 ("an existing table without a row keeps all its rows until its owner proposes a window").
-A new app's dir joins RETENTION_OWNERS in the PR that registers it in owners.yaml (ADR 0008 playbook).
+A new app's dir joins RETENTION_OWNERS in the PR that registers it in owners.yaml (ADR 0008 playbook). A new schema of
+an existing owner joins RETENTION_SCHEMAS the same way (AA-1105: cis `learn`); only its tables are checked in that dir.
 
 Scope of the SQL reading: `CREATE [UNLOGGED] TABLE [IF NOT EXISTS] name` (a `PARTITION OF` child is covered by its
 parent's row; TEMP tables are skipped), `DROP TABLE` and `ALTER TABLE … RENAME TO`, in file order. Unqualified
@@ -34,7 +35,10 @@ import run_migration  # noqa: E402
 
 MIGRATIONS_DIR = "db/migrations"
 # Migration dir -> the schema an unqualified table name lands in. Add a new app's dir here (DM-7.1).
-RETENTION_OWNERS = {"crm": "crm"}
+RETENTION_OWNERS = {"crm": "crm", "cis": "shared"}
+# Dir -> the only schemas checked in it (absent: every schema of the dir). AA-1105: a NEW schema of an existing owner
+# has rows from its first migration, like a new app; the owner's older schemas stay grandfathered (DM-7.1).
+RETENTION_SCHEMAS = {"cis": frozenset({"learn"})}
 
 SECTION_RE = re.compile(r"^## 7\. Retention and archival\s*$")
 NAME_IN_CELL_RE = re.compile(r"`([a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*)`")
@@ -144,10 +148,17 @@ def scoped_files(repo_root: Path) -> dict[str, list[tuple[str, str]]]:
     return out
 
 
+def scoped_tables(d: str, sql_files: list[tuple[str, str]]) -> dict[str, str]:
+    """The tables of dir `d` this check covers: every created table, or only those of RETENTION_SCHEMAS[d]."""
+    tables = created_tables(sql_files, RETENTION_OWNERS[d])
+    keep = RETENTION_SCHEMAS.get(d)
+    return tables if keep is None else {t: w for t, w in tables.items() if t.split(".", 1)[0] in keep}
+
+
 def check(registry: set[str], files: dict[str, list[tuple[str, str]]]) -> list[str]:
     errors = []
     for d, sql_files in files.items():
-        for table, where in sorted(created_tables(sql_files, RETENTION_OWNERS[d]).items()):
+        for table, where in sorted(scoped_tables(d, sql_files).items()):
             if table not in registry:
                 errors.append(f"{where}: table {table} has no row in the data standards retention table (Part B "
                               "section 7, DM-7.1). Add the row in an AA-Ecosys root PR, merge it, then re-run.")
@@ -161,7 +172,7 @@ def main(argv: Optional[list[str]] = None, out=sys.stdout) -> int:
     parser.add_argument("--scoped", action="store_true",
                         help="print 'yes' when a RETENTION_OWNERS dir has a migration copy, else 'no'")
     args = parser.parse_args(argv)
-    files = scoped_files(Path(args.repo_root))
+    files = {d: f for d, f in scoped_files(Path(args.repo_root)).items() if scoped_tables(d, f)}
     if args.scoped:
         print("yes" if files else "no", file=out)
         return 0
@@ -182,7 +193,7 @@ def main(argv: Optional[list[str]] = None, out=sys.stdout) -> int:
         print(f"FAIL  {e}", file=out)
         if annotate:
             print(f"::error file={e.split(':', 1)[0]}::{e}", file=out)
-    n = sum(len(created_tables(f, RETENTION_OWNERS[d])) for d, f in files.items())
+    n = sum(len(scoped_tables(d, f)) for d, f in files.items())
     print(f"{n} table(s) in {', '.join(files)}, {len(registry)} name(s) in the registry, {len(errors)} without a row",
           file=out)
     return 1 if errors else 0

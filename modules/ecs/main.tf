@@ -409,6 +409,23 @@ resource "aws_iam_role_policy" "ecs_task_policy" {
         Action   = ["s3:PutObject", "s3:DeleteObject"]
         Resource = "arn:aws:s3:::${var.bronze_bucket_name}/docs-reader/*"
       },
+      # AA-1105 (root ADR 0022, decision D8) — the AA Academy lesson videos and captions live under learn-media/ (built
+      # locally with AA-Ecosys tools/uat and uploaded by a human; never by CIS). The learning API reads nothing there
+      # itself: it presigns a short-lived GET for a learner after its access check, and a presigned URL carries the
+      # signer's rights, so the read is named here and survives a narrowing of the "*" GetObject above.
+      {
+        Sid      = "ReadLearnMedia"
+        Effect   = "Allow"
+        Action   = ["s3:GetObject"]
+        Resource = "arn:aws:s3:::${var.bronze_bucket_name}/learn-media/*"
+      },
+      # AA-1105 — CIS never writes or deletes a lesson video; the "*" PutObject above must not reach this prefix.
+      {
+        Sid      = "DenyLearnMediaWrites"
+        Effect   = "Deny"
+        Action   = ["s3:PutObject", "s3:DeleteObject"]
+        Resource = "arn:aws:s3:::${var.bronze_bucket_name}/learn-media/*"
+      },
       # AA-835 (S6 review) — DM-7 row "supply_media": when Booking withdraws a supply photo's usage rights or removes
       # it, the supply_media_purge job deletes the CIS WebP copies (photos/supply/<type>/<media_id>-{1600,600}.webp).
       # The only S3 delete this role holds, on that prefix only; every other CIS photo (photos/<country slug>/) stays

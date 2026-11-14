@@ -353,6 +353,7 @@ def test_invitee_reset_refuses_an_unknown_target(capsys):
 
 # ── AA-1019: the staff console's secret keys and the Dev-only staff E2E user (root ADR 0006a A10c) ──────────────────
 STAFF_SECRET = "STAFF-CLIENT-SECRET-do-not-print"
+ACADEMY_SECRET = "ACADEMY-CLIENT-SECRET-do-not-print"
 
 
 class FakeWorkforceIdp(FakeIdp):
@@ -365,12 +366,15 @@ class FakeWorkforceIdp(FakeIdp):
 
     def list_user_pool_clients(self, **kw):
         if kw["UserPoolId"] == "w":
-            return {"UserPoolClients": [{"ClientName": "aa-workforce-dev-crm-staff", "ClientId": "scid"}]}
+            return {"UserPoolClients": [{"ClientName": "aa-workforce-dev-crm-staff", "ClientId": "scid"},
+                                        {"ClientName": "aa-workforce-dev-academy-web", "ClientId": "acid"}]}
         return super().list_user_pool_clients(**kw)
 
     def describe_user_pool_client(self, **kw):
         if kw == {"UserPoolId": "w", "ClientId": "scid"}:
             return {"UserPoolClient": {"ClientSecret": STAFF_SECRET}}
+        if kw == {"UserPoolId": "w", "ClientId": "acid"}:
+            return {"UserPoolClient": {"ClientSecret": ACADEMY_SECRET}}
         return super().describe_user_pool_client(**kw)
 
     def admin_list_groups_for_user(self, UserPoolId, Username):  # noqa: N803
@@ -404,6 +408,36 @@ def test_staff_web_secret_adds_two_keys_and_keeps_the_agency_ones(capsys):
     assert run(["staff-web-secret", "--apply", "--rotate-staff-session"], idp, sm) == 0
     capsys.readouterr()
     assert json.loads(sm.values["crm/dev/web"])["staff_session_secret"] != kept
+
+
+def test_academy_web_secret_adds_two_keys_and_keeps_every_other(capsys):
+    """AA-1105: the academy host's own client secret and cookie key; the agency and staff keys are untouched."""
+    other = {"cognito_client_secret": "agency-cs", "session_secret": "a" * 40,
+             "staff_cognito_client_secret": "s-cs", "staff_session_secret": "t" * 40}
+    sm = FakeSm({"crm/dev/web": json.dumps(other)})
+    idp = FakeWorkforceIdp()
+    assert run(["academy-web-secret"], idp, sm) == 0
+    dry = lines(capsys)[0]
+    assert dry["action"] == "would_write" and dry["client"] == "aa-workforce-dev-academy-web"
+    assert set(dry["changed"]) == {"academy_session_secret", "academy_cognito_client_secret"} and sm.writes == []
+    assert run(["academy-web-secret", "--apply"], idp, sm) == 0
+    out = capsys.readouterr().out
+    value = json.loads(sm.values["crm/dev/web"])
+    assert {k: value[k] for k in other} == other
+    assert value["academy_cognito_client_secret"] == ACADEMY_SECRET and len(value["academy_session_secret"]) >= 32
+    assert value["academy_session_secret"] not in (value["session_secret"], value["staff_session_secret"])
+    assert ACADEMY_SECRET not in out and value["academy_session_secret"] not in out
+    assert run(["academy-web-secret", "--apply"], idp, sm) == 0
+    assert lines(capsys)[0]["action"] == "unchanged"
+
+
+def test_academy_cookie_key_never_reuses_another_surface_key(capsys):
+    shared = "k" * 40
+    sm = FakeSm({"crm/dev/web": json.dumps({"session_secret": shared, "academy_session_secret": shared,
+                                           "academy_cognito_client_secret": ACADEMY_SECRET})})
+    assert run(["academy-web-secret", "--apply"], FakeWorkforceIdp(), sm) == 0
+    assert lines(capsys)[0]["changed"] == ["academy_session_secret"]
+    assert json.loads(sm.values["crm/dev/web"])["academy_session_secret"] != shared
 
 
 def test_the_agency_web_secret_keeps_the_staff_keys(capsys):

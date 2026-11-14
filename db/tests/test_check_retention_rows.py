@@ -169,7 +169,7 @@ class CheckTest(unittest.TestCase):
 
     def test_existing_owners_are_grandfathered(self):
         root = self.make_repo({"db/migrations/booking/001_x.sql": "CREATE TABLE booking.new_thing (id int);"})
-        self.assertEqual(self.run_main(root), (0, "no migration copy in crm: nothing to check\n"))
+        self.assertEqual(self.run_main(root), (0, "no migration copy in cis, crm: nothing to check\n"))
         self.assertEqual(self.run_main(root, "--scoped"), (0, "no\n"))
 
     def test_scoped_dir_needs_a_readable_registry(self):
@@ -181,6 +181,28 @@ class CheckTest(unittest.TestCase):
         self.assertIn("FAIL  retention registry", out)
         (root / "empty.md").write_text("# no section 7\n", encoding="utf-8")
         self.assertEqual(self.run_main(root, "--registry", str(root / "empty.md"))[0], 2)
+
+    def test_cis_dir_checks_only_the_learn_schema(self):
+        """AA-1105: the new CIS schema learn has rows from its first migration; older CIS schemas stay grandfathered."""
+        root = self.make_repo({
+            "registry.md": REGISTRY.replace("| `crm.otp_challenge` |", "| `learn.learner` | CIS | x | — | No |\n"
+                                                                       "| `crm.otp_challenge` |"),
+            "db/migrations/cis/419_old.sql": "CREATE TABLE shared.grandfathered (id int);\n",
+            "db/migrations/cis/420_learn.sql": "BEGIN;\nCREATE SCHEMA learn;\nCREATE TABLE learn.learner (id uuid);\n"
+                                               "CREATE TABLE learn.statement (id uuid);\nCOMMIT;\n",
+        })
+        self.assertEqual(self.run_main(root, "--scoped"), (0, "yes\n"))
+        code, out = self.run_main(root, "--registry", str(root / "registry.md"))
+        self.assertEqual(code, 1, out)
+        self.assertIn("FAIL  db/migrations/cis/420_learn.sql:4: table learn.statement has no row", out)
+        self.assertNotIn("shared.grandfathered", out)
+        self.assertNotIn("learn.learner has no row", out)
+        self.assertIn("2 table(s) in cis", out)
+
+    def test_cis_dir_without_learn_tables_is_out_of_scope(self):
+        root = self.make_repo({"db/migrations/cis/419_old.sql": "CREATE TABLE shared.grandfathered (id int);\n"})
+        self.assertEqual(self.run_main(root, "--scoped"), (0, "no\n"))
+        self.assertEqual(self.run_main(root)[0], 0)
 
     def test_this_repo_today(self):
         root = Path(__file__).resolve().parent.parent.parent

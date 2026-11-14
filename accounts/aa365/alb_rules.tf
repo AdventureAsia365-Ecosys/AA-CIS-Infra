@@ -28,6 +28,7 @@ locals {
     crm_api             = 5   # below (was crm_app.tf): partner-dev. host + /crm, /crm/* -> AA-Partner API (AA-933)
     crm_client_public   = 6   # crm_client_edge.tf: go-dev. host + /crm/public/* -> AA-Partner API (AA-936)
     crm_agency_api      = 7   # crm_agency_edge.tf: portal. host + /crm, /crm/* -> AA-Partner API (AA-979)
+    crm_academy_default = 9   # academy_edge.tf: academy. host, any path -> AA-Partner web (AA-1105, root ADR 0022)
     crm_partner_default = 10  # crm_edge.tf: partner-dev. host, any other path -> AA-Partner web (AA-935; was a fixed 404, AA-933)
     crm_client_default  = 11  # crm_client_edge.tf: go-dev. host, any other path -> AA-Partner web (AA-936)
     crm_agency_default  = 12  # crm_agency_edge.tf: portal. host, any other path -> AA-Partner web (AA-979)
