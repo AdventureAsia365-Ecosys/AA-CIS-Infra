@@ -144,3 +144,19 @@ variable "crm_slo" {
     error_message = "crm_slo: five_xx_percent in (0, 100], min_requests >= 1, p95_latency_s > 0, 1 <= alarm_breaching <= alarm_periods."
   }
 }
+
+# AA-1093 stage 2 (S281): the kill switch of crm_tenant_erase (AA-Partner api/app/lifecycle/tenant_erase.py, env
+# TENANT_ERASE_APPLY_ENABLED, read by app/settings.py). "false" (default): the CRM step of the tenant offboarding
+# erasure saga runs DRY RUN and verify only; an approved apply is refused (apply_disabled). "true" only for an approved
+# erasure (on Dev: a synthetic tenant), then back to "false". Declared identically in the root
+# (accounts/aa365/crm_variables.tf) and passed through. The next AA-Partner deploy carries the new revision.
+variable "crm_tenant_erase_apply_enabled" {
+  description = "AA-1093: \"true\" (exact string) lets crm_tenant_erase APPLY an approved tenant erasure plan (TENANT_ERASE_APPLY_ENABLED); DRY RUN and verify never need it"
+  type        = string
+  default     = "false"
+
+  validation {
+    condition     = contains(["true", "false"], var.crm_tenant_erase_apply_enabled)
+    error_message = "crm_tenant_erase_apply_enabled must be \"true\" or \"false\"."
+  }
+}

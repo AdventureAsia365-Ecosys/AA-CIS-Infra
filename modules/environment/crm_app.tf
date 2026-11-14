@@ -451,6 +451,8 @@ resource "aws_ecs_task_definition" "crm_api" {
       { name = "WORKER_ENABLED", value = "true" },
       { name = "JOB_RETENTION_DRY_RUN", value = "true" },
       { name = "LIFECYCLE_DRY_RUN", value = "true" },
+      # AA-1093 stage 2: the CRM step of the tenant erasure saga applies only while this is "true" (default "false").
+      { name = "TENANT_ERASE_APPLY_ENABLED", value = var.crm_tenant_erase_apply_enabled },
       { name = "PARTNER_ACCOUNT_CLEANUP_DRY_RUN", value = "false" },
       { name = "RATE_LIMIT_XFF_HOPS", value = "2" },
       { name = "KEY_PROVIDER", value = "kms" },

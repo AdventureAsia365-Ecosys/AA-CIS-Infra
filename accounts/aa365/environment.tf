@@ -153,6 +153,8 @@ module "environment" {
   crm_scrub_guardrail_enabled  = var.crm_scrub_guardrail_enabled
   crm_llm_bedrock_enabled      = var.crm_llm_bedrock_enabled
   crm_slo                      = var.crm_slo
+  # AA-1093 stage 2: the crm_tenant_erase kill switch (default "false").
+  crm_tenant_erase_apply_enabled = var.crm_tenant_erase_apply_enabled
 
   # Booking settings (booking_variables.tf of this root, passed through unchanged).
   booking_github_repo_id     = var.booking_github_repo_id
