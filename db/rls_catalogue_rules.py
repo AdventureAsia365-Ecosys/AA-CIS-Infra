@@ -134,6 +134,8 @@ ALLOWLIST: dict[str, dict[str, str]] = {
         "shared.tenant_addon_request": f"add-on requests and staff decisions (AA-1036, 374); {_CIS_ONLY}",
         # AA-1038 R5 slice 2 (CIS 379): TripPlanner site settings, read by TripPlanner only through the catalog view.
         "shared.tenant_tripplanner_site": f"TripPlanner site theme and locale (AA-1038, 379); {_CIS_ONLY}",
+        # AA-1090 R8 (CIS 427): the custom hosts of a TripPlanner site, read by TripPlanner only through the catalog view.
+        "shared.tenant_tripplanner_domain": f"TripPlanner site custom hosts (AA-1090, 427); {_CIS_ONLY}",
         # S279 thresholds L1 (CIS 407): per-tenant setting values of the settings registry, read and written only by the
         # CIS settings API and reader (Platform › Settings, admin only).
         "shared.setting_value": f"settings registry values, tenant_id = a per-tenant override (S279, 407); {_CIS_ONLY}",
