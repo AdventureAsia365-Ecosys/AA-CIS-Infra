@@ -224,7 +224,7 @@ SLICE_2_SETTINGS = {
     "crm_github_repo_id", "crm_cis_api_url", "crm_booking_api_url", "crm_booking_admin_url", "crm_sentry_enabled",
     "crm_partner_signin_enabled", "crm_web_client_hosts", "crm_portal_sentry_enabled", "crm_portal_api_key_signin",
     "crm_audit_compliance_enabled", "crm_ingest_subdomain", "crm_mail_oauth_enabled", "crm_scrub_guardrail_enabled",
-    "crm_llm_bedrock_enabled",
+    "crm_llm_bedrock_enabled", "crm_tenant_erase_apply_enabled",
     "crm_slo",                                                 # AA-1096 L6 (S279): the SLO alarm thresholds
 }
 
