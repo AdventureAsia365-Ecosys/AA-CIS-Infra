@@ -231,6 +231,10 @@ module "ecs" {
   tripplanner_revalidate_url = "https://${local.tp_web_host}/api/revalidate/catalog"
   # AA-835 (S6 review): the supply_media_purge job invalidates withdrawn Booking photo copies on the photos CDN.
   photos_cdn_distribution_arn = local.photos_cdn_on == 1 ? aws_cloudfront_distribution.photos_cdn[0].arn : ""
+  # AA-1090 R8 (tripplanner_web_edge.tf): the CIS job tripplanner_custom_domain attaches agency domains to the TripPlanner
+  # distribution; the base certificate is the wildcard it falls back to. "" = custom domains off (no grant, no env).
+  tripplanner_web_distribution_arn = local.tp_web_edge_on == 1 ? aws_cloudfront_distribution.tripplanner_web[0].arn : ""
+  tripplanner_web_base_cert_arn    = local.tp_web_edge_on == 1 ? aws_acm_certificate_validation.crm_agency[0].certificate_arn : ""
   # AA-839: data_erasure apply switch, driven by local.erasure_drill above (the retention window is a CIS setting).
   erasure_apply_enabled = local.erasure_drill
 
@@ -341,6 +345,13 @@ module "waf" {
     challenge_immunity_s = var.tripplanner_web_challenge_immunity_s
     protected_paths      = local.tp_web_protected_paths
     path_transformations = local.tp_web_path_normalize
+  } : null
+
+  # AA-1090 R8 (tripplanner_web_edge.tf): the TripPlanner rules match the distribution's site header instead of the
+  # Host, so they cover every agency domain of the planner. null while the edge is off.
+  tripplanner_site_header = local.tp_web_edge_on == 1 ? {
+    name  = local.tp_web_site_header_name
+    value = random_password.tp_web_site_marker[0].result
   } : null
 
   tags = merge(local.shared_tags, { Component = "edge" }) # AA-828: on the ALB and on the CIS + Booking REST API stages

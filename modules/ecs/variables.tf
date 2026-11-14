@@ -338,6 +338,23 @@ variable "tripplanner_revalidate_url" {
   }
 }
 
+variable "tripplanner_web_distribution_arn" {
+  description = "AA-1090 R8: ARN of the TripPlanner web CloudFront distribution (accounts/aa365/tripplanner_web_edge.tf). With tripplanner_web_base_cert_arn it gives the CIS task role the tripplanner_custom_domain policy (tagged ACM certificates in us-east-1, Get / UpdateDistribution on this distribution only) and the CIS api + worker the env TP_WEB_DISTRIBUTION_ID / TP_WEB_BASE_CERT_ARN (the agency-domain job). Empty = custom domains off: no grant, no env."
+  type        = string
+  default     = ""
+}
+
+variable "tripplanner_web_base_cert_arn" {
+  description = "AA-1090 R8: the us-east-1 ACM certificate the TripPlanner distribution serves without agency domains (the wildcard of crm_agency_edge.tf). Read only (DescribeCertificate): the job copies its names into the edge certificate and falls back to it; never deletable by the task role (untagged)."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.tripplanner_web_base_cert_arn == "" || can(regex("^arn:aws:acm:us-east-1:[0-9]{12}:certificate/", var.tripplanner_web_base_cert_arn))
+    error_message = "tripplanner_web_base_cert_arn must be a us-east-1 ACM certificate ARN (CloudFront reads certificates from us-east-1 only) or empty."
+  }
+}
+
 variable "photos_cdn_distribution_arn" {
   description = "AA-835: ARN of the photos CloudFront distribution (accounts/aa365/photos_cdn.tf). Gives the CIS task role cloudfront:CreateInvalidation on it and the worker env PHOTO_CDN_DISTRIBUTION_ID (the supply_media_purge job). Empty = CDN gated off: no grant, no env."
   type        = string

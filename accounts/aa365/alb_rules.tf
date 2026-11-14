@@ -8,7 +8,9 @@
 # A lower number is evaluated first and the first match wins, so ORDER IS THE CONTROL:
 #
 #   < 20   CloudFront host rules: Host = a partner host AND X-AA-Origin = the secret -> forward, or a fixed
-#          response (crm_partner_default forwards the partner host's other paths to the CRM web since AA-935)
+#          response (crm_partner_default forwards the partner host's other paths to the CRM web since AA-935);
+#          AA-1090: tripplanner_web_alias matches a distribution's site header (a second exact secret) instead of a
+#          Host, for the agency domains of the TripPlanner distribution
 #   20     crm_origin_deny: ANY X-AA-Origin -> fixed 403. Everything that came through CloudFront and
 #          matched no host rule above (raw *.cloudfront.net name, another Host) stops here, before any
 #          CIS / Booking rule and before the default action (CIS api).
@@ -25,16 +27,17 @@ locals {
   alb_origin_header_name = "X-AA-Origin"
 
   alb_http_rule_priorities = {
-    crm_api             = 5   # below (was crm_app.tf): partner-dev. host + /crm, /crm/* -> AA-Partner API (AA-933)
-    crm_client_public   = 6   # crm_client_edge.tf: go-dev. host + /crm/public/* -> AA-Partner API (AA-936)
-    crm_agency_api      = 7   # crm_agency_edge.tf: portal. host + /crm, /crm/* -> AA-Partner API (AA-979)
-    crm_academy_default = 9   # academy_edge.tf: academy. host, any path -> AA-Partner web (AA-1105, root ADR 0022)
-    crm_partner_default = 10  # crm_edge.tf: partner-dev. host, any other path -> AA-Partner web (AA-935; was a fixed 404, AA-933)
-    crm_client_default  = 11  # crm_client_edge.tf: go-dev. host, any other path -> AA-Partner web (AA-936)
-    crm_agency_default  = 12  # crm_agency_edge.tf: portal. host, any other path -> AA-Partner web (AA-979)
-    tripplanner_web     = 13  # tripplanner_web_edge.tf: tripplanner. host, any path -> TripPlanner web (AA-1038)
-    crm_origin_deny     = 20  # crm_edge.tf: any X-AA-Origin -> 403 (AA-931)
-    booking             = 100 # below: /booking, /booking/* (AA-678)
+    crm_api               = 5   # below (was crm_app.tf): partner-dev. host + /crm, /crm/* -> AA-Partner API (AA-933)
+    crm_client_public     = 6   # crm_client_edge.tf: go-dev. host + /crm/public/* -> AA-Partner API (AA-936)
+    crm_agency_api        = 7   # crm_agency_edge.tf: portal. host + /crm, /crm/* -> AA-Partner API (AA-979)
+    crm_academy_default   = 9   # academy_edge.tf: academy. host, any path -> AA-Partner web (AA-1105, root ADR 0022)
+    crm_partner_default   = 10  # crm_edge.tf: partner-dev. host, any other path -> AA-Partner web (AA-935; was a fixed 404, AA-933)
+    crm_client_default    = 11  # crm_client_edge.tf: go-dev. host, any other path -> AA-Partner web (AA-936)
+    crm_agency_default    = 12  # crm_agency_edge.tf: portal. host, any other path -> AA-Partner web (AA-979)
+    tripplanner_web       = 13  # tripplanner_web_edge.tf: tripplanner. host, any path -> TripPlanner web (AA-1038)
+    tripplanner_web_alias = 14  # tripplanner_web_edge.tf: the TripPlanner site header, any Host (agency domains) -> TripPlanner web (AA-1090)
+    crm_origin_deny       = 20  # crm_edge.tf: any X-AA-Origin -> 403 (AA-931)
+    booking               = 100 # below: /booking, /booking/* (AA-678)
   }
 
   # AA-911 (root ADR 0019 d23): the HTTPS (:443) listener, reached by browsers directly (staff_web_edge.tf). Host rules

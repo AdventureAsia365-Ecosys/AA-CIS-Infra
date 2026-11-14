@@ -1,0 +1,41 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "RequestTaggedDnsCertificatesInUsEast1",
+      "Effect": "Allow",
+      "Action": ["acm:RequestCertificate", "acm:AddTagsToCertificate"],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "us-east-1",
+          "aws:RequestTag/${tag_key}": "${tag_value}",
+          "acm:ValidationMethod": "DNS"
+        }
+      }
+    },
+    {
+      "Sid": "ReadAndDeleteOwnCertificates",
+      "Effect": "Allow",
+      "Action": ["acm:DescribeCertificate", "acm:DeleteCertificate"],
+      "Resource": "arn:aws:acm:us-east-1:${account_id}:certificate/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/${tag_key}": "${tag_value}"
+        }
+      }
+    },
+    {
+      "Sid": "ReadTheBaseCertificate",
+      "Effect": "Allow",
+      "Action": ["acm:DescribeCertificate"],
+      "Resource": "${base_cert_arn}"
+    },
+    {
+      "Sid": "AttachAliasesToTheTripPlannerDistribution",
+      "Effect": "Allow",
+      "Action": ["cloudfront:GetDistribution", "cloudfront:UpdateDistribution"],
+      "Resource": "${distribution_arn}"
+    }
+  ]
+}

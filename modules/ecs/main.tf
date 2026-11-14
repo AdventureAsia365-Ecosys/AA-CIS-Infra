@@ -108,6 +108,17 @@ locals {
     { name = "PHOTO_CDN_DISTRIBUTION_ID", value = local.photos_cdn_distribution_id },
   ]
 
+  # AA-1090 R8: the agency-domain job (AA-CIS-App services/jobs/tripplanner_custom_domain_job.py, worker) and its Tenant 360
+  # editor (api, which answers 409 without them) read the TripPlanner distribution and its base certificate. Both empty
+  # = custom domains off: no env, no grant (aws_iam_role_policy.ecs_task_tripplanner_custom_domain).
+  tp_custom_domain_on = var.tripplanner_web_distribution_arn != "" && var.tripplanner_web_base_cert_arn != ""
+  tp_custom_domain_env = local.tp_custom_domain_on ? [
+    { name = "TP_WEB_DISTRIBUTION_ID", value = element(split("/", var.tripplanner_web_distribution_arn), 1) },
+    { name = "TP_WEB_BASE_CERT_ARN", value = var.tripplanner_web_base_cert_arn },
+  ] : []
+  # The tag every certificate the job requests carries; the policy lets the role read and delete only those.
+  tp_custom_domain_tag = { key = "aa-managed-by", value = "tripplanner-custom-domain" }
+
   # AA-874 S5: Redis connection for api and worker (AA-CIS-App shared/cache/redis_conn.py). REDIS_TLS and the
   # REDIS_AUTH_TOKEN secret appear only when set, so a module call without them renders the old plain env.
   # REDIS_CLUSTER_ID names the node GET /admin/infra/status describes (admin_pipeline.py).
@@ -455,6 +466,31 @@ resource "aws_iam_role_policy" "ecs_task_policy" {
   })
 }
 
+# AA-1090 R8 — the agency-domain job of the TripPlanner web (AA-CIS-App services/tenant_account/tp_edge.py). Least
+# privilege (policy text policies/tripplanner_custom_domain.json.tftpl; tools/terraform/tests/test_aa1090_tp_custom_domain.py
+# renders and checks it):
+#   RequestCertificate / AddTagsToCertificate  only in us-east-1, only with DNS validation and the job's tag (ACM has
+#                                              no resource ARN before the request, so "*" with those conditions);
+#   Describe / DeleteCertificate               only certificates carrying that tag (the job's own: one per agency
+#                                              domain and the edge certificate), so the base wildcard and every other
+#                                              certificate of the account stay untouchable;
+#   DescribeCertificate on the base certificate (read its names);
+#   Get / UpdateDistribution                   the TripPlanner distribution only (aliases + viewer certificate).
+# Cost: 0 (IAM). Not merged by auto-merge: an IAM change gets its own review (repo convention).
+resource "aws_iam_role_policy" "ecs_task_tripplanner_custom_domain" {
+  count = local.tp_custom_domain_on ? 1 : 0
+
+  name = "${local.name_prefix}-ecs-task-tripplanner-custom-domain"
+  role = aws_iam_role.ecs_task.id
+  policy = jsonencode(jsondecode(templatefile("${path.module}/policies/tripplanner_custom_domain.json.tftpl", {
+    account_id       = element(split(":", var.tripplanner_web_base_cert_arn), 4)
+    base_cert_arn    = var.tripplanner_web_base_cert_arn
+    distribution_arn = var.tripplanner_web_distribution_arn
+    tag_key          = local.tp_custom_domain_tag.key
+    tag_value        = local.tp_custom_domain_tag.value
+  })))
+}
+
 # AA-257 — GET /admin/infra/status (live ECS/RDS/NAT/ElastiCache health, aa-cis-dev-api's
 # admin_pipeline.py) and the pre-existing GET /admin/metrics/spot-workers (built earlier,
 # never actually granted this) both need read-only describe/list access this role has never
@@ -637,6 +673,7 @@ resource "aws_ecs_task_definition" "api" {
       local.erasure_env,
       local.llm_daily_probe_env,
       local.tripplanner_revalidate_env,
+      local.tp_custom_domain_env,
       local.redis_env,
       local.job_test_kinds_env,
     )
@@ -832,6 +869,7 @@ resource "aws_ecs_task_definition" "worker" {
       local.s1_writer_env,
       local.llm_daily_probe_env,
       local.tripplanner_revalidate_env,
+      local.tp_custom_domain_env,
       local.redis_env,
       local.job_test_kinds_env,
     )
