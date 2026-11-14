@@ -52,6 +52,16 @@ distribution (academy_edge.tf), reached through DNS.
   academy-healthz  https://<academy host>/healthz      200 {"service": "aa-crm-web"} or 503 (no healthy web task)
   academy-no-crm   https://<academy host>/crm/health   NOT the CRM API (no /crm/* rule on this host): the web's 404
                                                       page, or 503; a 200 JSON health answer fails
+  academy-root     https://<academy host>/             the AA-Partner web's academy gate (S5): 307 to /academy, or 503
+  academy-page     https://<academy host>/academy      no academy session: 307 to /academy/auth/refresh, or 503; a
+                                                      307 to /academy/signed-out?reason=unavailable fails (the academy
+                                                      sign-in is not configured on the web task)
+  academy-no-agency https://<academy host>/home        host isolation: an agency page is the web's 404 page there, or
+                                                      503
+  academy-verify   https://<academy host>/verify/<an invented code>   the public verify page: 200 HTML (it says no
+                                                      certificate matches), or 503
+  agency-no-academy https://<agency host>/academy      (with --agency-cf-domain too) the academy pages are 404 on the
+                                                      agency host, or 503
 """
 from __future__ import annotations
 
@@ -239,6 +249,34 @@ def studio_sign_in_gone(agency_host: str) -> Callable[..., Result]:
     return evaluate
 
 
+# AA-1105 S5: an invented, well-formed verification code (22 URL-safe characters); no certificate has it.
+ACADEMY_VERIFY_PROBE = "/verify/aa1105-live-check-prob"
+
+
+def academy_redirect(academy_host: str, want: str) -> Callable[..., Result]:
+    """The academy gate of the web answers 307 to ``want`` (a path, or a path prefix ending in "?")."""
+
+    def evaluate(status: int, body: bytes, ctype: str, location: str = "") -> Result:
+        path = location[len(f"https://{academy_host}"):] if location.startswith(f"https://{academy_host}/") else location
+        if status == 307 and (path == want or (want.endswith("?") and path.startswith(want))):
+            return True, f"status=307 -> {location}"
+        if status == 503 and _json(body) is None:
+            return True, "status=503 (rule matched, aa-crm-dev-web has no healthy task: desired 0?)"
+        hint = " (the academy sign-in is not configured on the web task)" if "reason=unavailable" in location else ""
+        return False, f"status={status} location={location or '-'} (expected 307 -> {want}){hint}"
+
+    return evaluate
+
+
+def eval_academy_verify(status: int, body: bytes, ctype: str, location: str = "") -> Result:
+    """The public verify page renders (200 HTML) for any well-formed code, with no sign-in."""
+    if status == 200 and ctype.split(";")[0].strip() == "text/html":
+        return True, "status=200 page (the public verify page answers)"
+    if status == 503 and _json(body) is None:
+        return True, "status=503 (rule matched, aa-crm-dev-web has no healthy task: desired 0?)"
+    return False, f"status={status} type={ctype or '-'} location={location or '-'}"
+
+
 def eval_raw_cf(status: int, body: bytes, ctype: str, location: str = "") -> Result:
     return status == 403 and body.strip() == b"Forbidden", f"status={status} body={body[:40]!r}"
 
@@ -290,7 +328,13 @@ def build_checks(args: argparse.Namespace) -> dict[str, Callable[[], Result]]:
         checks.update({
             "academy-healthz": run(eval_web_healthz, academy, "/healthz"),
             "academy-no-crm": run(eval_client_web_404, academy, "/crm/health"),
+            "academy-root": run(academy_redirect(academy, "/academy"), academy, "/"),
+            "academy-page": run(academy_redirect(academy, "/academy/auth/refresh?"), academy, "/academy"),
+            "academy-no-agency": run(eval_client_web_404, academy, "/home"),
+            "academy-verify": run(eval_academy_verify, academy, ACADEMY_VERIFY_PROBE),
         })
+        if args.agency_cf_domain:
+            checks["agency-no-academy"] = agency(eval_client_web_404, "/academy")
     return checks
 
 
