@@ -459,9 +459,8 @@ resource "aws_ecs_task_definition" "crm_api" {
       { name = "KMS_SEAL_KEY_ID", value = aws_kms_alias.crm["seal"].name },
       # AA-936: the public inquiry form (app.intake.public): pages on the client host may post. AA-1096 L4 / L6: the
       # rate limits are admin-editable CRM settings (crm-064: crm.rate.public_per_minute 60, crm.rate.intake_per_minute
-      # 5, crm.rate.intake_form_per_hour 200 with a per-agency override). Their env vars (RATE_LIMIT_PUBLIC_PER_MINUTE,
-      # RATE_LIMIT_INTAKE_PER_MINUTE, RATE_LIMIT_INTAKE_FORM_PER_HOUR) are emergency overrides that win over the
-      # setting, so none is set here.
+      # 5, crm.rate.intake_form_per_hour 200 with a per-agency override). Their env vars were retired by AA-Partner
+      # crm-070 (AA-1096 l5): the app no longer reads them.
       { name = "INTAKE_PAGE_ORIGINS", value = var.crm_intake_origin },
       { name = "DOCUMENTS_BUCKET", value = aws_s3_bucket.crm["documents"].bucket },
       # AA-940 (CRM-12): the hourly audit export to both Object Lock tiers (crm_storage.tf crm_ecs_task_audit_export);

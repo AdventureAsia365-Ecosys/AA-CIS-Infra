@@ -72,19 +72,14 @@ locals {
     { name = "TRIPPLANNER_REVALIDATE_URL", value = var.tripplanner_revalidate_url },
   ]
 
-  # AA-839: the data_erasure job's apply switch and the tenant retention window (AA-CIS-App
-  # services/jobs/erasure_job.py). The api checks the flag before it enqueues an apply (403) and the job
-  # re-checks both on the worker, so api and worker carry the same values. Apply is on only for the
-  # string "true"; "false" behaves like unset.
-  # AA-1096 L6 (S279): the retention window is the admin-editable setting cis.erasure.tenant_retention_days (CIS 407,
-  # seed 30); ERASURE_TENANT_RETENTION_DAYS is its emergency override, which wins over the setting, so it is set only
-  # when the variable is (the Dev erasure drill sets 0). null = no env: the setting is served.
-  erasure_env = concat(
-    [{ name = "ERASURE_APPLY_ENABLED", value = var.erasure_apply_enabled ? "true" : "false" }],
-    var.erasure_tenant_retention_days != null ? [
-      { name = "ERASURE_TENANT_RETENTION_DAYS", value = tostring(var.erasure_tenant_retention_days) },
-    ] : [],
-  )
+  # AA-839: the data_erasure job's apply switch (AA-CIS-App services/jobs/erasure_job.py). The api checks the flag
+  # before it enqueues an apply (403) and the job re-checks it on the worker, so api and worker carry the same value.
+  # Apply is on only for the string "true"; "false" behaves like unset.
+  # The tenant retention window is the admin-editable setting cis.erasure.tenant_retention_days (CIS 407, seed 30);
+  # its one-release env override ERASURE_TENANT_RETENTION_DAYS was retired (AA-1096 l5, CIS 428): no env var here.
+  erasure_env = [
+    { name = "ERASURE_APPLY_ENABLED", value = var.erasure_apply_enabled ? "true" : "false" },
+  ]
 
   # AA-779 (CIS ADR 0011): the T9 blog FAQ question filter's mode (AA-CIS-App services/acp_content_writing/faq_filter.py).
   # The T9 write runs as a job on the worker, so only the worker task definition carries it.

@@ -688,8 +688,8 @@ boundary denies `GetSecretValue` on those two prefixes to every bounded role (`D
 `aws_ecs_service`, `aws_ecs_task_definition` or `aws_lambda_function` rolls services and has no job guard: run the
 manual idle gate first (root `skill/aa-ship`, X1 plan standing rules). Env on the CIS task definitions comes only
 from `modules/ecs/main.tf` (e.g. AA-847 `PLACE_SHAPES_ENABLED` from `place_shapes_enabled`; AA-839
-`ERASURE_APPLY_ENABLED` / `ERASURE_TENANT_RETENTION_DAYS` from `local.erasure_drill` in `accounts/aa365`, the retention env only
-while the drill is on since AA-1096 L6); CIS Deploy Dev copies
+`ERASURE_APPLY_ENABLED` from `local.erasure_drill` in `accounts/aa365`; the tenant retention window is the CIS setting
+`cis.erasure.tenant_retention_days`, no env var since AA-1096 l5); CIS Deploy Dev copies
 the latest revision and swaps the image, so a Terraform env change ships with the next CIS deploy. The reverse also
 holds: an env set by hand on a running revision is lost when any apply touching `module.ecs` registers a new
 template revision, so every runtime switch lives in the module (AA-645 `S1_WRITER_V2` from `s1_writer_v2_enabled`,

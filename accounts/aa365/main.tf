@@ -48,10 +48,10 @@ locals {
   sfn_pipeline_arn     = "arn:aws:states:${var.aws_region}:${var.account_id}:stateMachine:${local.name_prefix}-pipeline"
 
   # AA-839: the Dev erasure drill switch, the ONLY line a drill PR changes. false = DRY RUN only
-  # (ERASURE_APPLY_ENABLED=false, retention = the admin setting cis.erasure.tenant_retention_days, seed 30 days; no
-  # ERASURE_TENANT_RETENTION_DAYS env since AA-1096 L6). true = apply on and retention 0
-  # days, for the approved drill on a synthetic tenant only (root docs/legal/dsar-erasure-runbook.md
-  # section 5). A change reaches the tasks only after Terraform Apply AND a CIS Deploy Dev dispatch
+  # (ERASURE_APPLY_ENABLED=false). true = apply on, for the approved drill on a synthetic tenant only (root
+  # docs/legal/dsar-erasure-runbook.md section 5). The retention window is the admin setting
+  # cis.erasure.tenant_retention_days (seed 30 days): the drill sets 0 on Platform › Settings for its run and puts it
+  # back after; no env var since AA-1096 l5 (CIS 428 retired the override ERASURE_TENANT_RETENTION_DAYS). A change reaches the tasks only after Terraform Apply AND a CIS Deploy Dev dispatch
   # (the services ignore task_definition; the deploy copies the latest revision and swaps the image).
   erasure_drill = false
 }
@@ -231,9 +231,8 @@ module "ecs" {
   tripplanner_revalidate_url = "https://${local.tp_web_host}/api/revalidate/catalog"
   # AA-835 (S6 review): the supply_media_purge job invalidates withdrawn Booking photo copies on the photos CDN.
   photos_cdn_distribution_arn = local.photos_cdn_on == 1 ? aws_cloudfront_distribution.photos_cdn[0].arn : ""
-  # AA-839: data_erasure apply switch + tenant retention window, driven by local.erasure_drill above.
-  erasure_apply_enabled         = local.erasure_drill
-  erasure_tenant_retention_days = local.erasure_drill ? 0 : null # null = no env: the setting cis.erasure.tenant_retention_days (AA-1096 L6)
+  # AA-839: data_erasure apply switch, driven by local.erasure_drill above (the retention window is a CIS setting).
+  erasure_apply_enabled = local.erasure_drill
 
   task_cpu              = var.task_cpu
   task_memory           = var.task_memory
