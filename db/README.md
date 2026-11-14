@@ -327,7 +327,8 @@ line) prints the plan the task would follow.
   row in the retention table of data standards Part B §7, read from the root repo's `master` with a
   Contents-read token of the GitHub App `aa-ecosys-ci-bot`. Merge the root row first, then the Infra copy. The cis/booking/tripplanner
   dirs are grandfathered (DM-7.1); a new app's dir is added to `RETENTION_OWNERS` with its
-  `owners.yaml` entry.
+  `owners.yaml` entry. A new schema of an existing owner is checked the same way through `RETENTION_SCHEMAS`
+  (AA-1105: the `learn` tables of the `cis` dir; the other CIS schemas stay grandfathered).
 - Exit codes: 2 sha256 mismatch, 3 not registered, 4 lint error, 5 destructive without snapshot,
   6 PostgreSQL error (lock or statement timeout prints a hint), 7 apply refused because a job
   table is busy or a rerun wave is open, 8 role refused, 9 ownership post-check failed (or the

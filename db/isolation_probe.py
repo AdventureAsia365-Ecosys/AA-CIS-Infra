@@ -118,6 +118,9 @@ class RuntimePrivileges:
     # Relations ("schema.name") the owner keeps from this role on purpose (owners.yaml owner_only_relations): left
     # out of the baseline check, and cell owner_only.<owner> asserts the role holds NO privilege on them.
     owner_only: tuple = ()
+    # ((schema, schema_versions key), …): a schema of `schemas` that a later migration creates (owners.yaml
+    # schemas_from, AA-1105). Its baseline and default privileges are expected only once the key is registered.
+    schemas_from: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -134,19 +137,20 @@ class ProbeOwner:
 
 BASELINE = (("relation", ("SELECT",)), ("sequence", ("USAGE",)), ("function", ("EXECUTE",)))
 # AA-850: acp_gold_output, acp_silver_s2, acp_silver_s3, acp_silver_s4 left with CIS 299 (dropped, empty).
-CIS_RUNTIME_SCHEMAS = ("acp_contract", "acp_deliver", "acp_shared", "geo", "gold_aa_internal", "shared",
+CIS_RUNTIME_SCHEMAS = ("acp_contract", "acp_deliver", "acp_shared", "geo", "gold_aa_internal", "learn", "shared",
                        "silver_aa_internal")
 DML = ("DELETE", "INSERT", "SELECT", "UPDATE")
 OWNERS = {
     "cis": ProbeOwner(
-        ("acp_contract", "acp_deliver", "acp_shared", "catalog", "geo", "gold_aa_internal", "retired", "shared",
-         "silver_aa_internal"),
+        ("acp_contract", "acp_deliver", "acp_shared", "catalog", "geo", "gold_aa_internal", "learn", "retired",
+         "shared", "silver_aa_internal"),
         "shared", "cis_owner", "245",
         (("cis_app", "aa-cis/dev/rds-cis-app"), ("aa_app_user", "aa-cis/dev/rds-app-user")),
         frozenset({"catalog_owner"}),
         (RuntimePrivileges("cis_app", CIS_RUNTIME_SCHEMAS, BASELINE,
                            (("tables", DML), ("sequences", ("SELECT", "UPDATE", "USAGE")),
-                            ("functions", ("EXECUTE",)))),),
+                            ("functions", ("EXECUTE",))),
+                           schemas_from=(("learn", "420"),)),),   # AA-1105: CIS 420 creates schema learn
         "244"),
     "booking": ProbeOwner(("booking",), "booking", "bk_owner", "bk-014", (("booking", "booking/dev/database-url"),),
                           runtime_privileges=(RuntimePrivileges(
@@ -301,10 +305,19 @@ CROSS_APP = (
     ("aa_app_user", "crm.job", ("crm-001",)),
     (CIS_APP, "crm.job", ("crm-001",) + CIS_APP_LOGIN_KEYS),
     (CIS_RUNTIME, "crm.job", ("crm-001", "cis_runtime_on_cis_app")),
+    # AA-1105 (root ADR 0022, D3): the AA Academy learner records are CIS only; aa_app_user gets nothing until the agency
+    # academy (P7). Expected once CIS 420 (schema learn) is registered.
+    ("booking", "learn.learner", ("420",)),
+    ("tripplanner", "learn.learner", ("420",)),
+    (CRM_APP, "learn.learner", ("420",) + CRM_APP_LOGIN_KEYS),
+    ("aa_app_user", "learn.learner", ("420",)),
 )
 
+# AA-1105: the keys of the migrations that create a runtime schema later (owners.yaml schemas_from).
+SCHEMA_KEYS = tuple(sorted({k for o in OWNERS.values() for rp in o.runtime_privileges for _, k in rp.schemas_from}))
 VERSION_KEYS = ("rl-001", "243", "bk-014", "tp-013", "244", "rl-002", "245", "rl-003", "rl-004", "269",
-                "crm-001", "crm-006", "tp-027", "tp-028") + CONSUMER_GRANT_KEYS
+                "crm-001", "crm-006", "tp-027", "tp-028") + CONSUMER_GRANT_KEYS + tuple(
+                    k for k in SCHEMA_KEYS if k not in CONSUMER_GRANT_KEYS)
 TRANSFER_KEYS = {name: f"{name}_transferred" for name in OWNERS}
 KEY_TEXT = {
     "rl-001": "rl-001 registered (X1 S3, first apply of the S8 train)",
@@ -335,6 +348,8 @@ KEY_TEXT = {
     "cis_runtime_on_cis_app": "the running api task definition injects aa-cis/dev/rds-cis-app (X1 S18)",
     "catalog_login_not_master": "the probe's catalog login is not the RDS master (X1 S22, db_migrator)",
     **{k: f"{k} registered (creates contract consumer grants, owners.yaml expected_from)" for k in CONSUMER_GRANT_KEYS},
+    **{k: f"{k} registered (creates a runtime schema, owners.yaml schemas_from)" for k in SCHEMA_KEYS
+       if k not in CONSUMER_GRANT_KEYS},
 }
 NOTES = [
     "Isolation evidence (cross-app reads, RLS counts, tenant matrix) comes only from each role's own login.",
@@ -683,7 +698,13 @@ def ownership_offenders(rows: list, owner: "ProbeOwner") -> list:
             if not (r["owner"] in owner.view_owner_roles and r["kind"] in ("view", "matview"))]
 
 
-def default_acl_findings(rows: list, rp: "RuntimePrivileges", owner: "ProbeOwner", live_owner: str) -> list:
+def pending_schemas(rp: "RuntimePrivileges", keys: dict) -> frozenset:
+    """The schemas of rp.schemas_from whose creating migration is not registered yet (AA-1105): not expected."""
+    return frozenset(s for s, k in rp.schemas_from if not keys.get(k, False))
+
+
+def default_acl_findings(rows: list, rp: "RuntimePrivileges", owner: "ProbeOwner", live_owner: str,
+                         pending: frozenset = frozenset()) -> list:
     """What breaks "objects the owner creates later reach the runtime role" (DEFAULT_ACL_SQL rows of the
     owner's schemas, privileges as granted to rp.role): a missing or short row FOR ROLE <live owner of the
     anchor schema> IN SCHEMA s for each owners.yaml default_acl object type, and, once the live owner is
@@ -693,6 +714,8 @@ def default_acl_findings(rows: list, rp: "RuntimePrivileges", owner: "ProbeOwner
     have = {(r["schema"], r["objtype"], r["for_role"]): set(r["privileges"] or ()) for r in rows}
     out = []
     for schema in rp.schemas:
+        if schema in pending:
+            continue                   # its migration is not applied yet (owners.yaml schemas_from)
         for word, privs in rp.default_acl:
             got = have.get((schema, DEFACL_OBJTYPE[word], live_owner))
             if got is None:
@@ -984,7 +1007,8 @@ def build_cells(facts: dict, keys: dict) -> list:
                                           "present": [r["name"] for r in o.get("relations", [])
                                                       if r.get("present")]}))
             d = facts["default_acl"].get(name, {}).get(rp.role, {})
-            found = [] if d.get("error") else default_acl_findings(d.get("rows", []), rp, owner, live or "?")
+            found = [] if d.get("error") else default_acl_findings(d.get("rows", []), rp, owner, live or "?",
+                                                                   pending_schemas(rp, keys))
             cells.append(Cell(f"default_acl.{name}{suffix}", "runtime grants",
                               f"default privileges FOR ROLE <live owner of {owner.anchor_schema}> grant {rp.role} "
                               f"{', '.join(w for w, _ in rp.default_acl)}; no FOR ROLE {MASTER_ROLE} row once "

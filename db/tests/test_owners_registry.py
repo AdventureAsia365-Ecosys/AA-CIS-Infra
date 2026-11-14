@@ -91,8 +91,14 @@ class RegistryShapeTest(unittest.TestCase):
                 self.assertLessEqual(set(o["runtime_privileges"]), set(o["runtime_roles"]))
                 for role, rp in o["runtime_privileges"].items():
                     self.assertLessEqual({"schemas", "objects", "default_acl"}, set(rp), role)
-                    self.assertLessEqual(set(rp), {"schemas", "objects", "default_acl", "owner_only_relations"}, role)
+                    self.assertLessEqual(set(rp), {"schemas", "objects", "default_acl", "owner_only_relations",
+                                                   "schemas_from"}, role)
                     self.assertLessEqual(set(rp["schemas"]), set(o["schemas"]), role)
+                    # AA-1105: a schema a later migration creates names that migration's key in this owner's space.
+                    for schema, key in rp.get("schemas_from", {}).items():
+                        self.assertIn(schema, rp["schemas"], role)
+                        self.assertRegex(str(key), rf"^{re.escape(o['key_prefix'])}[0-9]{{3}}$", schema)
+                        self.assertIn(str(key), probe.VERSION_KEYS, schema)
                     # owner-only relations (AA-1046): sorted, distinct, each in one of the role's schemas
                     only = rp.get("owner_only_relations", [])
                     self.assertEqual(only, sorted(set(only)), role)
@@ -218,6 +224,8 @@ class MirrorsAgreeTest(unittest.TestCase):
                                             "objects": {k: list(v) for k, v in rp.objects},
                                             "default_acl": {k: list(v) for k, v in rp.default_acl},
                                             **({"owner_only_relations": list(rp.owner_only)} if rp.owner_only
+                                               else {}),
+                                            **({"schemas_from": dict(rp.schemas_from)} if rp.schemas_from
                                                else {})}
                                   for rp in p.runtime_privileges}, o["runtime_privileges"])
         # Contract consumer grants on one named object (wildcards such as catalog.* are left to the dump).

@@ -32,6 +32,11 @@
 # AA-1019 Terraform apply (tools/identity/README.md runbook); a task whose secret lacks a mapped key fails to start.
 # (The service ignores task_definition changes, so the apply alone never restarts the running task: writing the keys
 # after the apply and before the next web deploy would also work, but the runbook uses one order.)
+# AA-1105 (root ADR 0022): the AA Academy host academy.<zone> (accounts/aa365 academy_edge.tf) is served by this web:
+# WEB_ACADEMY_HOSTS / ACADEMY_COGNITO_DOMAIN / ACADEMY_COGNITO_CLIENT_ID (WORKFORCE client academy-web) here,
+# ACADEMY_COGNITO_CLIENT_SECRET / ACADEMY_SESSION_SECRET from the academy_* keys of crm/dev/web. Same ORDER as AA-1019:
+# crm_dev_identity.py academy-web-secret --apply after the client exists and BEFORE the next web deploy (the client is
+# created by the same apply, so: apply -> academy-web-secret --apply -> deploy the web).
 #
 # Order of applies: after AA-933 (crm_app.tf, crm_edge.tf). The secret value must exist before the first task starts
 # (a task whose secret has no value fails to start): apply -> `crm_dev_identity.py web-secret --apply` -> deploy the
@@ -110,6 +115,12 @@ locals {
     # AA-1019: the AA staff console's WORKFORCE client (its secret and cookie key come from crm/dev/web).
     { name = "STAFF_COGNITO_DOMAIN", value = local.crm_web_staff_domain },
     { name = "STAFF_COGNITO_CLIENT_ID", value = var.cognito_workforce_crm_staff_client_id },
+    # AA-1105 (root ADR 0022, D17): the AA Academy host. The web serves only the academy pages there and refuses them
+    # on every other host (AA-Partner web/lib/hosts.ts). Same WORKFORCE managed login as the staff console, its own
+    # client academy-web; its secret and its own cookie key come from crm/dev/web (academy_* keys).
+    { name = "WEB_ACADEMY_HOSTS", value = join(",", var.crm_academy_hosts) },
+    { name = "ACADEMY_COGNITO_DOMAIN", value = local.crm_web_staff_domain },
+    { name = "ACADEMY_COGNITO_CLIENT_ID", value = var.cognito_workforce_academy_client_id },
   ]
 }
 
@@ -152,7 +163,7 @@ resource "aws_ecr_lifecycle_policy" "crm_web" {
 # -----------------------------------------------------------------------------
 resource "aws_secretsmanager_secret" "crm_web" {
   name                    = "crm/${var.environment}/web"
-  description             = "AA-Partner CRM web (AA-935, AA-1019): JSON {cognito_client_secret, session_secret, staff_cognito_client_secret, staff_session_secret}. Set by AA-CIS-Infra tools/identity/crm_dev_identity.py web-secret and staff-web-secret, never by Terraform."
+  description             = "AA-Partner CRM web (AA-935, AA-1019, AA-1105): JSON {cognito_client_secret, session_secret, staff_cognito_client_secret, staff_session_secret, academy_cognito_client_secret, academy_session_secret}. Set by AA-CIS-Infra tools/identity/crm_dev_identity.py web-secret, staff-web-secret and academy-web-secret, never by Terraform."
   recovery_window_in_days = var.environment == "dev" ? 0 : 30
   tags                    = merge(local.crm_web_tags, { DataClassification = "restricted" })
 }
@@ -280,6 +291,9 @@ resource "aws_ecs_task_definition" "crm_web" {
       # AA-1019: the staff console's client secret and its own cookie key (never the agency key above).
       { name = "STAFF_COGNITO_CLIENT_SECRET", valueFrom = "${aws_secretsmanager_secret.crm_web.arn}:staff_cognito_client_secret::" },
       { name = "STAFF_SESSION_SECRET", valueFrom = "${aws_secretsmanager_secret.crm_web.arn}:staff_session_secret::" },
+      # AA-1105: the academy host's client secret and its own cookie key (never the agency or the staff console key).
+      { name = "ACADEMY_COGNITO_CLIENT_SECRET", valueFrom = "${aws_secretsmanager_secret.crm_web.arn}:academy_cognito_client_secret::" },
+      { name = "ACADEMY_SESSION_SECRET", valueFrom = "${aws_secretsmanager_secret.crm_web.arn}:academy_session_secret::" },
     ]
     logConfiguration = {
       logDriver = "awslogs"
