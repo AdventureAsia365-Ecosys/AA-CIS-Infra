@@ -24,6 +24,7 @@
 #     decision 6); EXTERNAL has none (tenant roles live in CIS DB)
 #   - AA-939: the WORKFORCE crm-staff client (AA-Partner /crm/staff/v1); the PARTNER pool (agency people, MFA
 #     required) is in identity_partner.tf
+#   - AA-1105: the WORKFORCE academy-web client (the AA Academy host on the CRM web, CIS route class /learn/v1)
 #   - Staff sign in with an EMAIL ONE-TIME CODE ONLY (S236 amendment: adventure.asia mail is on
 #     DreamHost, not Google Workspace, so there is no `hd` claim to restrict Google to staff). The
 #     WORKFORCE pool has NO social identity provider. Google and Facebook exist on EXTERNAL only,
@@ -194,6 +195,14 @@ locals {
     # AA-939 / root ADR 0006b decision 6: the WORKFORCE client of the AA-Partner staff routes (/crm/staff/v1). Its
     # managed login style is created with it (aws_cognito_managed_login_branding.workforce covers the whole map).
     "crm-staff" = {
+      secret = true, access_minutes = 15, refresh_hours = 12
+      idps   = ["COGNITO"], writes = ["name"]
+    }
+    # AA-1105 / root ADR 0022 (amends ADR 0006b decision 6): the AA Academy host on the CRM web (academy.<zone>). Accepted
+    # only by the CIS route class /learn/v1 (api/core/learn_identity.py); never a CIS staff issuer, never crm-staff.
+    # No group limit per client: the WORKFORCE triggers are client-agnostic, so every staff member (and the Dev E2E CIS
+    # admin of ADR 0006a A10b) can sign in; CIS decides who is a learner. Managed login style: the whole-map branding.
+    "academy-web" = {
       secret = true, access_minutes = 15, refresh_hours = 12
       idps   = ["COGNITO"], writes = ["name"]
     }

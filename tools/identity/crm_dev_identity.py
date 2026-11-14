@@ -34,6 +34,12 @@ Subcommands
       --rotate-staff-session, which signs every staff console user out). The agency keys are kept as they are. Run it
       BEFORE the AA-1019 Terraform apply (tools/identity/README.md runbook): the task maps both keys and fails to start
       without them.
+  academy-web-secret [--apply] [--rotate-academy-session]   (AA-1105; always the WORKFORCE pool, --pool is ignored)
+      Adds / updates the AA Academy host's two keys in crm/<env>/web: academy_cognito_client_secret (read from the
+      WORKFORCE client aa-workforce-<env>-academy-web) and academy_session_secret (random, never equal to the agency or
+      staff console key, kept on a re-run unless --rotate-academy-session, which signs every academy learner out).
+      Every other key is kept. Run it after the Terraform apply that creates the client and BEFORE the next web
+      deploy: the task maps both keys and fails to start without them.
   e2e-staff [--apply]   (AA-1019, root ADR 0006a A10c; WORKFORCE pool, dev only)
       The Dev-only AA-Partner staff E2E user e2e-crm-staff@e2e-mail.<zone> in groups crm-ops + crm-support exactly:
       AdminCreateUser with MessageAction=SUPPRESS and email_verified=true, no password (sign-in is the e-mail code,
@@ -92,6 +98,10 @@ WEB_CLIENT = {"external": "cis-portal", "partner": "partner-web"}
 E2E_STAFF_LOCAL = "e2e-crm-staff"
 E2E_STAFF_GROUPS = ("crm-ops", "crm-support")
 STAFF_CLIENT = "crm-staff"
+# AA-1105 (root ADR 0022): the AA Academy host's WORKFORCE client and its two keys of crm/<env>/web.
+ACADEMY_CLIENT = "academy-web"
+# Every cookie key of crm/<env>/web: each surface (agency, staff console, academy) has its own, never a shared one.
+SESSION_KEYS = ("session_secret", "staff_session_secret", "academy_session_secret")
 # AA-1087 (root ADR 0006a A10e): the Dev-only write-capable AA-Booking E2E users (local part, exact groups, name); must
 # equal workforce.py E2E_BOOKING_{STAFF,MAKER,CHECKER}_TEST_STAFF_EMAIL / _GROUPS and AA-Booking app/auth/e2e_staff.py.
 E2E_BOOKING_WRITERS: tuple[tuple[str, tuple[str, ...], str], ...] = (
@@ -468,6 +478,25 @@ def staff_web_secret(
     idp: Any, sm: Any, workforce_pool_id: str, client_name: str, *, env: str, apply: bool, rotate_session: bool
 ) -> dict[str, Any]:
     """AA-1019: the staff console's two keys of crm/<env>/web; the agency keys are kept as they are."""
+    return _workforce_web_keys(idp, sm, workforce_pool_id, client_name, env=env, apply=apply,
+                               rotate_session=rotate_session, client_key="staff_cognito_client_secret",
+                               session_key="staff_session_secret")
+
+
+def academy_web_secret(
+    idp: Any, sm: Any, workforce_pool_id: str, client_name: str, *, env: str, apply: bool, rotate_session: bool
+) -> dict[str, Any]:
+    """AA-1105: the AA Academy host's two keys of crm/<env>/web; every other key is kept as it is."""
+    return _workforce_web_keys(idp, sm, workforce_pool_id, client_name, env=env, apply=apply,
+                               rotate_session=rotate_session, client_key="academy_cognito_client_secret",
+                               session_key="academy_session_secret")
+
+
+def _workforce_web_keys(
+    idp: Any, sm: Any, workforce_pool_id: str, client_name: str, *, env: str, apply: bool, rotate_session: bool,
+    client_key: str, session_key: str,
+) -> dict[str, Any]:
+    """A WORKFORCE client's secret and its own cookie key in crm/<env>/web (never equal to another surface's key)."""
     name = f"crm/{env}/web"
     if not _secret_exists(sm, name):
         raise ToolError(f"{name} does not exist: apply AA-CIS-Infra crm_web.tf first (the secret shell)")
@@ -478,13 +507,14 @@ def staff_web_secret(
     if not client_secret:
         raise ToolError(f"{client_name} has no client secret (it must be a confidential client)")
     current = _current_secret(sm, name) or {}
-    session = current.get("staff_session_secret")
+    session = current.get(session_key)
+    others = {current.get(k) for k in SESSION_KEYS if k != session_key}
     changed = []
-    if rotate_session or not isinstance(session, str) or len(session) < 32 or session == current.get("session_secret"):
+    if rotate_session or not isinstance(session, str) or len(session) < 32 or session in others:
         session = secrets.token_urlsafe(SESSION_SECRET_BYTES)
-        changed.append("staff_session_secret")
-    if current.get("staff_cognito_client_secret") != client_secret:
-        changed.append("staff_cognito_client_secret")
+        changed.append(session_key)
+    if current.get(client_key) != client_secret:
+        changed.append(client_key)
     result: dict[str, Any] = {"secret": name, "client": client_name, "changed": changed}
     if not changed:
         result["action"] = "unchanged"
@@ -492,7 +522,7 @@ def staff_web_secret(
     if not apply:
         result["action"] = "would_write"
         return result
-    value = {**current, "staff_cognito_client_secret": client_secret, "staff_session_secret": session}
+    value = {**current, client_key: client_secret, session_key: session}
     resp = sm.put_secret_value(SecretId=name, SecretString=json.dumps(value))
     result["action"] = "written"
     result["version_id"] = resp.get("VersionId")
@@ -582,6 +612,10 @@ def build_parser() -> argparse.ArgumentParser:
     ws = sub.add_parser("staff-web-secret", help="AA-1019: the staff console's keys of crm/<env>/web (WORKFORCE crm-staff)")
     ws.add_argument("--apply", action="store_true")
     ws.add_argument("--rotate-staff-session", action="store_true")
+    ac = sub.add_parser("academy-web-secret",
+                        help="AA-1105: the AA Academy host's keys of crm/<env>/web (WORKFORCE academy-web)")
+    ac.add_argument("--apply", action="store_true")
+    ac.add_argument("--rotate-academy-session", action="store_true")
     es = sub.add_parser("e2e-staff", help="AA-1019: the Dev-only staff E2E user (crm-ops + crm-support)")
     es.add_argument("--apply", action="store_true")
     eb = sub.add_parser("e2e-booking-writers", help="AA-1087: the Dev-only write-capable Booking E2E users")
@@ -606,7 +640,7 @@ def main(argv: list[str] | None = None, clients: tuple[Any, Any, Any] | None = N
         account = sts.get_caller_identity()["Account"]
         if args.expect_account and account != args.expect_account:
             raise ToolError(f"refused: credentials are for account {account}, expected {args.expect_account}")
-        if args.command in ("staff-web-secret", "e2e-staff", "e2e-booking-writers"):
+        if args.command in ("staff-web-secret", "academy-web-secret", "e2e-staff", "e2e-booking-writers"):
             if args.command == "e2e-staff" and args.env != "dev":
                 raise ToolError("e2e-staff is Dev only (root ADR 0006a A10c)")
             if args.command == "e2e-booking-writers" and args.env != "dev":
@@ -618,6 +652,9 @@ def main(argv: list[str] | None = None, clients: tuple[Any, Any, Any] | None = N
                     out(row)
             elif args.command == "e2e-staff":
                 out(e2e_staff(idp, workforce_id, env=args.env, zone=args.zone, apply=args.apply))
+            elif args.command == "academy-web-secret":
+                out(academy_web_secret(idp, sm, workforce_id, f"{workforce_pool}-{ACADEMY_CLIENT}", env=args.env,
+                                       apply=args.apply, rotate_session=args.rotate_academy_session))
             else:
                 out(staff_web_secret(idp, sm, workforce_id, f"{workforce_pool}-{STAFF_CLIENT}", env=args.env,
                                      apply=args.apply, rotate_session=args.rotate_staff_session))

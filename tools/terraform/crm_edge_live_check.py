@@ -46,6 +46,12 @@ runbook); pass --agency-direct to go through DNS (portal. points at the distribu
   agency-studio-page https://<agency host>/legal/partner-terms  the web's public studio page: 200 HTML, or 503
   agency-crm      https://<agency host>/crm/health    the CRM API (crm_agency_api): 200, or 503
   agency-raw-cf   https://<agency cf domain>/         403 "Forbidden" from the deny rule (no Host rule matches)
+
+AA-1105 (root ADR 0022), only with --academy-host: the AA Academy host academy.<zone>, an alias of the agency
+distribution (academy_edge.tf), reached through DNS.
+  academy-healthz  https://<academy host>/healthz      200 {"service": "aa-crm-web"} or 503 (no healthy web task)
+  academy-no-crm   https://<academy host>/crm/health   NOT the CRM API (no /crm/* rule on this host): the web's 404
+                                                      page, or 503; a 200 JSON health answer fails
 """
 from __future__ import annotations
 
@@ -279,6 +285,12 @@ def build_checks(args: argparse.Namespace) -> dict[str, Callable[[], Result]]:
             "agency-crm": agency(eval_crm_health, "/crm/health"),
             "agency-raw-cf": run(eval_raw_cf, args.agency_cf_domain, "/"),
         })
+    academy = getattr(args, "academy_host", "")
+    if academy:
+        checks.update({
+            "academy-healthz": run(eval_web_healthz, academy, "/healthz"),
+            "academy-no-crm": run(eval_client_web_404, academy, "/crm/health"),
+        })
     return checks
 
 
@@ -295,6 +307,8 @@ def main(argv=None) -> int:
                          "enables the agency checks, connecting to it with SNI / Host = --agency-host")
     ap.add_argument("--agency-direct", action="store_true",
                     help="AA-979: after the cutover, reach --agency-host through DNS instead of --agency-cf-domain")
+    ap.add_argument("--academy-host", default="",
+                    help="AA-1105: the AA Academy host (academy.lumiguides.it.com on Dev); enables the academy checks")
     ap.add_argument("--only", default="", help="comma list of check names")
     args = ap.parse_args(argv)
     only = {c for c in args.only.split(",") if c}
