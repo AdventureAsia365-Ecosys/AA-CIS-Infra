@@ -19,14 +19,14 @@
 #       CRM_LLM_USD_PER_MTOK_IN / _OUT = the CIS catalogue prices of 'nova-lite' (equal to the crm-042 route prices,
 #       so the ledger price matches the catalogue whichever source prices the row), CRM_LLM_REGION. No
 #       CRM_LLM_MAX_TOKENS since AA-1096 L6: the output cap is the admin-editable setting crm.ai.draft_reply_max_tokens
-#       (crm-064, 800) and the env var is its emergency override, which would win over it.
+#       (crm-064, 800); the app no longer reads the env var (crm-070, AA-1096 l5).
 #   Off = no env and no policy: the app falls back to its stub provider (cost 0), as before.
 #
 # Who pays, and the guards that stay in the app (AA-Partner app/llm/gateway.py, unchanged): an agency's draft reaches
 # the model only with the ai_assist entitlement (AA grants it in the CIS admin), ai_enabled on (default off, owner),
-# under its monthly ai_budget_usd (default 2 USD, AI_BUDGET_MAX_USD cap) with 75/90/100 % alerts, the CRM app profile
+# under its monthly ai_budget_usd (default 2 USD, setting crm.ai.budget_max_usd cap) with 75/90/100 % alerts, the CRM app profile
 # (crm-041: app switch and daily budget of every agency together), the stage kill switch (crm-037 is_active), the
-# per-agency rate cap (RATE_LIMIT_AI_PER_MINUTE, default 6) and the F3 scrub (fail closed: no guardrail = no call).
+# per-agency rate cap (setting crm.rate.ai_per_minute, default 6) and the F3 scrub (fail closed: no guardrail = no call).
 # An agency without ai_assist or with AI off pays nothing (refused before the scrub, 0 USD row or no row).
 #
 # Order: AA-Partner crm-042 applied (Migration Apply) BEFORE this apply, else the first real draft tries Claude on acc2

@@ -284,16 +284,6 @@ variable "erasure_apply_enabled" {
   default     = false
 }
 
-variable "erasure_tenant_retention_days" {
-  description = "AA-839 / AA-1096 L6: env ERASURE_TENANT_RETENTION_DAYS on api and worker, the emergency override of the admin-editable setting cis.erasure.tenant_retention_days (CIS 407, seed 30): days a tenant stays offboarded before an erasure apply may run. null (default) = no env, the setting is served; the Dev erasure drill sets 0."
-  type        = number
-  default     = null
-  validation {
-    condition     = var.erasure_tenant_retention_days == null ? true : (var.erasure_tenant_retention_days >= 0 && floor(var.erasure_tenant_retention_days) == var.erasure_tenant_retention_days)
-    error_message = "erasure_tenant_retention_days must be null or a whole number >= 0."
-  }
-}
-
 variable "t9_faq_llm_filter" {
   description = "AA-779: env T9_FAQ_LLM_FILTER on the worker — off (no model call), shadow (record the LLM verdicts, deliver the deterministic list) or on (deliver the LLM-kept list; needs CIS ADR 0011 accepted)."
   type        = string
