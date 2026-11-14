@@ -71,6 +71,19 @@ def test_raw_cf_needs_the_deny_403():
     assert not chk.eval_raw_cf(200, b"{}", "application/json")[0]
 
 
+def test_raw_cf_accepts_only_an_empty_redirect_to_the_agency_host():
+    ev = chk.raw_cf("portal.example.com")
+    assert ev(403, b"Forbidden\n", "text/plain")[0]
+    assert ev(301, b"", "", "https://portal.example.com/")[0]
+    assert not ev(301, b"<html>", "text/html", "https://portal.example.com/")[0]
+    assert not ev(301, b"", "", "https://evil.example.net/")[0]
+    assert not ev(301, b"", "", "http://portal.example.com/")[0]
+    assert not ev(302, b"", "", "https://portal.example.com/")[0]
+    assert not ev(200, b"{}", "application/json")[0]
+    strict = chk.raw_cf("")
+    assert not strict(301, b"", "", "https://portal.example.com/")[0]
+
+
 def test_api_header_never_the_partner_404():
     assert chk.eval_api_header(403, b"Forbidden\n", "text/plain")[0]
     assert chk.eval_api_header(200, b'{"status":"ok"}', "application/json")[0]
