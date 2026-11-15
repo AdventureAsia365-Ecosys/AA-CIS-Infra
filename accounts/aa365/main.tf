@@ -53,7 +53,7 @@ locals {
   # cis.erasure.tenant_retention_days (seed 30 days): the drill sets 0 on Platform › Settings for its run and puts it
   # back after; no env var since AA-1096 l5 (CIS 428 retired the override ERASURE_TENANT_RETENTION_DAYS). A change reaches the tasks only after Terraform Apply AND a CIS Deploy Dev dispatch
   # (the services ignore task_definition; the deploy copies the latest revision and swaps the image).
-  erasure_drill = true
+  erasure_drill = false
 }
 
 module "vpc" {
