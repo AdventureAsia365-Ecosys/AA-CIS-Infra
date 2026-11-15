@@ -128,3 +128,10 @@ test_wp_service_attached = true
 # hosts scoped out of GeoBlock. No new ACL and no new rule (no fixed fee): about 0.60 USD per million requests
 # inspected (Dev: well under 1 million a month, estimate < 0.60 USD/month). The IP set is free.
 waf_protect_rest_api_stages = true
+
+# AA-1093 (S281): the second real tenant erasure on Dev, synthetic tenant aa1093-erase-02 only, CRM stage included
+# (tech lead approval S281). Back to "false" (delete these lines) right after the run, together with
+# erasure_drill = false in main.tf. The CRM switch reaches the task with the next AA-Partner Deploy Dev.
+tripplanner_jobs_tenant_erase_apply_enabled = "true"
+booking_tenant_erase_apply_enabled          = "true"
+crm_tenant_erase_apply_enabled              = "true"
