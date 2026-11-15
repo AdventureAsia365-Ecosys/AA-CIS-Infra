@@ -51,8 +51,9 @@ variable "common_rules_count_only" {
 variable "log_redacted_headers" {
   type        = list(string)
   description = "Request headers replaced with REDACTED in the WAF log (AA-806 S239: credentials must not be logged)"
-  # AA-931: x-aa-origin is the CloudFront origin-verify secret (var.origin_verify_header).
-  default = ["authorization", "x-admin-secret", "x-api-key", "cookie", "x-aa-origin"]
+  # AA-931: x-aa-origin is the CloudFront origin-verify secret (var.origin_verify_header). AA-1090: x-aa-tp-site is the
+  # TripPlanner distribution's site header (var.tripplanner_site_header), a secret too.
+  default = ["authorization", "x-admin-secret", "x-api-key", "cookie", "x-aa-origin", "x-aa-tp-site"]
 }
 
 variable "origin_verify_header" {
@@ -102,6 +103,16 @@ variable "tripplanner_web" {
     path_transformations = list(string)
   })
   default = null
+}
+
+variable "tripplanner_site_header" {
+  description = "AA-1090 R8: the header the TripPlanner CloudFront distribution adds to every origin request ({ name, value }; an origin custom header, so a viewer cannot set it). When set, the three TripPlanner web rules match this header (EXACTLY) instead of the TripPlanner Host, so they apply to every alternate domain name of the distribution (agency domains). null = Host scope as before. Add the header name to log_redacted_headers."
+  type = object({
+    name  = string
+    value = string
+  })
+  default   = null
+  sensitive = true
 }
 
 variable "rate_limit_exempt_cidrs" {

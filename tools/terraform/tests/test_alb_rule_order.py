@@ -152,6 +152,27 @@ def test_partner_rule_without_host_fails(tmp_path):
     assert any("must also match a host header" in e for e in errs)
 
 
+def test_site_header_rule_passes_instead_of_a_host(tmp_path):
+    """AA-1090 R8: one distribution's exact site header (its own secret) stands in for the Host."""
+    site = PARTNER.replace(
+        '  condition {\n    host_header {\n      values = ["partner-dev.${var.zone}"]\n    }\n  }\n',
+        '  condition {\n    http_header {\n      http_header_name = local.tp_web_site_header_name\n'
+        '      values           = [random_password.tp_web_site_marker[0].result]\n    }\n  }\n',
+    )
+    assert site != PARTNER
+    assert _errors(tmp_path, a=PRIORITIES, b=site + DENY, c=BOOKING) == []
+
+
+def test_a_site_header_with_a_literal_value_is_not_a_scope(tmp_path):
+    site = PARTNER.replace(
+        '  condition {\n    host_header {\n      values = ["partner-dev.${var.zone}"]\n    }\n  }\n',
+        '  condition {\n    http_header {\n      http_header_name = "x-aa-tp-site"\n      values           = ["*"]\n'
+        '    }\n  }\n',
+    )
+    errs = _errors(tmp_path, a=PRIORITIES, b=site + DENY, c=BOOKING)
+    assert any("must also match a host header or a site header" in e for e in errs)
+
+
 def test_deny_must_be_403(tmp_path):
     errs = _errors(tmp_path, a=PRIORITIES, b=PARTNER + DENY.replace('"403"', '"404"'), c=BOOKING)
     assert any(e.startswith("R2 ") for e in errs)
@@ -225,6 +246,22 @@ def test_live_bad_order(tmp_path, capsys):
     out = capsys.readouterr()
     assert "R3 " in out.err and "R4 " in out.err
     assert "s3cr3tvalue" not in out.out + out.err
+
+
+SITE = {"Field": "http-header", "HttpHeaderConfig": {"HttpHeaderName": "x-aa-tp-site", "Values": ["s1t3value"]}}
+SITE_ANY = {"Field": "http-header", "HttpHeaderConfig": {"HttpHeaderName": "x-aa-tp-site", "Values": ["*"]}}
+
+
+def test_live_site_header_rule(tmp_path, capsys):
+    """AA-1090 R8: the TripPlanner alias rule (site header + origin secret, no Host) passes; a wildcard does not."""
+    f = tmp_path / "rules.json"
+    f.write_text(json.dumps(_live(_r(13, [HOST, SECRET], FWD), _r(14, [SITE, SECRET], FWD), _r(20, [ANY], F403),
+                                  _r("default", [], FWD))))
+    assert aro.main(["--live", str(f)]) == 0
+    f.write_text(json.dumps(_live(_r(14, [SITE_ANY, SECRET], FWD), _r(20, [ANY], F403), _r("default", [], FWD))))
+    assert aro.main(["--live", str(f)]) == 1
+    out = capsys.readouterr()
+    assert "s1t3value" not in out.out + out.err
 
 
 def test_live_bad_input(tmp_path):

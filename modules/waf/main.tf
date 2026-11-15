@@ -20,6 +20,9 @@ locals {
   tp            = var.tripplanner_web
   tp_on         = var.tripplanner_web != null && nonsensitive(var.origin_verify_header != null)
   tp_host_regex = local.tp_on ? "^${replace(lower(local.tp.host), ".", "\\.")}(:443)?$" : null
+  # AA-1090 R8: with the site header, the three rules match every alias of the TripPlanner distribution (an agency's
+  # own domain included) instead of the TripPlanner host only.
+  tp_site_on = local.tp_on && nonsensitive(var.tripplanner_site_header != null)
 
   # One regex per path set, so no rule nests a logical statement deeper than 3 levels (the provider schema refuses a
   # fourth: and > or > and > or failed the plan, S272; tools/terraform/tests/test_waf_statement_depth.py). Both run on
@@ -231,17 +234,41 @@ resource "aws_wafv2_web_acl" "main" {
 
           scope_down_statement {
             and_statement {
-              statement {
-                regex_match_statement {
-                  regex_string = local.tp_host_regex
-                  field_to_match {
-                    single_header {
-                      name = "host"
+              dynamic "statement" {
+                # The TripPlanner host (before AA-1090), or every alias of the distribution: the site header below.
+                for_each = local.tp_site_on ? [] : [1]
+                content {
+                  regex_match_statement {
+                    regex_string = local.tp_host_regex
+                    field_to_match {
+                      single_header {
+                        name = "host"
+                      }
+                    }
+                    text_transformation {
+                      priority = 0
+                      type     = "LOWERCASE"
                     }
                   }
-                  text_transformation {
-                    priority = 0
-                    type     = "LOWERCASE"
+                }
+              }
+              dynamic "statement" {
+                # AA-1090 R8: the per-distribution site header the TripPlanner distribution adds to every origin request
+                # (an origin custom header, so a viewer cannot set it), which covers every agency domain of the planner.
+                for_each = local.tp_site_on ? [1] : []
+                content {
+                  byte_match_statement {
+                    search_string         = var.tripplanner_site_header.value
+                    positional_constraint = "EXACTLY"
+                    field_to_match {
+                      single_header {
+                        name = lower(var.tripplanner_site_header.name)
+                      }
+                    }
+                    text_transformation {
+                      priority = 0
+                      type     = "NONE"
+                    }
                   }
                 }
               }
@@ -301,17 +328,41 @@ resource "aws_wafv2_web_acl" "main" {
 
           scope_down_statement {
             and_statement {
-              statement {
-                regex_match_statement {
-                  regex_string = local.tp_host_regex
-                  field_to_match {
-                    single_header {
-                      name = "host"
+              dynamic "statement" {
+                # The TripPlanner host (before AA-1090), or every alias of the distribution: the site header below.
+                for_each = local.tp_site_on ? [] : [1]
+                content {
+                  regex_match_statement {
+                    regex_string = local.tp_host_regex
+                    field_to_match {
+                      single_header {
+                        name = "host"
+                      }
+                    }
+                    text_transformation {
+                      priority = 0
+                      type     = "LOWERCASE"
                     }
                   }
-                  text_transformation {
-                    priority = 0
-                    type     = "LOWERCASE"
+                }
+              }
+              dynamic "statement" {
+                # AA-1090 R8: the per-distribution site header the TripPlanner distribution adds to every origin request
+                # (an origin custom header, so a viewer cannot set it), which covers every agency domain of the planner.
+                for_each = local.tp_site_on ? [1] : []
+                content {
+                  byte_match_statement {
+                    search_string         = var.tripplanner_site_header.value
+                    positional_constraint = "EXACTLY"
+                    field_to_match {
+                      single_header {
+                        name = lower(var.tripplanner_site_header.name)
+                      }
+                    }
+                    text_transformation {
+                      priority = 0
+                      type     = "NONE"
+                    }
                   }
                 }
               }
@@ -385,17 +436,41 @@ resource "aws_wafv2_web_acl" "main" {
 
       statement {
         and_statement {
-          statement {
-            regex_match_statement {
-              regex_string = local.tp_host_regex
-              field_to_match {
-                single_header {
-                  name = "host"
+          dynamic "statement" {
+            # The TripPlanner host (before AA-1090), or every alias of the distribution: the site header below.
+            for_each = local.tp_site_on ? [] : [1]
+            content {
+              regex_match_statement {
+                regex_string = local.tp_host_regex
+                field_to_match {
+                  single_header {
+                    name = "host"
+                  }
+                }
+                text_transformation {
+                  priority = 0
+                  type     = "LOWERCASE"
                 }
               }
-              text_transformation {
-                priority = 0
-                type     = "LOWERCASE"
+            }
+          }
+          dynamic "statement" {
+            # AA-1090 R8: the per-distribution site header the TripPlanner distribution adds to every origin request
+            # (an origin custom header, so a viewer cannot set it), which covers every agency domain of the planner.
+            for_each = local.tp_site_on ? [1] : []
+            content {
+              byte_match_statement {
+                search_string         = var.tripplanner_site_header.value
+                positional_constraint = "EXACTLY"
+                field_to_match {
+                  single_header {
+                    name = lower(var.tripplanner_site_header.name)
+                  }
+                }
+                text_transformation {
+                  priority = 0
+                  type     = "NONE"
+                }
               }
             }
           }
