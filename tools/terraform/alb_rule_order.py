@@ -9,8 +9,9 @@ evaluated by priority and the first match wins, so the order is the security con
   R1  priorities are unique;
   R2  at most one deny rule: only an origin-header condition with value "*", action fixed-response 403;
   R3  every rule with an exact origin-header condition forwards or answers a fixed response (AA-933: the
-      partner host's default until the CRM web exists), also has a host-header condition and sits BELOW
-      (lower number than) the deny rule;
+      partner host's default until the CRM web exists), also has a host-header condition, or (AA-1090 R8) an
+      exact site-header condition (SITE_HEADERS: one distribution's own secret, so the rule takes every alias of
+      that distribution and nothing else), and sits BELOW (lower number than) the deny rule;
   R4  every rule without an origin-header condition sits ABOVE the deny rule (CloudFront traffic that
       matched no host rule must hit the 403 before any CIS / Booking rule or the default action);
   R5  an exact origin-header rule without a deny rule is an error (CloudFront traffic for other hosts
@@ -40,6 +41,9 @@ DEFAULT_ORIGIN_HEADER = "x-aa-origin"
 PRIORITY_MAP_LOCAL = "alb_http_rule_priorities"
 HEADER_NAME_LOCAL = "alb_origin_header_name"
 HTTP_LISTENER_REF = "module.alb.http_listener_arn"
+# AA-1090 R8: per-distribution site headers (a CloudFront origin custom header with a secret value, which a viewer
+# cannot set): a rule may match one exactly instead of a Host. name -> the local that holds it in the source.
+SITE_HEADERS = {"x-aa-tp-site": "tp_web_site_header_name"}
 # R3: a redirect (or anything else) behind the origin secret could send a viewer off-site; a fixed response cannot.
 EXACT_RULE_ACTIONS = frozenset({"forward", "fixed-response"})
 
@@ -55,6 +59,7 @@ class Rule:
     action: str
     status_code: Optional[str] = None
     has_host: bool = False
+    has_site_header: bool = False  # AA-1090: an exact SITE_HEADERS condition (one distribution's secret)
     has_other_conditions: bool = False  # path, query, source-ip, method, other headers
     origin_values: Optional[list[str]] = None  # None = no origin-header condition
 
@@ -119,8 +124,8 @@ def check_rules(rules: list[Rule]) -> list[str]:
     for r in exact:
         if r.action not in EXACT_RULE_ACTIONS:
             errors.append(f"R3 {r.name}: an exact origin-header rule must forward or answer a fixed response")
-        if not r.has_host:
-            errors.append(f"R3 {r.name}: an exact origin-header rule must also match a host header")
+        if not (r.has_host or r.has_site_header):
+            errors.append(f"R3 {r.name}: an exact origin-header rule must also match a host header or a site header")
         if deny is not None and not r.sort_key < deny.sort_key:
             errors.append(f"R3 {r.name} (priority {r.priority}) must sit below the deny rule ({deny.priority})")
 
@@ -164,8 +169,12 @@ def rules_from_describe(data: dict, origin_header: str = DEFAULT_ORIGIN_HEADER) 
                 rule.has_host = True
             elif fld == "http-header":
                 cfg = cond.get("HttpHeaderConfig") or {}
-                if str(cfg.get("HttpHeaderName", "")).lower() == origin_header:
-                    rule.origin_values = list(cfg.get("Values") or [])
+                hname = str(cfg.get("HttpHeaderName", "")).lower()
+                values = list(cfg.get("Values") or [])
+                if hname == origin_header:
+                    rule.origin_values = values
+                elif hname in SITE_HEADERS and len(values) == 1 and not any(c in values[0] for c in "*?"):
+                    rule.has_site_header = True
                 else:
                     rule.has_other_conditions = True
             else:
@@ -311,6 +320,17 @@ def rules_from_source(root: Path) -> tuple[list[Rule], list[str], str]:
                     nm = re.search(r"(?m)^\s*http_header_name\s*=\s*(.+?)\s*$", hbody)
                     hname = (nm.group(1) if nm else "").strip()
                     is_origin = hname == f"local.{HEADER_NAME_LOCAL}" or hname.strip('"').lower() == origin_header
+                    is_site = (hname.strip('"').lower() in SITE_HEADERS
+                               or hname in {f"local.{v}" for v in SITE_HEADERS.values()})
+                    if is_site:
+                        vm = re.search(r"(?ms)^\s*values\s*=\s*\[(.*?)\]", hbody)
+                        items = [v.strip() for v in (vm.group(1) if vm else "").split(",") if v.strip()]
+                        # one reference (the secret), never a literal pattern
+                        if len(items) == 1 and not items[0].startswith('"'):
+                            rule.has_site_header = True
+                        else:
+                            rule.has_other_conditions = True
+                        continue
                     if not is_origin:
                         rule.has_other_conditions = True
                         continue

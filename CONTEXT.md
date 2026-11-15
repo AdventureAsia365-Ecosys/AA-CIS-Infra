@@ -391,7 +391,16 @@ accounts/
                                    tripplanner_web; the tripplanner. CNAME (moved from custom_domains.tf), always to
                                    the distribution since the Vercel retirement (S272: switch and Vercel target
                                    removed), with the 60 s TTL option var.tripplanner_web_dns_switch_window (off, 300 s);
-                                   root runbook docs/ops/runbooks/tripplanner-web-ecs-cutover.md)
+                                   root runbook docs/ops/runbooks/tripplanner-web-ecs-cutover.md). AA-1090 R8
+                                   (agency domains): a second distribution tripplanner_agency (same origin, headers,
+                                   behaviours; no alias, default certificate) holds the agency domains, so the public
+                                   host never shares a certificate with an agency; its aliases + viewer_certificate
+                                   are ignore_changes (the CIS job tripplanner_custom_domain owns them; modules/ecs
+                                   policy tripplanner_custom_domain, env TP_AGENCY_DISTRIBUTION_ID on the CIS api +
+                                   worker); the public distribution stays fully Terraform's. Both add the site header
+                                   x-aa-tp-site (a random secret); ALB rule tripplanner_web_alias forwards on it + the
+                                   origin secret (any Host); the three WAF rules match it (module "waf" input
+                                   tripplanner_site_header)
     photos_cdn.tf                 (AA-844, edge: CloudFront img.lumiguides.it.com in front of the bronze
                                    bucket's photos/ prefix — ACM cert us-east-1 + validation record always;
                                    validation wait, distribution (origin_path /photos, OAC SigV4, cache key

@@ -338,6 +338,34 @@ variable "tripplanner_revalidate_url" {
   }
 }
 
+variable "tripplanner_custom_domains_enabled" {
+  description = "AA-1090: turn the CIS custom-domain grant and env on (the root sets it with the TripPlanner edge); a plan-time boolean so count never waits on a distribution ARN."
+  type        = bool
+  default     = false
+}
+
+variable "tripplanner_agency_distribution_arn" {
+  description = "AA-1090 R8: ARN of the TripPlanner AGENCY CloudFront distribution (accounts/aa365/tripplanner_web_edge.tf, aws_cloudfront_distribution.tripplanner_agency: agency domains only, never the public TripPlanner host). Gives the CIS task role the tripplanner_custom_domain policy (tagged ACM certificates in us-east-1, Get / UpdateDistribution on this distribution only) and the CIS api + worker the env TP_AGENCY_DISTRIBUTION_ID (the agency-domain job). Empty = custom domains off: no grant, no env."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.tripplanner_agency_distribution_arn == "" || can(regex("^arn:aws:cloudfront::[0-9]{12}:distribution/[A-Z0-9]+$", var.tripplanner_agency_distribution_arn))
+    error_message = "tripplanner_agency_distribution_arn must be a CloudFront distribution ARN or empty."
+  }
+}
+
+variable "tripplanner_custom_domain_protected_cert_arns" {
+  description = "AA-1090 R8: us-east-1 ACM certificates the agency-domain job may never tag, untag or delete (an explicit Deny on top of the ManagedBy = terraform Deny), e.g. the wildcard the public TripPlanner host serves. At least one when custom domains are on (an empty Resource list is not a valid policy)."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for a in var.tripplanner_custom_domain_protected_cert_arns : can(regex("^arn:aws:acm:us-east-1:[0-9]{12}:certificate/", a))])
+    error_message = "tripplanner_custom_domain_protected_cert_arns must hold us-east-1 ACM certificate ARNs."
+  }
+}
+
 variable "photos_cdn_distribution_arn" {
   description = "AA-835: ARN of the photos CloudFront distribution (accounts/aa365/photos_cdn.tf). Gives the CIS task role cloudfront:CreateInvalidation on it and the worker env PHOTO_CDN_DISTRIBUTION_ID (the supply_media_purge job). Empty = CDN gated off: no grant, no env."
   type        = string
