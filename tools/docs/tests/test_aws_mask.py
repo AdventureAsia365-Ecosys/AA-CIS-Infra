@@ -79,6 +79,16 @@ class MaskText(unittest.TestCase):
         self.assertIn('"alb_arn": "arn:{partition}:elasticloadbalancing:us-west-1:{acc2}:loadbalancer/app/a/1"', out)
         self.assertEqual(am.find_leaks(out), [])
 
+    def test_arn_patterns_in_check_constraints(self):
+        # S282: CIS 428 has CHECK (certificate_arn ~ '^arn:aws:acm:us-east-1:[0-9]{12}:certificate/...'); the dump
+        # renders it and the reference generator's leak guard failed on the unmasked partition.
+        s = "CHECK ((certificate_arn ~ '^arn:aws:acm:us-east-1:[0-9]{12}:certificate/[0-9a-f-]{36}$'::text))"
+        out = self.m(s)
+        self.assertEqual(out, "CHECK ((certificate_arn ~ '^arn:{partition}:acm:us-east-1:[0-9]{12}:certificate/[0-9a-f-]{36}$'::text))")
+        self.assertEqual(am.find_leaks(out), [])
+        self.assertEqual(self.m(out), out)
+        self.assertEqual(self.m("prefix arn:aws-us-gov:"), "prefix arn:{partition}:")
+
     def test_ec2_ids(self):
         out = self.m("vpc-0123456789abcdef0 subnet-0abc1234def567890 sg-0123abcd i-0abcdef1234567890 eni-0fedcba9876543210 igw-0a1b2c3d4e5f60718 rtb-0b1c2d3e4f5a60718")
         self.assertEqual(out, "vpc-{masked} subnet-{masked} sg-{masked} i-{masked} eni-{masked} igw-{masked} rtb-{masked}")

@@ -60,6 +60,7 @@ EC2_ID_RE = re.compile(r"\b(?P<prefix>vpc|subnet|sg|rtb|igw|eni|i|nat|eipalloc|v
 LEAK_ID_RE = re.compile(r"\b\d{12}\b")
 UUID_RE = re.compile(UUID)
 LEAK_ARN = "arn:aws:"
+RESIDUAL_ARN_RE = re.compile(r"arn:aws(?:-[a-z]+)*:")
 FINGERPRINT_RE = re.compile(r"<!-- docs-fingerprint: ([0-9a-f]{64}) -->\n")
 
 
@@ -116,6 +117,10 @@ def mask_text(text: str, aliases: Optional[Mapping[str, str]] = None) -> str:
     if aliases is None:
         aliases = load_aliases()
     text = TOKEN_RE.sub(lambda m: _replace(m, aliases), text)
+    # S282: an 'arn:aws...:' left over is not a full ARN (a regex in a CHECK constraint such as
+    # '^arn:aws:acm:us-east-1:[0-9]{12}:certificate/...', a truncated value): mask its partition too, so the
+    # generator's own leak guard cannot fail on text that names no account.
+    text = RESIDUAL_ARN_RE.sub("arn:{partition}:", text)
     return EC2_ID_RE.sub(lambda m: f"{m.group('prefix')}-{{masked}}", text)
 
 
