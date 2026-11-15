@@ -338,6 +338,12 @@ variable "tripplanner_revalidate_url" {
   }
 }
 
+variable "tripplanner_custom_domains_enabled" {
+  description = "AA-1090: turn the CIS custom-domain grant and env on (the root sets it with the TripPlanner edge); a plan-time boolean so count never waits on a distribution ARN."
+  type        = bool
+  default     = false
+}
+
 variable "tripplanner_agency_distribution_arn" {
   description = "AA-1090 R8: ARN of the TripPlanner AGENCY CloudFront distribution (accounts/aa365/tripplanner_web_edge.tf, aws_cloudfront_distribution.tripplanner_agency: agency domains only, never the public TripPlanner host). Gives the CIS task role the tripplanner_custom_domain policy (tagged ACM certificates in us-east-1, Get / UpdateDistribution on this distribution only) and the CIS api + worker the env TP_AGENCY_DISTRIBUTION_ID (the agency-domain job). Empty = custom domains off: no grant, no env."
   type        = string

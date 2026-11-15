@@ -112,7 +112,8 @@ locals {
   # editor (api, which answers 409 without it) read the TripPlanner AGENCY distribution (its own distribution: the public
   # TripPlanner host never shares a certificate with an agency). Empty = custom domains off: no env, no grant
   # (aws_iam_role_policy.ecs_task_tripplanner_custom_domain).
-  tp_custom_domain_on = var.tripplanner_agency_distribution_arn != ""
+  # A plan-time boolean (never derived from the distribution ARN, which is unknown until the distribution exists).
+  tp_custom_domain_on = var.tripplanner_custom_domains_enabled
   tp_custom_domain_env = local.tp_custom_domain_on ? [
     { name = "TP_AGENCY_DISTRIBUTION_ID", value = element(split("/", var.tripplanner_agency_distribution_arn), 1) },
   ] : []
