@@ -87,11 +87,6 @@ def _say(msg: str) -> None:
     print(f"SCRIPT {msg}", flush=True)
 
 
-def _ident(t: str) -> str:
-    s, n = t.split(".", 1)
-    return f'"{s}"."{n}"'
-
-
 async def _tripplanner(conn, tid: str) -> tuple[int, bool]:
     bad, blind = 0, False
     for t in TP_TABLES:
@@ -195,7 +190,7 @@ async def _crm(conn, tid: str) -> tuple[int, bool]:
                 continue
             if n:
                 (keep if (t in CRM_KEEP or t.startswith("audit_event")) else left).append(f"{t}={n}")
-        bad += len(left) + len(unreadable)
+        bad += len(left) + len(unreadable) + (len(tables) == 0)  # no table read is never a pass
         _say(f"CRM tables_checked={len(tables)} left={len(left)} " + (" ".join(left) or "(none)"))
         _say("CRM kept (erase_subject keep list): " + (" ".join(keep) or "(none)"))
         if unreadable:
@@ -218,7 +213,7 @@ async def _crm(conn, tid: str) -> tuple[int, bool]:
             found += n
             if n:
                 hits.append(f"{t}={n}")
-        bad += bool(found)
+        bad += bool(found) + (checked == 0)  # no pii column read is never a pass
         _say(f"CRM pii_columns_checked={checked} pii_rows_found={found} " + (" ".join(hits) or "(none)"))
         keys = await conn.fetchval("SELECT count(*)::int FROM crm.tenant_key WHERE tenant_id = $1::uuid "
                                    "AND destroyed_at IS NULL", tid)
@@ -231,13 +226,26 @@ async def _crm(conn, tid: str) -> tuple[int, bool]:
             n = await conn.fetchval("SELECT count(*)::int FROM crm.tenant WHERE display_name = $1", AGENCY_NAME.strip())
             bad += bool(n)
             _say(f"CRM name_hits crm.tenant={n}")
-    rows = await conn.fetch(
-        "SELECT r.round, r.mode, r.outcome, count(*)::int AS n FROM crm.tenant_erasure_report r "
-        "JOIN crm.tenant_erasure_saga s ON s.request_id = r.request_id WHERE s.subject_tenant_id = $1::uuid "
-        "GROUP BY r.round, r.mode, r.outcome ORDER BY r.round, r.mode", tid)
-    _say("CRM crm.tenant_erasure_report (kept, the record): "
-         + (", ".join(f"r{r['round']} {r['mode']}/{r['outcome']}={r['n']}" for r in rows) or "none"))
+    try:  # the record only (crm-066): never turns the verdict above inconclusive
+        rows = await conn.fetch(
+            "SELECT r.round, r.mode, r.outcome, count(*)::int AS n FROM crm.tenant_erasure_report r "
+            "JOIN crm.tenant_erasure_saga s ON s.request_id = r.request_id WHERE s.subject_tenant_id = $1::uuid "
+            "GROUP BY r.round, r.mode, r.outcome ORDER BY r.round, r.mode", tid)
+        _say("CRM crm.tenant_erasure_report (kept, the record): "
+             + (", ".join(f"r{r['round']} {r['mode']}/{r['outcome']}={r['n']}" for r in rows) or "none"))
+    except Exception as exc:  # noqa: BLE001
+        _say(f"CRM crm.tenant_erasure_report unreadable ({type(exc).__name__})")
     return bad, blind
+
+
+async def _synthetic(conn, tid: str) -> bool:
+    """The run tenant is a synthetic CRM agency (crm.tenant.is_synthetic, kept by the erase)."""
+    async with conn.transaction():
+        await conn.execute(f"SET LOCAL app.tenant_id = '{tid}'")
+        await conn.execute("SET LOCAL app.actor = 'platform:aa1093-reread'")
+        n = await conn.fetchval("SELECT count(*) FILTER (WHERE is_synthetic)::int FROM crm.tenant "
+                                "WHERE tenant_id = $1::uuid", tid)
+    return n == 1
 
 
 async def main(conn):
@@ -246,9 +254,18 @@ async def main(conn):
         _say("FAIL TENANT_ID is not set to the run's tenant uuid")
         return 1
     _say(f"tenant {tid[:8]}")
+    try:
+        synthetic = await _synthetic(conn, tid)
+    except Exception as exc:  # noqa: BLE001
+        _say(f"FAIL the synthetic check could not run ({type(exc).__name__})")
+        return 1
+    if not synthetic:
+        _say("FAIL tenant not synthetic (no crm.tenant row with is_synthetic for this id): refusing to report")
+        return 1
     tp_bad, tp_blind = await _tripplanner(conn, tid)
     bk_bad = await _booking(conn, tid)
-    tp_v = "INCONCLUSIVE (no visible session row)" if tp_blind else ("PASS" if tp_bad == 0 else "FAIL")
+    tp_v = ("INCONCLUSIVE (no visible session row)" if tp_blind
+            else ("PASS (no tenant rows at baseline: not evidence)" if tp_bad == 0 else "FAIL"))
     _say(f"VERDICT tripplanner after-erase {tp_v} (non-zero checks: {tp_bad})")
     _say(f"VERDICT booking after-erase {'PASS' if bk_bad == 0 else 'FAIL'} (non-zero checks: {bk_bad})")
     try:
