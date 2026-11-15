@@ -155,7 +155,9 @@ def test_cloudfront_is_the_agency_distribution_only():
 # --- 2. modules/ecs --------------------------------------------------------------------------------------------------
 
 def test_policy_and_env_only_when_the_agency_distribution_is_set():
-    assert 'tp_custom_domain_on = var.tripplanner_agency_distribution_arn != ""' in ECS
+    # a plan-time boolean: a count must never wait on the new distribution's ARN (unknown until it exists)
+    assert "tp_custom_domain_on = var.tripplanner_custom_domains_enabled" in ECS
+    assert "tripplanner_custom_domains_enabled            = local.tp_web_edge_on == 1" in MAIN
     pol = _code(_resource(ECS, "aws_iam_role_policy", "ecs_task_tripplanner_custom_domain"))
     assert "count = local.tp_custom_domain_on ? 1 : 0" in pol
     assert "policies/tripplanner_custom_domain.json.tftpl" in pol and "role = aws_iam_role.ecs_task.id" in pol
