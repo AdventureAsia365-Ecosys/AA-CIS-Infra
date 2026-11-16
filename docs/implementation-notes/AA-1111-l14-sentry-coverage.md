@@ -53,3 +53,10 @@ Two PRs:
 - Tests: `tools/identity/tests/test_crm_dev_identity.py` (the command, and that `crm_web.tf` maps the same key
   behind the flag) and `tools/terraform/tests/test_aa1004_environment_moves.py` (the setting is declared identically
   in the root and the module and passed through).
+
+## The enable PR (`chore/aa-1111-enable-crm-sentry-dev`)
+
+- Stacked on the code PR (it sets a variable that PR declares); merge it after the code PR and only when the
+  orchestrator has written `crm/dev/sentry-dsn` and the `sentry_dsn` key of `crm/dev/web`.
+- `crm_sentry_enabled = true` also sets `SENTRY_REQUIRED=true` on the API task: the API refuses to start without a
+  usable DSN, so a missing value shows at once instead of silently sending nothing.

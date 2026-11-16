@@ -75,6 +75,14 @@ booking_staff_notify_email = "nghieppham@adventure.asia"
 # secret with no value); the next AA-Booking deploy carries the new task-definition revision.
 booking_sentry_enabled = true
 
+# AA-1111 (S282): Sentry for the AA-Partner API + crm.job worker (crm_sentry_enabled: SENTRY_DSN from crm/dev/sentry-dsn
+# + SENTRY_REQUIRED=true) and the AA-Partner web (crm_web_sentry_enabled: SENTRY_DSN from key sentry_dsn of
+# crm/dev/web). Only after both values exist (Sentry projects aa-partner-api / aa-partner-web; tools/identity/README.md
+# "Runbook: Sentry for the AA-Partner API and web"): ECS cannot start a task on a missing value or key. The next
+# AA-Partner Deploy Dev / Deploy Web Dev carries the new revisions.
+crm_sentry_enabled     = true
+crm_web_sentry_enabled = true
+
 # AA-828 (S238): CIS spend budget alert e-mails (job ops_alert_email, SES) go to this inbox on Dev.
 cis_ops_alert_email = "nghieppham@adventure.asia"
 
