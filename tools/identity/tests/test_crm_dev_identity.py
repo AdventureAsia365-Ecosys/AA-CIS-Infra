@@ -551,3 +551,55 @@ def test_e2e_booking_writers_refuse_other_groups_and_other_environments(capsys):
     assert "booking-admin" in capsys.readouterr().err and idp.added == []
     assert run(["--env", "stg", "e2e-booking-writers", "--apply"], PerUserWorkforceIdp()) == 1
     assert "Dev only" in capsys.readouterr().err
+
+
+# AA-1111: the CRM web's server-side Sentry DSN key. Invented values only.
+WEB_DSN = "https://publickey000@o0.ingest.example.test/1"
+
+
+def test_web_sentry_dsn_adds_the_key_keeps_every_other_and_never_prints_it(capsys):
+    other = {"cognito_client_secret": "agency-cs", "session_secret": "a" * 40, "staff_session_secret": "t" * 40}
+    sm = FakeSm({"crm/dev/web": json.dumps(other)})
+    assert run(["web-sentry-dsn"], sm=sm) == 0
+    assert lines(capsys)[0] == {"secret": "crm/dev/web", "changed": [], "sentry": "off", "action": "unchanged"}
+    assert run(["web-sentry-dsn", "--sentry-dsn", WEB_DSN], sm=sm) == 0
+    dry = lines(capsys)[0]
+    assert dry["action"] == "would_write" and dry["changed"] == ["sentry_dsn"] and dry["sentry"] == "on"
+    assert sm.writes == []
+    assert run(["web-sentry-dsn", "--sentry-dsn", WEB_DSN, "--apply"], sm=sm) == 0
+    out = capsys.readouterr().out
+    assert WEB_DSN not in out and json.loads(out)["action"] == "written"
+    value = json.loads(sm.values["crm/dev/web"])
+    assert value == {**other, "sentry_dsn": WEB_DSN}
+    assert run(["web-sentry-dsn", "--sentry-dsn", WEB_DSN, "--apply"], sm=sm) == 0
+    assert lines(capsys)[0]["action"] == "unchanged" and len(sm.writes) == 1
+    assert run(["web-sentry-dsn"], sm=sm) == 0
+    assert lines(capsys)[0]["sentry"] == "on"
+
+
+def test_web_sentry_dsn_switches_off_with_an_empty_value(capsys):
+    sm = FakeSm({"crm/dev/web": json.dumps({"session_secret": "a" * 40, "sentry_dsn": WEB_DSN})})
+    assert run(["web-sentry-dsn", "--sentry-dsn", "", "--apply"], sm=sm) == 0
+    assert lines(capsys)[0]["sentry"] == "off"
+    assert json.loads(sm.values["crm/dev/web"])["sentry_dsn"] == ""
+
+
+@pytest.mark.parametrize("bad", ["http://k@o0.ingest.example.test/1", "not-a-dsn"])
+def test_web_sentry_dsn_refuses_a_value_that_is_not_https(capsys, bad):
+    sm = FakeSm({"crm/dev/web": json.dumps({"session_secret": "a" * 40})})
+    assert run(["web-sentry-dsn", "--sentry-dsn", bad, "--apply"], sm=sm) == 1
+    assert "https://" in capsys.readouterr().err and sm.writes == []
+
+
+def test_web_sentry_dsn_refuses_without_the_secret_shell(capsys):
+    assert run(["web-sentry-dsn", "--sentry-dsn", WEB_DSN, "--apply"], sm=FakeSm()) == 1
+    assert "crm_web.tf" in capsys.readouterr().err
+
+
+def test_the_web_task_maps_the_sentry_key_only_behind_its_flag():
+    """crm_web.tf maps SENTRY_DSN from the same key this tool writes, inside the crm_web_sentry_enabled branch."""
+    tf = (REPO / "modules" / "environment" / "crm_web.tf").read_text(encoding="utf-8")
+    branch = tf.split("var.crm_web_sentry_enabled ? [", 1)[1].split("] : [])", 1)[0]
+    assert f':{tool.SENTRY_DSN_KEY}::" }}' in branch and '{ name = "SENTRY_DSN"' in branch
+    assert 'variable "crm_web_sentry_enabled"' in tf and re.search(
+        r'variable "crm_web_sentry_enabled" \{[^}]*default\s*=\s*false', tf)

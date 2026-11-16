@@ -9,8 +9,9 @@
 #   Resources:
 #     - ECR repo aa-crm-dev-web (IMMUTABLE, one tag per git SHA, scan on push, keep last 10)
 #     - secret shell crm/dev/web (JSON {cognito_client_secret, session_secret, staff_cognito_client_secret,
-#       staff_session_secret}; NO secret_version: the value is set out of band by tools/identity/crm_dev_identity.py
-#       web-secret / staff-web-secret, so Terraform and the plan role never read it)
+#       staff_session_secret, academy_*, sentry_dsn (AA-1111)}; NO secret_version: the value is set out of band by
+#       tools/identity/crm_dev_identity.py web-secret / staff-web-secret / academy-web-secret / web-sentry-dsn, so
+#       Terraform and the plan role never read it)
 #     - execution role aa-crm-dev-web-ecs-execution-role: pull this repo, write the CRM log group, read crm/dev/web only
 #       (never the DSN: the web has no database access)
 #     - task role aa-crm-dev-web-ecs-task-role: ECS Exec channel + exec session logs only (no AWS API the app calls)
@@ -32,6 +33,10 @@
 # AA-1019 Terraform apply (tools/identity/README.md runbook); a task whose secret lacks a mapped key fails to start.
 # (The service ignores task_definition changes, so the apply alone never restarts the running task: writing the keys
 # after the apply and before the next web deploy would also work, but the runbook uses one order.)
+# AA-1111 (S282 Sentry coverage): with var.crm_web_sentry_enabled the task also maps SENTRY_DSN from the key sentry_dsn
+# of crm/dev/web (the server SDK of the web, Sentry project aa-partner-web; the execution role already reads this
+# secret). ORDER: write the key (crm_dev_identity.py web-sentry-dsn --apply) BEFORE the apply that turns the flag on,
+# then deploy the web (the deploy copies the family's latest revision). The browser DSN is a build arg, not this key.
 # AA-1105 (root ADR 0022): the AA Academy host academy.<zone> (accounts/aa365 academy_edge.tf) is served by this web:
 # WEB_ACADEMY_HOSTS / ACADEMY_COGNITO_DOMAIN / ACADEMY_COGNITO_CLIENT_ID (WORKFORCE client academy-web) here,
 # ACADEMY_COGNITO_CLIENT_SECRET / ACADEMY_SESSION_SECRET from the academy_* keys of crm/dev/web. Same ORDER as AA-1019:
@@ -62,6 +67,12 @@ variable "crm_web_client_hosts" {
   description = "AA-935: extra traveller (client) hosts the CRM web serves /c/* on (WEB_CLIENT_HOSTS). AA-936 adds go-dev. itself (crm_client_edge.tf); list only additional hosts here."
   type        = list(string)
   default     = []
+}
+
+variable "crm_web_sentry_enabled" {
+  description = "AA-1111: map key sentry_dsn of the crm/<env>/web secret into the CRM web task (SENTRY_DSN, the server half of Sentry project aa-partner-web). Turn on only AFTER the key exists (crm_dev_identity.py web-sentry-dsn --apply): a task whose secret lacks a mapped key fails to start."
+  type        = bool
+  default     = false
 }
 
 locals {
@@ -285,7 +296,7 @@ resource "aws_ecs_task_definition" "crm_web" {
     essential    = true
     portMappings = [{ containerPort = local.crm_web_port, protocol = "tcp" }]
     environment  = local.crm_web_env
-    secrets = [
+    secrets = concat([
       { name = "COGNITO_CLIENT_SECRET", valueFrom = "${aws_secretsmanager_secret.crm_web.arn}:cognito_client_secret::" },
       { name = "WEB_SESSION_SECRET", valueFrom = "${aws_secretsmanager_secret.crm_web.arn}:session_secret::" },
       # AA-1019: the staff console's client secret and its own cookie key (never the agency key above).
@@ -294,7 +305,11 @@ resource "aws_ecs_task_definition" "crm_web" {
       # AA-1105: the academy host's client secret and its own cookie key (never the agency or the staff console key).
       { name = "ACADEMY_COGNITO_CLIENT_SECRET", valueFrom = "${aws_secretsmanager_secret.crm_web.arn}:academy_cognito_client_secret::" },
       { name = "ACADEMY_SESSION_SECRET", valueFrom = "${aws_secretsmanager_secret.crm_web.arn}:academy_session_secret::" },
-    ]
+      ], var.crm_web_sentry_enabled ? [
+      # AA-1111: the server-side Sentry DSN (AA-Partner web/instrumentation.ts reads SENTRY_DSN; the browser DSN is the
+      # build arg from the AA-Partner `dev` variable WEB_PUBLIC_SENTRY_DSN). Only while var.crm_web_sentry_enabled.
+      { name = "SENTRY_DSN", valueFrom = "${aws_secretsmanager_secret.crm_web.arn}:sentry_dsn::" },
+    ] : [])
     logConfiguration = {
       logDriver = "awslogs"
       options = {
