@@ -43,6 +43,10 @@ Two PRs:
   `crm/dev/sentry-dsn` -> `web-sentry-dsn --apply` -> `WEB_PUBLIC_SENTRY_DSN` GitHub variable -> merge the tfvars PR
   -> Terraform Apply -> AA-Partner Deploy Dev and Deploy Web Dev.
 - The services ignore `task_definition`, so the apply restarts nothing; the next deploy copies the latest revision.
+- The browser DSN (`WEB_PUBLIC_SENTRY_DSN`) is a build arg. Deploy Web Dev reuses the IMMUTABLE image of a commit
+  already built, so a dispatch on such a commit keeps the old browser bundle; the browser half lands with the next
+  web image built after the variable is set (the runbook says how to tell from the run log). The server half does not
+  depend on the image.
 - AA-Partner needs no code change: `web/instrumentation.ts` reads `SENTRY_DSN` at run time (not inlined, it is not a
   `NEXT_PUBLIC_` name) and `api/app/observability/sentry.py` reads `SENTRY_DSN` and logs `sentry_enabled`. The
   comment in `web/instrumentation.ts` still names the retired `crm_portal_sentry_enabled` route (follow-up).

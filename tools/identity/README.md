@@ -120,6 +120,12 @@ Run by the orchestrator with the MFA admin role. The DSN values never go into a 
 
 A task whose secret lacks a mapped key, or whose secret has no value, fails to start: steps 2 and 3 come before 5.
 
+The browser half (step 4) is baked into the web image at build time. ECR `aa-crm-dev-web` is IMMUTABLE and Deploy Web
+Dev reuses the image already pushed for the commit it runs on, so a dispatch on a `main` commit whose web image exists
+ships the old browser bundle (the server half still turns on: it comes from the task definition). The browser DSN
+lands with the first web image built after step 4: check the run log for "already in ECR: reusing it"; if it says so,
+the browser half waits for the next AA-Partner commit that touches `web/**`.
+
 ### Runbook: the Dev E2E staff user (AA-1019, root ADR 0006a A10c)
 
 Run by the orchestrator with the MFA admin role, in this order, after the AA-1019 Infra PR is merged:
