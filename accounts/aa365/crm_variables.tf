@@ -81,6 +81,13 @@ variable "crm_web_client_hosts" {
   default     = []
 }
 
+# as in modules/environment/crm_web.tf
+variable "crm_web_sentry_enabled" {
+  description = "AA-1111: map key sentry_dsn of the crm/<env>/web secret into the CRM web task (SENTRY_DSN, the server half of Sentry project aa-partner-web). Turn on only AFTER the key exists (crm_dev_identity.py web-sentry-dsn --apply): a task whose secret lacks a mapped key fails to start."
+  type        = bool
+  default     = false
+}
+
 # as in modules/environment/crm_storage.tf
 variable "crm_audit_compliance_enabled" {
   description = "AA-932: put the 12-month audit bucket (aa-crm-<env>-audit-c-*) in COMPLIANCE mode. Irreversible for every locked version (nobody, root included, can shorten or lift it). Go-real only (CRM-38); a precondition refuses it on Dev (design v3 §3.6: Dev governance only)."

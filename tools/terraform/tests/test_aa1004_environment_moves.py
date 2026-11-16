@@ -226,6 +226,7 @@ SLICE_2_SETTINGS = {
     "crm_audit_compliance_enabled", "crm_ingest_subdomain", "crm_mail_oauth_enabled", "crm_scrub_guardrail_enabled",
     "crm_llm_bedrock_enabled", "crm_tenant_erase_apply_enabled",
     "crm_slo",                                                 # AA-1096 L6 (S279): the SLO alarm thresholds
+    "crm_web_sentry_enabled",                                  # AA-1111 (S282): the CRM web's server Sentry DSN
 }
 
 # Slice 3 (S267, AA-1004 P1): the former tripplanner.tf and tripplanner_jobs.tf of accounts/aa365 (the two Mapbox
