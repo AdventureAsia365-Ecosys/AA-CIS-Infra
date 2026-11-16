@@ -71,6 +71,7 @@ pool, MFA required).
 | `$PY tools/identity/crm_dev_identity.py --pool partner invitee-reset --invitee studio-viewer [--apply]` (or `studio-editor`) | AA-979: deletes the partner-pool account of one Content studio invitee (`e2e-test-studio-<role>@e2e-mail.lumiguides.it.com`, `studio_invitees` in `crm_e2e_users.json`, a recipient of the e2e mailbox rule) before the phase 2 re-enrolment E2E invites it again (staff invitation from the Dev-only E2E CIS admin, synthetic tenants only, root ADR 0006a A10b-1). One role per run, so the other role's account and saved credentials stay. Without `--invitee` the CRM invitee is reset, as before. |
 | `$PY tools/identity/crm_dev_identity.py web-secret [--apply] [--rotate-session]` | Writes `crm/dev/web` (the `crm_web.tf` secret shell) = `{cognito_client_secret, session_secret}`: the client secret read from the `cis-portal` client (or, with `--pool partner`, the `partner-web` client: run it right after `crm_partner_signin_enabled = true` is applied, then deploy the web), the session secret random and kept on re-runs unless `--rotate-session` (signs every CRM web user out). Run it before the first web task starts. |
 | `$PY tools/identity/crm_dev_identity.py academy-web-secret [--apply] [--rotate-academy-session]` | AA-1105: adds the AA Academy host's two keys to `crm/dev/web`: `academy_cognito_client_secret` (read from the WORKFORCE client `aa-workforce-dev-academy-web`) and `academy_session_secret` (random, kept on re-runs unless `--rotate-academy-session`, never equal to the agency or staff console key). Every other key stays as it is. Run it after the Terraform apply that creates the client and before the next web deploy. |
+| `$PY tools/identity/crm_dev_identity.py web-sentry-dsn [--sentry-dsn DSN] [--apply]` | AA-1111: sets the key `sentry_dsn` of `crm/dev/web`, the server-side DSN of Sentry project `aa-partner-web` (the task maps it as `SENTRY_DSN` once `crm_web_sentry_enabled = true`). `--sentry-dsn` must be an `https://` DSN, or `''` (Sentry off). Without `--sentry-dsn` it only reports `"sentry": "on"`/`"off"`. The value is never printed; every other key stays as it is. Run it BEFORE the apply that turns the flag on. |
 | `$PY tools/identity/crm_dev_identity.py staff-web-secret [--apply] [--rotate-staff-session]` | AA-1019: adds the AA staff console's two keys to `crm/dev/web`: `staff_cognito_client_secret` (read from the WORKFORCE client `aa-workforce-dev-crm-staff`) and `staff_session_secret` (random, kept on re-runs unless `--rotate-staff-session`, never equal to the agency `session_secret`). The agency keys stay as they are (and `web-secret` now keeps the staff keys). Run it BEFORE the AA-1019 Terraform apply (the `aa-workforce-dev-crm-staff` client already exists; the apply only changes its URLs). Either order works, because the running service ignores task definition changes, but the runbook below uses this one: the task maps both keys and does not start without them. |
 | `$PY tools/identity/crm_dev_identity.py e2e-staff [--apply]` | AA-1019 (root ADR 0006a A10c), Dev only: the AA-Partner staff E2E user `e2e-crm-staff@e2e-mail.lumiguides.it.com` in the WORKFORCE pool, groups exactly `crm-ops` + `crm-support`: AdminCreateUser with `MessageAction=SUPPRESS` and `email_verified=true`, no password, then AdminAddUserToGroup for the missing groups; refuses a user that holds any other group. Needs the AA-1019 trigger (Dev flag on) applied first, or the pre sign-up trigger refuses the address. Sign-in is the e-mail code: it lands in the e2e mailbox prefix `inbound-admin/` (rule `e2e-cognito-admin`), which only the MFA admin role reads. The CRM API lets this identity reach synthetic agencies only. |
 | `$PY tools/identity/crm_dev_identity.py e2e-booking-writers [--apply]` | AA-1087 (root ADR 0006a A10e), Dev only: the write-capable AA-Booking E2E users in the WORKFORCE pool, each in exactly one group: `e2e-booking-staff@` (`booking-sales`), `e2e-booking-maker@` and `e2e-booking-checker@` (`booking-finance`), and since AA-1091 (A10e-2) the pricing checker `e2e-booking-pricing-checker@` (`booking-contracting`), all `@e2e-mail.lumiguides.it.com`. Same steps and refusals as `e2e-staff` (SUPPRESS, `email_verified=true`, no password, refuses a user in any other group). Needs the AA-1087 trigger (Dev flag on) applied first. Codes land in `inbound-admin/` (MFA admin role only). AA-Booking holds each user to its own writes on synthetic agencies only. |
@@ -101,6 +102,29 @@ Run by the orchestrator with the MFA admin role, after the AA-1105 Infra PR is m
    This must happen before the next CRM web deploy: the task maps `academy_cognito_client_secret` and
    `academy_session_secret` and does not start without them.
 3. Deploy the CRM web (AA-Partner Deploy Web Dev); `/healthz` on `academy.lumiguides.it.com` answers 200.
+
+### Runbook: Sentry for the AA-Partner API and web (AA-1111)
+
+Run by the orchestrator with the MFA admin role. The DSN values never go into a repo, a PR or a log.
+
+1. Create the Sentry projects `aa-partner-api` and `aa-partner-web` and one client key each.
+2. API: write the `aa-partner-api` DSN into the existing secret shell `crm/dev/sentry-dsn` (a plain string; the
+   Secrets Manager `put-secret-value` call, with the value from a file or a pipe so it is not in the shell history).
+3. Web, server half: `$PY tools/identity/crm_dev_identity.py web-sentry-dsn --sentry-dsn "$DSN"` (dry run:
+   `would_write`, `"sentry": "on"`), then the same with `--apply`.
+4. Web, browser half: set the AA-Partner `dev` environment variable `WEB_PUBLIC_SENTRY_DSN` (public by design).
+5. Merge the tfvars PR (`crm_sentry_enabled = true`, `crm_web_sentry_enabled = true`), then Terraform Apply. The
+   services ignore task definition changes: the apply restarts nothing.
+6. Deploy the CRM API and the CRM web (AA-Partner Deploy Dev / Deploy Web Dev); each deploy copies the family's latest
+   revision. The API logs its `sentry_enabled` line; a test error per service shows in Sentry with `environment=dev`.
+
+A task whose secret lacks a mapped key, or whose secret has no value, fails to start: steps 2 and 3 come before 5.
+
+The browser half (step 4) is baked into the web image at build time. ECR `aa-crm-dev-web` is IMMUTABLE and Deploy Web
+Dev reuses the image already pushed for the commit it runs on, so a dispatch on a `main` commit whose web image exists
+ships the old browser bundle (the server half still turns on: it comes from the task definition). The browser DSN
+lands with the first web image built after step 4: check the run log for "already in ECR: reusing it"; if it says so,
+the browser half waits for the next AA-Partner commit that touches `web/**`.
 
 ### Runbook: the Dev E2E staff user (AA-1019, root ADR 0006a A10c)
 
