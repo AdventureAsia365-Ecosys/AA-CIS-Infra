@@ -24,9 +24,9 @@
 # =============================================================================
 
 variable "acc3_budget_monthly_usd" {
-  description = "AA-896: monthly cost budget for acc3 (USD, gross of credits). 250 = the AWS Lift tier 1 credit; October 2026 runs at about 190 USD/month"
+  description = "AA-896: monthly cost budget for acc3 (USD, gross of credits). 100 since S283 (tech lead, 17/11/2026): equal to the acc3 cap of the AI gateway; acc3 is the Bedrock fallback behind acc1 since S278"
   type        = number
-  default     = 250
+  default     = 100
 }
 
 variable "acc3_anomaly_alert_usd" {
