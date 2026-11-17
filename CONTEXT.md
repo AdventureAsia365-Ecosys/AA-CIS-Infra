@@ -804,11 +804,18 @@ makes CI Terraform Plan fail with 403.
   table itself are removed in separate steps.
 - No `profile` is hardcoded in the aa365 backend: CI (GitHub Actions OIDC) uses ambient env-var
   credentials; locally you `export AWS_PROFILE=aa365-admin` before running Terraform.
-- The acc3 root is applied only by a human and **must** set `profile` in the backend
-  block as well as the provider: `nghiep_aa365`. The provider's `profile` does not apply to
-  backend init; without it Terraform falls back to `[default]` (acc2, MFA assume-role) and fails
-  with a confusing MFA error (first hit on the former acc1 root, PR #70). Copy the backend block
-  from `acc3-bedrock/versions.tf` when creating a new root.
+- The acc1 and acc3 roots are applied only by a human and **must** get the profile at backend
+  init (`-backend-config="profile=<P>"`) as well as in the provider (`var.aws_profile`). The
+  provider's `profile` does not apply to backend init; without it Terraform falls back to
+  `[default]` (acc2, MFA assume-role) and fails with a confusing MFA error (first hit on the
+  former acc1 root, PR #70). Neither root commits its state bucket, profile or account ID: the
+  bucket and profile come through `-backend-config`, `account_id` and `aws_profile` through an
+  untracked `terraform.tfvars` (AA-1095 for acc1, AA-1111 for acc3). Copy the `versions.tf`
+  header and backend block of `acc1-bedrock` when creating a new root.
+- Every `provider "aws"` block of `accounts/` sets `allowed_account_ids` from a variable
+  (aa365: `var.account_id`; acc1/acc3: the untracked `var.account_id`; management:
+  `var.management_account_id`), so a plan with credentials of another account stops before any
+  call (AA-517; AA-1111). `tools/terraform/tests/test_aa1111_account_guards.py` holds a new root to it.
 - Version pins: the aa365 root pins Terraform exactly (`required_version = "1.15.5"`, the same
   version as `terraform_version` in `terraform-plan.yml` and `terraform-apply.yml`; bump all three
   in one PR) and AWS provider `~> 6.69`. The acc3 root (applied by a human only) keeps
