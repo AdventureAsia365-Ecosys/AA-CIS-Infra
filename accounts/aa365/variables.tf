@@ -155,6 +155,29 @@ variable "alert_email" {
   default     = "nghieppham@adventure.asia"
 }
 
+# AA-1110 (S283): the second alert channel (observability.tf aws_sns_topic_subscription.alerts_email_secondary).
+# "" = off (no subscription, the default). Set to the second key-holder's or a role inbox, never the bootstrap
+# address; a recipient, not a threshold, so it is a Terraform input like var.alert_email. It comes from the repo secret
+# ALERT_EMAIL_SECONDARY (TF_VAR_alert_email_secondary in the three Terraform workflows), never terraform.tfvars: this repo
+# is public and the inbox receives every alarm (spam / phishing target). Unset secret = "" = off.
+variable "alert_email_secondary" {
+  description = "Second Terraform-managed e-mail recipient of the alerts topic (AA-1110). From the repo secret ALERT_EMAIL_SECONDARY in CI; never in a committed file. Empty = no second subscription."
+  type        = string
+  default     = ""
+  # Kept out of plan output (public run logs) on top of GitHub's secret masking.
+  sensitive = true
+
+  validation {
+    condition     = var.alert_email_secondary == "" || can(regex("^[^@[:space:]]+@[^@[:space:]]+\\.[^@[:space:]]+$", var.alert_email_secondary))
+    error_message = "alert_email_secondary must be empty or one e-mail address."
+  }
+
+  validation {
+    condition     = var.alert_email_secondary == "" || lower(var.alert_email_secondary) != lower(var.alert_email)
+    error_message = "alert_email_secondary must differ from alert_email (the bootstrap recipient)."
+  }
+}
+
 # AA-896 (S255): monthly USD limit of the whole-account budget (aws_budgets_budget.total_monthly,
 # observability.tf). It also covers untagged spend (~50 USD/month: CloudWatch, public IPv4, some
 # secrets), which no per-App budget sees. 250 (AA-287) -> 300: the run-rate 20-27/10/2026 is ~8.6
