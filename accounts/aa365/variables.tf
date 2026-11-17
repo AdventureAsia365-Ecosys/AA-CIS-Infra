@@ -152,11 +152,15 @@ variable "alert_email" {
 
 # AA-1110 (S283): the second alert channel (observability.tf aws_sns_topic_subscription.alerts_email_secondary).
 # "" = off (no subscription, the default). Set to the second key-holder's or a role inbox, never the bootstrap
-# address; a recipient, not a threshold, so it is a Terraform input like var.alert_email.
+# address; a recipient, not a threshold, so it is a Terraform input like var.alert_email. It comes from the repo secret
+# ALERT_EMAIL_SECONDARY (TF_VAR_alert_email_secondary in the three Terraform workflows), never terraform.tfvars: this repo
+# is public and the inbox receives every alarm (spam / phishing target). Unset secret = "" = off.
 variable "alert_email_secondary" {
-  description = "Second Terraform-managed e-mail recipient of the alerts topic (AA-1110). Empty = no second subscription."
+  description = "Second Terraform-managed e-mail recipient of the alerts topic (AA-1110). From the repo secret ALERT_EMAIL_SECONDARY in CI; never in a committed file. Empty = no second subscription."
   type        = string
   default     = ""
+  # Kept out of plan output (public run logs) on top of GitHub's secret masking.
+  sensitive = true
 
   validation {
     condition     = var.alert_email_secondary == "" || can(regex("^[^@[:space:]]+@[^@[:space:]]+\\.[^@[:space:]]+$", var.alert_email_secondary))
