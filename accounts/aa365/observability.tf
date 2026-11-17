@@ -70,6 +70,24 @@ resource "aws_sns_topic_subscription" "alerts_email" {
   endpoint  = var.alert_email
 }
 
+# AA-1110 (S283): a second alert channel, OFF until a recipient is set. The bootstrap above is a single inbox; a
+# second, Terraform-managed recipient (the second key-holder's inbox, a role address) keeps every alarm reaching a
+# second person when the first inbox is unread or lost. count = 0 while var.alert_email_secondary is "" (the default),
+# so this file changes nothing until the tech lead sets the repo secret ALERT_EMAIL_SECONDARY (mapped to
+# TF_VAR_alert_email_secondary in terraform-plan, -apply and -drift; never terraform.tfvars, this repo is public and the
+# inbox receives every alarm) and applies. Like the bootstrap it is
+# created PendingConfirmation: its owner clicks the AWS confirmation link once. The CIS admin page (Platform > Alert
+# recipients) lists it as an address it does not manage and never removes it; the DenyUnsubscribeBootstrap statement
+# (alert_recipients.tf) names it too. Cost: 0 USD (SNS e-mail, inside the 1,000 notifications/month free tier).
+resource "aws_sns_topic_subscription" "alerts_email_secondary" {
+  # nonsensitive(): count may not depend on a sensitive value; whether it is set is not a secret.
+  count = nonsensitive(var.alert_email_secondary == "") ? 0 : 1
+
+  topic_arn = aws_sns_topic.alerts.arn
+  protocol  = "email"
+  endpoint  = var.alert_email_secondary
+}
+
 # RDS CPU sustained high (S102). One of the three RDS alarms the S263 alert diet keeps (CPU, free storage,
 # connections; AA-1025): the apps cannot see the instance CPU.
 resource "aws_cloudwatch_metric_alarm" "rds_cpu_high" {

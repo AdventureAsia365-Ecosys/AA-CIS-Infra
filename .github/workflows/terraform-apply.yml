@@ -78,6 +78,8 @@ jobs:
       TF_VAR_org_management_org_id: ${{ secrets.MGMT_ORG_ID }}
       # AA-1095 (accounts/aa365/bedrock_satellite_assume.tf): acc1's ID (a personal account, never committed), masked.
       TF_VAR_bedrock_acct_payer_id: ${{ secrets.BEDROCK_ACCT_PAYER_ID }}
+      # AA-1110 (accounts/aa365/observability.tf): the second alert recipient's inbox, never committed (public repo).
+      TF_VAR_alert_email_secondary: ${{ secrets.ALERT_EMAIL_SECONDARY }}
       # AA-846: plan guard inputs, passed via env (never interpolated into a script).
       GUARD_SELFTEST: ${{ inputs.guard_selftest && 'true' || 'false' }}
       ALLOW_GUARDED: ${{ inputs.allow_guarded && 'true' || 'false' }}

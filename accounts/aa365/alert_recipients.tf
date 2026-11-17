@@ -75,11 +75,13 @@ data "aws_iam_policy_document" "cis_alert_recipients" {
   # It only bites if SNS authorizes Unsubscribe against the subscription ARN (see the implementation
   # notes: verify with iam simulate-principal-policy after apply); if SNS evaluates the topic ARN only,
   # this statement is inert and the app-side guards are the control.
+  # AA-1110: the second Terraform-managed recipient, when set, is protected the same way (an empty list while
+  # var.alert_email_secondary is unset, so the policy JSON is unchanged).
   statement {
     sid       = "DenyUnsubscribeBootstrap"
     effect    = "Deny"
     actions   = ["sns:Unsubscribe"]
-    resources = [aws_sns_topic_subscription.alerts_email.arn]
+    resources = concat([aws_sns_topic_subscription.alerts_email.arn], aws_sns_topic_subscription.alerts_email_secondary[*].arn)
   }
 }
 
