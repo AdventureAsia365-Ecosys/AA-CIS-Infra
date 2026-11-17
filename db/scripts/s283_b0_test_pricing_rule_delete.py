@@ -11,7 +11,7 @@ Guards: exactly one matching row, pinned by id; no row of any other table refere
 policy_row_closures; after the delete, inside the same transaction, no b2b row is dated after today and the b2b rule in
 force today is unchanged. Anything else rolls back. Prints ids, dates and counts only.
 """
-PIN = "REPLACE_WITH_DRY_RUN_PIN"
+PIN = "e4cd95e1-6ebe-481c-a8e1-6d1155a37f96"  # DRY RUN 17/11 (DB Migrate run 44052308368): 1 row, 1 approval, 0 closures
 CASCADE_OK = {"booking.policy_approvals", "booking.policy_row_closures"}
 
 IN_FORCE_SQL = """
