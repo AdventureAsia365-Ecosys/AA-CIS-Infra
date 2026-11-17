@@ -24,8 +24,13 @@ variable "project" {
 }
 
 variable "account_id" {
-  description = "AWS Account ID (aa365 — must NOT default to the account-1 value)"
+  description = "AWS Account ID (aa365 — must NOT default to the account-1 value). AA-1111: also the provider allowed_account_ids of every provider in versions.tf."
   type        = string
+
+  validation {
+    condition     = can(regex("^[0-9]{12}$", var.account_id))
+    error_message = "account_id must be the 12-digit ID of the account this root manages."
+  }
 }
 
 # ── Networking (own CIDR range — non-overlapping with account 1's 10.1.0.0/16) ──
