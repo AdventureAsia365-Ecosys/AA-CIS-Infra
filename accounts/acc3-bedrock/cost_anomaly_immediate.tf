@@ -13,7 +13,7 @@
 #
 # Cost: SNS topic 0 USD; e-mail deliveries stay inside the 1,000/month free tier; Cost Anomaly Detection is free
 # -> 0 USD/month.
-# Apply: this root is applied locally with the MFA profile nghiep_aa365 (not by CI). After apply the recipient
+# Apply: this root is applied locally with the acc3 profile of the root account map (not by CI; versions.tf header). After apply the recipient
 # must click the SNS confirmation e-mail once; Terraform cannot confirm an e-mail subscription.
 # =============================================================================
 

@@ -57,8 +57,14 @@ locals {
   }
 }
 
+# AA-1111 (S283): allowed_account_ids on every provider of this root refuses a plan or apply whose credentials resolve
+# to any other account (the AA-517 wrong-account writes: a `default` profile that pointed at acc1). The value is
+# var.account_id, the same variable every ARN of this root is built from, so the guard adds no account ID to this
+# public repo and needs no new CI input (the plan, apply and drift workflows already read it from terraform.tfvars).
+# ADR 0018 decision 5; tools/terraform/tests/test_aa1111_account_guards.py holds every provider block of accounts/ to it.
 provider "aws" {
-  region = var.aws_region
+  region              = var.aws_region
+  allowed_account_ids = [var.account_id]
 
   default_tags {
     tags = local.tag_defaults
@@ -69,8 +75,9 @@ provider "aws" {
 # (auth. / staff-auth.), which Cognito serves through CloudFront (custom_domains.tf). Same account,
 # same credentials, same default tags; every other resource stays on the default us-west-1 provider.
 provider "aws" {
-  alias  = "us_east_1"
-  region = "us-east-1"
+  alias               = "us_east_1"
+  region              = "us-east-1"
+  allowed_account_ids = [var.account_id]
 
   default_tags {
     tags = local.tag_defaults
@@ -80,8 +87,9 @@ provider "aws" {
 # S274 (AA-873): CloudTrail records a root console sign-in in us-east-1, us-east-2 OR us-west-2 (AWS docs; acc2 in the
 # last 90 days: 55 / 3 / 3). Only the EventBridge forward rules of security_baseline.tf use these two providers.
 provider "aws" {
-  alias  = "us_east_2"
-  region = "us-east-2"
+  alias               = "us_east_2"
+  region              = "us-east-2"
+  allowed_account_ids = [var.account_id]
 
   default_tags {
     tags = local.tag_defaults
@@ -89,8 +97,9 @@ provider "aws" {
 }
 
 provider "aws" {
-  alias  = "us_west_2"
-  region = "us-west-2"
+  alias               = "us_west_2"
+  region              = "us-west-2"
+  allowed_account_ids = [var.account_id]
 
   default_tags {
     tags = local.tag_defaults
