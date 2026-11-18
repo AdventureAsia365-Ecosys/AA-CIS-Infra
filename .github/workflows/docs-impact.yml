@@ -7,9 +7,10 @@ name: Docs Impact
 # `Docs-impact: updated-here` or `Docs-impact: none: <reason>`.
 #
 # Listens to pull_request and merge_group without a `paths:` filter (the merge-queue rule for new jobs); on
-# merge_group the called job is skipped. Pinned to an AA-Ecosys commit (WL6); the trailing comment is the date of that
-# root commit (the root repo has no release tags). The map itself is read from AA-Ecosys master, so a map change needs
-# no re-pin here; re-pin only when the root workflow file changes.
+# merge_group the called job is skipped. Pinned to an AA-Ecosys master commit (WL6); the trailing comment is
+# `# vYYYY.MM.DD`, the date of that root commit with a leading v (the root repo has no release tags, and the Infra
+# action-pin test wants a v). The map itself is read from AA-Ecosys master, so a map change needs no re-pin here;
+# re-pin only when the root workflow file changes, in all five app repos at once.
 on:
   pull_request:
   merge_group:
@@ -25,7 +26,7 @@ concurrency:
 jobs:
   docs-impact:
     name: Docs impact
-    uses: AdventureAsia365-Ecosys/AA-Ecosys/.github/workflows/docs-impact.yml@d487c24904456b607e04d4e8906682ac6856d1c5 # 2026.11.18
+    uses: AdventureAsia365-Ecosys/AA-Ecosys/.github/workflows/docs-impact.yml@d487c24904456b607e04d4e8906682ac6856d1c5 # v2026.11.18
     permissions:
       contents: read
       pull-requests: write
