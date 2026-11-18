@@ -366,7 +366,9 @@ accounts/
                                    SES receiving in us-west-1 adds rules to this set)
     docs_reader.tf                (AA-898: GitHub OIDC role aa-cis-<env>-docs-sync, trusted only by the root repo
                                    AA-Ecosys on refs/heads/master (immutable subject), ListBucket on docs-reader/ +
-                                   Put/Delete on docs-reader/* of the bronze bucket: the root "Docs sync" workflow uploads
+                                   Put/Delete on docs-reader/* + Get on docs-reader/manifest.json only (AA-1132: the
+                                   replaced manifest is kept as manifest.previous.json) of the bronze bucket: the root
+                                   "Docs sync" workflow uploads
                                    the /admin/docs bundle (manifest.json + pages/<repo>/<path>.md); the CIS task role reads
                                    it (modules/ecs ReadDocsReader, DenyDocsReaderWrites); noncurrent versions expire after
                                    7 days (modules/s3). < $0.10/month. AA-1105: the AA Academy learn bundle goes under
