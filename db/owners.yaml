@@ -251,7 +251,8 @@ owners:
         default_acl: {tables: [DELETE, INSERT, SELECT, UPDATE], sequences: [SELECT, USAGE]}   # no functions (tp-008)
         # tp-030/tp-031 (AA-1093): the erasure report view is read by cis_app only (tenant.erasure.v1); the
         # runtime role was revoked on purpose (the assembly Lambda shares it).
-        owner_only_relations: [tripplanner.v_tenant_erasure_report_v1]
+        # tp-034 (AA-1126): the AI notice events view, cis_app only too (the CIS worker relays them into its bells).
+        owner_only_relations: [tripplanner.v_ai_notices_v1, tripplanner.v_tenant_erasure_report_v1]
     job_table: tripplanner.job           # tp-021 (AA-861, ADR 0003a template); worker = the jobs Lambda
     job_kind_prefix: tp_
     idle_exempt_kinds: []
@@ -267,6 +268,9 @@ owners:
       - {grantee: cis_app, privilege: "USAGE, SELECT", object: tripplanner.v_ops_inquiry_keys, status: contract, source: "tp-022 (AA-1003)", expected_from: tp-022}
       # AA-1093: the TripPlanner tenant erasure report the CIS offboarding saga reads (contract tenant.erasure.v1).
       - {grantee: cis_app, privilege: "USAGE, SELECT", object: tripplanner.v_tenant_erasure_report_v1, status: contract, source: "tp-030 (AA-1093)", expected_from: tp-030}
+      # AA-1126: TripPlanner's AI notice events (ai.allowance_used, ai.spend_degraded) the CIS worker relays into the
+      # agency and admin bells; TripPlanner holds no grant on shared.notifications (CIS 274 / 351).
+      - {grantee: cis_app, privilege: "USAGE, SELECT", object: tripplanner.v_ai_notices_v1, status: contract, source: "tp-034 (AA-1126)", expected_from: tp-034}
 
   crm:
     # Partner CRM (AA-Partner, ADR 0010 / 0008a, data standards DM-6.8; AA-932 = design v3 card CRM-04). Born under

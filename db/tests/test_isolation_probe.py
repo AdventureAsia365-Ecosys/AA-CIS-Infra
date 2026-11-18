@@ -377,8 +377,9 @@ class BuildCellsTest(unittest.TestCase):
         self.assertEqual(p.RUNTIME_MISSING_SQL.count("$6"), 1)
         self.assertEqual(p.OWNERS["booking"].runtime_privileges[0].owner_only, ("booking.retired_b2c_record",))
         # AA-1093 (tp-030/031): the erasure report view is cis_app only (tenant.erasure.v1).
+        # AA-1126 (tp-034): the AI notice events view too.
         self.assertEqual(p.OWNERS["tripplanner"].runtime_privileges[0].owner_only,
-                         ("tripplanner.v_tenant_erasure_report_v1",))
+                         ("tripplanner.v_ai_notices_v1", "tripplanner.v_tenant_erasure_report_v1"))
         for name in ("cis", "crm"):
             self.assertEqual(p.OWNERS[name].runtime_privileges[0].owner_only, (), name)
 
@@ -468,8 +469,9 @@ class BuildCellsTest(unittest.TestCase):
         # 404: AA-1094, TripPlanner's per-tenant tour view catalog.v_tenant_tour_v1.
         # tp-030: AA-1093, the TripPlanner tenant erasure report the CIS offboarding saga reads.
         # bk-057: AA-1093 the Booking erasure report the CIS tenant_erasure_saga reads.
+        # tp-034: AA-1126 TripPlanner's AI notice events the CIS worker relays into its bells.
         self.assertEqual(p.CONSUMER_GRANT_KEYS, ("379", "404", "bk-017", "bk-023", "bk-025", "bk-039", "bk-040", "bk-042",
-                                                 "bk-057", "tp-015", "tp-020", "tp-022", "tp-030"))
+                                                 "bk-057", "tp-015", "tp-020", "tp-022", "tp-030", "tp-034"))
         for k in p.CONSUMER_GRANT_KEYS:
             self.assertIn(k, p.VERSION_KEYS)
             self.assertIn(k, p.KEY_TEXT)
@@ -633,6 +635,21 @@ class BuildCellsTest(unittest.TestCase):
                 c["missing"] = []
         st, _ = statuses(f)
         self.assertEqual(st["consumer.contract_grants.379"], "pass")
+
+    def test_ai_notices_cis_reader_grant_is_its_own_cell(self):
+        # AA-1126: the CIS worker reads tripplanner.v_ai_notices_v1; the grant comes with the contract file tp-034, so
+        # its cell waits for that apply and passes once tp-034 is registered.
+        objs = {c[2]: (c[0], c[3]) for c in p.CONSUMER_GRANTS if c[3] == "tp-034"}
+        self.assertEqual(objs, {"tripplanner.v_ai_notices_v1": ("cis_app", "tp-034")})
+        f = today_facts()
+        st, _ = statuses(f)
+        self.assertEqual(st["consumer.contract_grants.tp-034"], "pending")
+        f["catalog"]["registered"] = ["tp-034"]
+        for c in f["consumer"]["grants"]:
+            if c["from"] == "tp-034":
+                c["missing"] = []
+        st, _ = statuses(f)
+        self.assertEqual(st["consumer.contract_grants.tp-034"], "pass")
 
     def test_erasure_report_cis_reader_grant_is_its_own_cell(self):
         # AA-1093 L3: the CIS tenant_erasure_saga reads booking.v_tenant_erasure_report_v1; the grant comes with the

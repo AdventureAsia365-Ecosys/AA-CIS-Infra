@@ -164,7 +164,8 @@ OWNERS = {
                                   "tripplanner", ("tripplanner",), BASELINE,
                                   (("tables", DML), ("sequences", ("SELECT", "USAGE"))),
                                   # AA-1093 (tp-030/031): the erasure report view, cis_app only (tenant.erasure.v1).
-                                  ("tripplanner.v_tenant_erasure_report_v1",)),)),
+                                  # AA-1126 (tp-034): the AI notice events view, cis_app only (the CIS bell relay).
+                                  ("tripplanner.v_ai_notices_v1", "tripplanner.v_tenant_erasure_report_v1")),)),
     # AA-932: partner CRM. Born under crm_owner (rl-003), so the "transfer" key is its first file crm-001. No
     # schema-wide EXECUTE for crm_app: crm.erase_subject() belongs to crm_eraser (functions granted by name).
     "crm": ProbeOwner(("crm",), "crm", "crm_owner", "crm-001", (("crm_app", "crm/dev/database-url"),),
@@ -200,6 +201,7 @@ CONSUMER_GRANTS = (
     ("cis_app", ("USAGE", "SELECT"), "tripplanner.v_ops_component_id_map", "tp-020"),
     ("cis_app", ("USAGE", "SELECT"), "tripplanner.v_ops_inquiry_keys", "tp-022"),    # AA-1003 TP-03 key view
     ("cis_app", ("USAGE", "SELECT"), "tripplanner.v_tenant_erasure_report_v1", "tp-030"),  # AA-1093 erasure report
+    ("cis_app", ("USAGE", "SELECT"), "tripplanner.v_ai_notices_v1", "tp-034"),     # AA-1126 AI notice events
     ("tripplanner", ("USAGE", "SELECT"), "booking.v_from_prices", "bk-039"),       # AA-1029 price.from.v1
     ("cis_app", ("USAGE", "SELECT"), "booking.v_from_prices", "bk-040"),           # AA-1029 studio Marketplace
     ("cis_app", ("USAGE", "SELECT"), "booking.v_tenant_billing_status", "bk-042"), # AA-1037 billing tick
