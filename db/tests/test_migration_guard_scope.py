@@ -83,19 +83,19 @@ class AgreementTests(unittest.TestCase):
             self.assertIn("steps.scope.outputs.relevant != 'false'", block, step)
 
     def test_retention_rows_stay_out_of_the_required_check(self):
-        """Review S271: the DM-7.1 check reads the root repo's master and every crm table, so it must not gate the
+        """Review S271: the DM-7.1 check reads the root repo's master and every new table, so it must not gate the
         required "Copies match owner main" (the copy bot's merge check reads it) and must not be a required context."""
         wf = (ROOT / ".github" / "workflows" / "migration-copy-guard.yml").read_text(encoding="utf-8")
         guard = wf.split("\n  guard:\n", 1)[1].split("\n  lint:\n", 1)[0]
         self.assertNotIn("check_retention_rows", guard)
         self.assertNotIn("AA_CI_BOT_PRIVATE_KEY", guard)
         job = wf.split("\n  retention-rows:\n", 1)[1].split("\n  classify:\n", 1)[0]
-        self.assertIn("    name: Retention rows for new-app tables\n", job)
+        self.assertIn("    name: Retention rows and RLS allowlist\n", job)
         self.assertIn("check_retention_rows.py", job)
         rules = json.loads((ROOT / "tools" / "github" / "infra-main-ruleset.json").read_text(encoding="utf-8"))
         contexts = {c["context"] for r in rules["rules"] if r["type"] == "required_status_checks"
                     for c in r["parameters"]["required_status_checks"]}
-        self.assertNotIn("Retention rows for new-app tables", contexts)
+        self.assertNotIn("Retention rows and RLS allowlist", contexts)
 
     def test_required_checks_are_job_names_of_always_run_workflows(self):
         rules = json.loads((ROOT / "tools" / "github" / "infra-main-ruleset.json").read_text(encoding="utf-8"))

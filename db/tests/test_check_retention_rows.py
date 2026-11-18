@@ -1,4 +1,4 @@
-"""Unit tests for db/check_retention_rows.py (data standards DM-7.1, AA-929).
+"""Unit tests for db/check_retention_rows.py (data standards DM-7.1, AA-929, AA-1112).
 
 Run: python3 -m unittest discover -s db/tests -v
 """
@@ -167,10 +167,64 @@ class CheckTest(unittest.TestCase):
         _, plain = self.run_main(root, "--registry", str(root / "registry.md"))
         self.assertNotIn("::error", plain)
 
-    def test_existing_owners_are_grandfathered(self):
-        root = self.make_repo({"db/migrations/booking/001_x.sql": "CREATE TABLE booking.new_thing (id int);"})
-        self.assertEqual(self.run_main(root), (0, "no migration copy in cis, crm: nothing to check\n"))
+    def test_existing_owners_are_grandfathered_below_their_first_checked_number(self):
+        root = self.make_repo({"db/migrations/booking/001_x.sql": "CREATE TABLE booking.new_thing (id int);",
+                               "db/migrations/tripplanner/034_x.sql": "CREATE TABLE tripplanner.old_thing (id int);",
+                               "db/migrations/cis/447_x.sql": "CREATE TABLE shared.old_thing (id int);"})
+        self.assertEqual(self.run_main(root),
+                         (0, "no new table in booking, cis, crm, tripplanner: nothing to check\n"))
         self.assertEqual(self.run_main(root, "--scoped"), (0, "no\n"))
+
+    def test_every_owner_is_checked_from_its_first_checked_number(self):
+        """AA-1112: a new table of CIS, Booking or TripPlanner needs its row, like a CRM table (fixture names)."""
+        root = self.make_repo({
+            "registry.md": REGISTRY.replace("| `crm.otp_challenge` |",
+                                            "| `booking.kite_log` | Booking | x | — | No |\n| `crm.otp_challenge` |"),
+            "db/migrations/booking/059_old.sql": "CREATE TABLE booking.grandfathered (id int);\n",
+            "db/migrations/booking/060_new.sql": "BEGIN;\nCREATE TABLE kite_log (id int);\n"
+                                                 "CREATE TABLE booking.kite_spool (id int);\nCOMMIT;\n",
+            "db/migrations/tripplanner/035_new.sql": "CREATE TABLE tripplanner.lantern_note (id int);\n",
+            "db/migrations/cis/448_new.sql": "CREATE TABLE shared.pebble_count (id int);\n",
+        })
+        self.assertEqual(self.run_main(root, "--scoped"), (0, "yes\n"))
+        code, out = self.run_main(root, "--registry", str(root / "registry.md"))
+        self.assertEqual(code, 1, out)
+        fails = self.fail_lines(out)
+        self.assertEqual(len(fails), 3, out)
+        self.assertIn("FAIL  db/migrations/booking/060_new.sql:3: table booking.kite_spool has no row", out)
+        self.assertIn("FAIL  db/migrations/tripplanner/035_new.sql:1: table tripplanner.lantern_note has no row", out)
+        self.assertIn("FAIL  db/migrations/cis/448_new.sql:1: table shared.pebble_count has no row", out)
+        self.assertNotIn("booking.grandfathered", out)
+        self.assertNotIn("booking.kite_log has no row", out)
+
+    def test_error_names_the_table_and_the_registry_file_to_edit(self):
+        root = self.make_repo({"registry.md": REGISTRY,
+                               "db/migrations/tripplanner/035_new.sql": "CREATE TABLE tripplanner.lantern_note (id int);\n"})
+        _, out = self.run_main(root, "--registry", str(root / "registry.md"))
+        line = self.fail_lines(out)[0]
+        self.assertIn("table tripplanner.lantern_note", line)
+        self.assertIn("first cell is `tripplanner.lantern_note`", line)
+        self.assertIn("'## 7. Retention and archival'", line)
+        self.assertIn("docs/architecture/data-standards/02-data-management.md", line)
+
+    def test_a_rename_from_the_first_checked_number_needs_the_new_name(self):
+        """DM-7.1: the PR that renames a table updates its row; the rename's file and line are reported."""
+        root = self.make_repo({
+            "registry.md": REGISTRY,
+            "db/migrations/booking/010_old.sql": "CREATE TABLE booking.pond (id int);\nCREATE TABLE booking.reed (id int);\n",
+            "db/migrations/booking/061_rename.sql": "BEGIN;\nALTER TABLE booking.pond RENAME TO lake;\n"
+                                                    "DROP TABLE booking.reed;\nCOMMIT;\n",
+        })
+        code, out = self.run_main(root, "--registry", str(root / "registry.md"))
+        self.assertEqual(code, 1, out)
+        self.assertEqual(len(self.fail_lines(out)), 1, out)
+        self.assertIn("FAIL  db/migrations/booking/061_rename.sql:2: table booking.lake has no row", out)
+
+    def test_first_checked_numbers_are_pinned(self):
+        """Raising a number would grandfather a new table without a row: it needs this test changed too (review)."""
+        self.assertEqual(crr.RETENTION_FROM, {"cis": 448, "booking": 60, "tripplanner": 35})
+        self.assertEqual(set(crr.RETENTION_OWNERS), {"cis", "booking", "tripplanner", "crm"})
+        self.assertNotIn("crm", crr.RETENTION_FROM)
 
     def test_scoped_dir_needs_a_readable_registry(self):
         root = self.make_repo({"db/migrations/crm/001_base.sql": "CREATE TABLE crm.traveler (id uuid);"})
@@ -207,6 +261,15 @@ class CheckTest(unittest.TestCase):
     def test_this_repo_today(self):
         root = Path(__file__).resolve().parent.parent.parent
         self.assertEqual(crr.main(["--repo-root", str(root), "--scoped"], out=io.StringIO()), 0)
+
+    def test_this_repo_against_the_real_registry_when_the_root_repo_is_next_door(self):
+        base = os.environ.get("AA_ECOSYS_ROOT") or Path(__file__).resolve().parents[4]   # workspace layout
+        real = Path(base) / "docs" / "architecture" / "data-standards" / "02-data-management.md"
+        if not real.is_file():
+            self.skipTest("AA-Ecosys root repo not checked out next to this repo")
+        root = Path(__file__).resolve().parent.parent.parent
+        code, out = self.run_main(root, "--registry", str(real))
+        self.assertEqual(code, 0, out)
 
 
 if __name__ == "__main__":
