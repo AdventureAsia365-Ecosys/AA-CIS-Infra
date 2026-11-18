@@ -388,7 +388,7 @@ resource "aws_iam_role_policy" "crm_ecs_task" {
 # reaches the task on the next deploy.
 #
 # Env names read by the app (api/app/settings.py): DATABASE_URL (secret, role crm_app), DB_SSL, ENVIRONMENT,
-# WORKER_ENABLED, JOB_RETENTION_DRY_RUN (DM-7.2: counts only until a human turns it off),
+# WORKER_ENABLED, JOB_RETENTION_DRY_RUN (DM-7.2: counts only until a human turns it off; var.crm_job_retention_dry_run, S284),
 # RATE_LIMIT_XFF_HOPS (2 = CloudFront viewer address appended, then the NLB's; verify on the first live request),
 # SENTRY_DSN / SENTRY_REQUIRED (only with var.crm_sentry_enabled), the identity values (local.crm_identity_env),
 # the F3 scrub guardrail (AA-938, local.crm_scrub_env of crm_scrub.tf: SCRUB_GUARDRAIL_ID / _VERSION / _REGION, only
@@ -449,7 +449,7 @@ resource "aws_ecs_task_definition" "crm_api" {
       { name = "ENVIRONMENT", value = var.environment },
       { name = "DB_SSL", value = "require" },
       { name = "WORKER_ENABLED", value = "true" },
-      { name = "JOB_RETENTION_DRY_RUN", value = "true" },
+      { name = "JOB_RETENTION_DRY_RUN", value = var.crm_job_retention_dry_run },
       { name = "LIFECYCLE_DRY_RUN", value = "true" },
       # AA-1093 stage 2: the CRM step of the tenant erasure saga applies only while this is "true" (default "false").
       { name = "TENANT_ERASE_APPLY_ENABLED", value = var.crm_tenant_erase_apply_enabled },
