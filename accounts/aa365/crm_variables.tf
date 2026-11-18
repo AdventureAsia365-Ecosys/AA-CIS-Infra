@@ -167,3 +167,20 @@ variable "crm_tenant_erase_apply_enabled" {
     error_message = "crm_tenant_erase_apply_enabled must be \"true\" or \"false\"."
   }
 }
+
+# S284 (AA-1112, tech lead approved 18/11/2026): the Terraform floor under the CRM admin switch
+# crm.retention.job_dry_run (env JOB_RETENTION_DRY_RUN, read by AA-Partner api/app/settings.py). "true" (default): the
+# daily crm_job_retention run only counts the finished crm.job rows it would delete, whatever the admin switch says.
+# "false": the admin switch decides (maker-checker on the Settings page). Dev sets "false" in terraform.tfvars; any new
+# environment starts at "true" until a human turns it off (DM-7.2). Declared identically in the root
+# (accounts/aa365/crm_variables.tf) and passed through. The next AA-Partner deploy carries the new revision.
+variable "crm_job_retention_dry_run" {
+  description = "AA-1112: \"false\" (exact string) lets the CRM admin switch turn the daily crm.job retention live (JOB_RETENTION_DRY_RUN); \"true\" keeps it counting only"
+  type        = string
+  default     = "true"
+
+  validation {
+    condition     = contains(["true", "false"], var.crm_job_retention_dry_run)
+    error_message = "crm_job_retention_dry_run must be \"true\" or \"false\"."
+  }
+}

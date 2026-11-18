@@ -136,3 +136,7 @@ test_wp_service_attached = true
 # hosts scoped out of GeoBlock. No new ACL and no new rule (no fixed fee): about 0.60 USD per million requests
 # inspected (Dev: well under 1 million a month, estimate < 0.60 USD/month). The IP set is free.
 waf_protect_rest_api_stages = true
+
+# AA-1112 (S284, tech lead approved 18/11/2026): the CRM job-row retention may run live on Dev; the admin switch
+# crm.retention.job_dry_run (maker-checker, Settings page) still has to be turned off as well.
+crm_job_retention_dry_run = "false"
