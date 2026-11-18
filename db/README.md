@@ -337,7 +337,13 @@ line) prints the plan the task would follow.
   the canonical AA-CIS-App `tests/integration/rls_catalogue_rules.py`, then the byte copy here. The PR that drops or
   revokes the object removes its entry (the Dev reference shows it as a violation until the apply, report only); the
   nightly run of the Copy Guard turns red when an apply left an entry behind. The CIS CI replay checks the CIS-side
-  entries per PR (`test_rls_catalogue_guard.py`).
+  entries per PR (`test_rls_catalogue_guard.py`). On a pull request the step runs only when the PR changes
+  `db/rls_catalogue_rules.py`, `db/check_rls_allowlist.py` or the workflow, because the copy bot's merge check
+  (`db/migration_sync.py merge-check`) refuses a copy PR when ANY check of its head commit failed, required or not
+  (the required ones are only the ones it waits for): a Dev-side stale entry must never stop the migration copies of
+  every owner. An entry the PR adds is not checked (`--base`, the rules file at the PR's base commit): its object
+  reaches Dev only with Migration Apply. Order for a new entry: the rules copy may merge before or after the apply;
+  merged before, the nightly run is red on that entry until the apply has run and a newer DB Schema Dump exists.
 - Exit codes: 2 sha256 mismatch, 3 not registered, 4 lint error, 5 destructive without snapshot,
   6 PostgreSQL error (lock or statement timeout prints a hint), 7 apply refused because a job
   table is busy or a rerun wave is open, 8 role refused, 9 ownership post-check failed (or the

@@ -40,9 +40,12 @@ name: Migration Copy Guard
 # and classify need `guard` for the scope. A PR outside the paths costs one short job, as before; a PR inside them four
 # instead of five (each job is billed by the started minute). The retention rows stay a job of their own and stay OUT of
 # the ruleset (review S271): the check reads a file of another repo (root master) and every new table, so a root-side
-# gap must show as a red advisory check, never block the required "Copies match owner main" that the copy bot's merge
-# check (db/migration_sync.py merge-check) reads. Wall time: lint, retention-rows and classify start after `guard`
-# (~30 s later).
+# gap must show as a red advisory check, never block the required "Copies match owner main". The copy bot's merge check
+# (db/migration_sync.py merge-check) reads more than the required checks: it refuses a copy PR when ANY check of the
+# head commit failed. A missing root row therefore still holds that copy back until the root row merges (the intended
+# order), and a step whose result does not depend on the PR (the RLS allowlist vs Dev, AA-1112) runs on pull_request
+# only for a PR that changes the allowlist. Wall time: lint, retention-rows and classify start after `guard` (~30 s
+# later).
 on:
   pull_request:
     branches: [main]
@@ -188,6 +191,9 @@ jobs:
 
   # AA-1112: the same advisory job also fails on a stale X2 RLS allowlist entry (db/check_rls_allowlist.py on the latest
   # successful DB Schema Dump of Dev): two registries checked against what exists, one billed job (S271).
+  # The copy bot's merge check (db/migration_sync.py merge-check) refuses a copy PR when ANY check of its head commit
+  # failed, required or not. So on pull_request the stale step runs only when the PR changes the allowlist (or its
+  # checker / this workflow): its result depends on Dev, not on a migration copy, and must never stop the copies.
   retention-rows:
     name: Retention rows and RLS allowlist
     needs: guard
@@ -205,6 +211,8 @@ jobs:
       HAS_CI_BOT_APP: ${{ vars.AA_CI_BOT_APP_ID != '' && secrets.AA_CI_BOT_PRIVATE_KEY != '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0     # the RLS step diffs the PR against its base and reads the base rules file
 
       - name: Is any new table in scope?
         id: scope
@@ -249,12 +257,31 @@ jobs:
 
       # AA-1112: an allowlist entry that matches nothing on Dev (dropped table, revoked grant) fails. Only the live dump
       # sees every owner's objects (the CIS CI replay checks the CIS-side entries). Runs after a red retention step too.
-      # The nightly run of this workflow catches an entry an apply made stale since the last PR.
+      # Schedule / manual: every entry; the nightly run catches an entry an apply made stale. pull_request: only a PR
+      # that changes the allowlist files (see the job comment), and an entry the PR ADDS is not checked (--base): its
+      # object reaches Dev only with Migration Apply, after this copy merges (review S284).
       - name: RLS allowlist has no stale entry (latest Dev dump)
         if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
+          BASE_ARGS=()
+          if [ "$EVENT" = "pull_request" ]; then
+            if ! CHANGED=$(git diff --name-only "$BASE_SHA"...HEAD -- db/rls_catalogue_rules.py db/check_rls_allowlist.py \
+                .github/workflows/migration-copy-guard.yml); then
+              echo "::error::cannot diff the PR against its base $BASE_SHA"; exit 1
+            fi
+            if [ -z "$CHANGED" ]; then
+              echo "the PR changes no RLS allowlist file: stale check skipped (the nightly run checks every entry)"
+              exit 0
+            fi
+            if git cat-file -e "$BASE_SHA:db/rls_catalogue_rules.py" 2>/dev/null; then
+              git show "$BASE_SHA:db/rls_catalogue_rules.py" > "$RUNNER_TEMP/rls_catalogue_rules_base.py"
+              BASE_ARGS=(--base "$RUNNER_TEMP/rls_catalogue_rules_base.py")
+            fi
+          fi
           RUN=$(gh run list -R "$GITHUB_REPOSITORY" --workflow db-schema-dump.yml --branch main --status success \
             --limit 1 --json databaseId --jq '.[0].databaseId // empty')
           if [ -z "$RUN" ] || ! gh run download "$RUN" -R "$GITHUB_REPOSITORY" -n "db-schema-dump-$RUN" -D dump \
@@ -263,7 +290,7 @@ jobs:
             exit 0
           fi
           set +e
-          python3 db/check_rls_allowlist.py dump/schema.json > rls-allowlist.log 2>&1
+          python3 db/check_rls_allowlist.py dump/schema.json "${BASE_ARGS[@]}" > rls-allowlist.log 2>&1
           status=$?
           cat rls-allowlist.log
           { echo "### RLS allowlist vs Dev (DB Schema Dump run $RUN)"; echo '```'; grep -v '^::' rls-allowlist.log; echo '```'; } \
