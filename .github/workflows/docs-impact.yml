@@ -26,7 +26,7 @@ concurrency:
 jobs:
   docs-impact:
     name: Docs impact
-    uses: AdventureAsia365-Ecosys/AA-Ecosys/.github/workflows/docs-impact.yml@d487c24904456b607e04d4e8906682ac6856d1c5 # v2026.11.18
+    uses: AdventureAsia365-Ecosys/AA-Ecosys/.github/workflows/docs-impact.yml@f49963b9a1f8ccc0fd219083eb73f4b7e7081c3b # v2026.11.18
     permissions:
       contents: read
       pull-requests: write
