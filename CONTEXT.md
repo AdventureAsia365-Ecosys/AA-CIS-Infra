@@ -724,6 +724,13 @@ CloudFrontOriginAllow → RateLimit → GeoBlock (→ StaffWebRateLimit), in the
 `local.rule_priorities`; rate and
 geo only bite on REST API stages (`var.waf_protect_rest_api_stages`, needs `apigateway:SetWebACL`
 on the CI role). RDS `aa-cis-dev-db` has deletion protection on.
+**Security headers on edge answers (AA-1111, S284 ZAP baseline):** every block of the web ACL answers a custom
+response (403, or the TripPlanner 429 with its JSON body) carrying `local.security_response_headers` (HSTS two years
+with sub-domains and no preload, `nosniff`, `X-Frame-Options: DENY`, CSP `frame-ancestors 'none'; default-src
+'none'`); the ALB's own `Server: awselb/2.0` cannot be removed. Both REST APIs (CIS `modules/api_gateway`, Booking
+`modules/environment/booking.tf`) set `DEFAULT_4XX` / `DEFAULT_5XX` gateway responses with HSTS + `nosniff` and the
+default JSON message, hashed into the stage deployment (AA-432 trap). The apps send the same headers on their own
+responses (Next.js config / proxy, FastAPI middleware).
 
 **Edge, second path (AA-931, CRM-03):** CloudFront (AA-Partner, `partner-dev.`) → CloudFront VPC origin on the
 same internal NLB → ALB :80. CloudFront adds the secret header `X-AA-Origin` to every origin request. VPC-origin

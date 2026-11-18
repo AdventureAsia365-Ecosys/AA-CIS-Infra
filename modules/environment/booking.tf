@@ -581,6 +581,28 @@ resource "aws_api_gateway_integration" "booking_proxy_any" {
   }
 }
 
+# AA-1111 (S284, ZAP baseline triage): the answers API Gateway gives itself (missing route 403 "Missing Authentication
+# Token", throttling 429, integration 5xx) carry the headers the app adds to its own responses (FastAPI
+# SecurityHeadersMiddleware): HSTS (two years, sub-domains, no preload, same value as every app) and nosniff. The body
+# is the gateway's default JSON message, written out because a gateway response without a template answers an empty
+# body. Part of the deployment hash below: a stage serves a frozen snapshot (the AA-432 trap).
+locals {
+  bk_gateway_security_headers = {
+    "gatewayresponse.header.Strict-Transport-Security" = "'max-age=63072000; includeSubDomains'"
+    "gatewayresponse.header.X-Content-Type-Options"    = "'nosniff'"
+  }
+  bk_gateway_default_message = { "application/json" = "{\"message\":$context.error.messageString}" }
+}
+
+resource "aws_api_gateway_gateway_response" "booking_security_headers" {
+  for_each = toset(["DEFAULT_4XX", "DEFAULT_5XX"])
+
+  rest_api_id         = aws_api_gateway_rest_api.booking.id
+  response_type       = each.key
+  response_parameters = local.bk_gateway_security_headers
+  response_templates  = local.bk_gateway_default_message
+}
+
 resource "aws_api_gateway_deployment" "booking" {
   rest_api_id = aws_api_gateway_rest_api.booking.id
 
@@ -600,12 +622,15 @@ resource "aws_api_gateway_deployment" "booking" {
       aws_api_gateway_integration.booking_proxy_any.uri,
       aws_api_gateway_integration.booking_proxy_any.connection_id,
       aws_api_gateway_integration.booking_proxy_any.timeout_milliseconds,
+      # AA-1111: the gateway responses' headers and bodies.
+      { for k, r in aws_api_gateway_gateway_response.booking_security_headers : k => [r.response_parameters, r.response_templates] },
     ]))
   }
 
   depends_on = [
     aws_api_gateway_integration.booking_any,
     aws_api_gateway_integration.booking_proxy_any,
+    aws_api_gateway_gateway_response.booking_security_headers, # AA-1111
   ]
 
   lifecycle {

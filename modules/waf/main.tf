@@ -46,6 +46,18 @@ locals {
   #       the evaluation for every CloudFront request, and VpcLinkInternalAllow would if VPC-origin traffic were ever
   #       NATed to a VPC address (AA-931 notes: the spike allowed for both cases).
   #   5-9 the S235 / AA-931 / AA-911 rules in their old relative order (were 2-6 before AA-1038).
+  # AA-1111 (S284, ZAP baseline triage): every block this ACL answers itself (403 / 429) carries the security headers
+  # the apps send, so a refused request is not a response without HSTS, nosniff or a CSP (ZAP counted the WAF 403s of
+  # the staff hosts and the API stages as the apps' own). Same HSTS value as the apps (two years, sub-domains, no
+  # preload); the body is empty or the JSON rate_limited body, so the CSP refuses everything. Free (custom responses
+  # carry no WAF fee).
+  security_response_headers = {
+    "Strict-Transport-Security" = "max-age=63072000; includeSubDomains"
+    "X-Content-Type-Options"    = "nosniff"
+    "X-Frame-Options"           = "DENY"
+    "Content-Security-Policy"   = "frame-ancestors 'none'; default-src 'none'"
+  }
+
   rule_priorities = {
     common_rule_set         = 1
     tp_rate_per_ip          = 2
@@ -218,6 +230,13 @@ resource "aws_wafv2_web_acl" "main" {
           custom_response {
             response_code            = 429
             custom_response_body_key = "rate_limited"
+            dynamic "response_header" {
+              for_each = local.security_response_headers
+              content {
+                name  = response_header.key
+                value = response_header.value
+              }
+            }
           }
         }
       }
@@ -312,6 +331,13 @@ resource "aws_wafv2_web_acl" "main" {
           custom_response {
             response_code            = 429
             custom_response_body_key = "rate_limited"
+            dynamic "response_header" {
+              for_each = local.security_response_headers
+              content {
+                name  = response_header.key
+                value = response_header.value
+              }
+            }
           }
         }
       }
@@ -649,7 +675,18 @@ resource "aws_wafv2_web_acl" "main" {
     priority = local.rule_priorities.rate_limit
 
     action {
-      block {}
+      block {
+        custom_response {
+          response_code = 403
+          dynamic "response_header" {
+            for_each = local.security_response_headers
+            content {
+              name  = response_header.key
+              value = response_header.value
+            }
+          }
+        }
+      }
     }
 
     statement {
@@ -745,7 +782,18 @@ resource "aws_wafv2_web_acl" "main" {
     priority = local.rule_priorities.geo_block
 
     action {
-      block {}
+      block {
+        custom_response {
+          response_code = 403
+          dynamic "response_header" {
+            for_each = local.security_response_headers
+            content {
+              name  = response_header.key
+              value = response_header.value
+            }
+          }
+        }
+      }
     }
 
     # AA-1092: with var.geo_exempt_hosts, NOT allowed country AND NOT an API host (2 logical levels); else as before.
@@ -814,7 +862,18 @@ resource "aws_wafv2_web_acl" "main" {
       priority = local.rule_priorities.staff_web_rate_limit
 
       action {
-        block {}
+        block {
+          custom_response {
+            response_code = 403
+            dynamic "response_header" {
+              for_each = local.security_response_headers
+              content {
+                name  = response_header.key
+                value = response_header.value
+              }
+            }
+          }
+        }
       }
 
       statement {
