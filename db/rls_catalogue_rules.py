@@ -34,8 +34,10 @@ Rules (one finding per object; the key is what an allowlist entry names):
      cis_owner in a CIS schema (CIS 244 / 245).                     key schema.table:policy
 
 Every allowlist entry is {key: one-line reason}; a key may use `*` (fnmatch, matches dots too). check_allowlist()
-refuses an empty or multi-line reason and a rule letter that does not exist. A guarded run fails on violations
-only; allowlisted findings and allowlist entries that matched nothing (stale) are reported, not fatal.
+refuses an empty or multi-line reason and a rule letter that does not exist. A guarded run fails on violations.
+An allowlist entry that matches nothing (stale) fails too (AA-1112): on the nightly Dev dump every entry (AA-CIS-Infra
+db/check_rls_allowlist.py), in the CIS replay the entries of cis_side() (test_rls_catalogue_guard.py). The PR that
+drops a table, revokes a grant or fixes an object removes its entry.
 """
 from __future__ import annotations
 
@@ -79,6 +81,9 @@ ROLE_OWNERS = {
     "crm_support_reader": "crm",
 }
 CIS_PARITY_ROLES = {"cis_app": "_cis_app_all", "cis_owner": "_cis_owner_all"}   # rule t, CIS 244 / 245
+# Rule g grantees the CIS CI replay creates (tests/integration/conftest.py): a CIS-object entry granting to one of them
+# is cis_side() and must be used in the replay too (AA-1112).
+CIS_REPLAY_GRANTEES = frozenset({"booking", "tripplanner", "bk_owner", "tp_owner", "crm_owner"})
 BASE_TABLE_KINDS = ("table", "partitioned table")
 
 _TENANT_GUC_RE = re.compile(r"current_setting\s*\(\s*'app\.tenant_id'", re.IGNORECASE)
@@ -90,15 +95,10 @@ _NULLIF_OPEN_RE = re.compile(r"NULLIF\s*\(\s*$", re.IGNORECASE)
 TENANT_POOL_ROLES = ("aa_app_user",)
 _CIS_ONLY = "platform table, cis_app only (no tenant-pool grant); tenant_id is filtered in code"
 _GRANDFATHERED_TP = "grandfathered TripPlanner read (owners.yaml consumer_grants), removed by X4"
-# AA-847: the raw_tours (179) and tour_atoms (180) reads are revoked by CIS 254; these entries go stale (reported,
-# not fatal) once 254 is applied, and are removed in a later cleanup.
-_REVOKED_254 = "grandfathered TripPlanner read, revoked by CIS 254 (AA-847)"
-# AA-712 X4: CIS 270 revokes the rest of the pilot's reads (TripPlanner keeps the catalog views and the gateway).
-_REVOKED_270 = "grandfathered TripPlanner read, revoked by CIS 270 (AA-712 X4)"
-# AA-850: the wave-1 tables with a tenant_id column that CIS 294 quarantined in `retired` (DM-3.9) and CIS 296 drops.
-_WAVE1_TENANT_TABLES = ("acp_runs", "tenant_brand_rule_versions", "tenant_brand_rules_deleted_aa404", "route_pick",
-                        "tenant_atom_state")
-_QUARANTINED_294 = "quarantined, AA-850 (CIS 294, no grant to any role); dropped by CIS 296"
+# AA-1112 (S284): the stale entries left: the TripPlanner reads revoked by CIS 254 / 270 / 351, the AA-850 wave-1
+# tables CIS 296 dropped, acp_shared.acp_output_rules (moved to `retired` by 316) and the TripPlanner FKs to
+# shared.destinations (gone with X4). An entry that matches nothing on Dev now fails AA-CIS-Infra
+# db/check_rls_allowlist.py; one that matches nothing in the CIS replay fails test_rls_catalogue_guard.py.
 ALLOWLIST: dict[str, dict[str, str]] = {
     "a": {
         "shared.tenants": "the tenant registry itself (tenant_id is its key); cis_app only, no tenant-pool grant",
@@ -139,10 +139,8 @@ ALLOWLIST: dict[str, dict[str, str]] = {
         # S279 thresholds L1 (CIS 407): per-tenant setting values of the settings registry, read and written only by the
         # CIS settings API and reader (Platform › Settings, admin only).
         "shared.setting_value": f"settings registry values, tenant_id = a per-tenant override (S279, 407); {_CIS_ONLY}",
-        "acp_shared.acp_output_rules": "RLS on with the X1 cis_app parity policy only (CIS 244); no tenant-pool grant",
-        # AA-923 WM-34 (CIS 316): the same table quarantined in `retired` (no grant to any role), dropped after 14 days.
-        # The acp_shared key above goes stale once 316 is applied on Dev (reported, not fatal); remove both with the
-        # drop migration.
+        # AA-923 WM-34 (CIS 316): acp_shared.acp_output_rules quarantined in `retired` (no grant to any role), dropped
+        # after 14 days. Remove this entry in the drop migration's PR.
         "retired.acp_output_rules": "quarantined by CIS 316 (AA-923, DM-3.9): no grant to any role; dropped later",
         "acp_shared.acp_quota_ledger": f"tenant quota ledger; {_CIS_ONLY}",
         "acp_shared.audit_log": f"tenant action audit log; {_CIS_ONLY}",
@@ -151,11 +149,6 @@ ALLOWLIST: dict[str, dict[str, str]] = {
         "silver_aa_internal.raw_sources": f"source registry, admin + pipeline only; {_CIS_ONLY}",
         "silver_aa_internal.review_queue": f"staff review queue; {_CIS_ONLY}",
         "silver_aa_internal.upload_staging": f"staff upload staging; {_CIS_ONLY}",
-        # AA-850 wave 1: dead tables in the quarantine schema `retired` (CIS 294, no grant to any role). CIS 296 drops
-        # them: these keys keep the nightly Dev dump clean until 296 is applied there, and are stale afterwards (CIS CI
-        # already: reported, not fatal). Remove them in the next change of this file after the 296 apply. (The
-        # pre-294 names left with this change: 294 is applied on Dev.)
-        **{f"retired.{t}": _QUARANTINED_294 for t in _WAVE1_TENANT_TABLES},
     },
     "b": {
         f"{t}:tenant_isolation": "legacy tenant_isolation TO PUBLIC (004/006, pre-X1); retire in a tenant-pool review"
@@ -166,9 +159,7 @@ ALLOWLIST: dict[str, dict[str, str]] = {
     },
     "c": {},
     "d": {},
-    "e": {
-        "tripplanner.*->shared.destinations": "TripPlanner FKs to shared.destinations (ADR 0002), removed by X4",
-    },
+    "e": {},
     "p": {
         "public": "PostgreSQL default USAGE on the public schema (extensions); no app object lives there",
     },
@@ -179,20 +170,7 @@ ALLOWLIST: dict[str, dict[str, str]] = {
         "catalog.*:booking": "contract: catalog.* views for Booking (CIS 225, 228)",
         "catalog.*:tripplanner": "contract: catalog.* views for TripPlanner (CIS 225, 228)",
         "shared.llm_call_log:tripplanner": "contract: standing INSERT exception for TripPlanner cost logging (CIS 173)",
-        "shared:tripplanner": f"schema USAGE for the Model Gateway tables below (CIS 173); {_GRANDFATHERED_TP}",
-        "shared.llm_role_config:tripplanner": f"CIS 173; {_GRANDFATHERED_TP}",
-        "shared.llm_model_catalog:tripplanner": f"CIS 173; {_GRANDFATHERED_TP}",
-        "shared.destinations:tripplanner": f"CIS 201; {_REVOKED_270}",
-        "shared.v_destination_photos:tripplanner": f"CIS 201; {_REVOKED_270}",
-        "shared.v_tour_photos:tripplanner": f"CIS 201; {_REVOKED_270}",
-        "silver_aa_internal:tripplanner": f"schema USAGE for the raw_tours columns; {_REVOKED_254}",
-        "silver_aa_internal.raw_tours.tour_id:tripplanner": f"CIS 179; {_REVOKED_254}",
-        "silver_aa_internal.raw_tours.country:tripplanner": f"CIS 179; {_REVOKED_254}",
-        "acp_contract:tripplanner": f"schema USAGE for the atom columns; {_REVOKED_270}",
-        "acp_contract.tour_atoms.*:tripplanner": f"column grants, CIS 180; {_REVOKED_254}",
-        "acp_contract.v_active_tour_atoms.*:tripplanner": f"column grants, CIS 216; {_REVOKED_270}",
-        "gold_aa_internal:tripplanner": f"schema USAGE for published_tours; {_REVOKED_270}",
-        "gold_aa_internal.published_tours:tripplanner": f"tenant RLS read; {_REVOKED_270}",
+        "shared:tripplanner": f"schema USAGE for the llm_call_log INSERT above (CIS 173); {_GRANDFATHERED_TP}",
         # owners.yaml cis owner_grants (CIS 243, MIG-2 self-registration)
         "shared:bk_owner": "contract: Booking owner role registers bk- keys (CIS 243)",
         "shared:tp_owner": "contract: TripPlanner owner role registers tp- keys (CIS 243)",
@@ -229,6 +207,8 @@ ALLOWLIST: dict[str, dict[str, str]] = {
         "tripplanner.v_ops_inquiry_keys:cis_app": "contract: CIS TP-03 handoff check, keys and times (tp-022)",
         "tripplanner.v_tenant_erasure_report_v1:cis_app":
             "contract: tenant.erasure.v1, TripPlanner erasure report for the CIS tenant_erasure_saga (tp-030)",
+        "tripplanner.v_ai_notices_v1:cis_app":
+            "contract: TripPlanner AI notice events the CIS worker relays into its bells (tp-034, AA-1126)",
     },
     "t": {
         "acp_contract.tour_atoms:catalog_owner_read": "catalog_owner views read every atom as before (CIS 266); D9 = 0 "
@@ -343,6 +323,26 @@ def check_allowlist(allowlist: dict) -> list[str]:
             if not isinstance(reason, str) or not reason.strip() or "\n" in reason:
                 problems.append(f"rule {rule} {key}: the reason must be one non-empty line")
     return problems
+
+
+def entry_object(rule: str, key: str) -> str:
+    """The object part of an allowlist key: before ':' (rules b c d g t; for g the last ':' splits off the grantee),
+    before '->' (rule e), the whole key otherwise (a, p)."""
+    if rule == "e":
+        return key.split(":", 1)[0]
+    if rule == "g":
+        return key.rsplit(":", 1)[0]
+    return key.split(":", 1)[0]
+
+
+def cis_side(rule: str, key: str) -> bool:
+    """True when the CIS migrations alone build the object the entry names: its schema belongs to CIS (SCHEMA_OWNERS)
+    and, for rule g, the grantee is a role the CIS replay has. The CIS CI replay fails on such an entry when it is
+    stale; the other entries (objects of Booking, TripPlanner, CRM or the platform) are checked on the Dev dump only."""
+    schema = entry_object(rule, key).split(".", 1)[0]
+    if _owner(schema) != "cis" or "*" in schema:
+        return False
+    return rule != "g" or key.rsplit(":", 1)[1] in CIS_REPLAY_GRANTEES
 
 
 class Result(NamedTuple):

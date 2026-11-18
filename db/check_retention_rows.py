@@ -1,13 +1,18 @@
-"""Retention-row check for new-app tables (data standards DM-7.1, AA-929). No network, no DB.
+"""Retention-row check for new tables (data standards DM-7.1, AA-929, AA-1112). No network, no DB.
 
 DM-7.1: every table gets a row in the retention table of data standards Part B section 7 (AA-Ecosys
 `docs/architecture/data-standards/02-data-management.md`, the registry) in the same change that creates it. This
-check makes that a PR failure for the owner dirs in RETENTION_OWNERS: each table a migration copy of such a dir
-creates, and no later copy of the same dir drops, must be named in the first column of a row of that section
-(`schema.table` in backticks). The existing owners (cis, booking, tripplanner) are not listed: their tables are
-grandfathered by DM-7.1 ("an existing table without a row keeps all its rows until its owner proposes a window").
-A new app's dir joins RETENTION_OWNERS in the PR that registers it in owners.yaml (ADR 0008 playbook). A new schema of
-an existing owner joins RETENTION_SCHEMAS the same way (AA-1105: cis `learn`); only its tables are checked in that dir.
+check makes that a PR failure for every owner dir in RETENTION_OWNERS: each table a migration copy creates (or
+renames to), and no later copy of the same dir drops, must be named in the first column of a row of that section
+(`schema.table` in backticks).
+
+Which tables are checked (AA-1112, S284): a new app's dir (crm) from its first file; an existing owner's dir (cis,
+booking, tripplanner) from RETENTION_FROM[dir], the first migration number after the tables DM-7.1 grandfathers ("an
+existing table without a row keeps all its rows until its owner proposes a window"). A table created or renamed in a
+file numbered below that stays grandfathered; one created or renamed from that number on needs its row. A new schema
+of an existing owner (RETENTION_SCHEMAS, AA-1105: cis `learn`) is checked from its first file whatever the number.
+A new app's dir joins RETENTION_OWNERS (no RETENTION_FROM entry) in the PR that registers it in owners.yaml (ADR 0008
+playbook).
 
 Scope of the SQL reading: `CREATE [UNLOGGED] TABLE [IF NOT EXISTS] name` (a `PARTITION OF` child is covered by its
 parent's row; TEMP tables are skipped), `DROP TABLE` and `ALTER TABLE … RENAME TO`, in file order. Unqualified
@@ -15,9 +20,9 @@ names take the dir's schema. Views, materialized views and tables created throug
 
 Usage:
   python3 db/check_retention_rows.py --registry <AA-Ecosys>/docs/architecture/data-standards/02-data-management.md
-  python3 db/check_retention_rows.py --registry FILE --scoped      # print "yes" when a scoped dir has a copy
+  python3 db/check_retention_rows.py --scoped      # print "yes" when a dir has a table this check covers
 
-Exit: 0 every table has a row (or no scoped dir has a copy), 1 a table has no row, 2 the registry is unreadable or
+Exit: 0 every covered table has a row (or no table is covered), 1 a table has no row, 2 the registry is unreadable or
 has no section 7 table (fail closed).
 """
 from __future__ import annotations
@@ -35,10 +40,15 @@ import run_migration  # noqa: E402
 
 MIGRATIONS_DIR = "db/migrations"
 # Migration dir -> the schema an unqualified table name lands in. Add a new app's dir here (DM-7.1).
-RETENTION_OWNERS = {"crm": "crm", "cis": "shared"}
-# Dir -> the only schemas checked in it (absent: every schema of the dir). AA-1105: a NEW schema of an existing owner
-# has rows from its first migration, like a new app; the owner's older schemas stay grandfathered (DM-7.1).
+RETENTION_OWNERS = {"crm": "crm", "cis": "shared", "booking": "booking", "tripplanner": "tripplanner"}
+# Dir -> the first migration number whose new tables need a row (AA-1112: the next free number of each owner on
+# 18/11/2026, CIS 447 / bk-059 / tp-034 were the last files copied). Absent: every file of the dir (a new app).
+# Never raise one of these numbers to make a red check green: add the row instead.
+RETENTION_FROM = {"cis": 448, "booking": 60, "tripplanner": 35}
+# Dir -> schemas checked in every file of the dir, below RETENTION_FROM too. AA-1105: a NEW schema of an existing
+# owner has rows from its first migration, like a new app.
 RETENTION_SCHEMAS = {"cis": frozenset({"learn"})}
+REGISTRY_FILE = "docs/architecture/data-standards/02-data-management.md"
 
 SECTION_RE = re.compile(r"^## 7\. Retention and archival\s*$")
 NAME_IN_CELL_RE = re.compile(r"`([a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*)`")
@@ -109,7 +119,8 @@ def _code(st) -> str:
 
 
 def created_tables(sql_files: list[tuple[str, str]], default_schema: str) -> dict[str, str]:
-    """{table: 'file:line'} for the tables the files create and do not drop again, in file order."""
+    """{table: 'file:line'} for the tables the files create and do not drop again, in file order. A renamed table
+    points at its RENAME statement (the row is the new name's)."""
     live: dict[str, str] = {}
     for rel, sql in sql_files:
         for st in run_migration.split_statements(sql):
@@ -130,8 +141,8 @@ def created_tables(sql_files: list[tuple[str, str]], default_schema: str) -> dic
             if m:
                 old = qualify(m.group(1), default_schema)
                 if old in live:
-                    where = live.pop(old)
-                    live[f"{old.split('.')[0]}.{_ident(m.group(2))}"] = where
+                    live.pop(old)                      # a rename needs the new name's row (DM-7.1)
+                    live[f"{old.split('.')[0]}.{_ident(m.group(2))}"] = f"{rel}:{st.line}"
     return live
 
 
@@ -148,11 +159,19 @@ def scoped_files(repo_root: Path) -> dict[str, list[tuple[str, str]]]:
     return out
 
 
+def _number(where: str) -> int:
+    """The migration number of a 'db/migrations/<dir>/NNN_x.sql:line' location."""
+    m = NUMBER_RE.match(where.rsplit("/", 1)[-1])
+    return int(m.group(1)) if m else 0
+
+
 def scoped_tables(d: str, sql_files: list[tuple[str, str]]) -> dict[str, str]:
-    """The tables of dir `d` this check covers: every created table, or only those of RETENTION_SCHEMAS[d]."""
+    """The tables of dir `d` this check covers: those created (or renamed) in a file numbered RETENTION_FROM[d] or
+    above (every file when the dir has no RETENTION_FROM), plus every table of a RETENTION_SCHEMAS[d] schema."""
     tables = created_tables(sql_files, RETENTION_OWNERS[d])
-    keep = RETENTION_SCHEMAS.get(d)
-    return tables if keep is None else {t: w for t, w in tables.items() if t.split(".", 1)[0] in keep}
+    first = RETENTION_FROM.get(d, 0)
+    schemas = RETENTION_SCHEMAS.get(d, frozenset())
+    return {t: w for t, w in tables.items() if _number(w) >= first or t.split(".", 1)[0] in schemas}
 
 
 def check(registry: set[str], files: dict[str, list[tuple[str, str]]]) -> list[str]:
@@ -160,8 +179,9 @@ def check(registry: set[str], files: dict[str, list[tuple[str, str]]]) -> list[s
     for d, sql_files in files.items():
         for table, where in sorted(scoped_tables(d, sql_files).items()):
             if table not in registry:
-                errors.append(f"{where}: table {table} has no row in the data standards retention table (Part B "
-                              "section 7, DM-7.1). Add the row in an AA-Ecosys root PR, merge it, then re-run.")
+                errors.append(f"{where}: table {table} has no row in the DM-7.1 retention registry. Add a row whose "
+                              f"first cell is `{table}` to the table of '## 7. Retention and archival' in AA-Ecosys "
+                              f"{REGISTRY_FILE} (root PR, merged to master first), then re-run this check.")
     return errors
 
 
@@ -170,14 +190,14 @@ def main(argv: Optional[list[str]] = None, out=sys.stdout) -> int:
     parser.add_argument("--registry", help="path to AA-Ecosys docs/architecture/data-standards/02-data-management.md")
     parser.add_argument("--repo-root", default=str(Path(__file__).resolve().parent.parent))
     parser.add_argument("--scoped", action="store_true",
-                        help="print 'yes' when a RETENTION_OWNERS dir has a migration copy, else 'no'")
+                        help="print 'yes' when a RETENTION_OWNERS dir has a table this check covers, else 'no'")
     args = parser.parse_args(argv)
     files = {d: f for d, f in scoped_files(Path(args.repo_root)).items() if scoped_tables(d, f)}
     if args.scoped:
         print("yes" if files else "no", file=out)
         return 0
     if not files:
-        print(f"no migration copy in {', '.join(sorted(RETENTION_OWNERS))}: nothing to check", file=out)
+        print(f"no new table in {', '.join(sorted(RETENTION_OWNERS))}: nothing to check", file=out)
         return 0
     if not args.registry:
         print("FAIL  --registry is required when a scoped dir has migration copies", file=out)

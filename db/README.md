@@ -322,13 +322,28 @@ line) prints the plan the task would follow.
   (`python3 db/check_migration_ownership.py FILE`) prints a note for each DO block with dynamic SQL. `roles/` is not
   checked. Every copy on `main` passes; on the owners' full history it finds the known cases (TripPlanner
   `002_shared_destinations.sql` / `005`, CIS `122`'s `public.*` drops, CIS `001`–`007` before the owner split).
-- **Retention rows** (DM-7.1, AA-929): `db/check_retention_rows.py` (CI job "Retention rows for new-app
-  tables", not a required check) fails when a table created by a copy in a new-app dir (`RETENTION_OWNERS`, today `crm`) has no
-  row in the retention table of data standards Part B §7, read from the root repo's `master` with a
-  Contents-read token of the GitHub App `aa-ecosys-ci-bot`. Merge the root row first, then the Infra copy. The cis/booking/tripplanner
-  dirs are grandfathered (DM-7.1); a new app's dir is added to `RETENTION_OWNERS` with its
-  `owners.yaml` entry. A new schema of an existing owner is checked the same way through `RETENTION_SCHEMAS`
-  (AA-1105: the `learn` tables of the `cis` dir; the other CIS schemas stay grandfathered).
+- **Retention rows** (DM-7.1, AA-929, AA-1112): `db/check_retention_rows.py` (CI job "Retention rows and RLS
+  allowlist", not a required check) fails when a table an owner copy creates or renames to has no row in the retention
+  table of data standards Part B §7, read from the root repo's `master` with a Contents-read token of the GitHub App
+  `aa-ecosys-ci-bot`. Every owner dir is in `RETENTION_OWNERS`: `crm` from its first file; `cis`, `booking` and
+  `tripplanner` from `RETENTION_FROM` (CIS 448, bk-060, tp-035, AA-1112), the tables of older files being
+  grandfathered by DM-7.1. The failure names the migration file and line, the table and the registry file to edit:
+  merge the root row first, then the Infra copy. A new app's dir is added to `RETENTION_OWNERS` (no `RETENTION_FROM`)
+  with its `owners.yaml` entry; a new schema of an existing owner is checked from its first file through
+  `RETENTION_SCHEMAS` (AA-1105: `learn` in `cis`). Never raise a `RETENTION_FROM` number to turn the check green.
+- **RLS allowlist** (X2, AA-1112): `db/check_rls_allowlist.py` (same advisory job, second step) fails on an
+  allowlist entry of `db/rls_catalogue_rules.py` that matches nothing in the latest successful DB Schema Dump of Dev
+  (a dropped table, a revoked grant, a fixed object): stale entries used to be reported only. The fix is a change to
+  the canonical AA-CIS-App `tests/integration/rls_catalogue_rules.py`, then the byte copy here. The PR that drops or
+  revokes the object removes its entry (the Dev reference shows it as a violation until the apply, report only); the
+  nightly run of the Copy Guard turns red when an apply left an entry behind. The CIS CI replay checks the CIS-side
+  entries per PR (`test_rls_catalogue_guard.py`). On a pull request the step runs only when the PR changes
+  `db/rls_catalogue_rules.py`, `db/check_rls_allowlist.py` or the workflow, because the copy bot's merge check
+  (`db/migration_sync.py merge-check`) refuses a copy PR when ANY check of its head commit failed, required or not
+  (the required ones are only the ones it waits for): a Dev-side stale entry must never stop the migration copies of
+  every owner. An entry the PR adds is not checked (`--base`, the rules file at the PR's base commit): its object
+  reaches Dev only with Migration Apply. Order for a new entry: the rules copy may merge before or after the apply;
+  merged before, the nightly run is red on that entry until the apply has run and a newer DB Schema Dump exists.
 - Exit codes: 2 sha256 mismatch, 3 not registered, 4 lint error, 5 destructive without snapshot,
   6 PostgreSQL error (lock or statement timeout prints a hint), 7 apply refused because a job
   table is busy or a rerun wave is open, 8 role refused, 9 ownership post-check failed (or the
