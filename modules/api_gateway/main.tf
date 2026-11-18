@@ -14,6 +14,28 @@ resource "aws_api_gateway_rest_api" "this" {
   tags = var.tags
 }
 
+# AA-1111 (S284, ZAP baseline triage): the answers API Gateway gives itself (missing route 403 "Missing Authentication
+# Token", throttling 429, integration 5xx) carry the headers the app adds to its own responses (FastAPI
+# SecurityHeadersMiddleware): HSTS (two years, sub-domains, no preload, same value as every app) and nosniff. The body
+# is the gateway's default JSON message, written out because a gateway response without a template answers an empty
+# body. Part of the deployment hash below: a stage serves a frozen snapshot (the AA-432 trap).
+locals {
+  gateway_security_headers = {
+    "gatewayresponse.header.Strict-Transport-Security" = "'max-age=63072000; includeSubDomains'"
+    "gatewayresponse.header.X-Content-Type-Options"    = "'nosniff'"
+  }
+  gateway_default_message = { "application/json" = "{\"message\":$context.error.messageString}" }
+}
+
+resource "aws_api_gateway_gateway_response" "security_headers" {
+  for_each = toset(["DEFAULT_4XX", "DEFAULT_5XX"])
+
+  rest_api_id         = aws_api_gateway_rest_api.this.id
+  response_type       = each.key
+  response_parameters = local.gateway_security_headers
+  response_templates  = local.gateway_default_message
+}
+
 # AA-750: the tenant-key TOKEN authorizer (X-API-Key) was removed with its Lambda. No method had
 # used it since AA-432 (/v1/* is NONE; JWT is checked in FastAPI).
 
@@ -634,9 +656,12 @@ resource "aws_api_gateway_deployment" "this" {
     aws_api_gateway_integration.redoc,
     aws_api_gateway_integration.docs_oauth2_redirect,
     aws_api_gateway_integration.v1,
+    aws_api_gateway_gateway_response.security_headers, # AA-1111
   ]
   triggers = {
     redeployment = sha1(join(",", [
+      # AA-1111: the gateway responses' headers and bodies (a change must redeploy the stage, AA-432 trap).
+      jsonencode({ for k, r in aws_api_gateway_gateway_response.security_headers : k => [r.response_parameters, r.response_templates] }),
       aws_api_gateway_integration.root.uri,
       aws_api_gateway_integration.health.uri,
       aws_api_gateway_integration.health_ready.uri, # AA-884: new resource must redeploy the stage
