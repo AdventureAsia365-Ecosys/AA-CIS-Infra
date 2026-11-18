@@ -227,6 +227,7 @@ SLICE_2_SETTINGS = {
     "crm_llm_bedrock_enabled", "crm_tenant_erase_apply_enabled",
     "crm_slo",                                                 # AA-1096 L6 (S279): the SLO alarm thresholds
     "crm_web_sentry_enabled",                                  # AA-1111 (S282): the CRM web's server Sentry DSN
+    "crm_job_retention_dry_run",                               # AA-1112 (S284): the CRM job retention floor
 }
 
 # Slice 3 (S267, AA-1004 P1): the former tripplanner.tf and tripplanner_jobs.tf of accounts/aa365 (the two Mapbox

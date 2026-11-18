@@ -156,6 +156,8 @@ module "environment" {
   crm_slo                      = var.crm_slo
   # AA-1093 stage 2: the crm_tenant_erase kill switch (default "false").
   crm_tenant_erase_apply_enabled = var.crm_tenant_erase_apply_enabled
+  # AA-1112 (S284): the Terraform floor of the CRM job-row retention (default "true", Dev "false" in terraform.tfvars).
+  crm_job_retention_dry_run = var.crm_job_retention_dry_run
 
   # Booking settings (booking_variables.tf of this root, passed through unchanged).
   booking_github_repo_id     = var.booking_github_repo_id
