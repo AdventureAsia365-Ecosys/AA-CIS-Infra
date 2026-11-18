@@ -55,6 +55,7 @@ on:
       - "accounts/acc3-bedrock/versions.tf"
       - "accounts/acc1-bedrock/versions.tf" # AA-1095: test_tag_guard.py ROOT_DEFAULTS
       - "accounts/acc1-bedrock/cost_guard.tf" # AA-1096: test_aa1096_acc1_cost_guard.py (alert only)
+      - "accounts/acc3-bedrock/cost_guard.tf" # AA-1113: test_aa1113_llm_budgets_marketplace.py (counts Marketplace)
       - ".github/scripts/workflow_lint.py" # S271 G15: test_workflow_lint.py
   push:
     branches: [main]
@@ -83,6 +84,7 @@ on:
       - "accounts/acc3-bedrock/versions.tf"
       - "accounts/acc1-bedrock/versions.tf" # AA-1095: test_tag_guard.py ROOT_DEFAULTS
       - "accounts/acc1-bedrock/cost_guard.tf" # AA-1096: test_aa1096_acc1_cost_guard.py (alert only)
+      - "accounts/acc3-bedrock/cost_guard.tf" # AA-1113: test_aa1113_llm_budgets_marketplace.py (counts Marketplace)
       - ".github/scripts/workflow_lint.py" # S271 G15: test_workflow_lint.py
 
 permissions:
