@@ -108,7 +108,7 @@ patterns_for() {
         'db/replay_migrations.py' 'db/schema_drift.py' 'db/schema_drift_decisions.json' 'db/replay_baseline/**' \
         'db/gen_replay_baseline.py' 'db/gen_schema_reference.py' 'db/schema_dump_automerge.py' 'db/gen_erd.py' 'tools/docs/aws_mask.py' \
         'db/check_erd_drift.py' 'db/schema_dump.py' 'db/check_migration_files.py' 'db/check_migration_ownership.py' \
-        'db/check_retention_rows.py' 'db/run_migration.py' 'db/expand_check.py' 'db/migration_guard_scope.py' 'db/tests/**' 'db/owners.yaml' 'db/isolation_probe.py' \
+        'db/check_retention_rows.py' 'db/check_rls_allowlist.py' 'db/run_migration.py' 'db/expand_check.py' 'db/migration_guard_scope.py' 'db/tests/**' 'db/owners.yaml' 'db/isolation_probe.py' \
         'db/tour_liveness_gate.py' 'db/freshness_gate.py' 'db/scripts/**' 'db/templates/**' '.github/scripts/**' \
         '.github/workflows/db-isolation-probe.yml' '.github/workflows/db-tour-liveness-gate.yml' \
         '.github/workflows/db-freshness-probe.yml' '.github/workflows/db-migrate.yml' \
@@ -561,11 +561,12 @@ run_check() {
         if reg=$(root_registry); then
           step "$c" "retention rows (root master)" "" "$PYQ db/check_retention_rows.py --registry $(printf '%q' "$reg")"
         else
-          ci_only "retention rows for new-app tables (needs the root repo registry; set AA_ECOSYS_ROOT)"
+          ci_only "retention rows for new tables (needs the root repo registry; set AA_ECOSYS_ROOT)"
         fi
       else
         step "$c" "retention rows" "" "$PYQ db/check_retention_rows.py"
       fi
+      ci_only "RLS allowlist stale entries vs the latest Dev dump (needs the DB Schema Dump artifact)"
       ci_only "migration copies vs owner main (Migration Copy Guard, network)" ;;
     ops-probe)
       step "$c" "unittest" "" "cd accounts/aa365 && $PYQ -B -m unittest discover -s lambda_src/dfs_balance_check_tests -v" ;;

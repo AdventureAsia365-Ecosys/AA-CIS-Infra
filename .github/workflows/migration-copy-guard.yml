@@ -24,12 +24,13 @@ name: Migration Copy Guard
 # file that creates, alters, drops, comments on, grants on or writes to an object outside its owner's schemas
 # (db/owners.yaml `schemas`; its own shared.schema_versions registration excepted).
 #
-# Third job (AA-929, data standards DM-7.1): every table a copy of a new-app dir (check_retention_rows.RETENTION_OWNERS,
-# today crm) creates must have a row in the retention table of Part B section 7 on the root repo's master. The job
-# reads that one file with a READ-ONLY installation token of the GitHub App aa-ecosys-ci-bot (AA-901, root ADR 0011:
-# Contents read on AdventureAsia365-Ecosys/AA-Ecosys only, minted in the job, revoked when it ends) and only when a
-# scoped dir has a copy; with no such copy it passes without minting a token. The job also runs on pull_request, so
-# it never asks for a write permission. The existing owners' tables are grandfathered (DM-7.1).
+# Third job (AA-929, AA-1112, data standards DM-7.1): every new table an owner copy creates must have a row in the
+# retention table of Part B section 7 on the root repo's master: every crm table, and the cis / booking / tripplanner
+# tables created or renamed from check_retention_rows.RETENTION_FROM on (CIS 448, bk-060, tp-035; the older tables are
+# grandfathered by DM-7.1). The job reads that one file with a READ-ONLY installation token of the GitHub App
+# aa-ecosys-ci-bot (AA-901, root ADR 0011: Contents read on AdventureAsia365-Ecosys/AA-Ecosys only, minted in the job,
+# revoked when it ends) and only when a covered table exists; with none it passes without minting a token. The job
+# also runs on pull_request, so it never asks for a write permission.
 # AA-993 I1 (S255): no `paths` filter on pull_request any more. The jobs below are required checks of the ruleset on
 # main (tools/github/infra-main-ruleset.json), and a required check whose workflow never starts blocks the PR. The
 # scope step decides instead (db/migration_guard_scope.py, the path list that used to be the filter): when the PR
@@ -38,7 +39,7 @@ name: Migration Copy Guard
 # S271 (CI minutes): four jobs instead of five. The scope (was job `scope`) is a step of `guard`, and lint, retention-rows
 # and classify need `guard` for the scope. A PR outside the paths costs one short job, as before; a PR inside them four
 # instead of five (each job is billed by the started minute). The retention rows stay a job of their own and stay OUT of
-# the ruleset (review S271): the check reads a file of another repo (root master) and every crm table, so a root-side
+# the ruleset (review S271): the check reads a file of another repo (root master) and every new table, so a root-side
 # gap must show as a red advisory check, never block the required "Copies match owner main" that the copy bot's merge
 # check (db/migration_sync.py merge-check) reads. Wall time: lint, retention-rows and classify start after `guard`
 # (~30 s later).
@@ -55,7 +56,7 @@ concurrency:
 
 # No AWS: the owner repos are public, GITHUB_TOKEN only lifts the API rate limit. The one secret is the App key
 # AA_CI_BOT_PRIVATE_KEY (with the variable AA_CI_BOT_APP_ID) in the retention-rows job: it mints a Contents-read
-# token for the root repo (reads one root file; only when a crm copy exists).
+# token for the root repo (reads one root file; only when a covered table exists).
 permissions:
   contents: read
 
@@ -185,13 +186,18 @@ jobs:
           done
           exit "$status"
 
+  # AA-1112: the same advisory job also fails on a stale X2 RLS allowlist entry (db/check_rls_allowlist.py on the latest
+  # successful DB Schema Dump of Dev): two registries checked against what exists, one billed job (S271).
   retention-rows:
-    name: Retention rows for new-app tables
+    name: Retention rows and RLS allowlist
     needs: guard
     # Not a required check (review S271, see the header). Fail closed like lint: skip only on an explicit
     # relevant=false; it runs when the guard's checks failed too, so one run shows every reason.
     if: ${{ !cancelled() && needs.guard.outputs.relevant != 'false' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read          # gh run download of the DB Schema Dump artifact (this repo only)
     env:
       ROOT_REPO: AdventureAsia365-Ecosys/AA-Ecosys
       ROOT_BRANCH: master
@@ -200,7 +206,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Is any new-app dir in scope?
+      - name: Is any new table in scope?
         id: scope
         run: echo "scoped=$(python3 db/check_retention_rows.py --scoped)" >> "$GITHUB_OUTPUT"
 
@@ -239,6 +245,29 @@ jobs:
           status=$?
           cat retention.log
           { echo '### Retention rows (DM-7.1)'; echo '```'; grep -v '^::' retention.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+
+      # AA-1112: an allowlist entry that matches nothing on Dev (dropped table, revoked grant) fails. Only the live dump
+      # sees every owner's objects (the CIS CI replay checks the CIS-side entries). Runs after a red retention step too.
+      # The nightly run of this workflow catches an entry an apply made stale since the last PR.
+      - name: RLS allowlist has no stale entry (latest Dev dump)
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RUN=$(gh run list -R "$GITHUB_REPOSITORY" --workflow db-schema-dump.yml --branch main --status success \
+            --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+          if [ -z "$RUN" ] || ! gh run download "$RUN" -R "$GITHUB_REPOSITORY" -n "db-schema-dump-$RUN" -D dump \
+              || [ ! -s dump/schema.json ]; then
+            echo "::warning::no DB Schema Dump artifact on main (expired or none): the RLS allowlist stale check is skipped"
+            exit 0
+          fi
+          set +e
+          python3 db/check_rls_allowlist.py dump/schema.json > rls-allowlist.log 2>&1
+          status=$?
+          cat rls-allowlist.log
+          { echo "### RLS allowlist vs Dev (DB Schema Dump run $RUN)"; echo '```'; grep -v '^::' rls-allowlist.log; echo '```'; } \
+            >> "$GITHUB_STEP_SUMMARY"
           exit "$status"
 
   # AA-993 M2b (root ADR 0017 d3, design §2 M2b): the expand runtime post-check as evidence on the PR, on a throw-away
