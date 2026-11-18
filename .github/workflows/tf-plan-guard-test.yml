@@ -43,6 +43,7 @@ on:
       - "accounts/aa365/cicd_split.tf" # AA-1023: the apply role trust vs the workflow environments
       - "accounts/aa365/environment.tf" # AA-1004 P0: the moved blocks into modules/environment
       - "accounts/aa365/org_access.tf" # AA-1004 S273: test_aa1004_org_access.py (organization admin role)
+      - "accounts/aa365/docs_reader.tf" # AA-1132: test_aa1132_docs_sync_manifest_read.py (docs-sync role reads one object)
       - "accounts/aa365/terraform.tfvars" # AA-1004 S273: test_aa1004_org_access.py (no management ID committed)
       - "modules/environment/**"
       - ".github/scripts/prod-guard.sh" # AA-1004 P0: Deploy Prod / DB Migrate prod guard
@@ -72,6 +73,7 @@ on:
       - "accounts/aa365/cicd_split.tf" # AA-1023: the apply role trust vs the workflow environments
       - "accounts/aa365/environment.tf" # AA-1004 P0: the moved blocks into modules/environment
       - "accounts/aa365/org_access.tf" # AA-1004 S273: test_aa1004_org_access.py (organization admin role)
+      - "accounts/aa365/docs_reader.tf" # AA-1132: test_aa1132_docs_sync_manifest_read.py (docs-sync role reads one object)
       - "accounts/aa365/terraform.tfvars" # AA-1004 S273: test_aa1004_org_access.py (no management ID committed)
       - "modules/environment/**"
       - ".github/scripts/prod-guard.sh" # AA-1004 P0: Deploy Prod / DB Migrate prod guard
