@@ -1,0 +1,32 @@
+name: Docs Impact
+# AA-1132 A4 (root advisory docs/audits/2026-11-17-S283-docs-advisory, tech lead S283: one central doc map in the
+# AA-Ecosys root, warn only). Calls the root reusable workflow, which reads the root doc map
+# (docs/catalogue/doc-map.yaml on AA-Ecosys master) and, when this PR changes mapped code without touching the pages
+# that describe it, posts one sticky PR comment and warning annotations listing those pages. It never fails and is
+# never a required check. Answer it with one line in the PR body: `Docs-impact: <AA-Ecosys PR link>`,
+# `Docs-impact: updated-here` or `Docs-impact: none: <reason>`.
+#
+# Listens to pull_request and merge_group without a `paths:` filter (the merge-queue rule for new jobs); on
+# merge_group the called job is skipped. Pinned to an AA-Ecosys master commit (WL6); the trailing comment is
+# `# vYYYY.MM.DD`, the date of that root commit with a leading v (the root repo has no release tags, and the Infra
+# action-pin test wants a v). The map itself is read from AA-Ecosys master, so a map change needs no re-pin here;
+# re-pin only when the root workflow file changes, in all five app repos at once.
+on:
+  pull_request:
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-impact-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  docs-impact:
+    name: Docs impact
+    uses: AdventureAsia365-Ecosys/AA-Ecosys/.github/workflows/docs-impact.yml@f49963b9a1f8ccc0fd219083eb73f4b7e7081c3b # v2026.11.18
+    permissions:
+      contents: read
+      pull-requests: write
