@@ -14,7 +14,9 @@
 #
 #   - Writer: OIDC role aa-cis-<env>-docs-sync, trusted only by the root repo on refs/heads/master (immutable repo id
 #     subject, like TripPlanner's tp_oidc_subjects). ListBucket on docs-reader/ and Put / Delete on docs-reader/* of
-#     the bronze bucket, nothing else. Its ARN goes into the root repo secret DOCS_SYNC_ROLE_ARN (a secret, not a
+#     the bronze bucket, plus Get on the one object docs-reader/manifest.json (AA-1132: before a publish replaces it, the
+#     workflow keeps it as docs-reader/manifest.previous.json, the one-step undo of a bad publish), nothing else; no Get
+#     on pages/, assets/, search/ or learn/ (the workflow never reads those back). Its ARN goes into the root repo secret DOCS_SYNC_ROLE_ARN (a secret, not a
 #     variable: the root repo is public for now and a variable is printed in the run log, lessons S249).
 #   - Reader: the CIS task role (modules/ecs ReadDocsReader; DenyDocsReaderWrites keeps the CIS "*" put grant off
 #     the prefix, so only CI writes what the admin shows).
@@ -23,6 +25,7 @@
 #
 # Cost (us-west-1, D-19): ~100 pages, ~2 MB current + at most ~7 days of noncurrent copies (a few runs a day,
 # ~2 MB each) < 0.05 GB = ~$0.001/month storage; ~100 PUT per sync x ~5 syncs a day = ~15,000 PUT/month = ~$0.08;
+# AA-1132 manifest.previous.json: one GET + one PUT of < 1 MB per sync, ~150 of each a month = < $0.001;
 # GETs are cached 5 min in the api, a few hundred a month = ~$0. Total under $0.10/month, IAM $0. No new bucket,
 # KMS key or compute.
 # =============================================================================
@@ -82,6 +85,14 @@ resource "aws_iam_role_policy" "docs_sync" {
         Effect   = "Allow"
         Action   = ["s3:PutObject", "s3:DeleteObject"]
         Resource = "arn:aws:s3:::${module.s3.bronze_bucket_name}/${local.docs_reader_prefix}*"
+      },
+      {
+        # AA-1132: read the manifest about to be replaced, to keep it as manifest.previous.json (Put above). One object
+        # only; the bucket is SSE-S3 (AES256), so no KMS grant is needed.
+        Sid      = "ReadCurrentDocsManifest"
+        Effect   = "Allow"
+        Action   = ["s3:GetObject"]
+        Resource = "arn:aws:s3:::${module.s3.bronze_bucket_name}/${local.docs_reader_prefix}manifest.json"
       },
     ]
   })
