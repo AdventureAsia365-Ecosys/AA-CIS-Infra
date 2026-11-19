@@ -27,7 +27,7 @@ concurrency:
 
 jobs:
   guard:
-    name: ${{ matrix.guard }}
+    name: change guard ${{ matrix.guard }}
     if: >-
       github.event_name == 'pull_request'
       && !startsWith(github.head_ref, 'bot/')
