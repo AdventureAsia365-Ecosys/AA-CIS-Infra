@@ -46,7 +46,9 @@
 -- Migration-only PR first (MIG-4); the code PR raises readiness to bk-060. The running code before the code PR never
 -- reads the new columns or tables (a rate row keeps pax_type adult), so nothing it reads changes here.
 -- DM-6.1: no personal data by rule. Commercial columns are tagged conf:commercial; the note and the three reason
--- columns of supply_restrictions are staff text, tagged pii:free_text like the season-range reasons (bk-055).
+-- columns of supply_restrictions are staff text, tagged pii:free_text like the season-range reasons (bk-055). On
+-- erasure (DM-6.7) bk_owner sets them to '[redacted]' in a reviewed run-script; the guard trigger allows that move on
+-- any row (a closed stop-sale, a term of a published contract) when nothing else but updated_by / updated_at changes.
 -- DM-7.1: both new tables have their row in the root data standards (root PR merged before the Infra copy).
 -- Locks: supplier_rates, supplier_contracts (FK) take short locks (small tables); lock_timeout 5s.
 -- Re-runnable (the Integration Tests replay every file): IF NOT EXISTS, DROP CONSTRAINT IF EXISTS, CREATE OR
@@ -289,6 +291,23 @@ BEGIN
         END IF;
         RETURN OLD;
     END IF;
+    -- Erasure (DM-6.7): note and the three reason columns may be set to the fixed marker '[redacted]' on any row
+    -- (closed stop-sale or term of a published contract), with nothing else changed but updated_by / updated_at. It
+    -- runs as bk_owner in a reviewed run-script (the DSAR erasure runbook); triggers fire for bk_owner too.
+    IF TG_OP = 'UPDATE'
+       AND (to_jsonb(NEW) - 'note' - 'reject_reason' - 'withdraw_reason' - 'end_reason' - 'updated_by' - 'updated_at')
+           = (to_jsonb(OLD) - 'note' - 'reject_reason' - 'withdraw_reason' - 'end_reason' - 'updated_by' - 'updated_at')
+       AND (NEW.note IS NOT DISTINCT FROM OLD.note OR (OLD.note IS NOT NULL AND NEW.note = '[redacted]'))
+       AND (NEW.reject_reason IS NOT DISTINCT FROM OLD.reject_reason
+            OR (OLD.reject_reason IS NOT NULL AND NEW.reject_reason = '[redacted]'))
+       AND (NEW.withdraw_reason IS NOT DISTINCT FROM OLD.withdraw_reason
+            OR (OLD.withdraw_reason IS NOT NULL AND NEW.withdraw_reason = '[redacted]'))
+       AND (NEW.end_reason IS NOT DISTINCT FROM OLD.end_reason
+            OR (OLD.end_reason IS NOT NULL AND NEW.end_reason = '[redacted]'))
+       AND (NEW.note, NEW.reject_reason, NEW.withdraw_reason, NEW.end_reason)
+           IS DISTINCT FROM (OLD.note, OLD.reject_reason, OLD.withdraw_reason, OLD.end_reason) THEN
+        RETURN NEW;
+    END IF;
     IF TG_OP = 'UPDATE' AND OLD.inventory_kind = 'stop_sale' THEN
         -- A stop-sale's facts are fixed; only its decision and its end move (CHECKs keep the people apart).
         IF (NEW.supplier_contract_id, NEW.hotel_room_type_id, NEW.service_id, NEW.inventory_kind, NEW.date_from,
@@ -356,7 +375,7 @@ BEGIN
 END $$;
 
 COMMENT ON FUNCTION booking.supply_restriction_guard() IS
-    'bk-060: contract restrictions (allotment, free_sale, on_request) are written under a draft contract only; a stop-sale is entered pending on a published contract, keeps its facts, is never deleted; both name a component of the contract''s supplier inside its validity.';
+    'bk-060: contract restrictions (allotment, free_sale, on_request) are written under a draft contract only; a stop-sale is entered pending on a published contract, keeps its facts, is never deleted; both name a component of the contract''s supplier inside its validity. Erasure (DM-6.7): note, reject_reason, withdraw_reason and end_reason may be set to ''[redacted]'' on any row with nothing else changed (bk_owner, reviewed run-script).';
 
 CREATE OR REPLACE TRIGGER supply_restrictions_guard
     BEFORE INSERT OR UPDATE OR DELETE ON booking.supply_restrictions
