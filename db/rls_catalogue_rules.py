@@ -179,6 +179,10 @@ ALLOWLIST: dict[str, dict[str, str]] = {
         # owners.yaml cis owner_grants (CIS 269, AA-932: partner CRM self-registration)
         "shared:crm_owner": "contract: partner CRM owner role registers crm- keys (CIS 269)",
         "shared.schema_versions:crm_owner": "contract: crm- keys only, key guard (CIS 269)",
+        # owners.yaml cis consumer_grants (CIS 462, AA-1155, root ADR 0006a A14: staff.roles.v1 staff.booking_grant)
+        "shared:booking": "contract: schema USAGE for the key-only staff grant view below (CIS 462, AA-1155)",
+        "shared.v_staff_booking_grant:booking":
+            "contract: staff.roles.v1, a custom holder's Booking role code and owner markers by sub (CIS 462)",
         # owners.yaml booking / tripplanner consumer_grants
         "booking:cis_app": "contract: schema USAGE for the CIS ops views (bk-017)",
         "booking.v_ops_funnel_daily:cis_app": "contract: CIS ops dashboard (bk-017)",
@@ -195,6 +199,8 @@ ALLOWLIST: dict[str, dict[str, str]] = {
             "contract: agency billing status for the CIS tenant_billing_tick (bk-042)",
         "booking.v_tenant_erasure_report_v1:cis_app":
             "contract: tenant.erasure.v1, Booking erasure report for the CIS tenant_erasure_saga (bk-057)",
+        "booking.v_staff_role_capability:cis_app":
+            "contract: staff.roles.v1, Booking custom roles and capability names for the CIS matrix (bk-062)",
         "booking:tripplanner": "contract: schema USAGE for the public from price view (bk-039)",
         "booking.v_from_prices:tripplanner": "contract: price.from.v1, the tour page from price, RRP only (bk-039)",
         # AA-1046: tripplanner:booking and tripplanner.v_inquiry_outbox:booking (tp-009, the retired inquiry.submitted
