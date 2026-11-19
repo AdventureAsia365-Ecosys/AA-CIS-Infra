@@ -100,6 +100,30 @@ resource "aws_s3_bucket_lifecycle_configuration" "bronze" {
     }
   }
 
+  # AA-1161 (tech lead S285): session evidence images (screenshots used to verify work) live outside git under
+  # audit-assets/<session folder>/, with only a few key shots kept in the root repo. They serve the session and its
+  # follow-up only: expire after 60 days; noncurrent copies of the versioned bucket go after 1 day.
+  rule {
+    id     = "audit-assets-expire-60d"
+    status = "Enabled"
+
+    filter {
+      prefix = "audit-assets/"
+    }
+
+    expiration {
+      days = 60
+    }
+
+    noncurrent_version_expiration {
+      noncurrent_days = 1
+    }
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 1
+    }
+  }
+
   # AA-898: the admin docs reader bundle (root repo docs-sync.yml). Each sync from a fresh CI checkout re-uploads
   # every page, so the versioned bucket would keep a noncurrent copy per run forever; keep 7 days for a quick look
   # back, then expire them. The current objects never expire (the next sync replaces or deletes them).
