@@ -393,7 +393,8 @@ resource "aws_iam_role_policy" "crm_ecs_task" {
 # SENTRY_DSN / SENTRY_REQUIRED (only with var.crm_sentry_enabled), the identity values (local.crm_identity_env),
 # the F3 scrub guardrail (AA-938, local.crm_scrub_env of crm_scrub.tf: SCRUB_GUARDRAIL_ID / _VERSION / _REGION, only
 # when crm_scrub_guardrail_enabled), the AI gateway model (AA-1027 F4, local.crm_llm_env of crm_llm.tf: CRM_LLM_PROVIDER /
-# _MODEL_ID / _USD_PER_MTOK_IN / _OUT / _REGION, only when crm_llm_bedrock_enabled), and the key provider (AA-934): KEY_PROVIDER=kms and KMS_DATA_KEY_ID = the alias of the CRM data key (an alias, not the
+# _MODEL_ID / _USD_PER_MTOK_IN / _OUT / _REGION, only when crm_llm_bedrock_enabled; AA-1138 local.crm_llm_acc1_env of
+# crm_llm_acc1.tf: CRM_LLM_ACC1_ROLE_ARN / _EXTERNAL_ID, only when crm_llm_acc1_enabled), and the key provider (AA-934): KEY_PROVIDER=kms and KMS_DATA_KEY_ID = the alias of the CRM data key (an alias, not the
 # key ARN, so the public app repo never needs the account id; the app stores the ARN KMS returns per wrapped DEK);
 # DOCUMENTS_BUCKET (AA-937): the documents bucket name (task role grant CrmDocumentsObjects above);
 # AUDIT_BUCKET_COMPLIANCE / AUDIT_BUCKET_GOVERNANCE / AUDIT_RETENTION_DRY_RUN (AA-940): the two audit tiers and the
@@ -482,7 +483,7 @@ resource "aws_ecs_task_definition" "crm_api" {
       { name = "PORTAL_OTP_DEV_ECHO", value = var.environment == "dev" ? "true" : "false" },
       # S263 (AA-1025): the in-app ops checks publish their alerts here (task role PublishOpsAlerts).
       { name = "ALERTS_TOPIC_ARN", value = var.alerts_topic_arn },
-      ], local.crm_identity_env, local.crm_scrub_env, local.crm_llm_env, local.crm_mail_env, var.crm_sentry_enabled ? [
+      ], local.crm_identity_env, local.crm_scrub_env, local.crm_llm_env, local.crm_llm_acc1_env, local.crm_mail_env, var.crm_sentry_enabled ? [
       { name = "SENTRY_REQUIRED", value = "true" },
     ] : [])
     secrets = concat([

@@ -27,8 +27,11 @@
     {
       "match": "accounts/acc1-bedrock:aws_iam_role.bedrock_invoker",
       "kind": "AWS",
-      "principal": "arn:*:iam::*:role/aa-cis-dev-ecs-task-role",
-      "reason": "AA-1095 (S278): the acc2 CIS ECS task role assumes the acc1 Bedrock invoker while acc3 is blocked (ExternalId pinned; Bedrock chat models only; root ADR 0001a Note S278)"
+      "principal": [
+        "arn:*:iam::*:role/aa-cis-dev-ecs-task-role",
+        "arn:*:iam::*:role/aa-crm-dev-ecs-task-role"
+      ],
+      "reason": "AA-1095 (S278): the acc2 CIS ECS task role assumes the acc1 Bedrock invoker while acc3 is blocked (ExternalId pinned; Bedrock chat models only; root ADR 0001a Note S278). AA-1138 (S285): the acc2 AA-Partner CRM ECS task role too, with its own ExternalId, for the CRM draft stage's Claude entry"
     },
     {
       "match": "accounts/acc3-bedrock:aws_iam_role.cost_explorer_reader",

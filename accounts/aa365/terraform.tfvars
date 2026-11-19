@@ -66,6 +66,8 @@ crm_scrub_guardrail_enabled = true
 # AA-1027 F4 (S266): the CRM AI gateway on Amazon Nova Lite (acc2) with the task role (crm_llm.tf). Applied after
 # AA-Partner crm-042 (the draft route). Each agency still needs ai_assist + AI on; < $0.05/month on Dev.
 crm_llm_bedrock_enabled = true
+# AA-1138 (S285): the CRM draft stage runs Claude Haiku 5.5 on acc1 first (AA-Partner crm-078); needs the acc1 trust.
+crm_llm_acc1_enabled = true
 
 # AA-811 (S238): AA-Booking sends the staff "new inquiry" e-mail (SES, ses.tf) to this inbox on Dev.
 booking_staff_notify_email = "nghieppham@adventure.asia"

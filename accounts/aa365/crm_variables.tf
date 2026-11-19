@@ -128,6 +128,13 @@ variable "crm_llm_bedrock_enabled" {
   default     = false
 }
 
+# as in modules/environment/crm_llm_acc1.tf
+variable "crm_llm_acc1_enabled" {
+  description = "AA-1138: let the CRM AI gateway assume acc1's AA1-Bedrock-Invoker for its Claude route entry (crm-078 connection_key bedrock_acc1): sts:AssumeRole on that role only and the task env CRM_LLM_ACC1_ROLE_ARN / CRM_LLM_ACC1_EXTERNAL_ID. Needs crm_llm_bedrock_enabled and the acc1 ID (repo secret BEDROCK_ACCT_PAYER_ID). Apply the acc1 root's trust statement first."
+  type        = bool
+  default     = false
+}
+
 # as in modules/environment/crm_slo.tf (AA-1096 L6)
 variable "crm_slo" {
   description = "AA-969 / AA-1096 L6: the AA-Partner SLO alarm thresholds (AA-Partner docs/operations/slo.md, keep both in step): five_xx_percent = 5xx share of requests in a 5-minute window, min_requests = smallest window judged, p95_latency_s = target group p95, alarm_periods / alarm_breaching = windows evaluated / breaching to alarm."

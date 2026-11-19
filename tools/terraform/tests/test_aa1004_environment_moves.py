@@ -228,6 +228,7 @@ SLICE_2_SETTINGS = {
     "crm_slo",                                                 # AA-1096 L6 (S279): the SLO alarm thresholds
     "crm_web_sentry_enabled",                                  # AA-1111 (S282): the CRM web's server Sentry DSN
     "crm_job_retention_dry_run",                               # AA-1112 (S284): the CRM job retention floor
+    "crm_llm_acc1_enabled",                                    # AA-1138 (S285): the CRM's Claude entry on acc1
 }
 
 # Slice 3 (S267, AA-1004 P1): the former tripplanner.tf and tripplanner_jobs.tf of accounts/aa365 (the two Mapbox
