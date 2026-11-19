@@ -66,6 +66,15 @@ resource "aws_sesv2_configuration_set" "stream" {
   }
 
   tags = local.ses_tags
+
+  # The SES API reports a delivery_options block (max_delivery_seconds = 0) that this resource does not
+  # set, and the AWS provider plans "0 -> null" on every run. That never-converging update also defers
+  # data.aws_iam_policy_document.ses_send to apply time, so the five SES send policies showed a change in
+  # every plan and the nightly Terraform Drift run stayed red after each apply (S286). Delivery options are
+  # not managed here; ignore them until a stream needs a TLS policy or a delivery window.
+  lifecycle {
+    ignore_changes = [delivery_options]
+  }
 }
 
 # Bounce / complaint / reject events. No subscription yet: the app send helpers subscribe when they
