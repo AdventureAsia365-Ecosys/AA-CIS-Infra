@@ -52,3 +52,8 @@ accounts/*/lambda_src/*.zip
 
 # Python bytecode (db/ scripts, tests, identity triggers)
 __pycache__/
+
+# AA-1161: build artifacts are never committed. The live Lambdas are zipped by Terraform archive_file at plan time
+# (accounts/aa365/*.tf); the retired ACP/CIS Lambda zips that sat here were removed. tools/repo/lean_guard.py refuses
+# a dist/**/*.zip at push and in CI.
+/dist/
