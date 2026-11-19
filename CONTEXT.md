@@ -631,7 +631,10 @@ tools/
                     (AdminCreateUser SUPPRESS + groups), breakglass-init / -verify (password + TOTP
                     into aa-identity/dev/breakglass, user left DISABLED), breakglass-otp-probe
                     (AA-816: is EMAIL_OTP offered to break-glass; no secret read, no token, Enabled
-                    state restored), PKCE spike helpers; tests
+                    state restored), staff-totp-enroll / staff-totp-check (AA-1111 S2, root ADR 0006c: a
+                    staff member sets a password and enrols TOTP; the check proves the amr "otp" claim the
+                    CIS / Booking / CRM MFA switches read; runbook docs/runbooks/staff-admin-mfa.md; the user
+                    is signed out, never disabled), PKCE spike helpers; tests
                     in tools/identity/tests (job in identity-triggers-test.yml). Tracked on purpose:
                     scripts/ is gitignored, so hand-run tools that must be kept go in tools/.
   contracts/      ← check_contract_copies.py (AA-826, X7): consumer contract-copy hash guard. Pins the
