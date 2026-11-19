@@ -3,7 +3,7 @@
 
 aws-multiline   An `aws ...` command line that ends with a backslash continuation. Multi-line
                 AWS CLI hangs in WSL2 (global rule); every AWS CLI command is one line.
-                Scope: docs/**, skill/**, .kiro/steering/**, .claude/**, minus journals.
+                Scope: docs/**, skill/**, .kiro/steering/**, .kiro/specs/**, .claude/**, minus journals.
                 Always an error.
 
 resource-ids    Literal AWS resource IDs in prose: sg-/subnet-/vpc-/... IDs, standalone
@@ -15,8 +15,19 @@ resource-ids    Literal AWS resource IDs in prose: sg-/subnet-/vpc-/... IDs, sta
                 resource ID or API Gateway host in any page; ARNs and account IDs warn).
                 Kinds: vpc, arn, user-pool, apigw, account.
 
+retired-phrases  A phrase that describes something retired as if it were live (AA-1134, the S283
+                docs audit and AA-1118 lint slice 1): "acc3 only" LLM serving, Vercel previews,
+                the `portal/` copy and aa-crm-dev-portal, the retired Booking kind
+                bk_inquiry_pull, 7-day Dev RDS backups. A line that says the thing is gone
+                (retired, removed, no longer, was, ...) is history and passes. Scope: docs/**,
+                skill/**, .kiro/steering/**, .claude/**, minus journals, generated pages, ADRs,
+                exported Linear issues and archived pages (records keep their words).
+                --mode warn (default in CI while the AA-1118 rewrite lands) or --mode error.
+
 --all scans every tracked .md file of the repo (minus journals) instead of the check's
-default scope. The app and Infra repos keep their pages at the repo root and in docs/, so
+default scope. --scope DIR (repeatable) scans the tracked .md files under DIR instead; the docs
+lint runs `resource-ids --mode error --scope .kiro/specs`: specs ship in the public app repos
+(AA-1137), so an ID there fails even in the root repo, where docs pages only warn. The app and Infra repos keep their pages at the repo root and in docs/, so
 their docs-lint workflows pass --all; the root repo keeps the narrower default scope.
 
 Add `docs-lint: ignore` (for example in an HTML comment) to a line to skip it.
@@ -26,7 +37,9 @@ Usage:
   python tools/docs/check_docs_text.py aws-multiline --all
   python tools/docs/check_docs_text.py resource-ids --mode warn
   python tools/docs/check_docs_text.py resource-ids --all --mode warn --block vpc,apigw
+  python tools/docs/check_docs_text.py resource-ids --mode error --scope .kiro/specs
   python tools/docs/check_docs_text.py resource-ids --mode error path/to/file.md ...
+  python tools/docs/check_docs_text.py retired-phrases --mode warn
 """
 
 from __future__ import annotations
@@ -47,8 +60,35 @@ from docslib import (
     list_markdown,
 )
 
-AWS_SCOPE = ["docs", "skill", ".kiro/steering", ".claude"]
+AWS_SCOPE = ["docs", "skill", ".kiro/steering", ".kiro/specs", ".claude"]
 ID_SCOPE = ["docs"]
+RETIRED_SCOPE = AWS_SCOPE
+
+# (pattern, live truth). Each pattern names a thing that is retired; the message says what runs instead. Update this
+# list when an ADR retires something that docs keep describing (docs/STYLE.md).
+RETIRED_PHRASES: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"(?i)(?<!and )\bacc3[- ]only\b|\bonly (?:on )?acc3\b|\bacc3 is the only\b"),
+     "acc1 serves Bedrock first since S278 (AA-1095); acc3 is the fallback behind it (root ADR 0001a, Note S278)."),
+    (re.compile(r"(?i)\bVercel preview"),
+     "There are no Vercel previews: the frontends run on ECS (AA-911, AA-1038, AA-979) and the UI smoke runs "
+     "after the ECS deploy."),
+    (re.compile(r"(?:AA-Partner|AA-CIS-App)/portal/|`portal/`|\baa-crm-dev-portal\b"),
+     "The tenant portal lives in the CRM web since AA-1036 R3 (service aa-crm-dev-web, host portal.); the CIS "
+     "portal/ copy was deleted at P2b."),
+    (re.compile(r"\bbk_inquiry_pull\b"),
+     "The Booking B2C inquiry kinds are retired (AA-1046, root ADR 0019 d8/d11)."),
+    (re.compile(r"(?i)\b(?:7|seven)[- ]days?\b[^.|;]{0,40}\b(?:PITR|backups?)\b|"
+                r"\b(?:PITR|backups?)\b[^.|;]{0,40}\b(?:7|seven)[- ]days?\b"),
+     "Dev RDS backups are kept 14 days (root ADR 0019 d16)."),
+]
+# Records, not living pages: an ADR keeps the words of its decision (amendments say what changed), exported Linear
+# issues and archived pages are history.
+RETIRED_SKIP_PREFIXES = ("docs/adr/", "docs/linear-export/", "docs/archive/", "docs/ops/postmortems/2",
+                         "docs/architecture/ecosystem-review-2026-09.md", "docs/architecture/db-schema-reference.md")
+# A line that says the thing is gone is history, not a stale claim.
+RETIRED_HISTORY = re.compile(
+    r"(?i)\b(?:retired?|retiring|removed|no longer|was|were|gone|dropped|deleted|replaced|formerly|former|"
+    r"used to|until|before|instead of|not any more|anymore)\b")
 
 # `aws <service> ...` at a command position (line start, after $( | ; & = or a list marker),
 # with the line ending in a backslash continuation.
@@ -120,6 +160,31 @@ def check_resource_ids(root: Path, files: list[str]) -> list[Finding]:
     return findings
 
 
+def check_retired_phrases(root: Path, files: list[str]) -> list[Finding]:
+    findings: list[Finding] = []
+    for relpath in files:
+        if relpath.startswith(RETIRED_SKIP_PREFIXES):
+            continue
+        text, lines = _lines(root, relpath)
+        if is_generated(text):
+            continue
+        fenced = False
+        for n, line in enumerate(lines, 1):
+            if line.lstrip().startswith("```"):
+                fenced = not fenced
+                continue
+            if fenced or IGNORE_MARKER in line or RETIRED_HISTORY.search(line):
+                continue
+            for pattern, truth in RETIRED_PHRASES:
+                m = pattern.search(line)
+                if m:
+                    findings.append(Finding(relpath, n, "Retired phrase",
+                                            f"'{m.group(0)}' describes a retired thing as live. {truth}",
+                                            kind="retired"))
+                    break
+    return findings
+
+
 def _select(root: Path, scope: list[str], explicit: list[str]) -> list[str]:
     files = explicit or list_markdown(scope, root)
     return [f for f in files if f.endswith(".md") and not is_journal(f)]
@@ -127,23 +192,29 @@ def _select(root: Path, scope: list[str], explicit: list[str]) -> list[str]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("check", choices=["aws-multiline", "resource-ids"])
+    parser.add_argument("check", choices=["aws-multiline", "resource-ids", "retired-phrases"])
     parser.add_argument("files", nargs="*", help="repo-relative files (default: the check's scope)")
     parser.add_argument("--mode", choices=["warn", "error"], default="error")
     parser.add_argument("--block", type=_kinds, default=set(),
                         help="resource-ids: comma-separated kinds that fail even with --mode warn ("
                         + ", ".join(KIND_KEYS.values()) + ")")
     parser.add_argument("--all", action="store_true", help="scan every tracked .md file (minus journals)")
+    parser.add_argument("--scope", action="append", default=[],
+                        help="repo-relative folder to scan instead of the default scope (repeatable)")
     parser.add_argument("--root", type=Path, default=REPO_ROOT)
     args = parser.parse_intermixed_args(argv)
     root = args.root.resolve()
 
     if args.check == "aws-multiline":
-        files = _select(root, ["."] if args.all else AWS_SCOPE, args.files)
+        files = _select(root, ["."] if args.all else args.scope or AWS_SCOPE, args.files)
         findings = check_aws_multiline(root, files)
         errors, warnings = findings, []
+    elif args.check == "retired-phrases":
+        files = _select(root, ["."] if args.all else RETIRED_SCOPE, args.files)
+        findings = check_retired_phrases(root, files)
+        errors, warnings = (findings, []) if args.mode == "error" else ([], findings)
     else:
-        files = _select(root, ["."] if args.all else ID_SCOPE, args.files)
+        files = _select(root, ["."] if args.all else args.scope or ID_SCOPE, args.files)
         findings = check_resource_ids(root, files)
         if args.mode == "error":
             errors, warnings = findings, []

@@ -268,9 +268,8 @@ accounts/
                                    never-signed-in accounts) + ses_send; alerts: pool config change outside
                                    Terraform, admin calls outside the invitation model (AdminCreateUser /
                                    AdminDeleteUser only from the CRM task role). crm_web.tf
-                                   crm_partner_signin_enabled switches the CRM web from cis-portal to partner-web
-                                   (keep it true: since AA-979 P2b the CRM API no longer gets the EXTERNAL issuer /
-                                   cis-portal client id, so /crm/v1 refuses cis-portal tokens).
+                                   crm_partner_signin_enabled is pinned to true (the CRM web signs in with partner-web;
+                                   the EXTERNAL cis-portal client it replaced was removed in AA-1134).
                                    identity.tf adds the crm-platform-admin / crm-ops / crm-support groups and the
                                    crm-staff WORKFORCE client)
     identity_iam.tf               (AA-816: CIS task role (api + worker) allow-list on the WORKFORCE pool
@@ -514,16 +513,14 @@ accounts/
                                    role (ECS Exec only), task definition Fargate ARM64 port 3000 (env: public origin,
                                    partner/client hosts (WEB_PUBLIC_ORIGIN = the agency host portal. since the AA-979
                                    clean-up), CRM_API_ORIGIN = the public partner host (/crm/* is not redirected), the
-                                   EXTERNAL cis-portal client until AA-939, CONTENT_STUDIO_URL, WEB_CONTENT_HOME = true
+                                   partner-web client of the partner pool, CONTENT_STUDIO_URL, WEB_CONTENT_HOME = true
                                    (AA-1036: "/" lands on the Content studio inside the web), CIS_API_URL = var.crm_cis_api_url
                                    for the client-host trip page's CIS GET /v1/trip/{id}, AA-979 P2b), target group
                                    aa-crm-<env>-web-tg
                                    (/healthz) behind crm_partner_default, service aa-crm-<env>-web (desired 0,
                                    FARGATE_SPOT), two target-group alarms; security group sg-crm-web (ALB -> 3000, not
-                                   admitted by RDS); the API deploy role also deploys it (crm_app.tf). The cis-portal
-                                   client lists only the partner host's /auth/callback and /signed-out
-                                   (identity_variables.tf; the portal. placeholders went at the AA-979 clean-up);
-                                   the e2e mailbox rule takes the CRM e2e users of tools/identity/crm_e2e_users.json)
+                                   admitted by RDS); the API deploy role also deploys it (crm_app.tf). The
+                                   EXTERNAL cis-portal client is gone (AA-1134); the e2e mailbox rule takes the CRM e2e users of tools/identity/crm_e2e_users.json)
     staff_web.tf                  (AA-911, root ADR 0019 d23 + S271 amendment: the two staff frontends on
                                    ECS, ONE SERVICE PER APP. Per app key cis / booking: ECR, family and service aa-cis-<env>-admin /
                                    aa-booking-<env>-admin (IMMUTABLE ECR, git-SHA tags; Fargate ARM64 256/512, one container cis-admin :3000 /

@@ -49,6 +49,16 @@
         "enum": ["owner", "staff", "engineer", "devops", "cto", "cio", "pm", "agent"]
       }
     },
+    "nav": {
+      "description": "Sidebar group of the /admin/docs reader (AA-1133). Without it the reader derives the group from the folder (tools/docs/build_docs_reader.py NAV_DEFAULTS).",
+      "enum": ["start", "guides", "operations", "architecture", "reference", "legal-security"]
+    },
+    "nav_order": {
+      "description": "Position inside the sidebar group, lower first; pages without it follow, by folder and title (AA-1133).",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 999
+    },
     "applies_to": {
       "description": "Services, apps or versions the page is true for, e.g. aa-cis-api, aa-booking, tripplanner-lambda, ecosystem.",
       "type": "array",
@@ -102,6 +112,12 @@
       "type": "array",
       "uniqueItems": true,
       "items": {"type": "string"}
+    },
+    "known_issue": {
+      "description": "Short note the /admin/docs reader shows as a banner: the page has known errors and is being fixed. The PR that fixes the page removes the field (AA-1133).",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 300
     },
     "linear": {
       "description": "PRDs (docs/product/, AA-894): Linear issue keys that deliver this page. tools/docs/check_prd_refs.py requires it on a PRD.",

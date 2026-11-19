@@ -76,7 +76,7 @@ locals {
   # before it enqueues an apply (403) and the job re-checks it on the worker, so api and worker carry the same value.
   # Apply is on only for the string "true"; "false" behaves like unset.
   # The tenant retention window is the admin-editable setting cis.erasure.tenant_retention_days (CIS 407, seed 30);
-  # its one-release env override ERASURE_TENANT_RETENTION_DAYS was retired (AA-1096 l5, CIS 428): no env var here.
+  # its one-release env override ERASURE_TENANT_RETENTION_DAYS was retired (AA-1096 l5, CIS 424): no env var here.
   erasure_env = [
     { name = "ERASURE_APPLY_ENABLED", value = var.erasure_apply_enabled ? "true" : "false" },
   ]

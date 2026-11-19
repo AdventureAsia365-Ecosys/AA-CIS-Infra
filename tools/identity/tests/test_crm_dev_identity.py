@@ -200,6 +200,17 @@ def test_web_secret_keeps_the_session_secret_and_never_prints_values(capsys):
     assert json.loads(sm.values["crm/dev/web"])["session_secret"] != kept
 
 
+def test_web_secret_defaults_to_the_partner_client_and_refuses_external(capsys):
+    # AA-1134: the CRM web signs in on the partner pool since AA-979 P2b; the EXTERNAL cis-portal client is retired.
+    sm = FakeSm({"crm/dev/web": None})
+    assert run(["web-secret"], sm=sm) == 0
+    assert lines(capsys)[0]["client"] == "aa-partner-dev-partner-web"
+    assert run(["--pool", "external", "web-secret", "--apply"], sm=sm) == 1
+    assert "partner pool" in capsys.readouterr().err
+    assert sm.writes == []
+    assert "external" not in tool.WEB_CLIENT
+
+
 def test_web_secret_needs_the_terraform_shell(capsys):
     assert run(["web-secret", "--apply"], sm=FakeSm()) == 1
     assert "crm_web.tf" in capsys.readouterr().err

@@ -417,15 +417,14 @@ MIGRATE ERROR: refusing apply — busy: booking.job (queued=1). Wait until every
   wave. Same meaning as the deploy gate. AA-990: a queued row due further ahead (the CIS `place_geocode`
   run queued for the next Geoapify credit reset, up to ~24 h) is reported as `later=<n>` and does not
   block; the horizon mirrors AA-CIS-App `shared/jobs/queue.py` `DEPLOY_GATE_HORIZON_S`.
-- **Exempt kinds** (`IDLE_EXEMPT_KINDS` in `run_migration.py`, per owner): `booking.job`
+- **Exempt kinds** (`IDLE_EXEMPT_KINDS` in `run_migration.py`, per owner):
   `crm.job` `crm_heartbeat` (AA-932: the AA-Partner worker's always-queued liveness kind, so no CRM job blocks a
   CIS / Booking / TripPlanner apply; AA-933 registers it under this name) and `crm_membership_pull` (AA-978: the
   CIS membership feed pull, re-queued every 20 s, short transactions; in AA-Partner `DEPLOY_GATE_EXEMPT`) and
   `crm_booking_sync` (AA-947: the AA outage queue and the Booking event feed, re-queued every 60 s, short
-  transactions; in AA-Partner `DEPLOY_GATE_EXEMPT`);
-  `bk_inquiry_pull` (always queued at +60 s, Booking `intake.RECURRING` in
-  `backend/app/inquiry/intake.py`; a Booking `DEPLOY_GATE_EXEMPT` registry arrives with B4). It runs
-  short transactions, so a running one is safe too; `shared.job` has none since AA-751 (S240): the
+  transactions; in AA-Partner `DEPLOY_GATE_EXEMPT`). They run short transactions, so a running one is safe too.
+  `booking.job` has none since AA-1134: its only entry, the B2C intake pull, was retired by AA-1046 (no handler, the
+  Booking worker cancels a leftover row). `shared.job` has none since AA-751 (S240): the
   every-5-minutes `ops_rds_role_connections` kind was removed when the CIS api started publishing
   its metrics in process (CIS registry `deploy_gate_exempt` lists nothing). `lock_timeout 5s` is
   the backstop. Daily retention kinds are not exempt. The list mirrors the owners' registries until X1 (`owners.yaml`):
