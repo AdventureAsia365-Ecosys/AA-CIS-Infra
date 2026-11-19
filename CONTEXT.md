@@ -95,7 +95,8 @@ hand outside Terraform (value never in state); the CIS task role reads them by n
 the next model on the same account, or the job retries. The cross-account assume-role wiring that
 lets the main stack (acc2) and TripPlanner reach Bedrock in acc3 lives in
 `accounts/aa365/bedrock_satellite_assume.tf` (caller side) and the `acc3-bedrock` root (trust side).
-The former `accounts/acc1-bedrock/` was destroyed on 28/10/2026 (7 resources, state bucket deleted) and removed from the repo (AA-998). AA-1095 (S278) brings a new, minimal `accounts/acc1-bedrock/` back: the role `AA1-Bedrock-Invoker` only (trust: the CIS ECS task role, ExternalId pinned; invoke on the 13 chat models of the gateway through their `global.` profiles, plus `ListFoundationModels`), its own state bucket on acc1, applied locally with the acc1 SSO profile. The caller side is the `AssumeSatelliteBedrockInvokerAcc1` statement of `accounts/aa365/bedrock_satellite_assume.tf` and the env `BEDROCK_ACCT_PAYER` on the CIS api and worker (`modules/ecs`), which the CIS connection `acc1` names. acc1 is a personal account, so its ID follows the `MGMT_ACCOUNT_ID` pattern and never appears in this repo: `TF_VAR_bedrock_acct_payer_id` from the repo secret `BEDROCK_ACCT_PAYER_ID` in the three Terraform workflows (unset: no acc1 statement, empty env), and for the acc1 root `-backend-config` plus an untracked `terraform.tfvars` (`tools/terraform/tests/test_aa1095_acc1_no_id.py`). No Batch, Cost Explorer reader or TripPlanner grant on acc1. Spend on acc1 is ALERT ONLY (tech lead S279, AA-1096, root ADR 0001a Note S279): the CIS gateway connection `acc1` warns without a hard stop, and `accounts/acc1-bedrock/cost_guard.tf` adds a free monthly budget `aa1-llm-monthly-total` (100 USD, acc1's own usage via LinkedAccount since acc1 pays acc3's organization; e-mail at 50/80/100 % actual and 100 % forecast) and a CUSTOM LINKED_ACCOUNT anomaly monitor `aa1-spend` with a DAILY e-mail at >= 10 USD impact; no budget action, no SNS topic, recipient from the untracked `terraform.tfvars` (`tools/terraform/tests/test_aa1096_acc1_cost_guard.py`).
+The former `accounts/acc1-bedrock/` was destroyed on 28/10/2026 (7 resources, state bucket deleted) and removed from the repo (AA-998). AA-1095 (S278) brings a new, minimal `accounts/acc1-bedrock/` back: the role `AA1-Bedrock-Invoker` only (trust: the CIS ECS task role, ExternalId pinned, and since AA-1138 (S285) the
+AA-Partner CRM ECS task role with its own ExternalId, for the CRM draft stage's Claude entry (`modules/environment/crm_llm_acc1.tf`, `tools/terraform/tests/test_aa1138_crm_acc1.py`); invoke on the 13 chat models of the gateway through their `global.` profiles, plus `ListFoundationModels`), its own state bucket on acc1, applied locally with the acc1 SSO profile. The caller side is the `AssumeSatelliteBedrockInvokerAcc1` statement of `accounts/aa365/bedrock_satellite_assume.tf` and the env `BEDROCK_ACCT_PAYER` on the CIS api and worker (`modules/ecs`), which the CIS connection `acc1` names. acc1 is a personal account, so its ID follows the `MGMT_ACCOUNT_ID` pattern and never appears in this repo: `TF_VAR_bedrock_acct_payer_id` from the repo secret `BEDROCK_ACCT_PAYER_ID` in the three Terraform workflows (unset: no acc1 statement, empty env), and for the acc1 root `-backend-config` plus an untracked `terraform.tfvars` (`tools/terraform/tests/test_aa1095_acc1_no_id.py`). No Batch, Cost Explorer reader or TripPlanner grant on acc1. Spend on acc1 is ALERT ONLY (tech lead S279, AA-1096, root ADR 0001a Note S279): the CIS gateway connection `acc1` warns without a hard stop, and `accounts/acc1-bedrock/cost_guard.tf` adds a free monthly budget `aa1-llm-monthly-total` (100 USD, acc1's own usage via LinkedAccount since acc1 pays acc3's organization; e-mail at 50/80/100 % actual and 100 % forecast) and a CUSTOM LINKED_ACCOUNT anomaly monitor `aa1-spend` with a DAILY e-mail at >= 10 USD impact; no budget action, no SNS topic, recipient from the untracked `terraform.tfvars` (`tools/terraform/tests/test_aa1096_acc1_cost_guard.py`).
 The satellite invoker roles trust only the ECS task role (`aa-cis-dev-ecs-task-role`), not an
 admin session — Claude cannot be called from a local shell.
 Model lifecycle read (AA-1024 D2): `bedrock:ListFoundationModels` (read only, free) on the CIS task role (`modules/ecs`,
@@ -202,7 +203,7 @@ accounts/
                                    tp_name_prefix / tp_tags read from the module)
     (booking.tf, booking_media.tf, booking_ops_docs.tf: moved to modules/environment, AA-1004 P0 slice 1;
      booking_variables.tf stays here and is passed through)
-    (crm_app.tf, crm_web.tf, crm_data.tf, crm_storage.tf, crm_mail.tf, crm_scrub.tf, crm_llm.tf,
+    (crm_app.tf, crm_web.tf, crm_data.tf, crm_storage.tf, crm_mail.tf, crm_scrub.tf, crm_llm.tf, crm_llm_acc1.tf,
      described below: moved to modules/environment, AA-1004 slice 2. Still here: crm_variables.tf (same variables,
      passed through), the ALB rule crm_api (alb_rules.tf), crm_mail_receipt.tf (MX record + SES receipt rule, in the
      shared zone and rule set), the edge files crm_edge.tf / crm_agency_edge.tf / crm_client_edge.tf, and cicd_crm.tf)
@@ -573,6 +574,14 @@ accounts/
                                    CRM_LLM_PROVIDER / _MODEL_ID / _USD_PER_MTOK_IN / _OUT (= the CIS catalogue prices) /
                                    _REGION / _MAX_TOKENS via local.crm_llm_env in crm_app.tf. The draft route itself is
                                    AA-Partner crm-042. < $0.05/month on Dev)
+    crm_llm_acc1.tf               (AA-1138, behind var.crm_llm_acc1_enabled (default false, true in terraform.tfvars),
+                                   crm_llm_bedrock_enabled and the acc1 ID input bedrock_acct_payer (the root's
+                                   local.bedrock_acct_payer, repo secret): the CRM draft stage's Claude Haiku 5.5 entry
+                                   on acc1 (AA-Partner crm-078, connection_key bedrock_acc1). Inline policy
+                                   aa-crm-<env>-ecs-task-llm-acc1 (sts:AssumeRole on acc1's AA1-Bedrock-Invoker only)
+                                   and task env CRM_LLM_ACC1_ROLE_ARN / _EXTERNAL_ID via local.crm_llm_acc1_env in
+                                   crm_app.tf; the trust statement is in accounts/acc1-bedrock. IAM $0; the CRM's acc1
+                                   spend is capped by the AA-Partner setting crm.ai.connection_monthly_cap_usd)
     crm_mail.tf                   (AA-945: the CRM forward-in mailbox, SES receiving only, -> S3 under the ingest key)
     (crm_membership_alarms.tf, crm_support_alarms.tf, crm_ops_release_alarms.tf, tenant_pool_alarms.tf: deleted by the
      S263 alert diet, AA-1025; those log events are in-app checks of AA-Partner and AA-CIS-App now)
@@ -608,7 +617,7 @@ modules/          ← reusable building blocks, consumed by the account roots
                     booking_media.tf (supplier-photo bucket, CIS task role denied writes), booking_ops_docs.tf (ops
                     documents bucket, PII, only the Booking task role touches objects). The listener rule /booking/*
                     stays in the root (alb_rules.tf). Slice 2: the AA-Partner CRM stack (crm_app.tf, crm_web.tf,
-                    crm_data.tf, crm_storage.tf, crm_mail.tf, crm_scrub.tf, crm_llm.tf (crm_portal.tf was retired in AA-1036); crm_inputs.tf =
+                    crm_data.tf, crm_storage.tf, crm_mail.tf, crm_scrub.tf, crm_llm.tf, crm_llm_acc1.tf (crm_portal.tf was retired in AA-1036); crm_inputs.tf =
                     the CRM naming contract + the root inputs, crm_outputs.tf = what the root reads back); the CRM
                     edge, the crm_api listener rule and the SES receipt rule stay in the root. Later slices (TripPlanner, identity, observability, then the
                     platform module calls below) move the same way; tools/terraform/tests/test_aa1004_environment_moves.py

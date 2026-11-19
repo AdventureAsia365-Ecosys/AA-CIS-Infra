@@ -153,7 +153,10 @@ module "environment" {
   crm_mail_oauth_enabled       = var.crm_mail_oauth_enabled
   crm_scrub_guardrail_enabled  = var.crm_scrub_guardrail_enabled
   crm_llm_bedrock_enabled      = var.crm_llm_bedrock_enabled
-  crm_slo                      = var.crm_slo
+  # AA-1138: the CRM's Claude route entry on acc1 (crm_llm_acc1.tf); acc1's ID only from the repo secret.
+  crm_llm_acc1_enabled = var.crm_llm_acc1_enabled
+  bedrock_acct_payer   = local.bedrock_acct_payer
+  crm_slo              = var.crm_slo
   # AA-1093 stage 2: the crm_tenant_erase kill switch (default "false").
   crm_tenant_erase_apply_enabled = var.crm_tenant_erase_apply_enabled
   # AA-1112 (S284): the Terraform floor of the CRM job-row retention (default "true", Dev "false" in terraform.tfvars).
