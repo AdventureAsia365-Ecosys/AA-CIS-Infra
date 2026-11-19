@@ -1,0 +1,118 @@
+name: Change guard
+# AA-1136 (app-repo slice of the agent change hooks; root advisory docs/audits/2026-11-18-S284-hooks-spec-advisory,
+# section 4). Two WARN jobs on every PR, run by the same checker the Claude Code Stop hooks use
+# (tools/sync/change_guard.py of the AA-Ecosys root repo):
+#   notes-present   code (.py .ts .tsx .js .sh ...) or schema (.sql .tf ...) changed and the issue's implementation note
+#                   docs/implementation-notes/AA-<n>[-<lane>].md did not, with no `No note needed: <reason>` line in it;
+#   test-cochange   code changed and no test file did, with no `No test needed: <reason>` line in the note.
+# The issue id comes from the branch name and the `Refs AA-<n>` lines of the PR's commits. A finding is a warning
+# annotation plus a line in the job summary; the jobs never fail and are never required checks (tech lead S284: warn
+# first, measure for a week, then decide block vs warn for notes-present).
+#
+# Listens to pull_request and merge_group without a `paths:` filter (the merge-queue rule for new jobs); on merge_group
+# and on bot PRs (Dependabot, the CI bot's bot/* and release-please branches) the jobs are skipped. The checker comes
+# from a sparse checkout of AA-Ecosys at the same commit the Spec trace caller pins (spec-trace.yml): re-pin both
+# together, in all five app repos at once. Free: one short job per guard, no secret, no AWS, read-only token.
+on:
+  pull_request:
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: change-guard-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  guard:
+    name: change guard ${{ matrix.guard }}
+    if: >-
+      github.event_name == 'pull_request'
+      && !startsWith(github.head_ref, 'bot/')
+      && !startsWith(github.head_ref, 'release-please--')
+      && !startsWith(github.head_ref, 'dependabot/')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        guard: [notes-present, test-cochange]
+    steps:
+      - name: Checkout (full history, no blobs)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: app
+          fetch-depth: 0
+          filter: blob:none
+          persist-credentials: false
+
+      # Outside the app checkout, so the checker never counts its own files as a change of this PR.
+      - name: Checkout the AA-Ecosys change guard
+        id: tools
+        continue-on-error: true
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: AdventureAsia365-Ecosys/AA-Ecosys
+          ref: d6ef2b1074baf03db9146b792eccf6a9fc2b63b5
+          path: aa-tools
+          persist-credentials: false
+          sparse-checkout: |
+            tools/sync
+
+      - name: ${{ matrix.guard }} (warn only)
+        env:
+          GUARD: ${{ matrix.guard }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          set -uo pipefail
+          if [ ! -f aa-tools/tools/sync/change_guard.py ]; then
+            echo "::warning title=${GUARD}::the AA-Ecosys change guard could not be checked out; nothing checked"
+            exit 0
+          fi
+          # A local branch named after the PR head, so the checker reads the issue id from it as it does locally;
+          # no rename detection, which would fetch file contents into this blob-less clone.
+          git -C app switch --quiet -c "pr/${HEAD_REF}" || true
+          git -C app config diff.renames false
+          AA_SYNC_HOOKS=log python3 -I -B aa-tools/tools/sync/change_guard.py check --repo-dir app --json \
+            > "$RUNNER_TEMP/guard.json" || true
+          python3 -I -B - "$RUNNER_TEMP/guard.json" <<'PY'
+          import json, os, sys
+
+          guard = os.environ["GUARD"]
+          finding = {"notes-present": "no-note", "test-cochange": "no-test"}[guard]
+          try:
+              with open(sys.argv[1], encoding="utf-8") as fh:
+                  rep = json.load(fh)
+          except (OSError, ValueError) as e:
+              rep = {"error": f"no report ({type(e).__name__})"}
+
+          def show(files):
+              return ", ".join(files[:3]) + (f" (+{len(files) - 3})" if len(files) > 3 else "")
+
+          ids = ", ".join(rep.get("issues") or []) or "no issue id in the branch name or a Refs line"
+          note = f"docs/implementation-notes/{(rep.get('issues') or ['AA-<n>'])[0]}.md"
+          if rep.get("error"):
+              text = f"could not check: {rep['error']}"
+          elif finding not in (rep.get("findings") or []):
+              text = ""
+          elif finding == "no-note":
+              changed = (rep.get("code") or []) + (rep.get("schema") or [])
+              text = (f"code changed ({show(changed)}) and no implementation-note change ({ids}): update {note} "
+                      f"(Decisions / Changed / Tradeoffs / Should know), or write 'No note needed: <reason>' there.")
+          else:
+              text = (f"{len(rep.get('code') or [])} code file(s) changed ({show(rep.get('code') or [])}) and no test "
+                      f"file: add or update a test, or write 'No test needed: <reason>' in {note}.")
+          line = text.replace("%", "%25").replace("\r", " ").replace("\n", " ")
+          if text:
+              print(f"::warning title={guard}::{line}")
+          else:
+              print(f"{guard}: ok (code {len(rep.get('code') or [])}, schema {len(rep.get('schema') or [])}, "
+                    f"tests {len(rep.get('tests') or [])}, notes {len(rep.get('notes') or [])}, "
+                    f"waivers {', '.join(rep.get('waivers') or []) or 'none'})")
+          summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary:
+              with open(summary, "a", encoding="utf-8") as fh:
+                  fh.write(f"### {guard} (warn only)\n\n{text or 'No finding.'}\n")
+          PY

@@ -1,0 +1,33 @@
+name: Spec trace
+# AA-1137 (T7 of the root spec .kiro/specs/AA-1137-spec-trace, requirement R5.1). A thin caller of the root reusable
+# workflow AdventureAsia365-Ecosys/AA-Ecosys/.github/workflows/spec-trace.yml: it reads the issue keys of the PR title
+# and body (in the merge queue: the commit messages of the group) and checks the spec of each issue that has one, in
+# this repo's .kiro/specs/AA-<n>-<slug>/ or in the root repo's (work across repos), plus every spec this PR changes:
+# every task names an existing requirement, every requirement has a test or a live step, no account or resource ID,
+# and a spec implemented at the base stays frozen. A PR whose issues have no spec passes at once ("No spec").
+#
+# Listens to pull_request and merge_group without a `paths:` filter (the merge-queue rule for new jobs). Not a
+# required check. Pinned to an AA-Ecosys master commit (WL6); `tools-ref` names the same commit, so the checker and
+# the root specs it reads do not move under this repo. The trailing comment is `# vYYYY.MM.DD`, the date of that root
+# commit. Re-pin together with change-guard.yml, in all five app repos at once. Free: one short job (~20 s), no secret,
+# no AWS, read-only token.
+on:
+  pull_request:
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: spec-trace-caller-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  spec-trace:
+    name: Spec trace
+    uses: AdventureAsia365-Ecosys/AA-Ecosys/.github/workflows/spec-trace.yml@d6ef2b1074baf03db9146b792eccf6a9fc2b63b5 # v2026.11.19
+    with:
+      tools-ref: d6ef2b1074baf03db9146b792eccf6a9fc2b63b5
+    permissions:
+      contents: read
