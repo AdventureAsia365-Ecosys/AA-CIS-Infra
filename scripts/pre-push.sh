@@ -14,6 +14,10 @@
 #   scripts/pre-push.sh --self-test   run the selection logic on fixture diffs (plus scratch git repos for the diff)
 #   scripts/pre-push.sh --base REF    diff base (default origin/main; the script never fetches)
 #
+# Lean guard (AA-1161): every mode but --ci also runs tools/repo/lean_guard.py on <base>...HEAD (change-guard.yml job
+# `lean`): a raster image > 500 KiB, > 10 MiB of images, a dist/**/*.zip (the Lambda zips are built by archive_file),
+# an ELF / Mach-O / PE binary or a file > 5 MiB that .lean-allow does not list blocks the push; a missing base is a note.
+#
 # Installed as the pre-push hook by scripts/install-hooks.sh (.githooks/pre-push calls this file).
 # Bypass for one push: git push --no-verify
 #
@@ -395,6 +399,8 @@ fi
 DIRTY=$(git -c core.quotePath=false diff --name-only HEAD | head -1)
 
 mapfile -t SELECTED < <(printf '%s\n' "$CHANGED" | select_checks "$MODE")
+# AA-1161: the lean guard reads the commits, not the diff selection, so it runs on every local push (CI: job `lean`).
+[ "$CI_MODE" = 1 ] || SELECTED+=(lean-guard)
 
 if [ "$LIST_ONLY" = 1 ]; then
   printf 'mode: %s, base: %s, changed files: %s\n' "$MODE" "$BASE" "$(printf '%s' "$CHANGED" | grep -c . || true)"
@@ -578,6 +584,10 @@ run_check() {
       step "$c" "pytest" py:pytest,py:yaml "$PYQ -m pytest -p no:cacheprovider -q tools/terraform/tests"
       step "$c" "guarded fixture is refused" "" \
         "set +e; $PYQ -B tools/terraform/plan_guard.py tools/terraform/tests/fixtures/plan_guarded.json; rc=\$?; set -e; [ \"\$rc\" -eq 1 ] || { echo \"expected exit 1 (refused), got \$rc\" >&2; exit 1; }" ;;
+    lean-guard)
+      step "$c" "lean_guard.py (change-guard.yml lean)" "" \
+        "$PYQ -B tools/repo/lean_guard.py --base $(printf '%q' "$BASE") --allow-missing-base" \
+        "compress images with AA-Ecosys tools/docs/compress_images.py; build artifacts and binaries stay out of git; a justified big file goes in .lean-allow with a reason" ;;
     hook-self-test)
       step "$c" "--self-test" "" "bash scripts/pre-push.sh --self-test"
       # S273 (AA-1024): hook, this script and the git-init test drop git's repo-local variables (sentinel clone)

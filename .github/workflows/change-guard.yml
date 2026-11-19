@@ -9,6 +9,9 @@ name: Change guard
 # annotation plus a line in the job summary; the jobs never fail and are never required checks (tech lead S284: warn
 # first, measure for a week, then decide block vs warn for notes-present).
 #
+# A third job, `lean` (AA-1161), BLOCKS: tools/repo/lean_guard.py refuses big images, build zips under dist/,
+# executables and files over 5 MiB (its comment below). It also runs on merge_group and on bot PRs.
+#
 # Listens to pull_request and merge_group without a `paths:` filter (the merge-queue rule for new jobs); on merge_group
 # and on bot PRs (Dependabot, the CI bot's bot/* and release-please branches) the jobs are skipped. The checker comes
 # from a sparse checkout of AA-Ecosys at the same commit the Spec trace caller pins (spec-trace.yml): re-pin both
@@ -116,3 +119,31 @@ jobs:
               with open(summary, "a", encoding="utf-8") as fh:
                   fh.write(f"### {guard} (warn only)\n\n{text or 'No finding.'}\n")
           PY
+
+  # AA-1161 (S286): the lean repo guard, BLOCKING (unlike the two warn-only guards above). tools/repo/lean_guard.py of
+  # this repo (a byte-identical copy of the AA-Ecosys root one) refuses, among the files the change adds or changes: a
+  # raster image over 500 KiB, more than 10 MiB of images, a *.zip under dist/, an ELF / Mach-O / PE executable, and
+  # any file over 5 MiB that .lean-allow does not list with a reason. Runs on pull_request and merge_group (bot PRs
+  # too: they must not commit binaries either). Blobless sparse clone: only tools/repo is checked out and the guard
+  # fetches the changed blobs in one round trip (--prefetch). Free: stdlib Python of the runner, no secret, no AWS.
+  lean:
+    name: lean repo guard
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout (full history, no blobs, tools/repo only)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          filter: blob:none
+          sparse-checkout: |
+            tools/repo
+          persist-credentials: false
+
+      - name: Guard unit tests
+        run: python3 -B -m unittest discover -s tools/repo -p 'test_*.py'
+
+      - name: Lean repo guard (images, build artifacts, binaries)
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+        run: python3 -I -B tools/repo/lean_guard.py --base "$BASE_SHA" --head HEAD --prefetch --github
