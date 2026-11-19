@@ -123,6 +123,9 @@ OAUTH_SCOPES = "openid email profile"
 TOTP_STEP = 30
 TOTP_DIGITS = 6
 PASSWORD_LENGTH = 32
+# A failed staff-totp-enroll overwrites the typed password with one nobody knows (kept only in memory), so a
+# staff member is never left with a usable password and no second factor (AA-1111 S2 review).
+UNKNOWN_PASSWORD_LENGTH = 64
 PASSWORD_SYMBOLS = "!@#%^*-_=+.?"  # subset of Cognito's allowed symbols, shell- and JSON-safe
 
 # Claims that are safe to print. Everything else (jti, origin_jti, at_hash, tokens) is dropped.
@@ -767,6 +770,34 @@ def otpauth_uri(email: str, seed: str, env: str) -> str:
     return f"otpauth://totp/{label}?{query}"
 
 
+def _undo_partial_enrol(ctx: Ctx, username: str, *, restore_old_totp: bool) -> None:
+    """A staff-totp-enroll that stopped before TOTP was verified and preferred (refused codes, an unexpected challenge,
+    an error or Ctrl-C) must not leave a usable password without a second factor: MFA is OPTIONAL on the pool, so that
+    password alone would sign in (amr ["pwd"]), the bypass identity.tf forbids. The typed password is overwritten with
+    a random one nobody knows (never printed, kept only in memory). With --rotate the old TOTP preference, cleared to
+    let the password sign in, is switched back on (best effort: the old app entry keeps working when Cognito still
+    holds its token). Each step runs even if the other fails; a failure is a loud warning with the manual command."""
+    unknown = generate_password(UNKNOWN_PASSWORD_LENGTH)
+    ctx.out.register(unknown)
+    try:
+        ctx.idp.admin_set_user_password(UserPoolId=ctx.pool_id, Username=username, Password=unknown, Permanent=True)
+        ctx.out.info("password: replaced by a random one nobody knows (enrolment did not finish)")
+    except Exception as exc:  # noqa: BLE001 - the original error still propagates; this one must be loud
+        ctx.out.warn(f"WARNING the password you typed may still work WITHOUT a second factor ({type(exc).__name__}). "
+                     f"Block it now: aws cognito-idp admin-disable-user --user-pool-id {ctx.pool_id} "
+                     f"--username {username} ; then admin-enable-user and rerun staff-totp-enroll")
+    if restore_old_totp:
+        try:
+            ctx.idp.admin_set_user_mfa_preference(
+                UserPoolId=ctx.pool_id, Username=username,
+                SoftwareTokenMfaSettings={"Enabled": True, "PreferredMfa": True},
+            )
+            ctx.out.info("mfa: the old TOTP preference is back on (rotation did not finish)")
+        except Exception as exc:  # noqa: BLE001
+            ctx.out.warn(f"WARNING the old TOTP could not be switched back on ({type(exc).__name__}); the user has "
+                         "no TOTP now. Run staff-totp-enroll again (no --rotate needed)")
+
+
 def cmd_staff_totp_enroll(ctx: Ctx, email: str, client: str, rotate: bool, breakglass_email: str) -> int:
     username = _staff_user(ctx, email, breakglass_email)
     enrolled = "SOFTWARE_TOKEN_MFA" in (ctx.idp.admin_get_user(
@@ -777,6 +808,7 @@ def cmd_staff_totp_enroll(ctx: Ctx, email: str, client: str, rotate: bool, break
     password = _new_password(ctx)
     signed_in = None
     failures: list[str] = []
+    done = False
     try:
         if enrolled:
             ctx.idp.admin_set_user_mfa_preference(
@@ -809,13 +841,17 @@ def cmd_staff_totp_enroll(ctx: Ctx, email: str, client: str, rotate: bool, break
                 break
             ctx.out.warn(f"code not accepted (attempt {attempt} of {CODE_ATTEMPTS}); wait for the next code")
         else:
-            raise ToolError("TOTP not verified; nothing is enrolled. Run staff-totp-enroll again")
+            raise ToolError("TOTP not verified; nothing is enrolled and the password you typed no longer works. "
+                            "Run staff-totp-enroll again")
         ctx.idp.admin_set_user_mfa_preference(
             UserPoolId=ctx.pool_id, Username=username,
             SoftwareTokenMfaSettings={"Enabled": True, "PreferredMfa": True},
         )
+        done = True
         ctx.out.info("mfa: TOTP enrolled, verified and preferred (sign-in is now password + code; no e-mail code)")
     finally:
+        if not done:
+            _undo_partial_enrol(ctx, username, restore_old_totp=enrolled)
         failures = close_out(ctx.idp, pool_id=ctx.pool_id, username=username, client_id=client_id,
                              client_secret=client_secret,
                              refresh_token=signed_in.refresh_token if signed_in else None, out=ctx.out, disable=False)

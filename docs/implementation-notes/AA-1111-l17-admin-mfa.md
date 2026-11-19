@@ -23,8 +23,19 @@ Tech lead decisions: admin MFA = TOTP (S283); drop the WAF geo rule of the staff
 - `sign_in` can answer SOFTWARE_TOKEN_MFA with a typed code (`totp_code`), besides the stored break-glass seed.
 - `SAFE_CLAIMS` prints `amr` and `acr`.
 
+- **A failed enrolment leaves no usable password** (review fix): when `staff-totp-enroll` stops before TOTP is
+  verified and preferred (three refused codes, an unexpected challenge, an error, Ctrl-C), a `finally` step overwrites
+  the typed password with a random 64-character one nobody knows (memory only, never printed). MFA is OPTIONAL on the
+  pool, so a password alone would sign in with amr ["pwd"], the bypass `identity.tf` forbids. With `--rotate` the old
+  TOTP preference is switched back on in the same step. A failed overwrite is a loud warning with the manual
+  `admin-disable-user` command.
+
 ## Tradeoffs
 - A password is set by the tool (the pool's admin-only recovery keeps "forgot password" off); the person chooses it.
+- `--rotate` still clears the old TOTP preference before the password sign-in (the reviewer suggested clearing it
+  only after the new token is verified). Keeping it on would make the sign-in ask for the old app's code, and rotation
+  exists mostly for a lost phone. The failure path restores the preference instead (best effort: if Cognito no longer
+  holds the old token the user is left with no TOTP and an unknown password, the safe state, and reruns the tool).
 
 ## Should know
 - The WAF change (geo rule off for the staff hosts) is a separate PR, merged only after the three switches are on.

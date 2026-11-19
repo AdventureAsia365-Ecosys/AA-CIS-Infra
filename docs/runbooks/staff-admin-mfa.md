@@ -38,6 +38,9 @@ admin profile with its MFA (the tool refuses any other account).
 
 Someone else (the business owner): the tech lead runs step 3 with that person at the keyboard, or the person runs it on
 their own machine with their own AWS access. Lost phone: rerun step 3 with `--rotate` (the old app entry stops).
+If the tool stops before step 6 succeeds (codes refused, Ctrl-C, an error), it replaces the password you typed with
+an unknown one (and, with `--rotate`, switches the old TOTP back on): nothing usable is left half done. Run step 3
+again.
 
 ## B. Prove the claim (once, before any switch goes on)
 

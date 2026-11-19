@@ -91,7 +91,22 @@ def _enroll_stubs(idp_stub, *, existing=False, codes_ok=(True,)):
         idp_stub.add_response("admin_set_user_mfa_preference", {}, {
             "UserPoolId": POOL, "Username": STAFF,
             "SoftwareTokenMfaSettings": {"Enabled": True, "PreferredMfa": True}})
+    else:
+        stub_undo(idp_stub, existing=existing)
     stub_sign_out(idp_stub)
+
+
+def stub_undo(idp_stub, *, existing, password_error=None):
+    """The failure path: the typed password is overwritten with an unknown one, then (rotation) the old TOTP is back."""
+    if password_error:
+        idp_stub.add_client_error("admin_set_user_password", service_error_code=password_error)
+    else:
+        idp_stub.add_response("admin_set_user_password", {}, {
+            "UserPoolId": POOL, "Username": STAFF, "Password": ANY, "Permanent": True})
+    if existing:
+        idp_stub.add_response("admin_set_user_mfa_preference", {}, {
+            "UserPoolId": POOL, "Username": STAFF,
+            "SoftwareTokenMfaSettings": {"Enabled": True, "PreferredMfa": True}})
 
 
 @pytest.mark.parametrize("existing", [False, True], ids=["first", "rotate"])
@@ -119,14 +134,85 @@ def test_enroll_retries_a_wrong_code_then_succeeds(stubbed, ctx_factory):
     idp_stub.assert_no_pending_responses()
 
 
-def test_enroll_gives_up_after_three_wrong_codes_and_still_signs_out(stubbed, ctx_factory):
+@pytest.mark.parametrize("existing", [False, True], ids=["first", "rotate"])
+def test_enroll_gives_up_after_three_wrong_codes_overwrites_the_password_and_signs_out(
+        stubbed, ctx_factory, capsys, existing):
+    """Review fix: a failed enrolment never leaves the typed password usable without a second factor (MFA is
+    OPTIONAL on the pool, so it alone would sign in); a rotation switches the old TOTP back on."""
     _, idp_stub, _, _ = stubbed
-    _enroll_stubs(idp_stub, codes_ok=(False, False, False))
+    _enroll_stubs(idp_stub, existing=existing, codes_ok=(False, False, False))
+    ctx = ctx_factory()
+    prompts(ctx, [PASSWORD, PASSWORD], ["000000", "000001", "000002"])
+    with pytest.raises(wb.ToolError, match="TOTP not verified.*no longer works"):
+        wb.cmd_staff_totp_enroll(ctx, STAFF, "cis-admin", existing, wb.DEFAULT_BREAKGLASS_EMAIL)
+    idp_stub.assert_no_pending_responses()
+    out = capsys.readouterr()
+    assert "replaced by a random one nobody knows" in out.out
+    assert ("old TOTP preference is back on" in out.out) is existing
+    assert PASSWORD not in out.out + out.err
+
+
+def test_enroll_interrupted_at_the_code_prompt_still_overwrites_the_password(stubbed, ctx_factory):
+    _, idp_stub, _, _ = stubbed
+    stub_user(idp_stub, mfa=[])
+    stub_client(idp_stub)
+    idp_stub.add_response("admin_set_user_password", {}, {
+        "UserPoolId": POOL, "Username": STAFF, "Password": PASSWORD, "Permanent": True})
+    stub_password_sign_in(idp_stub, result(staff_token(["pwd"])))
+    idp_stub.add_response("associate_software_token", {"SecretCode": SEED}, {"AccessToken": ANY})
+    stub_undo(idp_stub, existing=False)
+    stub_sign_out(idp_stub)
+    ctx = ctx_factory()
+    prompts(ctx, [PASSWORD, PASSWORD], [])
+
+    def interrupted(_prompt):
+        raise KeyboardInterrupt
+
+    ctx.ask_text = interrupted
+    with pytest.raises(KeyboardInterrupt):
+        wb.cmd_staff_totp_enroll(ctx, STAFF, "cis-admin", False, wb.DEFAULT_BREAKGLASS_EMAIL)
+    idp_stub.assert_no_pending_responses()
+
+
+def test_enroll_unexpected_challenge_overwrites_the_password_and_restores_the_old_totp(stubbed, ctx_factory):
+    _, idp_stub, _, _ = stubbed
+    stub_user(idp_stub, mfa=["SOFTWARE_TOKEN_MFA"])
+    stub_client(idp_stub)
+    idp_stub.add_response("admin_set_user_mfa_preference", {}, {
+        "UserPoolId": POOL, "Username": STAFF, "SoftwareTokenMfaSettings": {"Enabled": False, "PreferredMfa": False}})
+    idp_stub.add_response("admin_set_user_password", {}, {
+        "UserPoolId": POOL, "Username": STAFF, "Password": PASSWORD, "Permanent": True})
+    stub_password_sign_in(idp_stub, {"ChallengeName": "NEW_PASSWORD_REQUIRED", "Session": S1,
+                                     "ChallengeParameters": {"USERNAME": SUB}})
+    stub_undo(idp_stub, existing=True)
+    idp_stub.add_response("admin_user_global_sign_out", {}, {"UserPoolId": POOL, "Username": STAFF})
+    ctx = ctx_factory()
+    prompts(ctx, [PASSWORD, PASSWORD], [])
+    with pytest.raises(wb.ToolError):
+        wb.cmd_staff_totp_enroll(ctx, STAFF, "cis-admin", True, wb.DEFAULT_BREAKGLASS_EMAIL)
+    idp_stub.assert_no_pending_responses()
+
+
+def test_enroll_warns_loudly_when_the_password_cannot_be_overwritten(stubbed, ctx_factory, capsys):
+    _, idp_stub, _, _ = stubbed
+    stub_user(idp_stub, mfa=[])
+    stub_client(idp_stub)
+    idp_stub.add_response("admin_set_user_password", {}, {
+        "UserPoolId": POOL, "Username": STAFF, "Password": PASSWORD, "Permanent": True})
+    stub_password_sign_in(idp_stub, result(staff_token(["pwd"])))
+    idp_stub.add_response("associate_software_token", {"SecretCode": SEED}, {"AccessToken": ANY})
+    for _ in range(wb.CODE_ATTEMPTS):
+        idp_stub.add_response("verify_software_token", {"Status": "ERROR"},
+                              {"AccessToken": ANY, "UserCode": ANY, "FriendlyDeviceName": "authenticator"})
+    stub_undo(idp_stub, existing=False, password_error="TooManyRequestsException")
+    stub_sign_out(idp_stub)
     ctx = ctx_factory()
     prompts(ctx, [PASSWORD, PASSWORD], ["000000", "000001", "000002"])
     with pytest.raises(wb.ToolError, match="TOTP not verified"):
         wb.cmd_staff_totp_enroll(ctx, STAFF, "cis-admin", False, wb.DEFAULT_BREAKGLASS_EMAIL)
     idp_stub.assert_no_pending_responses()
+    err = capsys.readouterr().err
+    assert "may still work WITHOUT a second factor" in err and "admin-disable-user" in err
 
 
 def test_enroll_refuses_an_enrolled_user_without_rotate_before_any_change(stubbed, ctx_factory):
