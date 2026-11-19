@@ -98,10 +98,18 @@ class IdleGateModeTest(unittest.TestCase):
     def test_exempt_and_later_rows_do_not_block(self):
         conn = FakeConn(login="db_migrator", states=[({
             "shared": [job("place_geocode", later=True)],
-            "booking": [job("bk_inquiry_pull")],
             "crm": [job("crm_heartbeat", "running"), job("crm_membership_pull"), job("crm_booking_sync")]}, 0)])
         code, out = self.run_gate(conn)
         self.assertEqual(code, 0, out)
+
+    def test_a_leftover_retired_booking_pull_is_not_exempt(self):
+        # AA-1134: the B2C intake pull was retired by AA-1046 (the Booking worker cancels a leftover row), so booking.job
+        # has no exempt kind any more and a due row of it is busy like any other kind.
+        self.assertEqual(rm.IDLE_EXEMPT_KINDS["booking"], frozenset())
+        conn = FakeConn(login="db_migrator", states=[({"booking": [job("bk_inquiry_pull")]}, 0)])
+        code, out = self.run_gate(conn)
+        self.assertEqual(code, 7, out)
+        self.assertIn("MIGRATE ERROR: idle-gate refused", out)
 
     def test_override_passes_a_busy_answer_with_a_warning(self):
         conn = FakeConn(login="db_migrator", states=[({"shared": [job("noop_sleep", "running")]}, 0)])

@@ -205,14 +205,14 @@ DELETE_RE = re.compile(r"^(WITH\b.*\b)?DELETE FROM\b")
 
 # Idle check (AA-751). Kinds that are always queued or running by design and only run short
 # transactions; a busy row of any other kind blocks apply. Mirrors the owners' sources until X1
-# (owners.yaml): CIS registry `deploy_gate_exempt`; Booking backend/app/inquiry/intake.py RECURRING
-# (bk_inquiry_pull, every 60 s) - Booking's DEPLOY_GATE_EXEMPT registry arrives with B4, point here
-# at it then. Daily retention kinds are deliberately NOT exempt.
+# (owners.yaml): CIS registry `deploy_gate_exempt`. Daily retention kinds are deliberately NOT exempt.
+# booking: none since AA-1134. Its only entry was the B2C intake pull bk_inquiry_pull (always queued at +60 s, bk-002),
+# retired by AA-1046: no handler, no schedule, and the Booking worker cancels a leftover row (app.b2c.RETIRED_KINDS).
 # shared: none since AA-751 (S240). ops_rds_role_connections (every 5 min, AA-832) was removed
 # from the CIS registry when the CIS api started publishing AA/RDS from an in-process sampler.
 IDLE_EXEMPT_KINDS = {
     "shared": frozenset(),
-    "booking": frozenset({"bk_inquiry_pull"}),            # always queued at +60 s (bk-002 intake)
+    "booking": frozenset(),
     # AA-932: AA-Partner worker liveness kind (AA-933); AA-978: the CIS membership feed pull, every 20 s;
     # AA-947: the AA outage queue + Booking feed (crm_booking_sync), every 60 s
     "crm": frozenset({"crm_heartbeat", "crm_membership_pull", "crm_booking_sync"}),

@@ -51,7 +51,7 @@ locals {
   # (ERASURE_APPLY_ENABLED=false). true = apply on, for the approved drill on a synthetic tenant only (root
   # docs/legal/dsar-erasure-runbook.md section 5). The retention window is the admin setting
   # cis.erasure.tenant_retention_days (seed 30 days): the drill sets 0 on Platform › Settings for its run and puts it
-  # back after; no env var since AA-1096 l5 (CIS 428 retired the override ERASURE_TENANT_RETENTION_DAYS). A change reaches the tasks only after Terraform Apply AND a CIS Deploy Dev dispatch
+  # back after; no env var since AA-1096 l5 (CIS 424 retired the override ERASURE_TENANT_RETENTION_DAYS). A change reaches the tasks only after Terraform Apply AND a CIS Deploy Dev dispatch
   # (the services ignore task_definition; the deploy copies the latest revision and swaps the image).
   erasure_drill = false
 }

@@ -7,7 +7,7 @@ What must hold:
    definition's env_override FIRST, so a Terraform-set override hides the admin page's value. The names come from the
    migration copies ("env_override": "<NAME>" in every owner's setting_definition seed) plus the env vars the apps no
    longer read or read only as a fallback. No exception any more: ERASURE_TENANT_RETENTION_DAYS, once set while the
-   Dev erasure drill was on, is gone with its variable (AA-1096 l5: CIS 428 retired every settings env override; the
+   Dev erasure drill was on, is gone with its variable (AA-1096 l5: CIS 424 retired every settings env override; the
    drill sets the setting on Platform › Settings).
 2. Dead config is gone: the four API Gateway usage plans and SF_BATCH_THRESHOLD.
 3. The edge literals are variables with the values in force: the WAF RateLimit1000 rule, the CIS and Booking REST API

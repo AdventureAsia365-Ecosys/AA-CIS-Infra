@@ -25,8 +25,8 @@
 # Routing: viewer -> CloudFront partner-dev. -> VPC origin -> NLB -> ALB :80 host + X-AA-Origin rules (alb_rules.tf):
 # crm_api (/crm, /crm/*) first, then crm_partner_default -> this service. The web calls the API back through the
 # public partner host (CRM_API_ORIGIN, egress via the NAT instance): it never holds the CloudFront origin secret.
-# Sign-in: the EXTERNAL `cis-portal` client until AA-939 (design v3 Fix C10); its callback / sign-out URLs on the
-# partner host are in identity_variables.tf. AA-939 points COGNITO_* at the partner pool's web client.
+# Sign-in: the partner pool's web client (AA-939; its URLs in identity_partner.tf). The EXTERNAL `cis-portal` client of
+# the first CRM release (design v3 Fix C10) was removed in AA-1134.
 # AA-1019: the AA staff console (/staff on the agency host) signs in with the WORKFORCE crm-staff client (root ADR 0006b
 # decision 6): STAFF_COGNITO_DOMAIN / STAFF_COGNITO_CLIENT_ID here, STAFF_COGNITO_CLIENT_SECRET / STAFF_SESSION_SECRET
 # from two more keys of crm/dev/web. ORDER: write those keys (crm_dev_identity.py staff-web-secret --apply) BEFORE the
@@ -85,13 +85,13 @@ locals {
   crm_web_service_arn      = "arn:aws:ecs:${var.aws_region}:${var.account_id}:service/${var.ecs_cluster_name}/${local.crm_web_service}"
   crm_web_task_def_pattern = "arn:aws:ecs:${var.aws_region}:${var.account_id}:task-definition/${local.crm_web_service}:*"
 
-  # Managed login of the pool the web signs in with (AA-939, safe rollout): the partner pool's partner-web client once
-  # crm_partner_signin_enabled = true, else the EXTERNAL cis-portal client (custom domain when on, else the prefix
-  # domain). The client secret in crm/dev/web must belong to the same client: after flipping the variable and
-  # applying, run tools/identity/crm_dev_identity.py web-secret --pool partner --apply, then deploy the web.
+  # Managed login of the pool the web signs in with: the partner pool's partner-web client (AA-939; the variable
+  # crm_partner_signin_enabled is pinned to true by its validation since AA-979 P2b). AA-1134: the EXTERNAL cis-portal
+  # fallback is gone with that client. The client secret in crm/dev/web belongs to partner-web
+  # (tools/identity/crm_dev_identity.py web-secret, which defaults to the partner pool).
   crm_web_external_domain = var.identity_custom_domains_enabled ? "https://${var.identity_external_custom_domain}" : "https://${var.cognito_external_prefix_domain}.auth.${var.aws_region}.amazoncognito.com"
   crm_web_cognito_domain  = var.crm_partner_signin_enabled ? var.cognito_partner_login_base : local.crm_web_external_domain
-  crm_web_client_id       = var.crm_partner_signin_enabled ? var.cognito_partner_web_client_id : var.cognito_external_cis_portal_client_id
+  crm_web_client_id       = var.cognito_partner_web_client_id
   # AA-1019: the WORKFORCE managed login (staff-auth. custom domain when on, else the prefix domain; same expression as
   # identity.tf output identity_managed_login_base_urls.workforce).
   crm_web_staff_domain = var.identity_custom_domains_enabled ? "https://${var.identity_workforce_custom_domain}" : "https://${var.cognito_workforce_prefix_domain}.auth.${var.aws_region}.amazoncognito.com"

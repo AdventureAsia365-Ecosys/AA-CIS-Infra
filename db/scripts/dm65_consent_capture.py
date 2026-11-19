@@ -1,10 +1,12 @@
-"""DM-6.5 consent capture check (AA-886; AA-1046 after Booking bk-045): consent value, time and source in
+"""DM-6.5 consent capture check (AA-886; AA-1046 B2C retirement): consent value, time and source in
 tripplanner.customers and in its hand-off to Booking (booking.inbox_events, inquiry.submitted). Read-only; prints
 ids, booleans, timestamps and counts only (no name, email or phone).
 Query text: AA-Ecosys docs/legal/consent-capture-query.md.
 
-bk-045 (AA-1037, root ADR 0019) dropped the Booking customer master (booking.customers): Booking keeps no traveller
-consent of its own any more. The hand-off rows stay under DM-6.6 (personal data redacted after 90 days), so the chain
+AA-1046 (root ADR 0019) retired the B2C half: Booking creates no traveller record and takes no consent of its own any
+more. Its customer master booking.customers (contact_consent, contact_consent_at) is still live, read-only, until the
+B2C table-drop migration (a later bk- key; AA-1134 corrected this note, which said bk-045 had dropped it: bk-045 is the
+finance migration). This script does not read those frozen rows. The hand-off rows stay under DM-6.6 (personal data redacted after 90 days), so the chain
 check reads the unredacted ones only. Consent of an agency's travellers lives in crm.consent (RLS per tenant): the
 CRM part of the page, not this master script.
 """

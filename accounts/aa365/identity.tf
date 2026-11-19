@@ -14,8 +14,9 @@
 #   - 2 user pools on the Essentials plan, deletion protection ACTIVE (decision 1):
 #       aa-workforce-<env>  staff + break-glass; admin-create only; MFA OPTIONAL (TOTP, break-glass only)
 #       aa-external-<env>   tenant users + travellers; self sign-up gated per client by the trigger; MFA OFF
-#   - 6 app clients (decision 2): workforce cis-admin / booking-staff / breakglass (confidential), external
-#     cis-portal (confidential), booking-customer / tripplanner (public, PKCE). The Preview-only
+#   - app clients (decision 2): workforce cis-admin / booking-staff / breakglass (confidential), external
+#     booking-customer / tripplanner (public, PKCE). The external cis-portal client (confidential) was removed in
+#     AA-1134: its last user, the CRM web before AA-939, signs in on the partner pool since AA-979 P2b. The Preview-only
 #     cis-admin-preview / booking-staff-preview (AA-911 D-1, root ADR 0006a A11) were deleted with their Vercel
 #     Preview hosts (AA-911 Vercel retirement, S272, root ADR 0006a A13)
 #   - 10 WORKFORCE groups <app>-<role> (decision 3): 3 CIS roles + every Booking staff role
@@ -166,7 +167,6 @@ locals {
     "crm-support"        = { precedence = 82, description = "AA-Partner owner-granted support sessions (/crm/staff/v1)" }
   }
 
-  id_ext_idps_portal    = concat(["COGNITO"], local.id_ext_google ? ["Google"] : [])
   id_ext_idps_traveller = concat(["COGNITO"], local.id_ext_google ? ["Google"] : [], local.id_facebook ? ["Facebook"] : [])
 
   # Mapped attributes must be client-writable. email_verified is mapped by Google only (Facebook
@@ -208,10 +208,8 @@ locals {
     }
   }
   id_external_clients = {
-    "cis-portal" = {
-      secret = true, access_minutes = 30, refresh_hours = 168
-      idps   = local.id_ext_idps_portal, writes = local.id_ext_google ? local.id_federated_writes : ["name"]
-    }
+    # AA-1134: no "cis-portal" client any more (its last user, the CRM web, left it at AA-979 P2b; the CRM API refuses
+    # its tokens). Tenant people sign in on the PARTNER pool (identity_partner.tf, root ADR 0006b).
     "booking-customer" = {
       secret = false, access_minutes = 60, refresh_hours = 720
       idps   = local.id_ext_idps_traveller, writes = (local.id_ext_google || local.id_facebook) ? local.id_federated_writes : ["name"]
@@ -223,7 +221,8 @@ locals {
   }
 
   # Client NAMES (not ids) go into the EXTERNAL trigger env: ids would create a Terraform cycle.
-  id_portal_client_names    = ["${local.idext_name}-cis-portal"]
+  # Empty since AA-1134 (cis-portal removed): the trigger then refuses every sign-up outside the traveller clients.
+  id_portal_client_names    = []
   id_traveller_client_names = ["${local.idext_name}-booking-customer", "${local.idext_name}-tripplanner"]
 
   id_workforce_env = {

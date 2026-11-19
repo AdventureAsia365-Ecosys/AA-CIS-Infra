@@ -165,11 +165,6 @@ variable "cognito_partner_login_base" {
   type        = string
 }
 
-variable "cognito_external_cis_portal_client_id" {
-  description = "EXTERNAL client cis-portal (aws_cognito_user_pool_client.external[\"cis-portal\"].id): the CRM web's sign-in client while crm_partner_signin_enabled is false."
-  type        = string
-}
-
 variable "cognito_external_prefix_domain" {
   description = "Prefix domain of the EXTERNAL managed login (aws_cognito_user_pool_domain.external_prefix.domain)."
   type        = string
