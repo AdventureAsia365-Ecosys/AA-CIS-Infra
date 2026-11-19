@@ -146,7 +146,7 @@ variable "identity_facebook_api_version" {
 
 # ── App client URLs ──────────────────────────────────────────────────────────
 variable "identity_client_urls" {
-  description = "Callback and sign-out URLs per app client key (cis-admin, booking-staff, breakglass, crm-staff, academy-web, cis-portal, booking-customer, tripplanner). Hosts follow the S237 hostname decision (AA-818); they need not resolve yet. Paths are placeholders until each app implements its callback route. cis-admin and booking-staff point at the staff hosts aa-cis. and booking., served by ECS since AA-911 (the aa-booking-admin.vercel.app URLs and the Preview-only clients cis-admin-preview / booking-staff-preview of S246 went with the Vercel retirement, S272); breakglass stays production-only; cis-portal points at portal.lumiguides.it.com (S243, AA-885) and, since AA-935, also at the AA-Partner CRM web on partner-dev.lumiguides.it.com (/auth/callback, /signed-out); crm-staff (AA-939) points at the AA-Partner staff console on the agency host portal.lumiguides.it.com (AA-1019); academy-web (AA-1105) points at the AA Academy host academy.lumiguides.it.com (/academy/auth/callback, /academy/signed-out); booking-customer stays on localhost until its frontend host is chosen; tripplanner points at the public host tripplanner.lumiguides.it.com only (the aa-tripplanner.vercel.app URLs went with the TripPlanner Vercel retirement, AA-1038, S272)."
+  description = "Callback and sign-out URLs per app client key (cis-admin, booking-staff, breakglass, crm-staff, academy-web, booking-customer, tripplanner). Hosts follow the S237 hostname decision (AA-818); they need not resolve yet. Paths are placeholders until each app implements its callback route. cis-admin and booking-staff point at the staff hosts aa-cis. and booking., served by ECS since AA-911 (the aa-booking-admin.vercel.app URLs and the Preview-only clients cis-admin-preview / booking-staff-preview of S246 went with the Vercel retirement, S272); breakglass stays production-only; the EXTERNAL cis-portal client and its URLs were removed in AA-1134 (the CRM web signs in on the PARTNER pool since AA-979 P2b); crm-staff (AA-939) points at the AA-Partner staff console on the agency host portal.lumiguides.it.com (AA-1019); academy-web (AA-1105) points at the AA Academy host academy.lumiguides.it.com (/academy/auth/callback, /academy/signed-out); booking-customer stays on localhost until its frontend host is chosen; tripplanner points at the public host tripplanner.lumiguides.it.com only (the aa-tripplanner.vercel.app URLs went with the TripPlanner Vercel retirement, AA-1038, S272)."
   type = map(object({
     callback_urls = list(string)
     logout_urls   = list(string)
@@ -165,14 +165,6 @@ variable "identity_client_urls" {
       # URLs went with the Vercel retirement, S272); localhost:3001 for local dev.
       callback_urls = ["https://booking.lumiguides.it.com/api/auth/callback/cognito", "http://localhost:3001/api/auth/callback/cognito"]
       logout_urls   = ["https://booking.lumiguides.it.com/login", "http://localhost:3001/login"]
-    }
-    "cis-portal" = {
-      # AA-935 (CRM-07, design v3 Fix C10): the AA-Partner CRM web's EXTERNAL-pool fallback (used only while
-      # crm_partner_signin_enabled = false): its callback and sign-out pages on the partner host, local dev port 3005.
-      # AA-979 P2b clean-up: the tenant portal's placeholder entries (portal. /api/auth/callback/cognito,
-      # /tenant-login, localhost:3004) are removed: the studio signs in with the partner pool through the CRM web.
-      callback_urls = ["https://partner-dev.lumiguides.it.com/auth/callback", "http://localhost:3005/auth/callback"]
-      logout_urls   = ["https://partner-dev.lumiguides.it.com/signed-out", "http://localhost:3005/signed-out"]
     }
     "crm-staff" = {
       # AA-939: the AA-Partner staff pages. AA-1019: the staff console (AA-Partner web/app/staff) on the agency host

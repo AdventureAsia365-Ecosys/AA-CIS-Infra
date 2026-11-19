@@ -200,7 +200,6 @@ SLICE_2_INPUTS = {
     "cognito_partner_web_client_id": 'aws_cognito_user_pool_client.partner["partner-web"].id',
     "cognito_partner_issuer": "local.idpartner_issuer",
     "cognito_partner_login_base": "local.idpartner_login_base",
-    "cognito_external_cis_portal_client_id": 'aws_cognito_user_pool_client.external["cis-portal"].id',
     "cognito_external_prefix_domain": "aws_cognito_user_pool_domain.external_prefix.domain",
     "identity_custom_domains_enabled": "local.id_custom_domains",
     "identity_external_custom_domain": "var.identity_external_custom_domain",

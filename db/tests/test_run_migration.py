@@ -472,7 +472,7 @@ class IdleCheckTest(unittest.TestCase):
         self.assertIn("MIGRATE busy: shared.job running=1 queued=2 due=1 kinds=[a3_atomize:queued=1, "
                       "a3_atomize:running=1, place_extract:queued=1]", log)
         self.assertIn(REFUSAL.format("shared.job (running=1, queued=2)"), log)
-        self.assertIn("MIGRATE idle: booking.job running=0 queued=0 (exempt: bk_inquiry_pull)", log)
+        self.assertIn("MIGRATE idle: booking.job running=0 queued=0\n", log)
 
     def test_a_row_queued_beyond_the_horizon_does_not_block_apply(self):
         # AA-990: the place_geocode run queued for the next Geoapify credit reset (up to ~24 h ahead)
@@ -506,13 +506,13 @@ class IdleCheckTest(unittest.TestCase):
 
     def test_exempt_kinds_queued_and_running_are_ignored(self):
         # shared.job has no exempt kind since AA-751; a test-only one keeps the mechanism covered.
-        state = ({"booking": [job("bk_inquiry_pull"), job("bk_inquiry_pull", "running")],
+        state = ({"booking": [],
                   "shared": [job("x_test_recurring"), job("x_test_recurring", "running"),
                              job("a3_atomize", "succeeded"), job("a3_atomize", "failed")]}, 0)
         with mock.patch.dict(rm.IDLE_EXEMPT_KINDS, {"shared": frozenset({"x_test_recurring"})}):
             code, conn, _, log = self.run_task(PLAIN, conn=FakeConn(states=[state]))
         self.assertEqual((code, conn.executed, self.sleeps), (0, [PLAIN], []))
-        self.assertIn("MIGRATE idle: booking.job running=0 queued=0 (exempt: bk_inquiry_pull)", log)
+        self.assertIn("MIGRATE idle: booking.job running=0 queued=0\n", log)
         self.assertIn("MIGRATE idle: shared.job running=0 queued=0 (exempt: x_test_recurring)", log)
 
     def test_crm_recurring_kinds_are_exempt_and_other_crm_kinds_block(self):
@@ -595,7 +595,7 @@ class IdleCheckTest(unittest.TestCase):
     def test_exempt_list_is_passed_per_owner(self):
         state = ({"booking": [], "shared": [], "tripplanner": []}, 0)
         _, conn, _, _ = self.run_task(PLAIN, conn=FakeConn(states=[state]))
-        self.assertEqual(conn.busy_queries, [("booking", ["bk_inquiry_pull"]),
+        self.assertEqual(conn.busy_queries, [("booking", []),
                                              ("shared", []),
                                              ("tripplanner", [])])
 

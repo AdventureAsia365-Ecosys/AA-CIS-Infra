@@ -3,8 +3,8 @@
 from a workstation. Not run by CI, not deployed. Standard library + boto3 only. DRY RUN by default: nothing is written
 without --apply.
 
---pool external (default, the AA-935 behaviour) or --pool partner (AA-939, root ADR 0006b: the partner pool with MFA
-required). On the partner pool an e2e user cannot sign in by e-mail code, so e2e-users enrols each new user the way a
+--pool external or --pool partner (AA-939, root ADR 0006b: the partner pool with MFA required). Without --pool,
+web-secret uses the partner pool and every other pool command the external pool (AA-1134). On the partner pool an e2e user cannot sign in by e-mail code, so e2e-users enrols each new user the way a
 person would: AdminCreateUser (SUPPRESS) with a random temporary password, then the first sign-in through the
 partner-web client (USER_AUTH + PASSWORD, NEW_PASSWORD_REQUIRED with a random permanent password, MFA_SETUP with
 AssociateSoftwareToken / VerifySoftwareToken), and stores {email, sub, agency, role, pool, password, totp_secret} in
@@ -14,7 +14,7 @@ pool's "admin bypass" alert (identity_partner.tf) by design: expect one mail per
 Subcommands
   e2e-users  [--apply] [--write-secrets]
       The e2e test users of the synthetic CRM agencies (tools/identity/crm_e2e_users.json), in the EXTERNAL pool
-      (the CRM web signs in with the `cis-portal` client on Dev until AA-939). Each user is
+      by default (the first CRM release; the CRM web signs in on the partner pool since AA-939: use --pool partner). Each user is
       e2e-test-crm-<agency>-<role>@e2e-mail.<zone> (the pool's username is the e-mail; the SES receipt rule of
       e2e_mailbox.tf takes these addresses), created with AdminCreateUser MessageAction=SUPPRESS and
       email_verified=true, no password ever set: sign-in is the e-mail code, read from the e2e mailbox bucket.
@@ -22,9 +22,11 @@ Subcommands
       argument `--member <agency>:<role>:<sub>`, then the full seeder command (AA-Partner `python -m app.seed`).
       --write-secrets stores {email, sub, agency, role, pool} (no password exists) in
       crm/<env>/e2e-test-crm/<agency>-<role>, so CI and agents look the subject up by name.
-  web-secret [--apply] [--rotate-session]
+  web-secret [--apply] [--rotate-session]   (partner pool; --pool external is refused)
       Writes the CRM web secret crm/<env>/web (crm_web.tf secret shell): {cognito_client_secret, session_secret}.
-      The client secret is read from the `cis-portal` client (DescribeUserPoolClient) and kept in memory; the
+      The client secret is read from the partner pool's `partner-web` client, the one the CRM web signs in with since
+      AA-979 P2b (DescribeUserPoolClient), and kept in memory. AA-1134: the default was the EXTERNAL `cis-portal`
+      client, which the CRM API refuses since P2b and which Terraform no longer provisions. The
       session secret is random (secrets.token_urlsafe) and kept on a re-run unless --rotate-session (which signs
       every CRM web user out). Values are never printed: the output is the secret name, the version id and which
       keys changed. AA-1019: every other key of the secret (the staff console's) is kept as it is.
@@ -66,7 +68,7 @@ Subcommands
       the viewer's account survives the editor's reset.
 
 Account guard: refuses to run unless the credentials are for --expect-account. Pools and clients are found by NAME
-(aa-<pool>-<env>; clients aa-external-<env>-cis-portal / aa-partner-<env>-partner-web), never by a pasted id.
+(aa-<pool>-<env>; client aa-partner-<env>-partner-web), never by a pasted id.
 """
 
 from __future__ import annotations
@@ -98,7 +100,11 @@ STUDIO_ROLES = ("viewer", "editor")
 INVITEE_TARGETS = ("crm", *(f"studio-{r}" for r in STUDIO_ROLES))
 SESSION_SECRET_BYTES = 48
 POOLS = ("external", "partner")
-WEB_CLIENT = {"external": "cis-portal", "partner": "partner-web"}
+# The CRM web's sign-in client per pool. AA-1134: the EXTERNAL pool has none since its cis-portal client was removed.
+WEB_CLIENT = {"partner": "partner-web"}
+# The pool a pool command uses without --pool: web-secret writes the partner-web client's secret (the CRM web's client
+# since AA-979 P2b); the others keep the AA-935 default.
+DEFAULT_POOL = {"web-secret": "partner"}
 # AA-1019 (root ADR 0006a A10c): the Dev-only staff E2E user; local part and groups must equal the WORKFORCE trigger's
 # E2E_CRM_STAFF_TEST_STAFF_EMAIL / _GROUPS (accounts/aa365/lambda_src/identity_triggers/workforce.py).
 E2E_STAFF_LOCAL = "e2e-crm-staff"
@@ -634,7 +640,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--expect-account", default=DEFAULT_ACCOUNT, help="refuse to run in any other account")
     p.add_argument("--env", default=DEFAULT_ENV)
     p.add_argument("--zone", default=DEFAULT_ZONE)
-    p.add_argument("--pool", choices=POOLS, default="external", help="AA-939: partner = the partner pool (MFA required)")
+    p.add_argument("--pool", choices=POOLS, default=None,
+                   help="AA-939: partner = the partner pool (MFA required); default: partner for web-secret, else external")
     sub = p.add_subparsers(dest="command", required=True)
     e = sub.add_parser("e2e-users", help="create the e2e users of the synthetic CRM agencies")
     e.add_argument("--apply", action="store_true")
@@ -698,17 +705,21 @@ def main(argv: list[str] | None = None, clients: tuple[Any, Any, Any] | None = N
                 out(staff_web_secret(idp, sm, workforce_id, f"{workforce_pool}-{STAFF_CLIENT}", env=args.env,
                                      apply=args.apply, rotate_session=args.rotate_staff_session))
             return 0
-        pool_name = f"aa-{args.pool}-{args.env}"
+        pool = args.pool or DEFAULT_POOL.get(args.command, "external")
+        if args.command == "web-secret" and pool not in WEB_CLIENT:
+            raise ToolError(f"web-secret: the {pool} pool has no CRM web client (AA-1134: cis-portal is retired); "
+                            "the CRM web signs in on the partner pool (--pool partner, the default)")
+        pool_name = f"aa-{pool}-{args.env}"
         pool_id = find_pool_id(idp, pool_name)
-        client_name = f"{pool_name}-{WEB_CLIENT[args.pool]}"
+        client_name = f"{pool_name}-{WEB_CLIENT[pool]}" if pool in WEB_CLIENT else ""
         if args.command == "invitee-reset":
-            if args.pool != "partner":
+            if pool != "partner":
                 raise ToolError("invitee-reset works on the partner pool only (--pool partner)")
             for row in invitee_reset(idp, pool_id, invitee_emails(args.invitee, zone=args.zone), apply=args.apply):
                 out(row)
             return 0
         if args.command == "e2e-users":
-            client = web_client(idp, pool_id, client_name) if args.pool == "partner" and args.apply else None
+            client = web_client(idp, pool_id, client_name) if pool == "partner" and args.apply else None
             rows = e2e_users(
                 idp,
                 sm,
@@ -718,7 +729,7 @@ def main(argv: list[str] | None = None, clients: tuple[Any, Any, Any] | None = N
                 zone=args.zone,
                 apply=args.apply,
                 write_secrets=args.write_secrets,
-                pool=args.pool,
+                pool=pool,
                 client=client,
             )
             for row in rows:

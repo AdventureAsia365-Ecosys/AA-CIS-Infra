@@ -207,7 +207,8 @@ owners:
         owner_only_relations: [booking.retired_b2c_record]
     job_table: booking.job
     job_kind_prefix: bk_
-    idle_exempt_kinds: [bk_inquiry_pull] # always queued at +60 s (bk-002 intake, Booking intake.RECURRING)
+    # AA-1134: empty. The retired B2C intake pull (bk_inquiry_pull, AA-1046) was the only always-queued Booking kind.
+    idle_exempt_kinds: []
     set_local_roles: []
     role_lint_from: 14
     # expected_from (optional): the owner's schema_versions key that creates the grant; the isolation probe checks
@@ -306,7 +307,7 @@ owners:
     # crm_heartbeat: the always-queued liveness kind of the AA-Partner worker (AA-933 registers it under this name),
     # so a CIS / Booking / TripPlanner DB Migrate apply is never blocked by the CRM (card CRM-04 E check).
     # crm_membership_pull (AA-978): the CIS membership feed pull, re-queued every 20 s with a key per slot (AA-Partner
-    # app/jobs/kinds.py DEPLOY_GATE_EXEMPT), short transactions only, like Booking's bk_inquiry_pull.
+    # app/jobs/kinds.py DEPLOY_GATE_EXEMPT), short transactions only.
     # crm_booking_sync (AA-947): the AA outage queue and the Booking /events feed, re-queued every 60 s with a key per
     # slot (AA-Partner app/jobs/kinds.py DEPLOY_GATE_EXEMPT); each request / event is its own short transaction.
     idle_exempt_kinds: [crm_heartbeat, crm_membership_pull, crm_booking_sync]
