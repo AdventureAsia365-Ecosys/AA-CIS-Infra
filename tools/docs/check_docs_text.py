@@ -3,7 +3,7 @@
 
 aws-multiline   An `aws ...` command line that ends with a backslash continuation. Multi-line
                 AWS CLI hangs in WSL2 (global rule); every AWS CLI command is one line.
-                Scope: docs/**, skill/**, .kiro/steering/**, .claude/**, minus journals.
+                Scope: docs/**, skill/**, .kiro/steering/**, .kiro/specs/**, .claude/**, minus journals.
                 Always an error.
 
 resource-ids    Literal AWS resource IDs in prose: sg-/subnet-/vpc-/... IDs, standalone
@@ -25,7 +25,9 @@ retired-phrases  A phrase that describes something retired as if it were live (A
                 --mode warn (default in CI while the AA-1118 rewrite lands) or --mode error.
 
 --all scans every tracked .md file of the repo (minus journals) instead of the check's
-default scope. The app and Infra repos keep their pages at the repo root and in docs/, so
+default scope. --scope DIR (repeatable) scans the tracked .md files under DIR instead; the docs
+lint runs `resource-ids --mode error --scope .kiro/specs`: specs ship in the public app repos
+(AA-1137), so an ID there fails even in the root repo, where docs pages only warn. The app and Infra repos keep their pages at the repo root and in docs/, so
 their docs-lint workflows pass --all; the root repo keeps the narrower default scope.
 
 Add `docs-lint: ignore` (for example in an HTML comment) to a line to skip it.
@@ -35,6 +37,7 @@ Usage:
   python tools/docs/check_docs_text.py aws-multiline --all
   python tools/docs/check_docs_text.py resource-ids --mode warn
   python tools/docs/check_docs_text.py resource-ids --all --mode warn --block vpc,apigw
+  python tools/docs/check_docs_text.py resource-ids --mode error --scope .kiro/specs
   python tools/docs/check_docs_text.py resource-ids --mode error path/to/file.md ...
   python tools/docs/check_docs_text.py retired-phrases --mode warn
 """
@@ -57,7 +60,7 @@ from docslib import (
     list_markdown,
 )
 
-AWS_SCOPE = ["docs", "skill", ".kiro/steering", ".claude"]
+AWS_SCOPE = ["docs", "skill", ".kiro/steering", ".kiro/specs", ".claude"]
 ID_SCOPE = ["docs"]
 RETIRED_SCOPE = AWS_SCOPE
 
@@ -196,12 +199,14 @@ def main(argv: list[str] | None = None) -> int:
                         help="resource-ids: comma-separated kinds that fail even with --mode warn ("
                         + ", ".join(KIND_KEYS.values()) + ")")
     parser.add_argument("--all", action="store_true", help="scan every tracked .md file (minus journals)")
+    parser.add_argument("--scope", action="append", default=[],
+                        help="repo-relative folder to scan instead of the default scope (repeatable)")
     parser.add_argument("--root", type=Path, default=REPO_ROOT)
     args = parser.parse_intermixed_args(argv)
     root = args.root.resolve()
 
     if args.check == "aws-multiline":
-        files = _select(root, ["."] if args.all else AWS_SCOPE, args.files)
+        files = _select(root, ["."] if args.all else args.scope or AWS_SCOPE, args.files)
         findings = check_aws_multiline(root, files)
         errors, warnings = findings, []
     elif args.check == "retired-phrases":
@@ -209,7 +214,7 @@ def main(argv: list[str] | None = None) -> int:
         findings = check_retired_phrases(root, files)
         errors, warnings = (findings, []) if args.mode == "error" else ([], findings)
     else:
-        files = _select(root, ["."] if args.all else ID_SCOPE, args.files)
+        files = _select(root, ["."] if args.all else args.scope or ID_SCOPE, args.files)
         findings = check_resource_ids(root, files)
         if args.mode == "error":
             errors, warnings = findings, []

@@ -135,6 +135,18 @@ class ResourceIdTest(TempRepo):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             check_docs_text.main(["resource-ids", "--block", "sgs", "--root", str(self.root)])
 
+    def test_spec_scope_fails_in_error_mode_and_is_in_the_aws_scope(self) -> None:
+        # AA-1137: specs ship in the public app repos, so the docs lint scans .kiro/specs in error mode.
+        self.write(".kiro/specs/AA-1-x/requirements.md", f"Open {SG}.\n")
+        self.write("docs/ops/y.md", f"{SG}\n")
+        args = ["resource-ids", "--mode", "error", "--scope", ".kiro/specs", "--root", str(self.root)]
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(check_docs_text.main(args), 1)
+        self.assertIn(".kiro/specs/AA-1-x/requirements.md", out.getvalue())
+        self.assertNotIn("docs/ops/y.md", out.getvalue())
+        self.assertIn(".kiro/specs", check_docs_text.AWS_SCOPE)
+
 
 class AllMarkdownScopeTest(TempRepo):
     def test_all_scans_root_pages_and_skips_journals(self) -> None:
