@@ -3,10 +3,13 @@
 #
 # Mirrors acc3's AA3-Bedrock-Invoker (accounts/acc3-bedrock/main.tf), narrowed to what the gateway calls:
 #   - trust: the acc2 CIS ECS task role (api and worker share it, modules/ecs aws_iam_role.ecs_task), ExternalId
-#     pinned. The TripPlanner Lambda role is NOT trusted: TripPlanner's gateway calls only the BEDROCK_ACCT_PRIMARY
+#     pinned; since AA-1138 (S285) also the acc2 AA-Partner CRM task role (modules/environment crm_app.tf
+#     aws_iam_role.crm_ecs_task) with its own ExternalId, for the CRM draft stage's Claude Haiku 5.5 entry (AA-Partner
+#     crm-078; the CRM's grant is modules/environment/crm_llm_acc1.tf). The TripPlanner Lambda role is NOT trusted: TripPlanner's gateway calls only the BEDROCK_ACCT_PRIMARY
 #     (acc3) satellite today; giving it acc1 is its own change (Lambda env + grant + TripPlanner code).
 #   - permissions: InvokeModel / InvokeModelWithResponseStream (Converse and ConverseStream authorize as these two
-#     actions) on the 13 chat models of the gateway, through their global. inference profiles, plus the free, read-only
+#     actions) on the 13 chat models of the gateway, through their global. inference profiles (and, AA-1138, the CRM's
+#     Claude Haiku 5.5 through its us. profile: local.crm_us_models), plus the free, read-only
 #     ListFoundationModels the CIS lifecycle sync reads per Bedrock connection.
 #   - nothing else: no Batch (no batch service role, no CreateModelInvocationJob, no PassRole), no Cost Explorer
 #     reader, no embeddings (Cohere Embed v4 stays on acc2 / acc3). Adding a model = a new id in local.chat_models
@@ -26,6 +29,9 @@ data "aws_caller_identity" "current" {}
 
 locals {
   external_id = "aa1095-satellite-bedrock-acc1"
+  # AA-1138: the CRM gateway's own ExternalId (= local.crm_llm_acc1_external_id of modules/environment/crm_llm_acc1.tf,
+  # the value of the CRM task env CRM_LLM_ACC1_EXTERNAL_ID). Not a secret; it pins the trust to the CRM's assume call.
+  crm_external_id = "aa1138-crm-bedrock-acc1"
 
   # The Bedrock model ids of the gateway's 13 chat models (AA-CIS-App catalog keys sonnet-5-5, opus-5-5, haiku-5-5,
   # sonnet-5, sonnet-4-6, opus-4-6, haiku-4-5, gpt-6-luna, gpt-6-astra, gpt-6-sol, gpt-5.6-luna, gpt-6.1-sol,
@@ -46,11 +52,23 @@ locals {
     "openai.gpt-6.1-terra",
   ]
 
-  invoke_resources = flatten([for m in local.chat_models : [
-    "arn:aws:bedrock:us-west-1:${data.aws_caller_identity.current.account_id}:inference-profile/global.${m}",
-    "arn:aws:bedrock:*::foundation-model/${m}",
-    "arn:aws:bedrock:::foundation-model/${m}",
-  ]])
+  # AA-1138 (S285): the CRM's own chat models through their US inference profile (us.<id>, routed to us-east-1,
+  # us-east-2, us-west-1 and us-west-2 only): the agency terms keep CRM text in US regions and root ADR 0009 decision
+  # 10 keeps tenant stages off global. profiles. Each id is also in chat_models, so its foundation-model forms are
+  # already granted below. Today: Claude Haiku 5.5, the CRM draft stage's first entry (AA-Partner crm-078).
+  crm_us_models = [
+    "anthropic.claude-haiku-5-5",
+  ]
+
+  invoke_resources = concat(
+    flatten([for m in local.chat_models : [
+      "arn:aws:bedrock:us-west-1:${data.aws_caller_identity.current.account_id}:inference-profile/global.${m}",
+      "arn:aws:bedrock:*::foundation-model/${m}",
+      "arn:aws:bedrock:::foundation-model/${m}",
+    ]]),
+    [for m in local.crm_us_models :
+    "arn:aws:bedrock:us-west-1:${data.aws_caller_identity.current.account_id}:inference-profile/us.${m}"],
+  )
 }
 
 resource "aws_iam_role" "bedrock_invoker" {
@@ -70,6 +88,18 @@ resource "aws_iam_role" "bedrock_invoker" {
         Action    = "sts:AssumeRole"
         Condition = {
           StringEquals = { "sts:ExternalId" = local.external_id }
+        }
+      },
+      {
+        Sid    = "AllowAcc2CrmEcsTaskRoleAssume"
+        Effect = "Allow"
+        # AA-1138: the AA-Partner CRM ECS task role (acc2), a literal for the static trust inventory like the CIS one.
+        # The CRM calls only the models of its route (crm.llm_stage_route); its spend on acc1 is capped by the CRM
+        # setting crm.ai.connection_monthly_cap_usd entry "acc1".
+        Principal = { AWS = "arn:aws:iam::005097885195:role/aa-crm-dev-ecs-task-role" }
+        Action    = "sts:AssumeRole"
+        Condition = {
+          StringEquals = { "sts:ExternalId" = local.crm_external_id }
         }
       }
     ]
