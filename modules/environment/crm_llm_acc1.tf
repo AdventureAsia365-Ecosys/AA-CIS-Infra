@@ -19,8 +19,14 @@
 # (repo secret BEDROCK_ACCT_PAYER_ID, bedrock_satellite_assume.tf). The ExternalId is not a secret (the acc1 root
 # carries it in clear, like the CIS one); it pins the trust to the CRM's own assume call.
 #
-# Order: the acc1 root apply (the trust statement) and this apply, then AA-Partner crm-078 (Migration Apply), then the
-# AA-Partner code PR deploy (it copies the family's latest task-def revision, so the env reaches the task then).
+# Order (cap first, review S285): (1) the CRM setting crm.ai.connection_monthly_cap_usd = {"acc1": 5, "acc2": 5}
+# written and approved (maker-checker) and the CIS acc1 share lowered to 95; (2) the root records (ADR 0001a note, DPA
+# Annex 3, AI Use Register) merged and acc1's Bedrock model invocation logging checked off; (3) the acc1 root apply (the
+# trust statement) and this apply; (4) AA-Partner crm-078 (Migration Apply); (5) the AA-Partner code PR deploy (it
+# copies the family's latest task-def revision, so the env reaches the task then). The env is inert before (5): the
+# running CRM code does not read it. From (5) on, the CRM code never calls a 'bedrock_acc1' entry under the dev spend
+# rules while the setting has no "acc1" entry (connection_cap_missing, fail closed), so crm_llm_acc1_enabled may stay
+# true whatever the order.
 # Cost: IAM $0. The CRM's spend on acc1 is capped by the AA-Partner setting crm.ai.connection_monthly_cap_usd entry
 # "acc1" (5 USD a month, tech lead 19/11), taken from the CIS share of acc1.
 # =============================================================================
