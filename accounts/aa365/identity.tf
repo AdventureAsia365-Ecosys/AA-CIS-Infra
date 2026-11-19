@@ -437,7 +437,13 @@ resource "aws_cognito_user_pool" "workforce" {
     }
   }
 
-  # TOTP is for break-glass only; no SMS configuration (removing SMS later forces a new pool).
+  # TOTP (an authenticator app) is the only second factor: break-glass, and since AA-1111 S2 (root ADR 0006c, tech
+  # lead S283 "admin MFA = TOTP") every administrator (CIS cis-admin / owner, Booking booking-admin, CRM crm-ops /
+  # crm-platform-admin), enrolled with tools/identity/workforce_bootstrap.py staff-totp-enroll
+  # (docs/runbooks/staff-admin-mfa.md). OPTIONAL stays: staff without TOTP keep the e-mail code; the APIs refuse an
+  # administrator session without the code once each app's switch is on (the token's amr claim). Never ON (it would
+  # force every staff member, desk roles and the Dev E2E accounts included, onto TOTP) and never SMS (paid, and
+  # removing SMS later forces a new pool): the postcondition below keeps both.
   mfa_configuration = "OPTIONAL"
   software_token_mfa_configuration {
     enabled = true
@@ -488,6 +494,16 @@ resource "aws_cognito_user_pool" "workforce" {
     precondition {
       condition     = !local.id_ses_enabled || var.identity_ses_from_address != ""
       error_message = "identity_ses_enabled = true needs identity_ses_from_address (inside the AA-811 identity's domain)."
+    }
+    # AA-1111 S2 (root ADR 0006c): administrators sign in with password + TOTP; the e-mail code stays for everyone else.
+    postcondition {
+      condition = (
+        self.mfa_configuration == "OPTIONAL"
+        && length(self.software_token_mfa_configuration) == 1
+        && self.software_token_mfa_configuration[0].enabled
+        && length(self.sms_configuration) == 0
+      )
+      error_message = "AA-1111: the WORKFORCE pool keeps MFA OPTIONAL with TOTP on and no SMS (root ADR 0006c)."
     }
   }
 }
