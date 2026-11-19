@@ -18,6 +18,16 @@ Subcommands
                                           an answer, never the secret), print JSON, then restore the
                                           Enabled state (finally). Exit 0 no EMAIL_OTP, 1 finding or
                                           inconclusive, 2 cleanup incomplete.
+  staff-totp-enroll --email E             AA-1111 S2 (root ADR 0006c): the staff member at the keyboard sets
+                                          a password (asked twice, never echoed), the tool signs in on the
+                                          staff client, shows the TOTP setup key + otpauth URI ONCE on the
+                                          terminal, asks for the first 6-digit code from the authenticator
+                                          app, verifies it and makes TOTP the preferred MFA; then revokes and
+                                          signs out everywhere (the user stays enabled). Run it yourself in
+                                          your own terminal, never through an agent (the key is shown).
+  staff-totp-check --email E              AA-1111 S2: password (asked) + a code from the app (asked), print
+                                          the access-token claims incl. amr / acr; exit 0 only when amr
+                                          holds "otp" (the claim the APIs check), then revoke + sign out.
   authorize-url --client C --redirect R   Spike helper: managed-login authorize URL with PKCE S256;
                                           verifier + state go to a 0600 file under
                                           .tmp-session/identity-spike/ (or --state-dir).
@@ -101,7 +111,14 @@ BREAKGLASS_GROUPS = ("cis-admin", "booking-admin")  # ADR 0006 decision 11
 # break-glass client, and cis-admin, whose managed login is the one a mailbox holder would use.
 OTP_PROBE_CLIENTS = ("breakglass", "cis-admin")
 # Commands that must never create a Secrets Manager client (the break-glass secret stays unread).
-NO_SECRETS_MANAGER_COMMANDS = ("breakglass-otp-probe",)
+NO_SECRETS_MANAGER_COMMANDS = ("breakglass-otp-probe", "staff-totp-enroll", "staff-totp-check")
+# AA-1111 S2: the staff app clients a person may enrol / check on (aa-workforce-<env>-<name>; never breakglass).
+STAFF_TOTP_CLIENTS = ("cis-admin", "booking-staff", "crm-staff")
+# The Cognito amr value of a TOTP code (the claim CIS, Booking and the CRM check, root ADR 0006c).
+MFA_AMR = "otp"
+TOTP_ISSUER_LABEL = "AA Staff"
+MIN_STAFF_PASSWORD = 16  # the WORKFORCE pool's password_policy.minimum_length (identity.tf)
+CODE_ATTEMPTS = 3
 OAUTH_SCOPES = "openid email profile"
 TOTP_STEP = 30
 TOTP_DIGITS = 6
@@ -124,6 +141,8 @@ SAFE_CLAIMS = (
     "auth_time",
     "iat",
     "exp",
+    "amr",
+    "acr",
 )
 
 
@@ -383,8 +402,12 @@ def sign_in(
     clock: Callable[[], float],
     sleep: Callable[[float], None],
     out: Output,
+    totp_code: Callable[[], str] | None = None,
 ) -> SignInResult:
-    """USER_AUTH sign-in with a password, answering SELECT_CHALLENGE / PASSWORD / SOFTWARE_TOKEN_MFA."""
+    """USER_AUTH sign-in with a password, answering SELECT_CHALLENGE / PASSWORD / SOFTWARE_TOKEN_MFA.
+
+    SOFTWARE_TOKEN_MFA is answered from ``totp_seed`` (break-glass) or, when there is none, by ``totp_code`` (a person
+    typing the code from their authenticator app, AA-1111 staff-totp-check)."""
     user = username
     resp = idp.initiate_auth(
         AuthFlow="USER_AUTH",
@@ -411,13 +434,17 @@ def sign_in(
         elif challenge == "PASSWORD":
             answers = {**base, "PASSWORD": password}
         elif challenge == "SOFTWARE_TOKEN_MFA":
-            if not totp_seed:
+            if totp_seed:
+                at = wait_for_fresh_window(clock, sleep)
+                code = totp(b32decode_seed(totp_seed), at)
+                out.info("sign-in: answering SOFTWARE_TOKEN_MFA with a fresh TOTP window")
+            elif totp_code is not None:
+                code = totp_code()
+                out.info("sign-in: answering SOFTWARE_TOKEN_MFA with the code from the app")
+            else:
                 raise ToolError("Cognito asked for TOTP but no seed is available")
-            at = wait_for_fresh_window(clock, sleep)
-            code = totp(b32decode_seed(totp_seed), at)
             out.register(code)
             answers = {**base, "SOFTWARE_TOKEN_MFA_CODE": code}
-            out.info("sign-in: answering SOFTWARE_TOKEN_MFA with a fresh TOTP window")
         else:
             raise ToolError(f"unexpected challenge {challenge!r}; stopping (user will be disabled)")
         out.info(f"sign-in: challenge {challenge} answered")
@@ -428,8 +455,9 @@ def sign_in(
 
 
 def close_out(idp, *, pool_id: str, username: str, client_id: str | None, client_secret: str | None,
-              refresh_token: str | None, out: Output) -> list[str]:
-    """Revoke, global sign-out, disable. Each step runs even if an earlier one failed."""
+              refresh_token: str | None, out: Output, disable: bool = True) -> list[str]:
+    """Revoke, global sign-out, disable (unless ``disable`` is False: a staff member, AA-1111). Each step runs even
+    if an earlier one failed."""
     failures = []
     if refresh_token and client_id:
         try:
@@ -445,14 +473,19 @@ def close_out(idp, *, pool_id: str, username: str, client_id: str | None, client
         out.info("sign-out: global sign-out done")
     except Exception as exc:  # noqa: BLE001
         failures.append(f"admin_user_global_sign_out {type(exc).__name__}")
-    try:
-        idp.admin_disable_user(UserPoolId=pool_id, Username=username)
-        out.info("user: DISABLED")
-    except Exception as exc:  # noqa: BLE001
-        failures.append(f"admin_disable_user {type(exc).__name__}")
+    if disable:
+        try:
+            idp.admin_disable_user(UserPoolId=pool_id, Username=username)
+            out.info("user: DISABLED")
+        except Exception as exc:  # noqa: BLE001
+            failures.append(f"admin_disable_user {type(exc).__name__}")
     for failure in failures:
-        out.warn(f"WARNING cleanup step failed: {failure}. Disable the user by hand: "
-                 f"aws cognito-idp admin-disable-user --user-pool-id {pool_id} --username {username}")
+        if disable:
+            out.warn(f"WARNING cleanup step failed: {failure}. Disable the user by hand: "
+                     f"aws cognito-idp admin-disable-user --user-pool-id {pool_id} --username {username}")
+        else:
+            out.warn(f"WARNING cleanup step failed: {failure}. Sign the user out by hand: "
+                     f"aws cognito-idp admin-user-global-sign-out --user-pool-id {pool_id} --username {username}")
     return failures
 
 
@@ -469,6 +502,11 @@ class Ctx:
     clock: Callable[[], float] = time.time
     sleep: Callable[[float], None] = time.sleep
     http_post: Callable[..., dict] | None = None
+    # AA-1111 staff-totp-*: a hidden prompt (password), a visible prompt (6-digit code) and the one channel that may
+    # show the TOTP setup key to the person at the keyboard (never through Output's redactor, never to a log).
+    ask_secret: Callable[[str], str] = getpass.getpass
+    ask_text: Callable[[str], str] = input
+    reveal: Callable[[str], None] = field(default=lambda text: print(text, file=sys.stderr, flush=True))
 
     @property
     def breakglass_client_name(self) -> str:
@@ -674,6 +712,145 @@ def cmd_breakglass_verify(ctx: Ctx, email: str) -> int:
         raise cleanup_failed_error("breakglass-verify", failures, ctx.pool_id, username,
                                    note=" The sign-in itself succeeded.")
     ctx.out.info("breakglass-verify: OK")
+    return 0
+
+
+# --------------------------------------------------------------------------------------------
+# AA-1111 S2 (root ADR 0006c): a staff member enrols TOTP and checks the amr claim the APIs read
+# --------------------------------------------------------------------------------------------
+def _staff_client(ctx: Ctx, client: str) -> tuple[str, str]:
+    if client not in STAFF_TOTP_CLIENTS:
+        raise ToolError(f"refused: --client must be one of {', '.join(STAFF_TOTP_CLIENTS)}")
+    name = f"aa-workforce-{ctx.env}-{client}"
+    client_id = find_client_id(ctx.idp, ctx.pool_id, name)
+    ctx.out.info(f"client: {name} = {client_id}")
+    return client_id, client_secret_of(ctx.idp, ctx.pool_id, client_id, ctx.out)
+
+
+def _staff_user(ctx: Ctx, email: str, breakglass_email: str) -> str:
+    email = require_staff_email(email)
+    if email == normalise_email(breakglass_email):
+        raise ToolError("refused: that is the break-glass address; use breakglass-init")
+    user = find_user(ctx.idp, ctx.pool_id, email)
+    if user is None:
+        raise ToolError(f"no user {email} in the pool; create it first (create-staff)")
+    if not user.get("Enabled", True):
+        raise ToolError(f"user {email} is disabled; enable it first")
+    return email
+
+
+def _six_digits(ctx: Ctx) -> str:
+    code = ctx.ask_text("6-digit code from the authenticator app: ").strip().replace(" ", "")
+    if not (len(code) == TOTP_DIGITS and code.isdigit()):
+        raise ToolError("the code must be 6 digits")
+    ctx.out.register(code)
+    return code
+
+
+def _new_password(ctx: Ctx) -> str:
+    first = ctx.ask_secret(f"new password (at least {MIN_STAFF_PASSWORD} characters, upper, lower, digit, symbol): ")
+    second = ctx.ask_secret("the same password again: ")
+    ctx.out.register(first, second)
+    if first != second:
+        raise ToolError("the two passwords differ; nothing was changed")
+    if len(first) < MIN_STAFF_PASSWORD:
+        raise ToolError(f"the password needs at least {MIN_STAFF_PASSWORD} characters; nothing was changed")
+    return first
+
+
+def otpauth_uri(email: str, seed: str, env: str) -> str:
+    """The otpauth:// URI an authenticator app reads (key URI format: label, secret, issuer, SHA1, 6 digits, 30 s)."""
+    issuer = f"{TOTP_ISSUER_LABEL} ({env})"
+    label = urllib.parse.quote(f"{issuer}:{email}")
+    query = urllib.parse.urlencode({"secret": seed, "issuer": issuer, "algorithm": "SHA1",
+                                    "digits": TOTP_DIGITS, "period": TOTP_STEP})
+    return f"otpauth://totp/{label}?{query}"
+
+
+def cmd_staff_totp_enroll(ctx: Ctx, email: str, client: str, rotate: bool, breakglass_email: str) -> int:
+    username = _staff_user(ctx, email, breakglass_email)
+    enrolled = "SOFTWARE_TOKEN_MFA" in (ctx.idp.admin_get_user(
+        UserPoolId=ctx.pool_id, Username=username).get("UserMFASettingList") or [])
+    if enrolled and not rotate:
+        raise ToolError(f"{username} already has TOTP; pass --rotate to replace it (the old app entry stops working)")
+    client_id, client_secret = _staff_client(ctx, client)
+    password = _new_password(ctx)
+    signed_in = None
+    failures: list[str] = []
+    try:
+        if enrolled:
+            ctx.idp.admin_set_user_mfa_preference(
+                UserPoolId=ctx.pool_id, Username=username,
+                SoftwareTokenMfaSettings={"Enabled": False, "PreferredMfa": False},
+            )
+            ctx.out.info("mfa: old TOTP preference cleared for rotation")
+        ctx.idp.admin_set_user_password(UserPoolId=ctx.pool_id, Username=username, Password=password, Permanent=True)
+        ctx.out.info("password: the password you typed is set (permanent)")
+        signed_in = sign_in(
+            ctx.idp, client_id=client_id, client_secret=client_secret, username=username, password=password,
+            totp_seed=None, clock=ctx.clock, sleep=ctx.sleep, out=ctx.out,
+        )
+        assoc = ctx.idp.associate_software_token(AccessToken=signed_in.access_token)
+        seed = assoc["SecretCode"]
+        ctx.reveal("\n=== Add this account to your authenticator app NOW (shown once, never logged) ===")
+        ctx.reveal(f"Setup key: {' '.join(seed[i:i + 4] for i in range(0, len(seed), 4))}")
+        ctx.reveal(f"Or open / paste: {otpauth_uri(username, seed, ctx.env)}")
+        ctx.reveal("Type: time based, 6 digits, every 30 seconds.\n")
+        ctx.out.register(seed)
+        for attempt in range(1, CODE_ATTEMPTS + 1):
+            code = _six_digits(ctx)
+            try:
+                verified = ctx.idp.verify_software_token(
+                    AccessToken=signed_in.access_token, UserCode=code, FriendlyDeviceName="authenticator"
+                )
+            except ctx.idp.exceptions.EnableSoftwareTokenMFAException:
+                verified = {"Status": "ERROR"}
+            if verified.get("Status") == "SUCCESS":
+                break
+            ctx.out.warn(f"code not accepted (attempt {attempt} of {CODE_ATTEMPTS}); wait for the next code")
+        else:
+            raise ToolError("TOTP not verified; nothing is enrolled. Run staff-totp-enroll again")
+        ctx.idp.admin_set_user_mfa_preference(
+            UserPoolId=ctx.pool_id, Username=username,
+            SoftwareTokenMfaSettings={"Enabled": True, "PreferredMfa": True},
+        )
+        ctx.out.info("mfa: TOTP enrolled, verified and preferred (sign-in is now password + code; no e-mail code)")
+    finally:
+        failures = close_out(ctx.idp, pool_id=ctx.pool_id, username=username, client_id=client_id,
+                             client_secret=client_secret,
+                             refresh_token=signed_in.refresh_token if signed_in else None, out=ctx.out, disable=False)
+    if failures:
+        raise ToolError(f"staff-totp-enroll: TOTP is enrolled but the sign-out step failed ({', '.join(failures)})")
+    ctx.out.info("staff-totp-enroll: done. Next: staff-totp-check, then sign in on the admin page with password + code")
+    return 0
+
+
+def cmd_staff_totp_check(ctx: Ctx, email: str, client: str, breakglass_email: str) -> int:
+    username = _staff_user(ctx, email, breakglass_email)
+    client_id, client_secret = _staff_client(ctx, client)
+    password = ctx.ask_secret("password: ")
+    ctx.out.register(password)
+    signed_in = None
+    try:
+        signed_in = sign_in(
+            ctx.idp, client_id=client_id, client_secret=client_secret, username=username, password=password,
+            totp_seed=None, clock=ctx.clock, sleep=ctx.sleep, out=ctx.out, totp_code=lambda: _six_digits(ctx),
+        )
+        for line in claim_summary("access token claims", signed_in.access_token):
+            ctx.out.info(line)
+        amr = jwt_claims(signed_in.access_token).get("amr") or []
+        amr = [amr] if isinstance(amr, str) else list(amr)
+    finally:
+        failures = close_out(ctx.idp, pool_id=ctx.pool_id, username=username, client_id=client_id,
+                             client_secret=client_secret,
+                             refresh_token=signed_in.refresh_token if signed_in else None, out=ctx.out, disable=False)
+    if failures:
+        raise ToolError(f"staff-totp-check: the sign-out step failed ({', '.join(failures)})")
+    if MFA_AMR not in amr:
+        ctx.out.warn(f"staff-totp-check: FAIL amr={json.dumps(amr)} has no \"{MFA_AMR}\": do NOT turn the "
+                     "MFA switches on (the APIs would refuse this session)")
+        return 1
+    ctx.out.info(f"staff-totp-check: OK amr={json.dumps(amr)} (the APIs accept this session)")
     return 0
 
 
@@ -959,6 +1136,18 @@ def build_parser() -> argparse.ArgumentParser:
                              "restores the Enabled state")
     op.add_argument("--email", default=DEFAULT_BREAKGLASS_EMAIL)
 
+    te = sub.add_parser("staff-totp-enroll",
+                        help="AA-1111: set your password and enrol TOTP (shows the key once; run it yourself)")
+    te.add_argument("--email", required=True)
+    te.add_argument("--client", default="cis-admin", choices=list(STAFF_TOTP_CLIENTS))
+    te.add_argument("--rotate", action="store_true", help="replace an enrolled TOTP (the old app entry stops)")
+    te.add_argument("--breakglass-email", default=DEFAULT_BREAKGLASS_EMAIL)
+    tc = sub.add_parser("staff-totp-check",
+                        help="AA-1111: sign in with password + code, print the claims, exit 0 when amr has otp")
+    tc.add_argument("--email", required=True)
+    tc.add_argument("--client", default="cis-admin", choices=list(STAFF_TOTP_CLIENTS))
+    tc.add_argument("--breakglass-email", default=DEFAULT_BREAKGLASS_EMAIL)
+
     au = sub.add_parser("authorize-url", help="spike: managed-login authorize URL with PKCE S256")
     # breakglass is left out on purpose: its managed-login test belongs to C4 (production callback only).
     au.add_argument("--client", default="cis-admin", choices=["cis-admin", "booking-staff"])
@@ -1019,6 +1208,10 @@ def dispatch(ctx: Ctx, args) -> int:
         return cmd_breakglass_verify(ctx, args.email)
     if args.cmd == "breakglass-otp-probe":
         return cmd_breakglass_otp_probe(ctx, args.email)
+    if args.cmd == "staff-totp-enroll":
+        return cmd_staff_totp_enroll(ctx, args.email, args.client, args.rotate, args.breakglass_email)
+    if args.cmd == "staff-totp-check":
+        return cmd_staff_totp_check(ctx, args.email, args.client, args.breakglass_email)
     state_dir = Path(args.state_dir) if args.state_dir else find_state_dir(Path(__file__).resolve().parent)
     if args.cmd == "authorize-url":
         return cmd_authorize_url(ctx, args.client, args.redirect, args.domain, state_dir)
