@@ -65,6 +65,16 @@ A10e-2 (AA-1091, S279, root ADR 0006a A10e-2): the pricing pair of the AA-1091 l
   - E2E_BOOKING_PRICING_CHECKER_TEST_STAFF_EMAIL, exactly booking-contracting: the checker. Not in the CIS directory
     (tools/identity/crm_dev_identity.py e2e-booking-writers), codes in inbound-admin/ like A10e.
   AA-Booking (app/auth/e2e_staff.py) holds both to the pricing steps on synthetic trip plans, Dev only.
+A10f (AA-1155, S286, root ADR 0006a A10f): the second person of the content publish flow:
+  - E2E_CIS_CONTENT_LEAD_TEST_STAFF_EMAIL, exactly cis-content_lead, no Booking / CRM group. The CIS directory
+    (migration 462, staff_directory) holds the same rule; CIS refuses it outside ENVIRONMENT dev and holds its writes to
+    synthetic test tours. Codes in the A10b prefix inbound-admin/ (MFA admin role only).
+A10g (AA-1155, S286, root ADR 0006a A10g): the custom-role maker, the write-capable proof of custom staff roles:
+  - E2E_CUSTOM_ROLE_MAKER_TEST_STAFF_EMAIL, exactly cis-custom + booking-custom (the two "custom role" groups, which
+    grant nothing alone: CIS and Booking read WHICH custom role from the CIS directory, migration 462). Created with
+    AdminCreateUser + SUPPRESS, no password (tools/identity/crm_dev_identity.py e2e-booking-writers), then linked to
+    its CIS directory row (role content_lead, never an owner or the business owner, migration 462). AA-Booking holds
+    it to synthetic records, Dev only. Codes in inbound-admin/ like A10e.
 The map is consulted only while the Lambda env E2E_DEV_ONLY_STAFF_ENABLED is exactly the string "true" (read per call,
 no strip / lower; missing or anything else = off, fail closed). identity.tf sets it to "true" only when
 var.environment == "dev" and a precondition refuses "true" anywhere else. The flag can only switch ON an entry whose
@@ -127,6 +137,14 @@ E2E_BOOKING_PRICING_CHECKER_TEST_STAFF_EMAIL = "e2e-booking-pricing-checker@e2e-
 E2E_BOOKING_PRICING_CHECKER_TEST_STAFF_GROUPS = ("booking-contracting",)
 # A10e-2: the A10d address with the "Pricing team" preset (the pricing maker): exactly these groups, as well as its own.
 E2E_CIS_CS_PRICING_TEST_STAFF_GROUPS = ("cis-customer_success", "booking-contracting")
+# A10f (AA-1155, S286): Dev-only CIS content_lead E2E address (the second person of two-person publishing); must equal
+# AA-CIS-App e2e_staff and the CIS 462 admin_users_email_chk.
+E2E_CIS_CONTENT_LEAD_TEST_STAFF_EMAIL = "e2e-cis-content-lead@e2e-mail.lumiguides.it.com"
+E2E_CIS_CONTENT_LEAD_TEST_STAFF_GROUPS = ("cis-content_lead",)
+# A10g (AA-1155, S286): Dev-only custom-role maker; must equal AA-Booking app/auth/e2e_staff.py, AA-CIS-App e2e_staff
+# and the CIS 462 admin_users_email_chk. The two groups say "custom role" only; the role itself is directory data.
+E2E_CUSTOM_ROLE_MAKER_TEST_STAFF_EMAIL = "e2e-custom-maker@e2e-mail.lumiguides.it.com"
+E2E_CUSTOM_ROLE_MAKER_TEST_STAFF_GROUPS = ("cis-custom", "booking-custom")
 E2E_DEV_ONLY_TEST_STAFF = MappingProxyType({
     E2E_CIS_ADMIN_TEST_STAFF_EMAIL: E2E_CIS_ADMIN_TEST_STAFF_GROUPS,
     E2E_CRM_STAFF_TEST_STAFF_EMAIL: E2E_CRM_STAFF_TEST_STAFF_GROUPS,
@@ -135,6 +153,8 @@ E2E_DEV_ONLY_TEST_STAFF = MappingProxyType({
     E2E_BOOKING_MAKER_TEST_STAFF_EMAIL: E2E_BOOKING_MAKER_TEST_STAFF_GROUPS,
     E2E_BOOKING_CHECKER_TEST_STAFF_EMAIL: E2E_BOOKING_CHECKER_TEST_STAFF_GROUPS,
     E2E_BOOKING_PRICING_CHECKER_TEST_STAFF_EMAIL: E2E_BOOKING_PRICING_CHECKER_TEST_STAFF_GROUPS,
+    E2E_CIS_CONTENT_LEAD_TEST_STAFF_EMAIL: E2E_CIS_CONTENT_LEAD_TEST_STAFF_GROUPS,
+    E2E_CUSTOM_ROLE_MAKER_TEST_STAFF_EMAIL: E2E_CUSTOM_ROLE_MAKER_TEST_STAFF_GROUPS,
 })
 # Other exact group sets a Dev-only address may hold, besides its own tuple above (read-only, code constants). Any set
 # that is neither still DENIES the token.
@@ -151,6 +171,8 @@ DEFAULT_STAFF_GROUPS = (
     # AA-1035 R2 / root ADR 0019 d3: the six new CIS staff groups and Booking finance (identity.tf local.id_staff_groups).
     "cis-content_lead,cis-ai_ops,cis-customer_success,cis-finance,cis-tenant_qa,cis-support,"
     "booking-admin,booking-sales,booking-contracting,booking-content_creator,booking-finance,"
+    # AA-1155 (root ADR 0006a A14): the custom-role groups (grant nothing alone; the role is directory data).
+    "cis-custom,booking-custom,"
     # AA-939 / root ADR 0006b decision 6: AA-Partner staff groups.
     "crm-platform-admin,crm-ops,crm-support"
 )

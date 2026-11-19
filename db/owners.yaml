@@ -158,6 +158,10 @@ owners:
       - {grantee: tripplanner, privilege: "USAGE, SELECT", object: catalog.v_tenant_tripplanner_v1,      status: contract,      source: "379 (AA-1038)", expected_from: "379"}
       # AA-1094: an agency tenant's own tours with its own text (contract catalog.tenant_tour.v1), CIS 404 (contract file).
       - {grantee: tripplanner, privilege: "USAGE, SELECT", object: catalog.v_tenant_tour_v1,             status: contract,      source: "404 (AA-1094)", expected_from: "404"}
+      # AA-1155 (root ADR 0006a A14, Q2 option A): Booking reads each staff member's Booking custom role and the owner /
+      # business-owner markers from the key-only contract view (no e-mail, no name); USAGE on schema shared is new for
+      # booking (CIS 462, a contract file). The base tables stay unreadable (CROSS_APP in the isolation probe).
+      - {grantee: booking,     privilege: "USAGE, SELECT", object: shared.v_staff_booking_grant,         status: contract,      source: "462 (AA-1155)", expected_from: "462"}
       - {grantee: tripplanner, privilege: SELECT,          object: "shared.llm_role_config, shared.llm_model_catalog", status: grandfathered, source: "173"}
       - {grantee: tripplanner, privilege: SELECT,          object: "silver_aa_internal.raw_tours (tour_id, country)",  status: grandfathered, source: "179; revoked by CIS 254 (AA-847)"}
       - {grantee: tripplanner, privilege: SELECT,          object: "acp_contract.tour_atoms, acp_contract.v_active_tour_atoms (columns)", status: grandfathered, source: "180 (revoked by CIS 254, AA-847), 216 (revoked by CIS 270, AA-712)"}
@@ -226,6 +230,9 @@ owners:
       - {grantee: cis_app, privilege: "USAGE, SELECT", object: booking.v_from_prices, status: contract, source: "bk-040 (AA-1029, price.from.v1, Content studio Marketplace)", expected_from: bk-040}
       - {grantee: cis_app, privilege: "USAGE, SELECT", object: booking.v_tenant_billing_status, status: contract, source: "bk-042 (AA-1037, agency billing status for the CIS tenant_billing_tick)", expected_from: bk-042}
       - {grantee: cis_app, privilege: "USAGE, SELECT", object: booking.v_tenant_erasure_report_v1, status: contract, source: "bk-057 (AA-1093, tenant.erasure.v1 Booking report for the CIS tenant_erasure_saga)", expected_from: bk-057}
+      # AA-1155: the Booking custom roles and their capabilities for the CIS "Roles & permissions" page and the Staff page
+      # pickers (key-only: codes, labels, capability names; no person). The base tables stay Booking-only.
+      - {grantee: cis_app, privilege: "USAGE, SELECT", object: booking.v_staff_role_capability, status: contract, source: "bk-062 (AA-1155, custom staff roles for the CIS matrix page and Staff pickers)", expected_from: bk-062}
 
   tripplanner:
     repo: AA-TripPlanner-Web

@@ -124,6 +124,14 @@ locals {
     # E2E_BOOKING_PRICING_CHECKER_TEST_STAFF_EMAIL.
     "e2e-booking-pricing-checker@${local.e2e_mail_domain}",
   ]
+  # AA-1155 (root ADR 0006a A10f / A10g): the Dev-only CIS content_lead (second person of two-person publishing) and
+  # the custom-role maker (cis-custom + booking-custom); must equal workforce.py
+  # E2E_CIS_CONTENT_LEAD_TEST_STAFF_EMAIL / E2E_CUSTOM_ROLE_MAKER_TEST_STAFF_EMAIL. Same rule and prefix as A10b (MFA
+  # admin reads only), never on e2e-cognito: both sessions write (synthetic records only), so no CI role reads the codes.
+  e2e_mail_custom_role_recipients = [
+    "e2e-cis-content-lead@${local.e2e_mail_domain}",
+    "e2e-custom-maker@${local.e2e_mail_domain}",
+  ]
 }
 
 # ── 1. DNS: MX for the sub-domain ────────────────────────────────────────────
@@ -353,7 +361,7 @@ resource "aws_ses_receipt_rule" "e2e_cognito_admin" {
   name          = local.e2e_mail_admin_rule
   rule_set_name = aws_ses_receipt_rule_set.e2e.rule_set_name
   after         = aws_ses_receipt_rule.crm_ingest.name
-  recipients    = concat([local.e2e_mail_admin_recipient, local.e2e_mail_crm_staff_recipient, local.e2e_mail_cis_cs_recipient], local.e2e_mail_booking_writer_recipients)
+  recipients    = concat([local.e2e_mail_admin_recipient, local.e2e_mail_crm_staff_recipient, local.e2e_mail_cis_cs_recipient], local.e2e_mail_booking_writer_recipients, local.e2e_mail_custom_role_recipients)
   enabled       = true
   scan_enabled  = true
   tls_policy    = "Require"
