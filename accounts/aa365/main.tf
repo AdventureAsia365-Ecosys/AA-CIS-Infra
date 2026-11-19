@@ -366,7 +366,14 @@ module "waf" {
   # the NAT instance EIP, so RateLimit1000 scopes that one address out; the API hosts are scoped out of GeoBlock
   # (travellers anywhere load catalogue images from api-cis; partner agencies are not limited to the staff list).
   rate_limit_exempt_cidrs = ["${module.vpc.nat_instance_eip}/32"]
-  geo_exempt_hosts        = ["api-cis.${var.dns_zone_name}", var.domain_name, local.cd_booking_api_host]
+  # AA-1111 S2 (root ADR 0006c, tech lead S285): the staff web hosts (CIS admin, Booking admin) leave GeoBlock too, once
+  # the CIS, Booking and CRM administrator MFA switches are on (docs/runbooks/staff-admin-mfa.md section D): every
+  # administrator session then needs password + TOTP, so the country list no longer guards them (staff travel and use
+  # VPNs). The rest of the ACL (CommonRuleSet, rate limits, StaffWebRateLimit) still applies to them.
+  geo_exempt_hosts = concat(
+    ["api-cis.${var.dns_zone_name}", var.domain_name, local.cd_booking_api_host],
+    values(local.staff_web_hosts),
+  )
 
   # S235 Phase 0: same web ACL on the CIS and Booking REST API stages (real client IP -> rate + geo
   # actually apply). The apply role holds apigateway:SetWebACL (cicd_split.tf APIGatewaySetWebACL). AA-1092 (S278
