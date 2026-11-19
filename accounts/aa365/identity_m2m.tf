@@ -117,6 +117,10 @@ locals {
   idm2m_tripplanner_identifier = "tripplanner.leads"
   idm2m_tripplanner_scopes = {
     deliver = "Pull and acknowledge an agency's TripPlanner leads (TripPlanner /trip/m2m/v1, lead.submitted.v1)"
+    # AA-1139: the agency app's TripPlanner module (lead delivery status, usage, the webhook signing key rotation;
+    # TripPlanner /trip/m2m/v1/tenants/{id}/planner/*, lead.submitted.v1 1.1). Its own scope, so the pull's token
+    # cannot rotate a key. The CRM client gets it through scope_identifiers below (in place, secret kept).
+    manage = "Read an agency's TripPlanner lead status and usage, and rotate its webhook signing key (/trip/m2m/v1/tenants/{id}/planner)"
   }
 }
 
@@ -209,6 +213,7 @@ resource "aws_cognito_user_pool_client" "m2m_crm" {
   # there. Updating the scopes of an existing client is in place (no new client id, the secret is kept).
   # AA-978: + cis.tenant/read (the CIS membership feed), same in-place update.
   # AA-1038: + tripplanner.leads/deliver (the TripPlanner lead pull), same in-place update.
+  # AA-1139: + tripplanner.leads/manage (the agency app's TripPlanner module), same in-place update.
   allowed_oauth_scopes = concat(
     [for s in aws_cognito_resource_server.booking_b2b.scope_identifiers : s],
     [for s in aws_cognito_resource_server.cis_catalog.scope_identifiers : s],
