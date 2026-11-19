@@ -123,11 +123,11 @@ def binary_kind(header: bytes) -> str | None:
         return "ELF"
     if header[:4] in (b"\xfe\xed\xfa\xce", b"\xfe\xed\xfa\xcf", b"\xce\xfa\xed\xfe", b"\xcf\xfa\xed\xfe"):
         return "Mach-O"
-    if header[:4] in (b"\xca\xfe\xba\xbe", b"\xca\xfe\xba\xbf") and len(header) >= 8:
-        # A universal (fat) Mach-O counts its architectures here (a handful); a Java class file shares the magic
-        # and has its class-file version (major >= 45) in the same bytes.
-        if int.from_bytes(header[4:8], "big") < 45:
-            return "Mach-O universal"
+    # A universal (fat) Mach-O counts its architectures in bytes 4-8 (a handful); a Java class file shares the magic
+    # and has its class-file version (major >= 45) in the same bytes.
+    fat = header[:4] in (b"\xca\xfe\xba\xbe", b"\xca\xfe\xba\xbf")
+    if fat and len(header) >= 8 and int.from_bytes(header[4:8], "big") < 45:
+        return "Mach-O universal"
     if header[:2] == b"MZ" and len(header) >= 64:
         pe = int.from_bytes(header[60:64], "little")
         if 0 < pe <= len(header) - 4 and header[pe : pe + 4] == b"PE\x00\x00":
@@ -151,7 +151,7 @@ def parse_allow(text: str) -> list[AllowEntry]:
         if not line or line.startswith("#"):
             continue
         parts = line.split(None, 1)
-        pattern = parts[0][2:] if parts[0].startswith("./") else parts[0]
+        pattern = parts[0].removeprefix("./")
         reason = parts[1].strip() if len(parts) > 1 else ""
         if not reason:
             raise GuardError(f"{ALLOW_FILE}:{n}: '{parts[0]}' has no reason; write `<path> <why it belongs in git>`")
@@ -190,8 +190,8 @@ def evaluate(changes: list[Change], allow: list[AllowEntry]) -> Report:
             rep.findings.append((c.path, "file-size", f"file is {human(c.size)}, the limit is {human(FILE_MAX_BYTES)}"))
     if rep.image_bytes > IMAGE_TOTAL_MAX_BYTES:
         rep.findings.append(
-            ("", "image-total", f"images in this change add {human(rep.image_bytes)}, the limit is "
-                                f"{human(IMAGE_TOTAL_MAX_BYTES)} per change")
+            ("", "image-total",
+             f"images in this change add {human(rep.image_bytes)}, the limit is {human(IMAGE_TOTAL_MAX_BYTES)} per change")
         )
     return rep
 
@@ -249,25 +249,23 @@ def changed_blobs(repo: str, base: str, head: str) -> list[tuple[str, str]]:
     # base falls back to the two trees.
     merge_base = subprocess.run(["git", "-C", repo, "merge-base", base, head], capture_output=True, check=False)
     spec = [f"{base}...{head}"] if merge_base.returncode == 0 else [base, head]
-    raw = git(repo, "-c", "core.quotePath=false", "diff", "--raw", "-z", "--no-abbrev", "--find-renames",
+    raw = git(repo, "-c", "core.quotePath=false", "diff", "--raw", "-z", "--no-abbrev", "--find-renames=100%",
               "--diff-filter=ACMRT", *spec)
     return parse_raw_diff(raw)
 
 
 def prefetch(repo: str, oids: list[str]) -> None:
-    """In a partial (blobless) clone, fetch the blobs to read in one round trip instead of one lazy fetch each."""
+    """In a partial (blobless) clone, fetch the blobs to read in one round trip instead of one lazy fetch each.
+
+    Every oid is asked for (no "is it missing" probe: before git 2.44 that probe itself fetches lazily, one object at a
+    time). A failed fetch is ignored: git still fetches a missing blob lazily when it is read."""
     promisor = subprocess.run(["git", "-C", repo, "config", "--get", "remote.origin.promisor"],
                               capture_output=True, text=True, check=False)
     if promisor.stdout.strip() != "true" or not oids:
         return
-    env = dict(os.environ, GIT_NO_LAZY_FETCH="1")
-    check = subprocess.run(["git", "-C", repo, "cat-file", "--batch-check=%(objectname) %(objecttype)"],
-                           input="\n".join(oids) + "\n", capture_output=True, text=True, env=env, check=False)
-    missing = [ln.split()[0] for ln in check.stdout.splitlines() if ln.endswith(" missing")]
-    if missing:
-        subprocess.run(["git", "-C", repo, "-c", "fetch.negotiationAlgorithm=noop", "fetch", "--no-tags",
-                        "--no-write-fetch-head", "--recurse-submodules=no", "--filter=blob:none", "origin", *missing],
-                       capture_output=True, check=False)
+    subprocess.run(["git", "-C", repo, "-c", "fetch.negotiationAlgorithm=noop", "fetch", "--no-tags",
+                    "--no-write-fetch-head", "--recurse-submodules=no", "--filter=blob:none", "--stdin", "origin"],
+                   input="\n".join(oids) + "\n", capture_output=True, text=True, check=False)
 
 
 def blob_sizes(repo: str, oids: list[str]) -> dict[str, int]:

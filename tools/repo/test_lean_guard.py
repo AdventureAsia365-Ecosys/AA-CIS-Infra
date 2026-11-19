@@ -9,6 +9,7 @@ from __future__ import annotations
 import contextlib
 import io
 import os
+import shutil
 import struct
 import subprocess
 import sys
@@ -218,6 +219,30 @@ class LeanGuardRepoTests(unittest.TestCase):
                               cwd=self.repo.root, capture_output=True, text=True, check=False)
         self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
         self.assertIn("dist-zip", proc.stdout)
+
+
+    def test_blobless_clone_with_prefetch(self):
+        """The CI path: a blobless (partial) sparse clone, the changed blobs fetched in one round trip."""
+        self.repo.put("dist/x.zip", b"PK\x03\x04")
+        self.repo.put("docs/audits/s1/shot.png", padded(png_bytes(), 600 * KB))
+        self.repo.put("docs/audits/s1/ok.png", png_bytes())
+        self.repo.commit("change")
+        up = "git -c uploadpack.allowFilter=true -c uploadpack.allowAnySHA1InWant=true upload-pack"
+        clone = Path(self._tmp.name + "-clone")
+        self.addCleanup(shutil.rmtree, clone, True)
+        subprocess.run(["git", "-c", "protocol.file.allow=always", "clone", "-q", "--filter=blob:none", "--no-checkout",
+                        f"--upload-pack={up}", f"file://{self.repo.root}", str(clone)], check=True, capture_output=True)
+        for key, value in (("remote.origin.uploadpack", up), ("protocol.file.allow", "always")):
+            subprocess.run(["git", "-C", str(clone), "config", key, value], check=True)
+        subprocess.run(["git", "-C", str(clone), "branch", "-q", "base", "origin/base"], check=True)
+        self.assertEqual(lg.git(str(clone), "config", "--get", "remote.origin.promisor").decode().strip(), "true")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            rc = lg.main(["--repo", str(clone), "--base", "base", "--head", "origin/main", "--prefetch"])
+        self.assertEqual(rc, 1, out.getvalue())
+        self.assertIn("dist/x.zip: dist-zip", out.getvalue())
+        self.assertIn("docs/audits/s1/shot.png: image-size", out.getvalue())
+        self.assertNotIn("ok.png:", out.getvalue())
 
 
 class PureRuleTests(unittest.TestCase):
