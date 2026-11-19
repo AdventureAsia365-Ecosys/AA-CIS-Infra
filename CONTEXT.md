@@ -250,7 +250,9 @@ accounts/
     identity_m2m.tf               (AA-972, root ADR 0006b d7: M2M pool aa-m2m-dev, resource servers
                                    booking.b2b (read/quote/hold/book), AA-976 cis.catalog (read),
                                    AA-978 cis.tenant (read) and AA-1038 tripplanner.leads (deliver: the CRM
-                                   pulls and acknowledges TripPlanner leads), client-credentials client aa-m2m-dev-crm
+                                   pulls and acknowledges TripPlanner leads; AA-1139 manage: the agency app's
+                                   TripPlanner module reads lead status and usage and rotates the webhook signing
+                                   key), client-credentials client aa-m2m-dev-crm
                                    (AA-Partner -> Booking B2B, -> CIS catalog.http.v1 and -> CIS
                                    tenant.membership.v1; each receiver checks only its own scope),
                                    prefix domain for the token endpoint, secret container
