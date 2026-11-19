@@ -7,6 +7,7 @@ trust statement of accounts/acc1-bedrock/main.tf).
 3. The task env is CRM_LLM_ACC1_ROLE_ARN and CRM_LLM_ACC1_EXTERNAL_ID only, and crm_app.tf passes it to the CRM API.
 4. The acc1 trust names the CRM task role (its name as crm_data.tf builds it for dev) with the CRM's own ExternalId,
    equal to the module's; the CIS statement keeps its own ExternalId; the trust inventory acknowledges both roles.
+5. The invoker role grants the CRM's Claude Haiku 5.5 through its us. inference profile (US regions only).
 
 Run: python3 -m pytest -q tools/terraform/tests/test_aa1138_crm_acc1.py
 """
@@ -112,6 +113,29 @@ class Acc1Trust(unittest.TestCase):
             sorted(entry["principal"]),
             ["arn:*:iam::*:role/aa-cis-dev-ecs-task-role", "arn:*:iam::*:role/aa-crm-dev-ecs-task-role"],
         )
+
+
+class Acc1UsProfile(unittest.TestCase):
+    """Review S285: the CRM's Claude entry runs on the us. inference profile (agency terms: US regions only; root ADR
+    0009 decision 10: no global. profile for a tenant stage), so the invoker role grants exactly that profile."""
+
+    def _list(self, name: str) -> list[str]:
+        m = re.search(rf"^\s*{name}\s*=\s*\[(.*?)\]", ACC1, re.M | re.S)
+        assert m, f"local {name} not found"
+        return re.findall(r'"([^"]+)"', m.group(1))
+
+    def test_the_crm_us_models_are_haiku_5_5_and_known_chat_models(self) -> None:
+        crm = self._list("crm_us_models")
+        self.assertEqual(crm, ["anthropic.claude-haiku-5-5"])
+        self.assertTrue(set(crm) <= set(self._list("chat_models")), "the foundation-model forms come from chat_models")
+
+    def test_the_policy_grants_the_us_profile_in_us_west_1(self) -> None:
+        self.assertIn(
+            '"arn:aws:bedrock:us-west-1:${data.aws_caller_identity.current.account_id}:inference-profile/us.${m}"',
+            ACC1,
+        )
+        self.assertRegex(ACC1, r"for m in local\.crm_us_models")
+        self.assertIn("Resource = local.invoke_resources", ACC1)
 
 
 if __name__ == "__main__":

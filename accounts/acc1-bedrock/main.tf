@@ -8,7 +8,8 @@
 #     crm-078; the CRM's grant is modules/environment/crm_llm_acc1.tf). The TripPlanner Lambda role is NOT trusted: TripPlanner's gateway calls only the BEDROCK_ACCT_PRIMARY
 #     (acc3) satellite today; giving it acc1 is its own change (Lambda env + grant + TripPlanner code).
 #   - permissions: InvokeModel / InvokeModelWithResponseStream (Converse and ConverseStream authorize as these two
-#     actions) on the 13 chat models of the gateway, through their global. inference profiles, plus the free, read-only
+#     actions) on the 13 chat models of the gateway, through their global. inference profiles (and, AA-1138, the CRM's
+#     Claude Haiku 5.5 through its us. profile: local.crm_us_models), plus the free, read-only
 #     ListFoundationModels the CIS lifecycle sync reads per Bedrock connection.
 #   - nothing else: no Batch (no batch service role, no CreateModelInvocationJob, no PassRole), no Cost Explorer
 #     reader, no embeddings (Cohere Embed v4 stays on acc2 / acc3). Adding a model = a new id in local.chat_models
@@ -51,11 +52,23 @@ locals {
     "openai.gpt-6.1-terra",
   ]
 
-  invoke_resources = flatten([for m in local.chat_models : [
-    "arn:aws:bedrock:us-west-1:${data.aws_caller_identity.current.account_id}:inference-profile/global.${m}",
-    "arn:aws:bedrock:*::foundation-model/${m}",
-    "arn:aws:bedrock:::foundation-model/${m}",
-  ]])
+  # AA-1138 (S285): the CRM's own chat models through their US inference profile (us.<id>, routed to us-east-1,
+  # us-east-2, us-west-1 and us-west-2 only): the agency terms keep CRM text in US regions and root ADR 0009 decision
+  # 10 keeps tenant stages off global. profiles. Each id is also in chat_models, so its foundation-model forms are
+  # already granted below. Today: Claude Haiku 5.5, the CRM draft stage's first entry (AA-Partner crm-078).
+  crm_us_models = [
+    "anthropic.claude-haiku-5-5",
+  ]
+
+  invoke_resources = concat(
+    flatten([for m in local.chat_models : [
+      "arn:aws:bedrock:us-west-1:${data.aws_caller_identity.current.account_id}:inference-profile/global.${m}",
+      "arn:aws:bedrock:*::foundation-model/${m}",
+      "arn:aws:bedrock:::foundation-model/${m}",
+    ]]),
+    [for m in local.crm_us_models :
+    "arn:aws:bedrock:us-west-1:${data.aws_caller_identity.current.account_id}:inference-profile/us.${m}"],
+  )
 }
 
 resource "aws_iam_role" "bedrock_invoker" {
