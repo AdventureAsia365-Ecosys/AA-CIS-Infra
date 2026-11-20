@@ -614,3 +614,41 @@ def test_the_web_task_maps_the_sentry_key_only_behind_its_flag():
     assert f':{tool.SENTRY_DSN_KEY}::" }}' in branch and '{ name = "SENTRY_DSN"' in branch
     assert 'variable "crm_web_sentry_enabled"' in tf and re.search(
         r'variable "crm_web_sentry_enabled" \{[^}]*default\s*=\s*false', tf)
+
+
+# ── AA-1155: the Dev-only custom-role maker (root ADR 0006a A10g) ─────────────────────────────────────────────────────
+CUSTOM_MAKER = "e2e-custom-maker@e2e-mail.lumiguides.it.com"
+
+
+def test_e2e_custom_maker_is_created_with_suppress_and_both_groups(capsys):
+    idp = PerUserWorkforceIdp()
+    assert run(["e2e-custom-maker"], idp) == 0
+    dry = lines(capsys)
+    assert [(r["email"], r["action"], r["groups"]) for r in dry] == [
+        (CUSTOM_MAKER, "would_create", ["cis-custom", "booking-custom"])]
+    assert idp.created == [] and idp.added == []
+    assert run(["e2e-custom-maker", "--apply"], idp) == 0
+    assert [r["action"] for r in lines(capsys)] == ["created"]
+    (created,) = idp.created
+    assert created["MessageAction"] == "SUPPRESS" and "TemporaryPassword" not in created
+    assert {u: sorted(g) for u, g in idp.by_user.items()} == {CUSTOM_MAKER: ["booking-custom", "cis-custom"]}
+    assert run(["e2e-custom-maker", "--apply"], idp) == 0
+    again = lines(capsys)
+    assert [r["action"] for r in again] == ["exists"] and again[0]["groups_added"] == []
+
+
+def test_e2e_custom_maker_matches_the_trigger_and_the_mailbox():
+    workforce = (REPO / "accounts" / "aa365" / "lambda_src" / "identity_triggers" / "workforce.py").read_text()
+    mailbox = (REPO / "accounts" / "aa365" / "e2e_mailbox.tf").read_text()
+    local, groups, _ = tool.E2E_CUSTOM_MAKER
+    assert f'E2E_CUSTOM_ROLE_MAKER_TEST_STAFF_EMAIL = "{local}@e2e-mail.lumiguides.it.com"' in workforce
+    assert f'E2E_CUSTOM_ROLE_MAKER_TEST_STAFF_GROUPS = ("{groups[0]}", "{groups[1]}")' in workforce
+    assert f'"{local}@${{local.e2e_mail_domain}}"' in mailbox
+
+
+def test_e2e_custom_maker_refuses_other_groups_and_other_environments(capsys):
+    idp = PerUserWorkforceIdp({CUSTOM_MAKER: "sub-8"}, groups={CUSTOM_MAKER: {"booking-custom", "booking-admin"}})
+    assert run(["e2e-custom-maker", "--apply"], idp) == 1
+    assert "booking-admin" in capsys.readouterr().err and idp.added == []
+    assert run(["--env", "stg", "e2e-custom-maker", "--apply"], PerUserWorkforceIdp()) == 1
+    assert "Dev only" in capsys.readouterr().err

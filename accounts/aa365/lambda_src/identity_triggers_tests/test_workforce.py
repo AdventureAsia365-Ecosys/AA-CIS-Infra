@@ -128,7 +128,8 @@ def test_default_staff_groups_match_terraform_groups():
     block = re.search(r"id_staff_groups = \{(.*?)\n  \}", tf, re.S).group(1)
     tf_groups = set(re.findall(r'^\s*"([a-z_-]+)"\s*=', block, re.M))
     assert tf_groups == set(workforce.DEFAULT_STAFF_GROUPS.split(","))
-    booking_roles = {"admin", "sales", "contracting", "content_creator", "finance"}   # finance: AA-1035
+    # finance: AA-1035; custom: AA-1155 (a custom role, which one is CIS directory data)
+    booking_roles = {"admin", "sales", "contracting", "content_creator", "finance", "custom"}
     assert {g.removeprefix("booking-") for g in tf_groups if g.startswith("booking-")} == booking_roles
 
 
@@ -390,6 +391,11 @@ BK_PRICING_CHECKER_E2E = "e2e-booking-pricing-checker@e2e-mail.lumiguides.it.com
 BK_WRITERS = {BK_STAFF_E2E: ("booking-sales",), BK_MAKER_E2E: ("booking-finance",),
               BK_CHECKER_E2E: ("booking-finance",), BK_PRICING_CHECKER_E2E: ("booking-contracting",)}
 CIS_CS_PRICING_GROUPS = ["booking-contracting", "cis-customer_success"]
+CIS_CONTENT_LEAD_E2E = "e2e-cis-content-lead@e2e-mail.lumiguides.it.com"
+CIS_CONTENT_LEAD_E2E_ATTRS = {"email": CIS_CONTENT_LEAD_E2E, "email_verified": "true"}
+CUSTOM_MAKER_E2E = "e2e-custom-maker@e2e-mail.lumiguides.it.com"
+CUSTOM_MAKER_E2E_ATTRS = {"email": CUSTOM_MAKER_E2E, "email_verified": "true"}
+CUSTOM_GROUPS = ["booking-custom", "cis-custom"]
 
 
 @pytest.fixture
@@ -413,6 +419,8 @@ def test_cis_admin_e2e_constants_and_dev_only_map():
         BK_MAKER_E2E: ("booking-finance",),
         BK_CHECKER_E2E: ("booking-finance",),
         BK_PRICING_CHECKER_E2E: ("booking-contracting",),
+        CIS_CONTENT_LEAD_E2E: ("cis-content_lead",),
+        CUSTOM_MAKER_E2E: ("cis-custom", "booking-custom"),
     }
     assert CIS_ADMIN_E2E not in workforce.E2E_TEST_STAFF
     assert set(workforce.E2E_TEST_STAFF) == {E2E, BOOKING_E2E}
@@ -592,7 +600,8 @@ def test_cis_admin_e2e_address_has_its_own_rule_and_prefix():
     admin = _resource_block(tf, "aws_ses_receipt_rule", "e2e_cognito_admin")
     assert "count         = local.e2e_admin_enabled ? 1 : 0" in admin
     assert re.search(r"recipients\s*=\s*concat\(\[local\.e2e_mail_admin_recipient, local\.e2e_mail_crm_staff_recipient, "
-                     r"local\.e2e_mail_cis_cs_recipient\], local\.e2e_mail_booking_writer_recipients\)", admin)
+                     r"local\.e2e_mail_cis_cs_recipient\], local\.e2e_mail_booking_writer_recipients, "
+                     r"local\.e2e_mail_custom_role_recipients\)", admin)
     # A10e (AA-1087): the Booking writers share the admin rule and prefix, never e2e-cognito (CI-readable inbound/).
     writers = re.search(r"e2e_mail_booking_writer_recipients = \[(.*?)\]", tf, re.S).group(1)
     assert re.findall(r'"([^"]+)"', writers) == [f"{e.split('@', 1)[0]}@${{local.e2e_mail_domain}}" for e in BK_WRITERS]
@@ -787,7 +796,7 @@ def test_every_e2e_address_maps_to_its_own_group_set():
     # No address borrows another address's groups: the tuples are pairwise distinct, except the A10e finance maker /
     # checker pair, which shares booking-finance on purpose (AA-Booking separates the two by address).
     tuples = list(workforce.E2E_TEST_STAFF.values()) + list(workforce.E2E_DEV_ONLY_TEST_STAFF.values())
-    assert len(tuples) == 9 and len(set(tuples)) == 8
+    assert len(tuples) == 11 and len(set(tuples)) == 10
     shared = [e for e, g in workforce.E2E_DEV_ONLY_TEST_STAFF.items() if g == ("booking-finance",)]
     assert sorted(shared) == sorted([BK_MAKER_E2E, BK_CHECKER_E2E])
     assert not set(workforce.E2E_TEST_STAFF) & set(workforce.E2E_DEV_ONLY_TEST_STAFF)
@@ -938,3 +947,101 @@ def test_the_pricing_checker_is_a_recipient_of_the_admin_rule_only():
     assert '"e2e-booking-pricing-checker@${local.e2e_mail_domain}"' in writers
     cognito = _resource_block(tf, "aws_ses_receipt_rule", "e2e_cognito")
     assert "pricing" not in cognito
+
+
+# ------------------------------------------------------------------ AA-1155: custom-role groups, A10f and A10g (S286)
+def test_custom_role_groups_are_kept_and_ranked():
+    """root ADR 0006a A14: cis-custom and booking-custom pass the trigger like any staff group (they grant nothing alone;
+    the apps read the role from the CIS directory). cis-custom sits in the CIS band, booking-custom after finance."""
+    out = workforce.pre_token_generation(token_event(STAFF, ["cis-custom", "booking-custom", "custom", "rogue"]))
+    kept = out["response"]["claimsAndScopeOverrideDetails"]["groupOverrideDetails"]["groupsToOverride"]
+    assert kept == CUSTOM_GROUPS
+    tf = (Path(__file__).resolve().parents[2] / "identity.tf").read_text()
+    block = re.search(r"id_staff_groups = \{(.*?)\n  \}", tf, re.S).group(1)
+    prec = {g: int(p) for g, p in re.findall(r'^\s*"([a-z_-]+)"\s*=\s*\{\s*precedence\s*=\s*(\d+)', block, re.M)}
+    assert prec["cis-custom"] == 32 and prec["booking-custom"] == 77
+    assert prec["booking-finance"] < prec["booking-custom"] < prec["crm-platform-admin"]
+
+
+def test_a_custom_group_alone_still_needs_the_staff_domain():
+    denied(workforce.pre_token_generation,
+           token_event({"email": "someone@example.com", "email_verified": "true"}, ["booking-custom"]))
+
+
+def test_a10f_a10g_constants():
+    assert workforce.E2E_CIS_CONTENT_LEAD_TEST_STAFF_EMAIL == CIS_CONTENT_LEAD_E2E
+    assert workforce.E2E_CIS_CONTENT_LEAD_TEST_STAFF_GROUPS == ("cis-content_lead",)
+    assert workforce.E2E_CUSTOM_ROLE_MAKER_TEST_STAFF_EMAIL == CUSTOM_MAKER_E2E
+    assert workforce.E2E_CUSTOM_ROLE_MAKER_TEST_STAFF_GROUPS == ("cis-custom", "booking-custom")
+    for email in (CIS_CONTENT_LEAD_E2E, CUSTOM_MAKER_E2E):
+        assert email not in workforce.E2E_TEST_STAFF   # Dev-only map only
+        assert email not in workforce.E2E_DEV_ONLY_EXTRA_GROUP_SETS   # one exact set each
+        assert set(workforce.E2E_DEV_ONLY_TEST_STAFF[email]) <= set(workforce.DEFAULT_STAFF_GROUPS.split(","))
+
+
+@pytest.mark.parametrize("attrs,groups", [(CIS_CONTENT_LEAD_E2E_ATTRS, ["cis-content_lead"]),
+                                          (CUSTOM_MAKER_E2E_ATTRS, CUSTOM_GROUPS)])
+@pytest.mark.parametrize("source", ["TokenGeneration_HostedAuth", "TokenGeneration_RefreshTokens"])
+def test_a10f_a10g_get_exactly_their_groups_with_the_flag(attrs, groups, source, dev_flag_on, capsys):
+    assert workforce.pre_sign_up(admin_create(attrs["email"]))["response"]["autoConfirmUser"] is False
+    out = workforce.pre_token_generation(token_event(attrs, groups + ["rogue"], source=source, client_id="booking"))
+    assert out["response"]["claimsAndScopeOverrideDetails"]["groupOverrideDetails"]["groupsToOverride"] == groups
+    assert {"event": "workforce_e2e_test_token_issued", "trigger": source, "client_id": "booking",
+            "email": attrs["email"]} in _events(capsys)
+
+
+@pytest.mark.parametrize("attrs,groups", [
+    (CIS_CONTENT_LEAD_E2E_ATTRS, ["cis-admin"]),
+    (CIS_CONTENT_LEAD_E2E_ATTRS, ["cis-content_lead", "booking-custom"]),
+    (CIS_CONTENT_LEAD_E2E_ATTRS, ["cis-content_lead", "cis-custom"]),
+    (CIS_CONTENT_LEAD_E2E_ATTRS, ["cis-content"]),
+    (CUSTOM_MAKER_E2E_ATTRS, ["booking-custom"]),
+    (CUSTOM_MAKER_E2E_ATTRS, ["cis-custom"]),
+    (CUSTOM_MAKER_E2E_ATTRS, ["booking-custom", "cis-custom", "booking-admin"]),
+    (CUSTOM_MAKER_E2E_ATTRS, ["booking-custom", "cis-content_lead"]),
+    (CUSTOM_MAKER_E2E_ATTRS, ["booking-contracting", "cis-custom"]),
+])
+def test_a10f_a10g_with_any_other_set_are_denied(attrs, groups, dev_flag_on):
+    denied(workforce.pre_token_generation, token_event(attrs, groups))
+
+
+@pytest.mark.parametrize("flag", [None, "false", "TRUE", " true", "1", ""])
+def test_a10f_a10g_are_denied_unless_the_flag_is_exactly_true(flag, monkeypatch):
+    if flag is None:
+        monkeypatch.delenv(FLAG, raising=False)
+    else:
+        monkeypatch.setenv(FLAG, flag)
+    for attrs, groups in ((CIS_CONTENT_LEAD_E2E_ATTRS, ["cis-content_lead"]), (CUSTOM_MAKER_E2E_ATTRS, CUSTOM_GROUPS)):
+        denied(workforce.pre_sign_up, admin_create(attrs["email"]))
+        denied(workforce.pre_token_generation, token_event(attrs, groups))
+
+
+@pytest.mark.parametrize("email", [
+    "e2e-custom-maker@e2e-mail.lumiguides.it.co",
+    "e2e-custom-maker2@e2e-mail.lumiguides.it.com",
+    "e2e-cis-content-lead@e2e-mail.lumiguides.it.com.evil",
+    "e2e-cis-content_lead@e2e-mail.lumiguides.it.com",
+    "e2e-custom-ma\u212aer@e2e-mail.lumiguides.it.com",
+])
+def test_look_alikes_of_the_a10f_a10g_addresses_are_denied(email, dev_flag_on):
+    denied(workforce.pre_sign_up, admin_create(email))
+    denied(workforce.pre_token_generation, token_event({"email": email, "email_verified": "true"}, CUSTOM_GROUPS))
+
+
+@pytest.mark.parametrize("attrs", [E2E_ATTRS, BOOKING_E2E_ATTRS, CIS_ADMIN_E2E_ATTRS, CRM_STAFF_E2E_ATTRS,
+                                   CIS_CS_E2E_ATTRS, {"email": BK_MAKER_E2E, "email_verified": "true"},
+                                   {"email": BK_PRICING_CHECKER_E2E, "email_verified": "true"}])
+@pytest.mark.parametrize("groups", [CUSTOM_GROUPS, ["booking-custom"], ["cis-content_lead"]])
+def test_no_other_account_borrows_the_a10f_a10g_sets(attrs, groups, dev_flag_on):
+    denied(workforce.pre_token_generation, token_event(attrs, groups))
+
+
+def test_a10f_a10g_are_recipients_of_the_admin_rule_only():
+    tf = _mailbox_tf()
+    custom = re.search(r"e2e_mail_custom_role_recipients = \[(.*?)\]", tf, re.S).group(1)
+    assert '"e2e-cis-content-lead@${local.e2e_mail_domain}"' in custom
+    assert '"e2e-custom-maker@${local.e2e_mail_domain}"' in custom
+    admin = _resource_block(tf, "aws_ses_receipt_rule", "e2e_cognito_admin")
+    assert "local.e2e_mail_custom_role_recipients" in admin
+    cognito = _resource_block(tf, "aws_ses_receipt_rule", "e2e_cognito")
+    assert "custom" not in cognito and "content-lead" not in cognito

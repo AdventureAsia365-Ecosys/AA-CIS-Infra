@@ -101,6 +101,9 @@ STAFF_GROUPS = (
     "booking-contracting",
     "booking-content_creator",
     "booking-finance",
+    # AA-1155 (root ADR 0006a A14): the custom-role groups (grant nothing alone; the role is CIS directory data).
+    "cis-custom",
+    "booking-custom",
     # AA-939 / root ADR 0006b decision 6: AA-Partner staff groups (identity.tf, the trigger's DEFAULT_STAFF_GROUPS).
     "crm-platform-admin",
     "crm-ops",
