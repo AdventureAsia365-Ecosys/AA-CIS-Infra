@@ -208,6 +208,8 @@ CONSUMER_GRANTS = (
     ("cis_app", ("USAGE", "SELECT"), "booking.v_tenant_erasure_report_v1", "bk-057"),  # AA-1093 erasure saga
     ("tripplanner", ("USAGE", "SELECT"), "catalog.v_tenant_tripplanner_v1", "379"), # AA-1038 R5 /{slug} tenants
     ("tripplanner", ("USAGE", "SELECT"), "catalog.v_tenant_tour_v1", "404"),        # AA-1094 a tenant's own tours
+    ("booking", ("USAGE", "SELECT"), "shared.v_staff_booking_grant", "462"),       # AA-1155 custom role transport
+    ("cis_app", ("USAGE", "SELECT"), "booking.v_staff_role_capability", "bk-062"), # AA-1155 roles matrix page
 )
 CONSUMER_GRANT_KEYS = tuple(sorted({k for *_, k in CONSUMER_GRANTS if k}))
 # DB Migrate mode=set-password (X1 S12) ends with COMMENT ON ROLE <role> IS '<marker> <UTC time> …': a
@@ -313,6 +315,13 @@ CROSS_APP = (
     ("tripplanner", "learn.learner", ("420",)),
     (CRM_APP, "learn.learner", ("420",) + CRM_APP_LOGIN_KEYS),
     ("aa_app_user", "learn.learner", ("420",)),
+    # AA-1155 (root ADR 0006a A14): booking reads the staff directory only through shared.v_staff_booking_grant (USAGE
+    # on schema shared from CIS 462); the directory tables themselves stay closed (42501 before and after 462).
+    ("booking", "shared.admin_users", ()),
+    ("booking", "shared.staff_app_grant", ()),
+    ("booking", "shared.staff_role", ("462",)),
+    # The Booking custom role tables are Booking-only; CIS reads the key-only view booking.v_staff_role_capability.
+    (CIS_APP, "booking.staff_role", ("bk-062",) + CIS_APP_LOGIN_KEYS),
 )
 
 # AA-1105: the keys of the migrations that create a runtime schema later (owners.yaml schemas_from).

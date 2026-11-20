@@ -110,6 +110,8 @@ def today_facts():
                             "cross": {"booking.trip_cases": denied("booking"), "tripplanner.sessions": denied("tp")}},
             "booking": {"secret": "booking/dev/database-url", "secret_user": "booking", "current_user": "booking",
                         "cross": {"tripplanner.sessions": denied("tp"), "shared.tenants": denied("shared"),
+                                  # AA-1155: the directory tables stay closed to booking before and after CIS 462
+                                  "shared.admin_users": denied("shared"), "shared.staff_app_grant": denied("shared"),
                                   # tp-009's grant, live until tp-027 (AA-1046) revokes it
                                   "tripplanner.v_inquiry_outbox": {"readable": True, "sqlstate": None}}},
             "tripplanner": {"secret": "tripplanner/dev/database-url", "secret_user": "tripplanner",
@@ -470,8 +472,10 @@ class BuildCellsTest(unittest.TestCase):
         # tp-030: AA-1093, the TripPlanner tenant erasure report the CIS offboarding saga reads.
         # bk-057: AA-1093 the Booking erasure report the CIS tenant_erasure_saga reads.
         # tp-034: AA-1126 TripPlanner's AI notice events the CIS worker relays into its bells.
-        self.assertEqual(p.CONSUMER_GRANT_KEYS, ("379", "404", "bk-017", "bk-023", "bk-025", "bk-039", "bk-040", "bk-042",
-                                                 "bk-057", "tp-015", "tp-020", "tp-022", "tp-030", "tp-034"))
+        # 462 / bk-062: AA-1155, the custom staff role transport view and the Booking roles view.
+        self.assertEqual(p.CONSUMER_GRANT_KEYS, ("379", "404", "462", "bk-017", "bk-023", "bk-025", "bk-039", "bk-040",
+                                                 "bk-042", "bk-057", "bk-062", "tp-015", "tp-020", "tp-022", "tp-030",
+                                                 "tp-034"))
         for k in p.CONSUMER_GRANT_KEYS:
             self.assertIn(k, p.VERSION_KEYS)
             self.assertIn(k, p.KEY_TEXT)
@@ -665,6 +669,31 @@ class BuildCellsTest(unittest.TestCase):
                 c["missing"] = []
         st, _ = statuses(f)
         self.assertEqual(st["consumer.contract_grants.bk-057"], "pass")
+
+    def test_custom_role_grants_are_their_own_cells(self):
+        # AA-1155: booking reads shared.v_staff_booking_grant (CIS 462) and cis_app reads
+        # booking.v_staff_role_capability (bk-062); each cell waits for its contract file, then passes.
+        objs = {c[2]: (c[0], c[3]) for c in p.CONSUMER_GRANTS if c[3] in ("462", "bk-062")}
+        self.assertEqual(objs, {"shared.v_staff_booking_grant": ("booking", "462"),
+                                "booking.v_staff_role_capability": ("cis_app", "bk-062")})
+        for key in ("462", "bk-062"):
+            f = today_facts()
+            st, _ = statuses(f)
+            self.assertEqual(st[f"consumer.contract_grants.{key}"], "pending")
+            f["catalog"]["registered"] = [key]
+            for c in f["consumer"]["grants"]:
+                if c["from"] == key:
+                    c["missing"] = []
+            st, _ = statuses(f)
+            self.assertEqual(st[f"consumer.contract_grants.{key}"], "pass")
+
+    def test_custom_role_base_tables_stay_cross_app_closed(self):
+        # AA-1155: the view is the only door; booking never reads the directory tables, cis_app never the Booking ones.
+        rows = {(r, t): w for r, t, w in p.CROSS_APP}
+        self.assertEqual(rows[("booking", "shared.admin_users")], ())
+        self.assertEqual(rows[("booking", "shared.staff_app_grant")], ())
+        self.assertEqual(rows[("booking", "shared.staff_role")], ("462",))
+        self.assertEqual(rows[(p.CIS_APP, "booking.staff_role")], ("bk-062",) + p.CIS_APP_LOGIN_KEYS)
 
     def test_cis_app_login_waits_for_set_password(self):
         f = today_facts()

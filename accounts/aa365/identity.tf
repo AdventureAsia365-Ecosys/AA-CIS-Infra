@@ -149,9 +149,13 @@ locals {
     "cis-finance"          = { precedence = 18, description = "CIS finance (shared.admin_role = finance)" }
     # AA-1035: cis-reviewer (rank 20, an alias of cis-content for one release after CIS 363) is retired: CIS 375
     # moved its last member, the A10 E2E account, to content, and the CIS API maps no role to it.
-    "cis-tenant_qa"       = { precedence = 24, description = "CIS tenant content QA (shared.admin_role = tenant_qa)" }
-    "cis-support"         = { precedence = 26, description = "CIS support (shared.admin_role = support)" }
-    "cis-content"         = { precedence = 30, description = "CIS content (shared.admin_role = content)" }
+    "cis-tenant_qa" = { precedence = 24, description = "CIS tenant content QA (shared.admin_role = tenant_qa)" }
+    "cis-support"   = { precedence = 26, description = "CIS support (shared.admin_role = support)" }
+    "cis-content"   = { precedence = 30, description = "CIS content (shared.admin_role = content)" }
+    # AA-1155 (root ADR 0006a A14): custom staff roles. The group only says "this person holds a custom role"; WHICH one
+    # is data in the CIS directory (shared.admin_users.custom_role -> shared.staff_role). Alone it grants nothing: the
+    # apps resolve the role from the directory and refuse (fail closed) when they cannot read it.
+    "cis-custom"          = { precedence = 32, description = "CIS custom role (the role is data in shared.admin_users.custom_role)" }
     "booking-admin"       = { precedence = 40, description = "Booking staff admin" }
     "booking-sales"       = { precedence = 50, description = "Booking sales" }
     "booking-contracting" = { precedence = 60, description = "Booking contracting" }
@@ -160,6 +164,10 @@ locals {
     # AA-1035 / root ADR 0019 d3 + d9: Booking finance (invoices and payments), granted by the CIS Staff page through
     # shared.staff_app_grant role 'finance' (CIS 363); Booking reads it from cognito:groups.
     "booking-finance" = { precedence = 75, description = "Booking finance (invoices and payments)" }
+    # AA-1155 (root ADR 0006a A14): a Booking custom role. Which one is the CIS Staff page grant (shared.staff_app_grant
+    # role = a booking.staff_role code), read by Booking through the contract view shared.v_staff_booking_grant (CIS
+    # 462). Alone it grants nothing: Booking refuses the holder when the view or booking.staff_role cannot be read.
+    "booking-custom" = { precedence = 77, description = "Booking custom role (the role is data in booking.staff_role)" }
     # AA-939 / root ADR 0006b decision 6: AA-Partner staff groups. crm-platform-admin writes on the L1 console
     # (/crm/ops/v1), crm-ops and crm-support use /crm/staff/v1 (support also needs an active owner grant, CRM-13b).
     "crm-platform-admin" = { precedence = 80, description = "AA-Partner L1 platform console writes (/crm/ops/v1)" }
