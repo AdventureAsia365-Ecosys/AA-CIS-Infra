@@ -79,9 +79,12 @@ locals {
   # Static file in both document roots (start.sh): the target group health never depends on WordPress itself.
   test_wp_health_path = "/license.txt"
 
-  # wordpress:7.1.4-php8.4-apache, multi-arch index digest (linux/arm64/v8 included), read 09/11/2026 from
+  # wordpress:7.1.5-php8.4-apache, multi-arch index digest (linux/arm64/v8 included), read 21/11/2026 from
   # public.ecr.aws/docker/library/wordpress. A digest, never a tag: the official images are rebuilt under the same tag.
-  test_wp_image = "public.ecr.aws/docker/library/wordpress@sha256:543d2b75f287c76f387cd17dcf2ca5e69745a1c30b754e32414a5e1ef5b8da87"
+  # AA-1164: moved from the 7.1.4 digest of 09/11, which the nightly Image Scan found with fixable CRITICAL / HIGH
+  # findings (apache2, zlib1g, linux-libc-dev); this digest had none fixable on 21/11. The new image reaches the
+  # running task at the next Booking admin deploy (the deploy copies the family's latest revision).
+  test_wp_image = "public.ecr.aws/docker/library/wordpress@sha256:9ad529b57c01fd71f161f331f638b83ef50ac7f095095d52bb222b7bc3b4d10b"
 
   # Fetched by start.sh at every start, checksums verified before use (sha256 of the release zip on wordpress.org;
   # sha512 published next to the wp-cli phar on GitHub).

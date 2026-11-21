@@ -41,6 +41,7 @@ locals {
       module.environment.tripplanner_app_deploy_role_arn, # AA-TripPlanner-Web, ref main
       module.environment.crm_app_deploy_role_arn,         # AA-Partner, environment dev, ref main (AA-1022)
       aws_iam_role.db_auto_apply.arn,                     # AA-CIS-Infra, environment dev-db-auto, ref main (AA-993 I1)
+      aws_iam_role.image_scan_upload.arn,                 # AA-CIS-Infra, ref main, one S3 key only (AA-1164)
     ],
     module.environment.crm_scrub_corpus_role_arns, # AA-Partner, environment scrub-corpus, ref main (only when the guardrail is on)
   )
