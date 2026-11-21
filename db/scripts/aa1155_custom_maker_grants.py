@@ -35,7 +35,7 @@ id or DSN.
 import hashlib
 import json
 
-READ_ONLY = True
+READ_ONLY = False
 
 SCRIPT_NAME = "aa1155_custom_maker_grants"
 MAKER_EMAIL = "e2e-custom-maker@e2e-mail.lumiguides.it.com"
