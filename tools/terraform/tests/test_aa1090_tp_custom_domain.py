@@ -234,9 +234,11 @@ def test_alias_rule_forwards_on_the_site_header_and_the_origin_secret():
 # --- 4. the WAF and the wiring ---------------------------------------------------------------------------------------
 
 def test_waf_rules_match_the_site_header_when_set():
-    assert WAF.count("for_each = local.tp_site_on ? [1] : []") == 3
+    # Three TripPlanner rules, plus the NOT TripPlanner of AA-1165 CloudFrontViewerRateLimit (site header shape only;
+    # its Host fallback is "local.tp_on && !local.tp_site_on").
+    assert WAF.count("for_each = local.tp_site_on ? [1] : []") == 4
     assert WAF.count("for_each = local.tp_site_on ? [] : [1]") == 3
-    assert WAF.count("search_string         = var.tripplanner_site_header.value") == 3
+    assert WAF.count("search_string         = var.tripplanner_site_header.value") == 4
     assert "tp_site_on = local.tp_on && nonsensitive(var.tripplanner_site_header != null)" in WAF
     var = WAF_VARS[WAF_VARS.index('variable "tripplanner_site_header"'):]
     assert "sensitive = true" in var[: var.index("\n}\n")]

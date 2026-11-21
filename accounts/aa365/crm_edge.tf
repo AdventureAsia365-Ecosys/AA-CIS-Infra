@@ -53,11 +53,36 @@ variable "crm_cdn_price_class" {
   }
 }
 
+# AA-1165 (S286 decision D10): WAF rule CloudFrontViewerRateLimit in the ALB web ACL (modules/waf), the per-viewer rate
+# limit of the CloudFront path (partner, agency and client hosts). An operator changes the limit or the mode here or
+# in terraform.tfvars, then plans and applies through the Terraform Apply workflow (docs/waf-count-review.md, section
+# "CloudFrontViewerRateLimit"). Cost: one WAF rule, 1 USD a month.
+variable "crm_edge_rate_limit" {
+  description = "AA-1165: requests per 5 minutes per viewer IP on the CloudFront path of the CRM hosts (partner, agency with the Academy alias, client; WAF rule CloudFrontViewerRateLimit in the ALB web ACL). Pages, their uncached static chunks, RSC navigations and BFF calls all count, like the staff web rule, so it starts at the staff web value."
+  type        = number
+  default     = 5000
+
+  validation {
+    condition     = floor(var.crm_edge_rate_limit) == var.crm_edge_rate_limit && var.crm_edge_rate_limit >= 100
+    error_message = "crm_edge_rate_limit must be a whole number of at least 100 (a page load is dozens of requests)."
+  }
+}
+
+variable "crm_edge_rate_count_only" {
+  description = "AA-1165: true = rule CloudFrontViewerRateLimit only COUNTS (observe window, nothing is refused); false = it BLOCKS past the limit with a 429 and the JSON body rate_limited."
+  type        = bool
+  default     = false
+}
+
 locals {
   crm_edge_on      = var.crm_edge_enabled && var.custom_domains_enabled ? 1 : 0
   crm_partner_host = "${var.crm_partner_subdomain}.${var.dns_zone_name}"
   crm_edge_tags    = merge(local.crm_tags, { Component = "edge", Issue = "AA-931" })
   crm_origin_id    = "crm-vpc-origin"
+
+  # AA-1165: the WAF rate key of the CRM distributions, written by their viewer-request functions (one header name for
+  # every edge; the TripPlanner rules and CloudFrontViewerRateLimit are scoped apart, so the two never share a count).
+  crm_viewer_ip_header = local.tp_web_viewer_ip_header
 }
 
 # -----------------------------------------------------------------------------
@@ -154,9 +179,30 @@ resource "aws_cloudfront_function" "crm_partner_to_agency" {
   publish = true
   code = templatefile("${path.module}/cloudfront_functions/crm_partner_to_agency.js", {
     agency_origin = "https://${local.crm_agency_host}"
+    header_name   = local.crm_viewer_ip_header # AA-1165: the WAF rate key on the /crm requests it lets through
   })
 
   tags = merge(local.crm_tags, { Component = "edge" }) # S271: tagging standard (FIN-03)
+}
+
+# AA-1165: viewer-request function of the agency and client distributions (crm_agency_edge.tf, crm_client_edge.tf):
+# writes the viewer's address into local.crm_viewer_ip_header, the key of WAF rule CloudFrontViewerRateLimit. Same code
+# as the TripPlanner function (cloudfront_functions/tripplanner_web_viewer_ip.js). The partner distribution's own
+# function above writes it too (one viewer-request function per behaviour). CreateFunction: cicd_crm.tf
+# CrmCloudFrontEdge (cloudfront:*Function*). Cost: CloudFront Functions, inside the always-free 2M invocations a month
+# on Dev.
+resource "aws_cloudfront_function" "crm_viewer_ip" {
+  count = local.crm_edge_on
+
+  name    = "${local.crm_name_prefix}-viewer-ip"
+  runtime = "cloudfront-js-2.0"
+  comment = "AA-1165: viewer address header for the WAF rate rule"
+  publish = true
+  code = templatefile("${path.module}/cloudfront_functions/tripplanner_web_viewer_ip.js", {
+    header_name = local.crm_viewer_ip_header
+  })
+
+  tags = merge(local.crm_tags, { Component = "edge", Issue = "AA-1165" })
 }
 
 resource "aws_cloudfront_distribution" "crm_partner" {

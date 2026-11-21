@@ -1,8 +1,8 @@
 # =============================================================================
 # AA-59 — WAF Module
 # Rules: AWSManagedRulesCommonRuleSet + the TripPlanner web rules + VpcLinkInternalAllow + CloudFrontOriginAllow +
-# RateLimit + GeoBlock (+ StaffWebRateLimit). AA-1092: RateLimit scopes out our own egress, GeoBlock the API hosts. Order: local.rule_priorities (S235 order; CloudFrontOriginAllow inserted
-# by AA-931; the three TripPlanner web rules by AA-1038, S272)
+# RateLimit + GeoBlock (+ StaffWebRateLimit) (+ CloudFrontViewerRateLimit, AA-1165). AA-1092: RateLimit scopes out our own egress, GeoBlock the API hosts. Order: local.rule_priorities (S235 order; CloudFrontOriginAllow inserted
+# by AA-931; the three TripPlanner web rules by AA-1038, S272; CloudFrontViewerRateLimit by AA-1165, S287)
 # Imported from existing manually-created WAF: aa-cis-dev-waf
 # Country list matches AWS state at import time; priority order changed in S235 (see below).
 # =============================================================================
@@ -35,6 +35,13 @@ locals {
   rate_exempt_on   = length(var.rate_limit_exempt_cidrs) > 0
   geo_exempt_regex = length(var.geo_exempt_hosts) > 0 ? "^(${join("|", [for h in var.geo_exempt_hosts : replace(lower(h), ".", "\\.")])})(:443)?$" : null
 
+  # AA-1165: the per-viewer rate rule of the CloudFront path (CRM partner, agency and client hosts). It scopes out the
+  # TripPlanner traffic (already limited by rules 2-4) and our own NAT egress whenever either exists; with neither, the
+  # scope is the origin secret alone (an AND needs two statements).
+  cfv              = var.cloudfront_viewer_rate
+  cfv_on           = var.cloudfront_viewer_rate != null && nonsensitive(var.origin_verify_header != null)
+  cfv_scoped_apart = local.tp_on || local.rate_exempt_on
+
   tp_planner_path_regex = "/plan/|/plan$"
   tp_protected_path_regex = local.tp_on ? join("|", [
     for p in local.tp.protected_paths : replace(p, "/([.^$*+?()\\[\\]{}|\\\\])/", "\\$1")
@@ -45,7 +52,9 @@ locals {
   #   2-4 TripPlanner web (AA-1038): after the content rules, BEFORE both allow rules. CloudFrontOriginAllow would end
   #       the evaluation for every CloudFront request, and VpcLinkInternalAllow would if VPC-origin traffic were ever
   #       NATed to a VPC address (AA-931 notes: the spike allowed for both cases).
-  #   5-9 the S235 / AA-931 / AA-911 rules in their old relative order (were 2-6 before AA-1038).
+  #   5   CloudFrontViewerRateLimit (AA-1165): per viewer on the CloudFront path, before both allow rules for the same
+  #       reason as 2-4 (CloudFrontOriginAllow ends the evaluation of every CloudFront request).
+  #   6-10 the S235 / AA-931 / AA-911 rules in their old relative order (were 2-6 before AA-1038, 5-9 before AA-1165).
   # AA-1111 (S284, ZAP baseline triage): every block this ACL answers itself (403 / 429) carries the security headers
   # the apps send, so a refused request is not a response without HSTS, nosniff or a CSP (ZAP counted the WAF 403s of
   # the staff hosts and the API stages as the apps' own). Same HSTS value as the apps (two years, sub-domains, no
@@ -63,11 +72,12 @@ locals {
     tp_rate_per_ip          = 2
     tp_rate_model_paths     = 3
     tp_challenge_planner    = 4
-    vpc_link_internal_allow = 5
-    cloudfront_origin_allow = 6
-    rate_limit              = 7
-    geo_block               = 8
-    staff_web_rate_limit    = 9
+    cloudfront_viewer_rate  = 5
+    vpc_link_internal_allow = 6
+    cloudfront_origin_allow = 7
+    rate_limit              = 8
+    geo_block               = 9
+    staff_web_rate_limit    = 10
   }
 }
 
@@ -115,9 +125,10 @@ resource "aws_wafv2_web_acl" "main" {
     allow {}
   }
 
-  # AA-1038: the JSON body of the TripPlanner rate rules' 429 (only while those rules exist).
+  # AA-1038: the JSON body of the TripPlanner rate rules' 429 (only while those rules exist); AA-1165: also the 429 of
+  # CloudFrontViewerRateLimit.
   dynamic "custom_response_body" {
-    for_each = local.tp_on ? [1] : []
+    for_each = local.tp_on || local.cfv_on ? [1] : []
     content {
       key          = "rate_limited"
       content      = jsonencode({ error = "rate_limited" })
@@ -132,11 +143,12 @@ resource "aws_wafv2_web_acl" "main" {
   #   2 TripPlannerRateLimitPerIp       (AA-1038, only with var.tripplanner_web) TripPlanner host via CloudFront
   #   3 TripPlannerRateLimitModelPaths  (AA-1038) the protected paths of the TripPlanner host (model calls + send)
   #   4 TripPlannerChallengePlanner     (AA-1038) Challenge on the planner documents and the protected paths
-  #   5 VpcLinkInternalAllow            (ALB only) VPC-link traffic stops here (was 2 before AA-1038)
-  #   6 CloudFrontOriginAllow           (ALB only, AA-931) CloudFront VPC-origin traffic stops here (was 3)
-  #   7 RateLimit1000                   per source IP (was 4)
-  #   8 GeoBlockNonAllowed              per source IP (was 5)
-  #   9 StaffWebRateLimit               (AA-911, only with var.staff_web_hosts) per client IP on the staff hosts (was 6)
+  #   5 CloudFrontViewerRateLimit       (AA-1165, only with var.cloudfront_viewer_rate) per viewer on the CloudFront path
+  #   6 VpcLinkInternalAllow            (ALB only) VPC-link traffic stops here (was 2 before AA-1038, 5 before AA-1165)
+  #   7 CloudFrontOriginAllow           (ALB only, AA-931) CloudFront VPC-origin traffic stops here (was 3, then 6)
+  #   8 RateLimit1000                   per source IP (was 4, then 7)
+  #   9 GeoBlockNonAllowed              per source IP (was 5, then 8)
+  #  10 StaffWebRateLimit               (AA-911, only with var.staff_web_hosts) per client IP on the staff hosts (was 6, then 9)
   #
   # Before S235 the VPC allow rule was priority 0, so every request that came through API Gateway
   # (it reaches the ALB from the NLB's private IPs, i.e. inside the VPC CIDR) skipped ALL rules.
@@ -595,7 +607,173 @@ resource "aws_wafv2_web_acl" "main" {
     }
   }
 
-  # Rule 5 — Allow internal VPC Link traffic (proxied requests + NLB health checks) past the
+  # Rule 5 — AA-1165 (S286 decision D10): per-viewer rate limit on the CloudFront path (the CRM partner, agency and
+  # client hosts; the Academy host rides on the agency distribution). Background: Linear AA-1165. Scope: the exact origin secret (came through our CloudFront) AND NOT TripPlanner (rules 2-4 limit it already: the
+  # site header, or the TripPlanner Host before AA-1090) AND NOT our NAT egress on the viewer header (the CRM web's
+  # server-side calls go to the API through the partner host, so every agency user's BFF call arrives with that one
+  # viewer address; counted together they would block the whole CRM). Key: var.cloudfront_viewer_rate.viewer_ip_header,
+  # written by the CRM distributions' viewer-request functions from the viewer's own address over any value the viewer
+  # sent (accounts/aa365 crm_edge.tf), like the TripPlanner key. Fallback MATCH: a request without a valid value is
+  # counted under the fallback, never skipped. count_only = true runs it in COUNT (observe window, AA-1165 scope).
+  # Cost: one rule, 1 USD a month; the requests are inspected by this ACL already (no new request fee).
+  dynamic "rule" {
+    for_each = local.cfv_on ? [1] : []
+
+    content {
+      name     = "CloudFrontViewerRateLimit"
+      priority = local.rule_priorities.cloudfront_viewer_rate
+
+      action {
+        dynamic "count" {
+          for_each = local.cfv.count_only ? [1] : []
+          content {}
+        }
+        dynamic "block" {
+          for_each = local.cfv.count_only ? [] : [1]
+          content {
+            custom_response {
+              response_code            = 429
+              custom_response_body_key = "rate_limited"
+              dynamic "response_header" {
+                for_each = local.security_response_headers
+                content {
+                  name  = response_header.key
+                  value = response_header.value
+                }
+              }
+            }
+          }
+        }
+      }
+
+      statement {
+        rate_based_statement {
+          limit              = local.cfv.limit
+          aggregate_key_type = "FORWARDED_IP"
+
+          forwarded_ip_config {
+            header_name       = local.cfv.viewer_ip_header
+            fallback_behavior = "MATCH"
+          }
+
+          # Origin secret alone (nothing to scope apart).
+          dynamic "scope_down_statement" {
+            for_each = local.cfv_scoped_apart ? [] : [1]
+            content {
+              byte_match_statement {
+                search_string         = var.origin_verify_header.value
+                positional_constraint = "EXACTLY"
+                field_to_match {
+                  single_header {
+                    name = lower(var.origin_verify_header.name)
+                  }
+                }
+                text_transformation {
+                  priority = 0
+                  type     = "NONE"
+                }
+              }
+            }
+          }
+
+          # Origin secret AND NOT TripPlanner AND NOT our egress (each NOT only when it exists; 2 logical levels).
+          dynamic "scope_down_statement" {
+            for_each = local.cfv_scoped_apart ? [1] : []
+            content {
+              and_statement {
+                statement {
+                  byte_match_statement {
+                    search_string         = var.origin_verify_header.value
+                    positional_constraint = "EXACTLY"
+                    field_to_match {
+                      single_header {
+                        name = lower(var.origin_verify_header.name)
+                      }
+                    }
+                    text_transformation {
+                      priority = 0
+                      type     = "NONE"
+                    }
+                  }
+                }
+                dynamic "statement" {
+                  # Not the TripPlanner distributions (AA-1090 R8 site header: every alias of the planner).
+                  for_each = local.tp_site_on ? [1] : []
+                  content {
+                    not_statement {
+                      statement {
+                        byte_match_statement {
+                          search_string         = var.tripplanner_site_header.value
+                          positional_constraint = "EXACTLY"
+                          field_to_match {
+                            single_header {
+                              name = lower(var.tripplanner_site_header.name)
+                            }
+                          }
+                          text_transformation {
+                            priority = 0
+                            type     = "NONE"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+                dynamic "statement" {
+                  # Not the TripPlanner host (before the site header existed).
+                  for_each = local.tp_on && !local.tp_site_on ? [1] : []
+                  content {
+                    not_statement {
+                      statement {
+                        regex_match_statement {
+                          regex_string = local.tp_host_regex
+                          field_to_match {
+                            single_header {
+                              name = "host"
+                            }
+                          }
+                          text_transformation {
+                            priority = 0
+                            type     = "LOWERCASE"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+                dynamic "statement" {
+                  # Not our own NAT egress, read from the same viewer header as the key (the source IP is CloudFront's).
+                  for_each = local.rate_exempt_on ? [1] : []
+                  content {
+                    not_statement {
+                      statement {
+                        ip_set_reference_statement {
+                          arn = aws_wafv2_ip_set.internal_egress[0].arn
+                          ip_set_forwarded_ip_config {
+                            header_name       = local.cfv.viewer_ip_header
+                            fallback_behavior = "NO_MATCH"
+                            position          = "FIRST"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+
+      visibility_config {
+        cloudwatch_metrics_enabled = true
+        metric_name                = "CloudFrontViewerRateLimit"
+        sampled_requests_enabled   = true
+      }
+    }
+  }
+
+  # Rule 6 — Allow internal VPC Link traffic (proxied requests + NLB health checks) past the
   # IP-based rules below. Optional, count-gated via var.vpc_allow_cidr (AA-272).
   dynamic "rule" {
     for_each = var.vpc_allow_cidr != null ? [1] : []
@@ -622,7 +800,7 @@ resource "aws_wafv2_web_acl" "main" {
     }
   }
 
-  # Rule 6 — AA-931 (CRM-03): allow CloudFront VPC-origin traffic past the IP-based rules below.
+  # Rule 7 — AA-931 (CRM-03): allow CloudFront VPC-origin traffic past the IP-based rules below.
   # An NLB with an `alb` target group preserves the source IP, so these requests reach the ALB from
   # CloudFront's origin-facing addresses: the geo rule would judge the EDGE's country (a viewer
   # outside the allowed list could be blocked) and the rate rule would count a whole edge as one
@@ -667,8 +845,8 @@ resource "aws_wafv2_web_acl" "main" {
     }
   }
 
-  # Rule 7 — Rate limit (per real client IP on the REST API stages, and on the ALB :443 for any host that is not a
-  # staff host). AA-911: the staff hosts (browsers on the ALB :443 directly) are scoped out and counted by rule 9 with
+  # Rule 8 — Rate limit (per real client IP on the REST API stages, and on the ALB :443 for any host that is not a
+  # staff host). AA-911: the staff hosts (browsers on the ALB :443 directly) are scoped out and counted by rule 10 with
   # their own limit: a Next.js page with its static chunks, RSC navigations and prefetches is many requests.
   rule {
     name     = "RateLimit1000"
@@ -775,7 +953,7 @@ resource "aws_wafv2_web_acl" "main" {
     }
   }
 
-  # Rule 8 — Geo Block (allow major markets only)
+  # Rule 9 — Geo Block (allow major markets only)
   # Country list matches AWS state at import — do not change without checking console
   rule {
     name     = "GeoBlockNonAllowed"
@@ -852,7 +1030,7 @@ resource "aws_wafv2_web_acl" "main" {
     }
   }
 
-  # Rule 9 — AA-911: rate limit of the staff hosts (CIS admin, Booking admin on the ALB :443), per real client IP.
+  # Rule 10 — AA-911: rate limit of the staff hosts (CIS admin, Booking admin on the ALB :443), per real client IP.
   # After the geo rule, which applies to the staff hosts as to everyone.
   dynamic "rule" {
     for_each = local.staff_host_regex != null ? [1] : []

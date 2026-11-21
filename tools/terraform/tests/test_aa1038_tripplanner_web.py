@@ -182,7 +182,7 @@ def test_tripplanner_rules_run_after_common_rules_and_before_both_allow_rules():
     order = sorted(pr, key=pr.get)
     assert order == [
         "common_rule_set", "tp_rate_per_ip", "tp_rate_model_paths", "tp_challenge_planner",
-        "vpc_link_internal_allow", "cloudfront_origin_allow", "rate_limit", "geo_block", "staff_web_rate_limit",
+        "cloudfront_viewer_rate", "vpc_link_internal_allow", "cloudfront_origin_allow", "rate_limit", "geo_block", "staff_web_rate_limit",
     ]
     acl = _acl()
     for name, key in [
@@ -190,6 +190,7 @@ def test_tripplanner_rules_run_after_common_rules_and_before_both_allow_rules():
         ("TripPlannerRateLimitPerIp", "tp_rate_per_ip"),
         ("TripPlannerRateLimitModelPaths", "tp_rate_model_paths"),
         ("TripPlannerChallengePlanner", "tp_challenge_planner"),
+        ("CloudFrontViewerRateLimit", "cloudfront_viewer_rate"),
         ("VpcLinkInternalAllow", "vpc_link_internal_allow"),
         ("CloudFrontOriginAllow", "cloudfront_origin_allow"),
         ("RateLimit1000", "rate_limit"),
@@ -236,9 +237,9 @@ def test_rate_rules_key_on_the_viewer_address_header_with_the_same_limits():
         assert 'fallback_behavior = "MATCH"' in rule
         assert "response_code            = 429" in rule and 'custom_response_body_key = "rate_limited"' in rule
     assert "regex_string = local.tp_protected_path_regex" in model and "uri_path {}" in model
-    # The 429 body exists exactly when the rules do.
+    # The 429 body exists exactly when a rule that answers with it does (AA-1165: CloudFrontViewerRateLimit too).
     body = _block_after(acl, acl.index('dynamic "custom_response_body"'))
-    assert "for_each = local.tp_on ? [1] : []" in body and 'key          = "rate_limited"' in body
+    assert "for_each = local.tp_on || local.cfv_on ? [1] : []" in body and 'key          = "rate_limited"' in body
 
 
 def test_challenge_rule_documents_of_the_planner_and_the_protected_paths_with_its_own_token_lifetime():
