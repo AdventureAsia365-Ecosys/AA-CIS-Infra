@@ -1,8 +1,11 @@
 // AA-979 P2b clean-up (runbook 4.5): viewer-request function of the partner distribution (crm_edge.tf).
 // The old agency host partner-<env>. answers 301 to the agency host portal. with the same path and query, except the
 // CRM API paths /crm and /crm/* (the CI deploy gates and server-to-server callers POST there; a 301 would turn a POST
-// into a GET). cloudfront-js-2.0. AGENCY_ORIGIN is filled in by Terraform (templatefile), no other template syntax here.
+// into a GET). AA-1165: on the requests it lets through, it also writes the viewer's own address into HEADER_NAME (over
+// any value the viewer sent), the key of WAF rule CloudFrontViewerRateLimit. cloudfront-js-2.0. AGENCY_ORIGIN and
+// HEADER_NAME are filled in by Terraform (templatefile), no other template syntax here.
 var AGENCY_ORIGIN = "${agency_origin}";
+var HEADER_NAME = "${header_name}";
 
 function queryString(qs) {
   var parts = [];
@@ -22,6 +25,7 @@ function handler(event) {
   var request = event.request;
   var uri = request.uri;
   if (uri === "/crm" || uri.indexOf("/crm/") === 0) {
+    request.headers[HEADER_NAME] = { value: event.viewer.ip };
     return request;
   }
   return {

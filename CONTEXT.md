@@ -733,7 +733,8 @@ and the durable job worker.
 admits only :80 from the VPC CIDR (NLB), so it cannot be called directly. The REGIONAL web ACL
 `aa-cis-dev-waf` evaluates CommonRuleSet (enforced since AA-806 S239; `SizeRestrictions_BODY`,
 `CrossSiteScripting_BODY` and `GenericLFI_BODY` stay COUNT; credential headers redacted in the WAF log)
-→ the three TripPlanner web rules (AA-1038, TripPlanner host + origin secret only) → VpcLinkInternalAllow →
+→ the three TripPlanner web rules (AA-1038, TripPlanner host + origin secret only) → CloudFrontViewerRateLimit
+(AA-1165, the CloudFront path of the CRM hosts) → VpcLinkInternalAllow →
 CloudFrontOriginAllow → RateLimit → GeoBlock (→ StaffWebRateLimit), in the order of `modules/waf`
 `local.rule_priorities`; rate and
 geo only bite on REST API stages (`var.waf_protect_rest_api_stages`, needs `apigateway:SetWebACL`
@@ -756,7 +757,12 @@ which would otherwise judge the CloudFront edge instead of the viewer; `x-aa-ori
 ALB rules (`alb_rules.tf`): partner host + secret → partner target group; client host `go-dev.` + secret →
 `/crm/public/*` to the CRM API, everything else to the CRM web (AA-936, its own distribution); any `X-AA-Origin` → 403, before the
 Booking rule and the CIS default. CloudFront bypasses API Gateway throttling: the AA-Partner app rate-limits on
-`CloudFront-Viewer-Address` (AA-933); the CloudFront WAF comes at Go-real (W8).
+`CloudFront-Viewer-Address` (AA-933), and since AA-1165 the ALB web ACL has rule `CloudFrontViewerRateLimit` (per
+viewer, 5 minutes, before both allow rules): origin secret AND NOT TripPlanner AND NOT the NAT egress (the CRM web's
+server-side calls reach the API through the partner host), keyed on `x-aa-viewer-ip`, which the viewer-request
+functions of the partner, agency and client distributions write from the viewer's own address. Limit and mode
+(COUNT / BLOCK 429 `rate_limited`) are `crm_edge_rate_limit` and `crm_edge_rate_count_only` (`crm_edge.tf`,
+`terraform.tfvars`); review and flip: `docs/waf-count-review.md`. The CloudFront WAF comes at Go-real (W8).
 
 **AA-Booking** (`modules/environment/booking.tf` since AA-1004 P0, AA-678, root ADR 0004) is a separate app on the same cluster, VPC,
 ALB and RDS: ECS service `aa-booking-dev-api` (created at `desired_count = 0`, scaled by hand,

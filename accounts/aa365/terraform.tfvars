@@ -139,6 +139,11 @@ test_wp_service_attached = true
 # inspected (Dev: well under 1 million a month, estimate < 0.60 USD/month). The IP set is free.
 waf_protect_rest_api_stages = true
 
+# AA-1165 (S286 decision D10, about 1 USD/month: one WAF rule, no new ACL): CloudFrontViewerRateLimit starts in COUNT,
+# as the issue's scope says. After the count check (docs/waf-count-review.md, section "CloudFrontViewerRateLimit")
+# a one-line PR removes this line and the rule BLOCKS with a 429 (variable default false).
+crm_edge_rate_count_only = true
+
 # AA-1112 (S284, tech lead approved 18/11/2026): the CRM job-row retention may run live on Dev; the admin switch
 # crm.retention.job_dry_run (maker-checker, Settings page) still has to be turned off as well.
 crm_job_retention_dry_run = "false"

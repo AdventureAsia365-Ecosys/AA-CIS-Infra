@@ -63,3 +63,36 @@ sub-rules.
 
 The scripts live in the audit folder above (`scripts/`). They read the e2e admin, tenant and Booking
 staff credentials from Secrets Manager at run time, never print them, and only PATCH random ids.
+
+## CloudFrontViewerRateLimit (AA-1165): count window, flip, change the limit
+
+Rule `CloudFrontViewerRateLimit` of `aa-cis-dev-waf` limits each viewer on the CloudFront path of the CRM hosts
+(partner, agency with the Academy alias, client) to `crm_edge_rate_limit` requests per 5 minutes (default 5000,
+`accounts/aa365/crm_edge.tf`). The key is the header `x-aa-viewer-ip`, which the distributions' viewer-request
+functions write from the viewer's own address. TripPlanner traffic (its own rules) and our NAT egress are scoped out.
+It started in COUNT (`crm_edge_rate_count_only = true` in `accounts/aa365/terraform.tfvars`).
+
+1. Normal use stays under the limit: browse the agency host for a few minutes, then read the rule's counts (0 is the
+   expected answer for one person):
+
+   ```
+   aws cloudwatch get-metric-statistics --namespace AWS/WAFV2 --metric-name CountedRequests --dimensions Name=WebACL,Value=aa-cis-dev-waf Name=Region,Value=us-west-1 Name=Rule,Value=CloudFrontViewerRateLimit --start-time <UTC start> --end-time <UTC end> --period 300 --statistics Sum --profile aa365-admin --region us-west-1
+   ```
+
+2. A burst from one address past the limit is counted (COUNT) or refused with 429 (BLOCK). AWS WAF evaluates rate
+   rules with a delay of up to about a minute, so the first refusals come a little after the limit. Burst on the
+   cheap CRM API health path of the partner host, for example 6000 requests with 50 in parallel, and tally the codes:
+
+   ```
+   seq 6000 | xargs -P 50 -I{} curl -s -o /dev/null -w '%{http_code}\n' https://partner-dev.lumiguides.it.com/crm/health | sort | uniq -c
+   ```
+
+   Then wait out the 5-minute window before using the CRM from that address again.
+3. To flip to BLOCK: a PR that removes the `crm_edge_rate_count_only = true` line from `terraform.tfvars` (the
+   variable defaults to `false`), plan, apply, repeat step 2 and expect `429` lines with the JSON body
+   `{"error":"rate_limited"}`, plus `BlockedRequests` on the same dimensions.
+4. To change the limit: set `crm_edge_rate_limit = <n>` in `terraform.tfvars` (a whole number of at least 100), plan,
+   apply. The value in force is published read-only in the root output `platform_limits` (`waf` group).
+
+The WAF log (`aws-waf-logs-aa-cis-dev`, only requests a rule acted on) records each counted or blocked request with
+`CloudFrontViewerRateLimit` as the matching rule.

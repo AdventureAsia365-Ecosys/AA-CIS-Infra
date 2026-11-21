@@ -262,23 +262,38 @@ def test_partner_distribution_runs_the_function_on_viewer_request():
     fn = EDGE_TF.split('resource "aws_cloudfront_function" "crm_partner_to_agency"', 1)[1].split("\nresource ", 1)[0]
     assert 'runtime = "cloudfront-js-2.0"' in fn and "publish = true" in fn
     assert 'agency_origin = "https://${local.crm_agency_host}"' in fn
+    assert "header_name   = local.crm_viewer_ip_header" in fn  # AA-1165: the WAF rate key
     dist = EDGE_TF.split('resource "aws_cloudfront_distribution" "crm_partner"', 1)[1].split("\nresource ", 1)[0]
     default = dist.split("default_cache_behavior {", 1)[1].split("\n  }\n", 1)[0]
     assert 'event_type   = "viewer-request"' in default
     assert "aws_cloudfront_function.crm_partner_to_agency[0].arn" in default
-    # The template has exactly one placeholder (templatefile would read any other ${...} as Terraform).
-    assert re.findall(r"\$\{[^}]*\}", FUNCTION_JS.read_text(encoding="utf-8")) == ["${agency_origin}"]
+    # The template has exactly these placeholders (templatefile would read any other ${...} as Terraform).
+    assert re.findall(r"\$\{[^}]*\}", FUNCTION_JS.read_text(encoding="utf-8")) == ["${agency_origin}", "${header_name}"]
 
 
 def _run_function(event: dict) -> dict:
-    code = FUNCTION_JS.read_text(encoding="utf-8").replace("${agency_origin}", "https://portal.example")
+    code = (
+        FUNCTION_JS.read_text(encoding="utf-8")
+        .replace("${agency_origin}", "https://portal.example")
+        .replace("${header_name}", "x-aa-viewer-ip")
+    )
     script = code + "\nprocess.stdout.write(JSON.stringify(handler(" + json.dumps(event) + ")));\n"
     out = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30, check=True)  # noqa: S603,S607
     return json.loads(out.stdout)
 
 
 def _event(uri: str, qs: dict | None = None) -> dict:
-    return {"request": {"method": "GET", "uri": uri, "querystring": qs or {}, "headers": {}, "cookies": {}}}
+    return {
+        "viewer": {"ip": "198.51.100.7"},
+        "request": {
+            "method": "GET",
+            "uri": uri,
+            "querystring": qs or {},
+            # AA-1165: a viewer-supplied rate key, which the function must overwrite on the paths it lets through.
+            "headers": {"x-aa-viewer-ip": {"value": "203.0.113.9"}},
+            "cookies": {},
+        },
+    }
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
@@ -307,6 +322,8 @@ def test_function_moves_every_other_path_with_its_query(uri, qs, location):
 def test_function_leaves_the_crm_api_paths_alone(uri):
     res = _run_function(_event(uri, {"x": {"value": "1"}}))
     assert res.get("uri") == uri and "statusCode" not in res
+    # AA-1165: the WAF rate key is the viewer's own address, never the value the viewer sent.
+    assert res["headers"]["x-aa-viewer-ip"] == {"value": "198.51.100.7"}
 
 
 # ── AA-1105 (root ADR 0022): the AA Academy host on the agency distribution ─────────────────────────────────────────

@@ -356,6 +356,14 @@ module "waf" {
     value = random_password.tp_web_site_marker[0].result
   } : null
 
+  # AA-1165 (crm_edge.tf): per-viewer rate rule CloudFrontViewerRateLimit on the CloudFront path (CRM partner, agency,
+  # client), keyed on the header the CRM viewer-request functions write. null while the edge is off.
+  cloudfront_viewer_rate = local.crm_edge_on == 1 ? {
+    viewer_ip_header = local.crm_viewer_ip_header
+    limit            = var.crm_edge_rate_limit
+    count_only       = var.crm_edge_rate_count_only
+  } : null
+
   tags = merge(local.shared_tags, { Component = "edge" }) # AA-828: on the ALB and on the CIS + Booking REST API stages
 
   # S235 Phase 0: CommonRuleSet started in observe mode (whole group COUNT); enforced since

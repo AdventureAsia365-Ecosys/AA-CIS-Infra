@@ -32,6 +32,8 @@ output "platform_limits" {
       tripplanner_web_rate_limit_per_5min        = var.tripplanner_web_rate_limit
       tripplanner_web_model_rate_limit_per_5min  = var.tripplanner_web_model_rate_limit
       tripplanner_web_challenge_immunity_s       = var.tripplanner_web_challenge_immunity_s
+      crm_edge_rate_limit_per_5min_per_viewer    = var.crm_edge_rate_limit
+      crm_edge_rate_count_only                   = var.crm_edge_rate_count_only
       geo_allowed_countries                      = module.waf.geo_allowed_countries
       common_rules_count_only                    = var.waf_common_rules_count_only
       protects_rest_api_stages                   = var.waf_protect_rest_api_stages

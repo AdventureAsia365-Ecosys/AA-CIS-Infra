@@ -15,6 +15,11 @@ output "tripplanner_web_rule_names" {
   value       = local.tp_on ? ["TripPlannerRateLimitPerIp", "TripPlannerRateLimitModelPaths", "TripPlannerChallengePlanner"] : []
 }
 
+output "cloudfront_viewer_rate_rule_name" {
+  description = "AA-1165: the per-viewer rate rule of the CloudFront path (empty without var.cloudfront_viewer_rate), for the runbook's metric checks."
+  value       = local.cfv_on ? "CloudFrontViewerRateLimit" : ""
+}
+
 output "geo_allowed_countries" {
   description = "AA-1096 L6: the countries rule GeoBlockNonAllowed lets through (ISO 3166-1 alpha-2), for the root output platform_limits."
   value       = var.geo_allowed_countries

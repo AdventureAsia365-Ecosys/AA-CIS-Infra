@@ -131,3 +131,18 @@ variable "geo_exempt_hosts" {
   type        = list(string)
   default     = []
 }
+
+variable "cloudfront_viewer_rate" {
+  description = "AA-1165: rule CloudFrontViewerRateLimit, a per-viewer rate limit on the CloudFront path (requests carrying the exact origin secret, needs origin_verify_header), before both allow rules. TripPlanner traffic is scoped out (its own rules) and so is our own NAT egress (rate_limit_exempt_cidrs, matched on the viewer header: the CRM web's server-side calls reach the API through CloudFront from that one address). viewer_ip_header: the header the CloudFront viewer-request functions write with the viewer's address (the rate key). limit: requests per 5 minutes per viewer. count_only: true = COUNT (observe), false = BLOCK with a 429. null = no rule."
+  type = object({
+    viewer_ip_header = string
+    limit            = number
+    count_only       = bool
+  })
+  default = null
+
+  validation {
+    condition     = var.cloudfront_viewer_rate == null || try(var.cloudfront_viewer_rate.limit >= 100 && floor(var.cloudfront_viewer_rate.limit) == var.cloudfront_viewer_rate.limit, false)
+    error_message = "cloudfront_viewer_rate.limit must be a whole number of at least 100 (a page load is dozens of requests)."
+  }
+}

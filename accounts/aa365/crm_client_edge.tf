@@ -102,6 +102,12 @@ resource "aws_cloudfront_distribution" "crm_client" {
     compress                 = false
     cache_policy_id          = data.aws_cloudfront_cache_policy.caching_disabled[0].id
     origin_request_policy_id = data.aws_cloudfront_origin_request_policy.all_viewer_and_cf_headers[0].id
+
+    # AA-1165: the viewer's address for WAF rule CloudFrontViewerRateLimit (crm_edge.tf).
+    function_association {
+      event_type   = "viewer-request"
+      function_arn = aws_cloudfront_function.crm_viewer_ip[0].arn
+    }
   }
 
   restrictions {
