@@ -367,6 +367,9 @@ accounts/
                                    -> inbound-admin/, object reads there denied
                                    to every principal except the MFA admin role (the reader role included). Any future
                                    SES receiving in us-west-1 adds rules to this set)
+    image_scan.tf                 (AA-1164: GitHub OIDC role aa-cis-<env>-image-scan-upload, trusted only by this repo
+                                   on refs/heads/main; PutObject on docs-reader/security/image-scan/summary.json of the
+                                   bronze bucket, nothing else: the nightly Image Scan's masked summary. < $0.01/month)
     docs_reader.tf                (AA-898: GitHub OIDC role aa-cis-<env>-docs-sync, trusted only by the root repo
                                    AA-Ecosys on refs/heads/master (immutable subject), ListBucket on docs-reader/ +
                                    Put/Delete on docs-reader/* + Get on docs-reader/manifest.json only (AA-1132: the
@@ -646,6 +649,13 @@ tools/
                     copy); --workspace also proves the pins against the canonical files (the root repo is
                     private, CI cannot read it). Tests in tools/contracts/tests (contract-copy-guard.yml:
                     PR + nightly).
+  security/       ← image_scan.py + image_scan.toml (AA-1164, root SEC-03, D11): the nightly scan of the images that
+                    actually run (image-scan.yml): the image digest of every RUNNING task of aa-cis-dev-cluster, one
+                    CycloneDX SBOM per digest (Trivy, pulled once by digest, cached), a nightly Trivy scan of each SBOM,
+                    the root triage rule (tools/security/vuln_triage.py: KEV, EPSS, CVSS) and the root exception
+                    register (docs/security/vuln-exceptions.toml) read from root master; fails on a fixable finding the
+                    gate in image_scan.toml names. Every output masked (aws_mask). Tests in tools/security/tests
+                    (image-scan-test.yml).
   secrets/        ← register_check.py (AA-878): metadata-only drift check of the root repo's
                     docs/security/secrets-register.yaml against Secrets Manager list-secrets, GitHub
                     secret lists, Vercel env names and Lambda env keys collected beforehand; never
@@ -855,8 +865,9 @@ makes CI Terraform Plan fail with 403.
   repo's own Terraform / DB Migrate / schema-dump workflows), `modules/environment/tripplanner.tf`
   (`aa-tripplanner-dev-app-deploy`), `modules/environment/booking.tf` (`aa-booking-dev-app-deploy`) and `crm_app.tf`
   (`aa-crm-dev-app-deploy`, AA-Partner, AA-933), plus `crm_scrub.tf` (`aa-crm-dev-scrub-corpus`, AA-Partner
-  "Scrub corpus" workflow, environment `scrub-corpus`, AA-938), and `docs_reader.tf` (`aa-cis-dev-docs-sync`, the root repo's
-  "Docs sync" workflow on `master`, AA-898). Each app repo
+  "Scrub corpus" workflow, environment `scrub-corpus`, AA-938), `docs_reader.tf` (`aa-cis-dev-docs-sync`, the root repo's
+  "Docs sync" workflow on `master`, AA-898) and `image_scan.tf` (`aa-cis-dev-image-scan-upload`, this repo's "Image
+  Scan" workflow on `main`: PutObject on one summary key only, AA-1164; its reads use the plan role). Each app repo
   and each job type gets its **own** role. The old shared `aa-cis-dev-role` is retired (AA-806
   step 3); the apply boundary denies every write on that name so it cannot come back.
 - **OIDC subject fact (learned AA-588, re-verified AA-678):** the repos have GitHub's immutable

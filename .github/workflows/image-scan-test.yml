@@ -1,0 +1,44 @@
+name: Image Scan Tool Tests
+
+# AA-1164: unit tests of tools/security/image_scan.py (the nightly scan of the running images) and of the wiring of
+# image-scan.yml. Offline: the AWS CLI and Trivy are injected, the account id in the fixtures is invented; no AWS
+# access, no scanner download.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "tools/security/**"
+      - "tools/docs/aws_mask.py"
+      - ".github/workflows/image-scan.yml"
+      - ".github/workflows/image-scan-test.yml"
+  push:
+    branches: [main]
+    paths:
+      - "tools/security/**"
+      - "tools/docs/aws_mask.py"
+      - ".github/workflows/image-scan.yml"
+      - ".github/workflows/image-scan-test.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  image-scan-tests:
+    name: Image scan tool tests (pytest)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install pytest
+        run: python -m pip install "pytest>=8,<10"
+
+      - name: Run tool tests
+        run: python -m pytest -p no:cacheprovider -q tools/security/tests

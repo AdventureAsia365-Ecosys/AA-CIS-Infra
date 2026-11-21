@@ -1,0 +1,286 @@
+name: Image Scan (running images)
+# AA-1164 (root SEC-03, tech lead decision D11, S286): scan the images that ACTUALLY run, every night, for free.
+#
+# The app CIs scan an image built for the check and never pushed, and the deploy builds again; nobody read the base
+# layers of what had been running for weeks. This workflow starts from the cluster instead:
+#
+#   1. collect   tools/security/image_scan.py lists every RUNNING task of every service of the Dev cluster and keeps one
+#                entry per image digest (ECS list / describe only) with its services, platform and owner repo.
+#   2. scan      a digest not seen before is read BY DIGEST from ECR (docker login with the plan role's ECR read) once,
+#                into a CycloneDX SBOM (Trivy); SBOMs are cached per digest (Actions cache, saved on main only), so a
+#                digest that keeps running is never pulled again. Every night each SBOM is scanned with that day's
+#                vulnerability DB (trivy sbom, all severities). Trivy comes from ./.github/actions/release-bin: pinned
+#                version + sha256 of the release file (pins.txt), cached.
+#   3. triage    the root repo's tools/security/vuln_triage.py (AA-1163: CISA KEV, FIRST EPSS, CVSS -> P0..P3) runs on
+#                each Trivy file with the image's owner repo, against the ONE exception register
+#                docs/security/vuln-exceptions.toml (read from root master, never copied here).
+#   4. report    counts by level, fixable counts, classes and the gate per image go to the run summary; the masked
+#                summary JSON, the Trivy / triage JSON and the SBOMs go to the run artifact (14 days); the summary JSON
+#                also goes to the private docs-reader prefix of the bronze bucket (job `upload`).
+#   5. gate      the run fails (GitHub e-mails it) when a finding with a fixed version is not accepted in the register
+#                and its class or severity is one the gate names, or when an image could not be scanned. Every such
+#                value is in tools/security/image_scan.toml, none in this file.
+#
+# Public repo (AA-981): the account id is ::add-mask::ed before any AWS output, every file this run uploads or prints
+# goes through tools/docs/aws_mask.py (the tool refuses to write a leak), and the pull references (the registry host
+# names the account) stay in RUNNER_TEMP/image-scan/running.json, which is never uploaded. Digests are printed.
+#
+# AWS: reads with the READ-ONLY plan role aa-cis-infra-tf-plan (secret AWS_ROLE_ARN, trusted for this repo's
+# `ref:refs/heads/main`; ReadOnlyAccess covers ecs:List*/Describe* and the ECR pull reads), verified before use, as in
+# docs-gen.yml. The one write, the summary object, uses aa-cis-dev-image-scan-upload (accounts/aa365/image_scan.tf:
+# PutObject on that single key only) in its own job, which holds no read role. Secret IMAGE_SCAN_UPLOAD_ROLE_ARN (a
+# secret, not a variable: WL1); without it the upload is skipped with a notice and the scan still runs.
+# No pip install in the scan job: it holds the plan role's credentials; only stdlib Python and the pinned binaries run.
+#
+# Cost (D-19): GitHub runners are outside AWS, so an ECR pull is data transfer out. Only a NEW digest is pulled (the
+# SBOM cache), i.e. roughly the images deployed since the night before: a few GB a month, inside the 100 GB/month
+# free tier of data transfer out, so 0 USD; one S3 PUT a night (< 0.01 USD/month); Actions minutes free (public repo).
+# Triggers: nightly, and by hand (after a rebuild, to read the new digests at once).
+on:
+  workflow_dispatch:
+    inputs:
+      offline:
+        description: "Skip the KEV and EPSS feeds (triage by CVSS / severity only)"
+        required: false
+        type: boolean
+        default: false
+  schedule:
+    - cron: "37 5 * * *"   # nightly, 05:37 UTC (after Docs Gen at 04:17)
+
+concurrency:
+  group: image-scan
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    name: Scan the running images
+    runs-on: ubuntu-latest
+    # No environment: the OIDC sub is `ref:refs/heads/main`, trusted by the read-only plan role.
+    if: github.ref == 'refs/heads/main'
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      summary: ${{ steps.report.outputs.summary }}
+    env:
+      AWS_REGION: us-west-1
+      ROOT_REPO: AdventureAsia365-Ecosys/AA-Ecosys
+      HAS_CI_BOT_APP: ${{ vars.AA_CI_BOT_APP_ID != '' && secrets.AA_CI_BOT_PRIVATE_KEY != '' }}
+      OFFLINE: ${{ github.event_name == 'workflow_dispatch' && inputs.offline && 'true' || 'false' }}
+      TOOL: tools/security/image_scan.py
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      # Pinned scanner (version + sha256 of the release file), before any credential is in the job.
+      - name: Install Trivy (pinned, checksum verified)
+        uses: ./.github/actions/release-bin
+        with:
+          tool: trivy
+
+      # AA-901: read-only App token for the root checkout (the triage rule and the exception register).
+      - name: Mint the aa-ecosys-ci-bot token (root repo, contents read)
+        id: root-read-token
+        if: env.HAS_CI_BOT_APP == 'true'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.AA_CI_BOT_APP_ID }}
+          private-key: ${{ secrets.AA_CI_BOT_PRIVATE_KEY }}
+          owner: AdventureAsia365-Ecosys
+          repositories: AA-Ecosys
+          permission-contents: read
+
+      - name: Check out the triage rule and the exception register (root master)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.ROOT_REPO }}
+          ref: master
+          token: ${{ steps.root-read-token.outputs.token || github.token }}
+          path: root
+          fetch-depth: 1
+          persist-credentials: false
+          sparse-checkout: |
+            tools/security
+            docs/security
+          sparse-checkout-cone-mode: true
+
+      - name: Configure AWS credentials (OIDC, read-only plan role)
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-west-1
+          role-session-name: image-scan-${{ github.run_id }}
+
+      # Fail closed if the repo-level secret ever names a role with write rights.
+      - name: Verify the role is the read-only plan role
+        run: |
+          ARN=$(aws sts get-caller-identity --query Arn --output text)
+          case "$ARN" in
+            *:assumed-role/aa-cis-infra-tf-plan/*) echo "role: aa-cis-infra-tf-plan" ;;
+            *) echo "::error::image-scan must run with the read-only role aa-cis-infra-tf-plan (got another role)"; exit 1 ;;
+          esac
+
+      # AA-981: label table for aws_mask (never echoed: every id is masked in the log before it is used).
+      - name: Account alias table for masking
+        env:
+          ALIASES: ${{ secrets.AWS_ACCOUNT_ALIASES }}
+        run: |
+          ACC=$(aws sts get-caller-identity --query Account --output text)
+          echo "::add-mask::$ACC"
+          ALIASES=$(printf '%s' "$ALIASES" | tr -s '[:space:],' ',' | sed 's/^,//; s/,$//')
+          for entry in ${ALIASES//,/ }; do echo "::add-mask::${entry#*=}"; done
+          case ",$ALIASES," in
+            *"=$ACC,"*) ;;
+            *) ALIASES="${ALIASES:+$ALIASES,}acc2=$ACC" ;;
+          esac
+          echo "::add-mask::$ALIASES"
+          echo "AWS_ACCOUNT_ALIASES=$ALIASES" >> "$GITHUB_ENV"
+
+      - name: List the running images (one entry per digest)
+        run: |
+          umask 077
+          mkdir -p "$RUNNER_TEMP/image-scan/out"
+          python3 "$TOOL" collect --out "$RUNNER_TEMP/image-scan/running.json"
+
+      - name: SBOM cache key (the running digests)
+        id: key
+        run: echo "key=$(python3 "$TOOL" cache-key --running "$RUNNER_TEMP/image-scan/running.json")" >> "$GITHUB_OUTPUT"
+
+      # The most recent SBOM set (restore-keys): only digests missing from it are pulled.
+      - name: Restore the SBOM cache
+        id: sbom-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/image-scan/sbom-cache
+          key: image-sbom-v1-${{ steps.key.outputs.key }}
+          restore-keys: image-sbom-v1-
+
+      - name: Log in to the private ECR registries (read)
+        run: |
+          set -euo pipefail
+          python3 "$TOOL" registries --running "$RUNNER_TEMP/image-scan/running.json" > "$RUNNER_TEMP/image-scan/registries.txt"
+          while IFS= read -r host; do
+            [ -n "$host" ] || continue
+            aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$host" >/dev/null
+          done < "$RUNNER_TEMP/image-scan/registries.txt"
+          echo "logged in to $(grep -c . "$RUNNER_TEMP/image-scan/registries.txt" || true) private registry host(s)"
+
+      - name: SBOM per digest (cached, else pulled by digest) and today's vulnerability scan (Trivy)
+        run: |
+          python3 "$TOOL" scan --running "$RUNNER_TEMP/image-scan/running.json" --out "$RUNNER_TEMP/image-scan/out" \
+            --sbom-cache "$RUNNER_TEMP/image-scan/sbom-cache"
+
+      # Masked SBOMs only. The job runs on main only (job `if`), so this is a default-branch save (WL4).
+      - name: Save the SBOM cache
+        if: steps.sbom-cache.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/image-scan/sbom-cache
+          key: image-sbom-v1-${{ steps.key.outputs.key }}
+
+      - name: Log out of the registries
+        if: always()
+        run: |
+          [ -f "$RUNNER_TEMP/image-scan/registries.txt" ] || exit 0
+          while IFS= read -r host; do [ -n "$host" ] && docker logout "$host" >/dev/null; done < "$RUNNER_TEMP/image-scan/registries.txt"
+          rm -f "$RUNNER_TEMP/image-scan/registries.txt"
+
+      - name: Triage (root SEC-03 rule, KEV + EPSS, exception register)
+        run: |
+          ARGS=()
+          if [ "$OFFLINE" = "true" ]; then ARGS=(--offline); fi
+          python3 "$TOOL" triage --running "$RUNNER_TEMP/image-scan/running.json" --dir "$RUNNER_TEMP/image-scan/out" \
+            --root-dir root "${ARGS[@]}"
+
+      - name: Report and gate
+        id: report
+        run: |
+          set +e
+          python3 "$TOOL" report --running "$RUNNER_TEMP/image-scan/running.json" --dir "$RUNNER_TEMP/image-scan/out" \
+            --summary-md "$RUNNER_TEMP/image-scan/out/summary.md" --summary-json "$RUNNER_TEMP/image-scan/out/summary.json"
+          rc=$?
+          set -e
+          if [ -f "$RUNNER_TEMP/image-scan/out/summary.md" ]; then
+            cat "$RUNNER_TEMP/image-scan/out/summary.md" >> "$GITHUB_STEP_SUMMARY"
+            echo "summary=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "gate_rc=$rc" >> "$GITHUB_OUTPUT"
+
+      # Masked by the tool (it refuses to write an account id or ARN); the pull references are not in this folder.
+      - name: Keep the SBOMs, scan and triage files as an artifact
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: image-scan-${{ github.run_id }}
+          path: ${{ runner.temp }}/image-scan/out/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Fail on the gate
+        if: always()
+        env:
+          GATE_RC: ${{ steps.report.outputs.gate_rc }}
+        run: |
+          case "$GATE_RC" in
+            0) echo "gate passed: no fixable finding the gate names is open on a running image" ;;
+            1) echo "::error title=image scan::a running image has a fixable finding the gate names, or could not be scanned (run summary)"; exit 1 ;;
+            *) echo "::error title=image scan::the report did not run (exit ${GATE_RC:-none}); see the steps above"; exit 1 ;;
+          esac
+
+  upload:
+    name: Upload the masked summary (private docs-reader prefix)
+    needs: scan
+    runs-on: ubuntu-latest
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.scan.outputs.summary == 'true' }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      HAS_UPLOAD_ROLE: ${{ secrets.IMAGE_SCAN_UPLOAD_ROLE_ARN != '' }}
+    steps:
+      - name: Upload role not configured
+        if: env.HAS_UPLOAD_ROLE != 'true'
+        run: echo "::notice title=Image scan::IMAGE_SCAN_UPLOAD_ROLE_ARN is not set; the summary is in the run artifact only."
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: env.HAS_UPLOAD_ROLE == 'true'
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            tools/security
+            tools/docs
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: env.HAS_UPLOAD_ROLE == 'true'
+        with:
+          name: image-scan-${{ github.run_id }}
+          path: image-scan
+
+      - name: Configure AWS credentials (OIDC, summary upload role)
+        if: env.HAS_UPLOAD_ROLE == 'true'
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ secrets.IMAGE_SCAN_UPLOAD_ROLE_ARN }}
+          aws-region: us-west-1
+          role-session-name: image-scan-upload-${{ github.run_id }}
+
+      - name: Upload summary.json
+        if: env.HAS_UPLOAD_ROLE == 'true'
+        run: |
+          set -euo pipefail
+          ACC=$(aws sts get-caller-identity --query Account --output text)
+          echo "::add-mask::$ACC"
+          python3 tools/docs/aws_mask.py check image-scan/summary.json
+          URI=$(python3 tools/security/image_scan.py upload-uri --account "$ACC")
+          aws s3 cp image-scan/summary.json "$URI" --only-show-errors --content-type "application/json"
+          echo "- summary uploaded to the private docs-reader prefix" >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,82 @@
+# Image scan of the images that actually run (AA-1164, root SEC-03; tech lead decision D11, S286).
+#
+# Read by tools/security/image_scan.py and the workflow .github/workflows/image-scan.yml. Every threshold, severity
+# list, owner mapping and timeout of the nightly scan lives here, never as a constant in the tool or the workflow.
+# The triage rule itself (KEV, EPSS, CVSS classes, SLA) and the exception register are NOT here: they are the root
+# repo's tools/security/vuln_triage.toml and docs/security/vuln-exceptions.toml (AA-1163), read from root master at
+# run time, so the nightly gate and the monthly triage apply one rule and one register. When the compliance settings
+# page exists (AA-1170 follow-up), these values move to the admin-editable settings and this file becomes the seed.
+
+[cluster]
+# The ECS cluster whose RUNNING tasks are scanned (every service, every container).
+name = "aa-cis-dev-cluster"
+region = "us-west-1"
+# SLA table of the triage rule (vuln_triage.toml [sla]): dev until the first production go-live.
+env = "dev"
+# Platform when a task does not report its CPU architecture (Fargate always does).
+default_platform = "linux/amd64"
+
+[scan]
+# Trivy (pinned in .github/actions/release-bin/pins.txt). Every severity is scanned so the run lists counts by level;
+# the gate below decides what fails.
+scanners = "vuln"
+pkg_types = "os,library"
+severities = ["UNKNOWN", "LOW", "MEDIUM", "HIGH", "CRITICAL"]
+timeout = "15m"
+# One CycloneDX SBOM per running digest, written by Trivy from a single pull by digest and cached by digest: the nightly
+# vulnerability scan reads the SBOM, so a digest that keeps running is never pulled again (ECR egress stays free).
+sbom_format = "cyclonedx"
+
+[gate]
+# A finding fails the nightly run when ALL of these hold:
+#   - no unexpired row of the exception register accepts it (repo = the image's owner, source = trivy, id = CVE/GHSA);
+#   - a fixed version exists (require_fix = true: nothing to bump yet is triaged monthly, not paged nightly);
+#   - its triage class is in `classes` (KEV, EPSS, CVSS rule of SEC-03) OR its Trivy severity is in `severities`.
+classes = ["P0", "P1"]
+severities = ["CRITICAL", "HIGH"]
+require_fix = true
+# An image that could not be scanned (pull refused, Trivy error) fails the run too: a scan that did not run never
+# passes.
+fail_on_scan_error = true
+
+[triage]
+# Paths in the root repo checkout (root master).
+tool = "tools/security/vuln_triage.py"
+config = "tools/security/vuln_triage.toml"
+register = "docs/security/vuln-exceptions.toml"
+
+[report]
+# Private copy of the masked summary for the CIS admin docs reader bucket (bronze, docs-reader/): only this one object
+# is written, by the upload role of accounts/aa365/image_scan.tf. Noncurrent versions expire after 7 days (modules/s3).
+bucket_template = "aa-cis-bronze-{account}"
+upload_key = "docs-reader/security/image-scan/summary.json"
+# Findings listed per image in the run summary (the gate failures are always listed in full).
+top_findings = 10
+
+# Which repository owns (builds and fixes) an image. First match wins; `repository` is a shell-style glob on the image
+# repository name, `registry` is "ecr" for this account's private ECR or the registry host of a public image.
+[[owners]]
+registry = "ecr"
+repository = "aa-cis-*"
+repo = "AA-CIS-App"
+
+[[owners]]
+registry = "ecr"
+repository = "aa-booking-*"
+repo = "AA-Booking"
+
+[[owners]]
+registry = "ecr"
+repository = "aa-crm-*"
+repo = "AA-Partner"
+
+[[owners]]
+registry = "ecr"
+repository = "aa-tripplanner-*"
+repo = "AA-TripPlanner-Web"
+
+# Third-party images (pinned by digest in Terraform, e.g. the E2E WordPress sidecar) are owned by this repo.
+[[owners]]
+registry = "*"
+repository = "*"
+repo = "AA-CIS-Infra"

@@ -78,7 +78,7 @@ MAIN_TOP=$(dirname "$COMMON_DIR")
 # Order here is the run order. tf-validate expands to one check per touched root (tf-validate:<root>).
 # ---------------------------------------------------------------------------------------------------------------
 CHECKS=(tf-fmt tf-validate alb-rule-order connection-budget contract-copy docs-gen docs-lint identity-triggers
-        managed-login-branding migration-guard ops-probe rds-snapshot-expiry secrets-register tf-plan-guard
+        image-scan managed-login-branding migration-guard ops-probe rds-snapshot-expiry secrets-register tf-plan-guard
         hook-self-test)
 
 patterns_for() {
@@ -102,6 +102,9 @@ patterns_for() {
       printf '%s\n' 'accounts/aa365/lambda_src/identity_triggers/**' 'accounts/aa365/lambda_src/identity_triggers_tests/**' \
         'accounts/aa365/identity.tf' 'accounts/aa365/identity_variables.tf' 'accounts/aa365/e2e_mailbox.tf' \
         'tools/identity/**' '.github/workflows/identity-triggers-test.yml' ;;
+    image-scan) # image-scan-test.yml
+      printf '%s\n' 'tools/security/**' 'tools/docs/aws_mask.py' '.github/workflows/image-scan.yml' \
+        '.github/workflows/image-scan-test.yml' ;;
     managed-login-branding) # managed-login-branding.yml
       printf '%s\n' 'accounts/aa365/**' 'tools/terraform/managed_login_branding.py' \
         'tools/terraform/tests/test_managed_login_branding.py' '.github/workflows/managed-login-branding.yml' ;;
@@ -280,7 +283,9 @@ self_test() {
   expect "crm migration copy" "db/migrations/crm/030_x.sql" "migration-guard"
   expect "plan guard tool" "tools/terraform/plan_guard.py" "alb-rule-order tf-plan-guard"
   expect "docs tool" "tools/docs/check_docs_text.py" "docs-gen docs-lint"
-  expect "aws_mask (shared by db)" "tools/docs/aws_mask.py" "docs-gen docs-lint migration-guard tf-plan-guard"
+  expect "aws_mask (shared by db)" "tools/docs/aws_mask.py" "docs-gen docs-lint image-scan migration-guard tf-plan-guard"
+  expect "image scan tool (AA-1164)" "tools/security/image_scan.toml" "image-scan"
+  expect "image scan workflow (AA-1164)" ".github/workflows/image-scan.yml" "image-scan"
   expect "secrets tool" "tools/secrets/register_check.py" "secrets-register"
   expect "contracts" "tools/contracts/contract_copies.json" "contract-copy"
   expect "identity tool" "tools/identity/workforce_bootstrap.py" "identity-triggers"
@@ -580,6 +585,8 @@ run_check() {
       step "$c" "unittest" "" "cd accounts/aa365 && $PYQ -B -m unittest discover -s lambda_src/rds_snapshot_expiry_tests -v" ;;
     secrets-register)
       step "$c" "pytest" py:pytest,py:yaml "$PYQ -m pytest -p no:cacheprovider -q tools/secrets/tests" ;;
+    image-scan)
+      step "$c" "pytest" py:pytest "$PYQ -m pytest -p no:cacheprovider -q tools/security/tests" ;;
     tf-plan-guard)
       step "$c" "pytest" py:pytest,py:yaml "$PYQ -m pytest -p no:cacheprovider -q tools/terraform/tests"
       step "$c" "guarded fixture is refused" "" \
