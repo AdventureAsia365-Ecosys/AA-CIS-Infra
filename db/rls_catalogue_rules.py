@@ -63,6 +63,7 @@ SCHEMA_OWNERS = {
     **{s: "cis" for s in ("acp_contract", "acp_deliver", "acp_shared", "catalog", "geo", "gold_aa_internal", "shared",
                           "silver_aa_internal")},
     "learn": "cis",                                  # AA Academy learner records (CIS 420, AA-1105, root ADR 0022)
+    "compliance": "cis",                             # compliance readiness register (CIS 466, AA-1170)
     "booking": "booking",
     "tripplanner": "tripplanner",
     "crm": "crm",                                    # partner CRM, AA-Partner (AA-932, ADR 0008a)
