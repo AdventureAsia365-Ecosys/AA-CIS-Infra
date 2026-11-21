@@ -25,12 +25,12 @@
 # in any later commit is still reported. Handling and status are in the private record (Linear AA-981),
 # not here. Never pin a new real secret without rotating it first.
 76dc29fbb477a45daaaf0d97f67861b745968592:envs/dev/terraform.tfvars:credential-key-literal:5
-38690ddd9149e6e9272bacda19704ed58cd09942:envs/dev/terraform.tfvars:credential-key-literal:39
-38690ddd9149e6e9272bacda19704ed58cd09942:envs/dev/terraform.tfvars:credential-key-literal:40
-38690ddd9149e6e9272bacda19704ed58cd09942:envs/dev/terraform.tfvars:terraform-plaintext-secret:39
-38690ddd9149e6e9272bacda19704ed58cd09942:envs/dev/terraform.tfvars:terraform-plaintext-secret:40
-38690ddd9149e6e9272bacda19704ed58cd09942:envs/dev/terraform.tfvars:uri-embedded-credentials:36
-10ff474952c8ee45417c40eeda1f06db4abe256d:envs/dev/terraform.tfvars:uri-embedded-credentials:36
+ffd60f477dbd3e55145c174cd5428c7c51d9536e:envs/dev/terraform.tfvars:credential-key-literal:39
+ffd60f477dbd3e55145c174cd5428c7c51d9536e:envs/dev/terraform.tfvars:credential-key-literal:40
+ffd60f477dbd3e55145c174cd5428c7c51d9536e:envs/dev/terraform.tfvars:terraform-plaintext-secret:39
+ffd60f477dbd3e55145c174cd5428c7c51d9536e:envs/dev/terraform.tfvars:terraform-plaintext-secret:40
+ffd60f477dbd3e55145c174cd5428c7c51d9536e:envs/dev/terraform.tfvars:uri-embedded-credentials:36
+d7f68878120176c87f7fc98b918a8e818d194e92:envs/dev/terraform.tfvars:uri-embedded-credentials:36
 
 # AA-981 canary (test/aa981-canary, closed unmerged): a FAKE random value committed on purpose to prove
 # the scan goes red. Its PR head stays fetchable, so it is pinned by commit.
