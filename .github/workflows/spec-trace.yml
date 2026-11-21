@@ -26,8 +26,8 @@ concurrency:
 jobs:
   spec-trace:
     name: Spec trace
-    uses: AdventureAsia365-Ecosys/AA-Ecosys/.github/workflows/spec-trace.yml@d6ef2b1074baf03db9146b792eccf6a9fc2b63b5 # v2026.11.19
+    uses: AdventureAsia365-Ecosys/AA-Ecosys/.github/workflows/spec-trace.yml@ff8d33e3dbe53962ac61e58ccd6d1c2326207257 # v2026.11.19
     with:
-      tools-ref: d6ef2b1074baf03db9146b792eccf6a9fc2b63b5
+      tools-ref: ff8d33e3dbe53962ac61e58ccd6d1c2326207257
     permissions:
       contents: read

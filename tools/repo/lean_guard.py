@@ -57,14 +57,14 @@ ALLOW_FILE = ".lean-allow"
 CATCH_ALL = frozenset({"*", "**", "**/*", "*/*", "/*", "./*"})
 COMPRESS_HINT = (
     "compress it with `python3 tools/docs/compress_images.py <file>` (AA-Ecosys root repo; Pillow: PNG to 256 "
-    "colours, JPEG quality 75, names kept), or keep the full image in the Google Drive AdventureAsia folder / the "
-    "private S3 audit-assets prefix and link it from the page"
+    "colours, JPEG quality 75, names kept), or keep the full image in the private S3 archive "
+    "(archive/repo-media/, docs/ops/repo-media-archive.md) or the audit-assets prefix and link it from the page"
 )
 HINTS = {
     "image-size": COMPRESS_HINT,
     "image-total": (
-        "commit at most ~5-10 key screenshots per change (~5-10 MB); move the full set to Drive or the private S3 "
-        "audit-assets prefix and link it (ASSETS.md in the audit folder)"
+        "commit at most ~5-10 key screenshots per change (~5-10 MB); move the full set to the private S3 "
+        "archive (archive/repo-media/) or audit-assets prefix and link it (ASSETS.md in the audit folder)"
     ),
     "dist-zip": (
         "a build artifact: build it in CI or Terraform (archive_file) and store it in S3/ECR/workflow artifacts; "

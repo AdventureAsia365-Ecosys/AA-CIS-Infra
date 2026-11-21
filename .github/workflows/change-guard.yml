@@ -58,7 +58,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: AdventureAsia365-Ecosys/AA-Ecosys
-          ref: d6ef2b1074baf03db9146b792eccf6a9fc2b63b5
+          ref: ff8d33e3dbe53962ac61e58ccd6d1c2326207257
           path: aa-tools
           persist-credentials: false
           sparse-checkout: |
