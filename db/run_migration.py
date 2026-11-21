@@ -272,7 +272,9 @@ class OwnerDir:
 
 OWNER_DIRS = {
     "cis": OwnerDir("shared",
-                    ("acp_contract", "acp_deliver", "acp_shared", "catalog", "geo", "gold_aa_internal",
+                    ("acp_contract", "acp_deliver", "acp_shared", "catalog",
+                     "compliance",         # AA-1170 (CIS 466): compliance readiness register
+                     "geo", "gold_aa_internal",
                      "learn",              # AA-1105 (CIS 420): AA Academy learner records
                      "retired",            # AA-850 (CIS 294): DM-3.9 quarantine schema, no runtime grant
                      "shared", "silver_aa_internal"),

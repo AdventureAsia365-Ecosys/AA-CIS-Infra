@@ -433,14 +433,15 @@ class BuildCellsTest(unittest.TestCase):
                           "FOR ROLE bk_owner IN SCHEMA booking ON FUNCTIONS: booking lacks EXECUTE"])
         cis = p.OWNERS["cis"]
         found = p.default_acl_findings([], cis.runtime_privileges[0], cis, "aa_cis_admin")
-        self.assertEqual(len(found), 8 * 3)          # 8 schemas (no catalog, not the four CIS 299 dropped) x 3 kinds
-        # AA-1105: learn is expected only once CIS 420 (which creates it) is registered (owners.yaml schemas_from).
+        self.assertEqual(len(found), 9 * 3)          # 9 schemas (no catalog, not the four CIS 299 dropped) x 3 kinds
+        # AA-1105: learn is expected only once CIS 420 (which creates it) is registered (owners.yaml schemas_from);
+        # AA-1170: compliance once CIS 466 is.
         rp = cis.runtime_privileges[0]
-        self.assertEqual(p.pending_schemas(rp, {}), frozenset({"learn"}))
-        self.assertEqual(p.pending_schemas(rp, {"420": True}), frozenset())
+        self.assertEqual(p.pending_schemas(rp, {}), frozenset({"learn", "compliance"}))
+        self.assertEqual(p.pending_schemas(rp, {"420": True, "466": True}), frozenset())
         found = p.default_acl_findings([], rp, cis, "cis_owner", p.pending_schemas(rp, {}))
         self.assertEqual(len(found), 7 * 3)
-        self.assertFalse(any("IN SCHEMA learn" in f for f in found))
+        self.assertFalse(any("IN SCHEMA learn" in f or "IN SCHEMA compliance" in f for f in found))
 
     def test_cis_app_grants_keyed_on_244(self):
         f = today_facts()
@@ -854,13 +855,40 @@ class LearnSchemaCellsTest(unittest.TestCase):
         self.assertIn("learn", cis.schemas)
         rp = cis.runtime_privileges[0]
         self.assertIn("learn", rp.schemas)
-        self.assertEqual(dict(rp.schemas_from), {"learn": "420"})
+        self.assertEqual(dict(rp.schemas_from), {"learn": "420", "compliance": "466"})
 
     def test_before_420_the_learn_cells_wait(self):
         st, keys = statuses(today_facts())
         self.assertFalse(keys["420"])
         for role in ("booking", "tripplanner", "crm_app", "aa_app_user"):
             self.assertIn(st[f"cross.{role}.learn.learner"], ("pending", "ready"), role)
+
+
+class ComplianceSchemaCellsTest(unittest.TestCase):
+    """AA-1170 (S287): schema compliance is CIS only; every other app role gets 42501, from CIS 466 on."""
+
+    def test_cross_app_rows_wait_for_466(self):
+        rows = {(role, target): when for role, target, when in p.CROSS_APP if target.startswith("compliance.")}
+        self.assertEqual({r for r, _ in rows}, {"booking", "tripplanner", "crm_app", "aa_app_user"})
+        for (role, _), when in rows.items():
+            self.assertIn("466", when, role)
+        self.assertIn("466", p.VERSION_KEYS)
+        self.assertIn("466", p.KEY_TEXT)
+
+    def test_compliance_is_a_cis_runtime_schema_expected_from_466(self):
+        cis = p.OWNERS["cis"]
+        self.assertIn("compliance", cis.schemas)
+        rp = cis.runtime_privileges[0]
+        self.assertIn("compliance", rp.schemas)
+        self.assertEqual(dict(rp.schemas_from)["compliance"], "466")
+        self.assertEqual(p.pending_schemas(rp, {"420": True}), frozenset({"compliance"}))
+        self.assertEqual(p.pending_schemas(rp, {"420": True, "466": True}), frozenset())
+
+    def test_before_466_the_compliance_cells_wait(self):
+        st, keys = statuses(today_facts())
+        self.assertFalse(keys["466"])
+        for role in ("booking", "tripplanner", "crm_app", "aa_app_user"):
+            self.assertIn(st[f"cross.{role}.compliance.control"], ("pending", "ready"), role)
 
 
 class CrmOwnerCellsTest(unittest.TestCase):
@@ -877,9 +905,10 @@ class CrmOwnerCellsTest(unittest.TestCase):
     def test_after_the_train_every_crm_cell_passes(self):
         st, keys = statuses(crm_live_facts())
         # cis_app / CIS runtime -> crm.job also wait for their own X1 keys, which today_facts() leaves false.
-        # AA-1105: crm_app -> learn.learner waits for CIS 420 (schema learn), which crm_live_facts() leaves out.
+        # AA-1105: crm_app -> learn.learner waits for CIS 420 (schema learn), which crm_live_facts() leaves out;
+        # AA-1170: crm_app -> compliance.control waits for CIS 466 the same way.
         crm = {k: v for k, v in st.items() if "crm" in k and not k.startswith(("cross.cis_app.", "cross.cis_runtime."))
-               and k != "cross.crm_app.learn.learner"}
+               and k not in ("cross.crm_app.learn.learner", "cross.crm_app.compliance.control")}
         self.assertTrue(keys["crm_transferred"] and keys["crm_app_password_set"])
         self.assertEqual({k: v for k, v in crm.items() if v != "pass"}, {})
         for cid in ("role.crm_app.noinherit", "nologin.crm_eraser", "registry.crm_owner", "login.crm_app",

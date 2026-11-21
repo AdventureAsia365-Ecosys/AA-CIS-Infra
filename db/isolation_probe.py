@@ -137,20 +137,21 @@ class ProbeOwner:
 
 BASELINE = (("relation", ("SELECT",)), ("sequence", ("USAGE",)), ("function", ("EXECUTE",)))
 # AA-850: acp_gold_output, acp_silver_s2, acp_silver_s3, acp_silver_s4 left with CIS 299 (dropped, empty).
-CIS_RUNTIME_SCHEMAS = ("acp_contract", "acp_deliver", "acp_shared", "geo", "gold_aa_internal", "learn", "shared",
-                       "silver_aa_internal")
+CIS_RUNTIME_SCHEMAS = ("acp_contract", "acp_deliver", "acp_shared", "compliance", "geo", "gold_aa_internal", "learn",
+                       "shared", "silver_aa_internal")
 DML = ("DELETE", "INSERT", "SELECT", "UPDATE")
 OWNERS = {
     "cis": ProbeOwner(
-        ("acp_contract", "acp_deliver", "acp_shared", "catalog", "geo", "gold_aa_internal", "learn", "retired",
-         "shared", "silver_aa_internal"),
+        ("acp_contract", "acp_deliver", "acp_shared", "catalog", "compliance", "geo", "gold_aa_internal", "learn",
+         "retired", "shared", "silver_aa_internal"),
         "shared", "cis_owner", "245",
         (("cis_app", "aa-cis/dev/rds-cis-app"), ("aa_app_user", "aa-cis/dev/rds-app-user")),
         frozenset({"catalog_owner"}),
         (RuntimePrivileges("cis_app", CIS_RUNTIME_SCHEMAS, BASELINE,
                            (("tables", DML), ("sequences", ("SELECT", "UPDATE", "USAGE")),
                             ("functions", ("EXECUTE",))),
-                           schemas_from=(("learn", "420"),)),),   # AA-1105: CIS 420 creates schema learn
+                           # AA-1105: CIS 420 creates schema learn; AA-1170: CIS 466 creates schema compliance
+                           schemas_from=(("learn", "420"), ("compliance", "466"))),),
         "244"),
     "booking": ProbeOwner(("booking",), "booking", "bk_owner", "bk-014", (("booking", "booking/dev/database-url"),),
                           runtime_privileges=(RuntimePrivileges(
@@ -315,6 +316,12 @@ CROSS_APP = (
     ("tripplanner", "learn.learner", ("420",)),
     (CRM_APP, "learn.learner", ("420",) + CRM_APP_LOGIN_KEYS),
     ("aa_app_user", "learn.learner", ("420",)),
+    # AA-1170: the compliance readiness register is CIS only (platform data, admin page); every other app role gets
+    # 42501. Expected once CIS 466 (schema compliance) is registered.
+    ("booking", "compliance.control", ("466",)),
+    ("tripplanner", "compliance.control", ("466",)),
+    (CRM_APP, "compliance.control", ("466",) + CRM_APP_LOGIN_KEYS),
+    ("aa_app_user", "compliance.control", ("466",)),
     # AA-1155 (root ADR 0006a A14): booking reads the staff directory only through shared.v_staff_booking_grant (USAGE
     # on schema shared from CIS 462); the directory tables themselves stay closed (42501 before and after 462).
     ("booking", "shared.admin_users", ()),
