@@ -5,8 +5,8 @@
 2. RateLimit1000 scopes out our own NAT egress (an IP set built from the NAT instance EIP, /32 only), so the
    server-to-server calls (CRM, staff web -> api-cis / api-booking) are not counted as one client; it still scopes out
    the staff hosts (AA-911).
-3. GeoBlockNonAllowed scopes out the public API hosts (api-cis under both names, api-booking) and still blocks
-   every other host outside the allowed countries.
+3. GeoBlockNonAllowed scopes out the public API hosts (api-cis under both names, api-booking) and, since AA-1111 S2,
+   the staff web hosts (administrator MFA enforced); it still blocks every other host outside the allowed countries.
 4. Every Cognito pool with a domain (WORKFORCE, EXTERNAL, PARTNER, M2M) is associated with the identity web ACL.
 
 Run: python3 -m pytest -q tools/terraform/tests/test_aa1092_waf_hosts.py
@@ -83,9 +83,13 @@ class RateExemption(unittest.TestCase):
 
 
 class GeoExemption(unittest.TestCase):
-    def test_root_lists_the_api_hosts(self) -> None:
+    def test_root_lists_the_api_hosts_and_since_aa1111_the_staff_web_hosts(self) -> None:
+        # AA-1111 S2 (root ADR 0006c): the staff hosts leave GeoBlock once administrator MFA is enforced.
         self.assertIn(
-            'geo_exempt_hosts        = ["api-cis.${var.dns_zone_name}", var.domain_name, local.cd_booking_api_host]',
+            'geo_exempt_hosts = concat(\n'
+            '    ["api-cis.${var.dns_zone_name}", var.domain_name, local.cd_booking_api_host],\n'
+            '    values(local.staff_web_hosts),\n'
+            '  )',
             MAIN)
 
     def test_geo_rule_keeps_the_country_list_and_scopes_out_the_hosts(self) -> None:
