@@ -59,8 +59,8 @@ resource "aws_cloudwatch_metric_alarm" "crm_api_5xx_rate" {
   evaluation_periods  = local.crm_slo_alarm_periods
   datapoints_to_alarm = local.crm_slo_alarm_breaching
   treat_missing_data  = "notBreaching"
-  alarm_actions       = [var.alerts_topic_arn]
-  ok_actions          = [var.alerts_topic_arn]
+  alarm_actions       = local.alert_actions.ticket
+  ok_actions          = local.alert_actions.ticket
 
   metric_query {
     id          = "rate"
@@ -91,7 +91,7 @@ resource "aws_cloudwatch_metric_alarm" "crm_api_5xx_rate" {
     }
   }
 
-  tags = merge(var.ecosys_tags, { App = "crm", Issue = "AA-969" })
+  tags = merge(var.ecosys_tags, { App = "crm", Issue = "AA-969" }, var.alert_tags.ticket, { Component = "api" }) # AA-1171: ticket, error rate SLO
 }
 
 resource "aws_cloudwatch_metric_alarm" "crm_api_p95_latency" {
@@ -109,10 +109,10 @@ resource "aws_cloudwatch_metric_alarm" "crm_api_p95_latency" {
   comparison_operator = "GreaterThanThreshold"
   threshold           = local.crm_slo_p95_latency_s
   treat_missing_data  = "notBreaching"
-  alarm_actions       = [var.alerts_topic_arn]
-  ok_actions          = [var.alerts_topic_arn]
+  alarm_actions       = local.alert_actions.ticket
+  ok_actions          = local.alert_actions.ticket
 
-  tags = merge(var.ecosys_tags, { App = "crm", Issue = "AA-969" })
+  tags = merge(var.ecosys_tags, { App = "crm", Issue = "AA-969" }, var.alert_tags.ticket, { Component = "api" }) # AA-1171: ticket, latency SLO
 }
 
 # -----------------------------------------------------------------------------

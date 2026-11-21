@@ -114,7 +114,7 @@ resource "aws_cloudwatch_event_rule" "identity_breakglass_secret" {
     }
   })
 
-  tags = local.id_tags
+  tags = merge(local.id_tags, local.alert_tags.page_locked) # AA-1171: page, identity: break-glass secret read
 }
 
 resource "aws_cloudwatch_event_target" "identity_breakglass_secret" {
@@ -159,7 +159,7 @@ resource "aws_cloudwatch_event_rule" "identity_denied_secret_read" {
     }
   })
 
-  tags = local.id_tags
+  tags = merge(local.id_tags, local.alert_tags.page_locked) # AA-1171: page, identity: denied secret read
 }
 
 resource "aws_cloudwatch_event_target" "identity_denied_secret_read" {
@@ -360,7 +360,7 @@ resource "aws_cloudwatch_event_rule" "identity_workforce_admincreateuser_passwor
     }
   })
 
-  tags = local.id_tags
+  tags = merge(local.id_tags, local.alert_tags.page_locked) # AA-1171: page, identity: staff user created with a password
 }
 
 resource "aws_cloudwatch_event_target" "identity_workforce_admincreateuser_password" {

@@ -91,7 +91,7 @@ class DigestTerraformTest(unittest.TestCase):
         self.assertIn("retention_in_days = 365", _resource("aws_cloudwatch_log_group", "sec_admin_session_digest"))
         alarm = _resource("aws_cloudwatch_metric_alarm", "sec_admin_session_digest_errors")
         self.assertIn("${local.runbook_suffix.incident}\"", alarm)
-        self.assertIn("alarm_actions       = [aws_sns_topic.alerts.arn]", alarm)
+        self.assertIn("alarm_actions       = local.alert_actions.page", alarm)  # AA-1171: page severity, both topics
 
     def test_no_account_id_in_the_file(self):
         self.assertNotRegex(TF, r"(?<!\d)\d{12}(?!\d)")

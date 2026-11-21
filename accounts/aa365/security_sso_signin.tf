@@ -66,7 +66,7 @@ resource "aws_cloudwatch_event_rule" "sec_sso_admin_signin" {
       requestParameters = { roleArn = [{ wildcard = local.sec_sso_admin_role_arn_patterns[each.key] }] }
     }
   })
-  tags = merge(local.sec_tags, { Issue = "AA-1022" })
+  tags = merge(local.sec_tags, { Issue = "AA-1022" }, local.alert_tags.page_locked) # AA-1171: page, security: admin Identity Center sign-in
 }
 
 resource "aws_cloudwatch_event_target" "sec_sso_admin_signin" {

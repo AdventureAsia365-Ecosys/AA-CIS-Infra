@@ -27,13 +27,21 @@
 # IAMRoleManageStack), so no bootstrap/MFA apply is needed.
 # =============================================================================
 
+# AA-1171 (D5): the page topic (alert_severity.tf) has its recipients managed on the same admin page (a recipient chooses
+# "All alerts" = this topic or "Page alerts only" = the page topic). Subscribe, list, unsubscribe and read a subscription
+# on both topics; Publish stays on the alerts topic only (the in-app checks are ticket severity). Terraform keeps no
+# subscription on the page topic, so DenyUnsubscribeBootstrap below is unchanged.
+locals {
+  recipient_topic_arns = [aws_sns_topic.alerts.arn, aws_sns_topic.page.arn]
+}
+
 data "aws_iam_policy_document" "cis_alert_recipients" {
   # Subscribe: e-mail protocol only (no http/sqs/lambda endpoints from the app).
   statement {
     sid       = "AlertsTopicSubscribeEmail"
     effect    = "Allow"
     actions   = ["sns:Subscribe"]
-    resources = [aws_sns_topic.alerts.arn]
+    resources = local.recipient_topic_arns
 
     condition {
       test     = "StringEquals"
@@ -55,7 +63,7 @@ data "aws_iam_policy_document" "cis_alert_recipients" {
     sid       = "AlertsTopicListSubscriptions"
     effect    = "Allow"
     actions   = ["sns:ListSubscriptionsByTopic"]
-    resources = [aws_sns_topic.alerts.arn]
+    resources = local.recipient_topic_arns
   }
 
   # Unsubscribe / GetSubscriptionAttributes are called with the SUBSCRIPTION ARN (<topic ARN>:<uuid>).
@@ -65,7 +73,7 @@ data "aws_iam_policy_document" "cis_alert_recipients" {
     sid       = "AlertsTopicSubscriptionManage"
     effect    = "Allow"
     actions   = ["sns:Unsubscribe", "sns:GetSubscriptionAttributes"]
-    resources = [aws_sns_topic.alerts.arn, "${aws_sns_topic.alerts.arn}:*"]
+    resources = flatten([for arn in local.recipient_topic_arns : [arn, "${arn}:*"]])
   }
 
   # Defense in depth (AA-913 review): the ":*" allow above also names the bootstrap subscription. The app

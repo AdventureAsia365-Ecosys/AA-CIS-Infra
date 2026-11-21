@@ -282,6 +282,10 @@ module "ecs" {
   # the ops-mail fallback.
   alerts_topic_arn      = aws_sns_topic.alerts.arn
   alert_bootstrap_email = var.alert_email
+  # AA-1171 (D5): the page topic (alert_severity.tf), managed on the same admin page.
+  page_topic_arn = aws_sns_topic.page.arn
+  # AA-1171 (D7): the management account ID (repo secret MGMT_ACCOUNT_ID, org_access.tf); "" when unset.
+  mgmt_account_id = var.org_management_account_id == null ? "" : var.org_management_account_id
 
   depends_on = [module.vpc, module.alb]
 }

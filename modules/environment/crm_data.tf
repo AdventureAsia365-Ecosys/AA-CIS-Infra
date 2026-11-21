@@ -418,7 +418,7 @@ resource "aws_cloudwatch_event_rule" "crm_kms_key_admin" {
     }
   })
 
-  tags = merge(local.crm_tags, { Issue = "AA-932", Component = "security" })
+  tags = merge(local.crm_tags, { Issue = "AA-932", Component = "security" }, var.alert_tags.page_locked) # AA-1171: page, security: CRM KMS key administration
 }
 
 resource "aws_cloudwatch_event_target" "crm_kms_key_admin" {
@@ -454,7 +454,7 @@ resource "aws_cloudwatch_event_rule" "crm_kms_foreign_use" {
     }
   })
 
-  tags = merge(local.crm_tags, { Issue = "AA-932", Component = "security" })
+  tags = merge(local.crm_tags, { Issue = "AA-932", Component = "security" }, var.alert_tags.page_locked) # AA-1171: page, security: CRM KMS key used by another principal
 }
 
 resource "aws_cloudwatch_event_target" "crm_kms_foreign_use" {
@@ -465,6 +465,24 @@ resource "aws_cloudwatch_event_target" "crm_kms_foreign_use" {
   input_transformer {
     input_paths    = local.crm_kms_alert_input_paths
     input_template = "\"[aa-crm] CRM KMS key used by a foreign principal: <event> on <key> by <principal> from <ip> at <time> (errorCode: <error>). Only the CRM task role uses these keys; a break-glass use must have a ticket, anything else is an incident (design v3 §4.1).${var.runbook_suffix.crm_keys}\""
+  }
+}
+
+# AA-1171 (D5): the two KMS key rules are page severity, so each gets a second target on the page topic with the same
+# e-mail text (the page topic policy admits rule/aa-crm-*, accounts/aa365 alert_severity.tf).
+resource "aws_cloudwatch_event_target" "crm_kms_page" {
+  for_each = {
+    key_admin   = aws_cloudwatch_event_target.crm_kms_key_admin
+    foreign_use = aws_cloudwatch_event_target.crm_kms_foreign_use
+  }
+
+  rule      = each.value.rule
+  target_id = "page-sns"
+  arn       = var.page_topic_arn
+
+  input_transformer {
+    input_paths    = each.value.input_transformer[0].input_paths
+    input_template = each.value.input_transformer[0].input_template
   }
 }
 

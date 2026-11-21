@@ -41,6 +41,14 @@
   "optional": {
     "Issue": {
       "pattern": "^AA-[0-9]+$"
+    },
+    "Severity": {
+      "pattern": "^(page|ticket)$",
+      "note": "AA-1171 (S287 D5): on CloudWatch alarms and SNS-notifying EventBridge rules; page = a person acts now, ticket = working hours"
+    },
+    "Mutable": {
+      "pattern": "^(true|false)$",
+      "note": "AA-1171: on alarms; whether a time-boxed mute from the admin may silence it (phase P1); false for security, identity, recover and watchdog alarms"
     }
   },
   "forbidden_keys": {

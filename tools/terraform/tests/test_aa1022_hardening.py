@@ -117,11 +117,12 @@ class NatRecoverAlarmTest(unittest.TestCase):
         self.assertIn('namespace           = "AWS/EC2"', self.alarm)
 
     def test_recover_action_and_mail(self):
-        actions = re.search(r"alarm_actions\s*=\s*\[(.*?)\]", self.alarm).group(1)
+        actions = re.search(r"alarm_actions\s*=\s*(.*)$", self.alarm, re.M).group(1)
         self.assertIn('"arn:aws:automate:${var.aws_region}:ec2:recover"', actions)
-        self.assertIn("aws_sns_topic.alerts.arn", actions)
+        # AA-1171: page severity, both topics (alert_severity.tf local.alert_actions.page).
+        self.assertIn("local.alert_actions.page", actions)
         # observability_ecosys.tf header: every alarm also e-mails on OK.
-        self.assertRegex(self.alarm, r"ok_actions\s*=\s*\[aws_sns_topic\.alerts\.arn\]")
+        self.assertRegex(self.alarm, r"ok_actions\s*=\s*local\.alert_actions\.page")
 
     def test_never_reboot_or_stop(self):
         self.assertNotRegex(self.alarm, r"ec2:(reboot|stop|terminate)")

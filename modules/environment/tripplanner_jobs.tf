@@ -262,8 +262,8 @@ resource "aws_cloudwatch_metric_alarm" "tripplanner_jobs_errors" {
   threshold           = 1
   comparison_operator = "GreaterThanOrEqualToThreshold"
   treat_missing_data  = "notBreaching"
-  alarm_actions       = [var.alerts_topic_arn]
-  tags                = local.tp_jobs_tags
+  alarm_actions       = local.alert_actions.ticket
+  tags                = merge(local.tp_jobs_tags, var.alert_tags.ticket) # AA-1171: ticket, job Lambda errors
 }
 
 # The daily tick stopped (rule disabled or deleted, invoke role broken): no tick for two whole days. Since the 5-minute
@@ -298,9 +298,9 @@ resource "aws_cloudwatch_metric_alarm" "tripplanner_jobs_not_run" {
   threshold           = 1
   comparison_operator = "LessThanThreshold"
   treat_missing_data  = "breaching"
-  alarm_actions       = [var.alerts_topic_arn]
-  ok_actions          = [var.alerts_topic_arn]
-  tags                = local.tp_jobs_tags
+  alarm_actions       = local.alert_actions.ticket
+  ok_actions          = local.alert_actions.ticket
+  tags                = merge(local.tp_jobs_tags, var.alert_tags.ticket) # AA-1171: ticket, job Lambda has not run
 }
 
 # ── EventBridge Scheduler → Lambda (dedicated invoke role) ───────────────────

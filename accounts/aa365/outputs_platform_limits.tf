@@ -76,6 +76,13 @@ output "platform_limits" {
       crm_slo_min_requests_per_window = var.crm_slo.min_requests
       crm_slo_p95_latency_s           = var.crm_slo.p95_latency_s
       crm_slo_breaching_of_periods    = "${var.crm_slo.alarm_breaching} of ${var.crm_slo.alarm_periods}"
+      # AA-1171: the coverage alarms of the S287 inventory and the alert-path watchdog (alert_severity.tf).
+      api_5xx_percent                 = var.api_5xx_rate.five_xx_percent
+      api_5xx_min_requests_per_window = var.api_5xx_rate.min_requests
+      api_5xx_breaching_of_periods    = "${var.api_5xx_rate.alarm_breaching} of ${var.api_5xx_rate.alarm_periods}"
+      alerts_delivery_failed_at_least = var.alerts_delivery_failed_threshold
+      cis_worker_silent_seconds       = var.cis_worker_liveness.period_s * var.cis_worker_liveness.periods
+      booking_worker_silent_seconds   = var.booking_worker_liveness.period_s * var.booking_worker_liveness.periods
     }
   }
 }

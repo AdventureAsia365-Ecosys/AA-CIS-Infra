@@ -85,7 +85,7 @@ resource "aws_cloudwatch_event_rule" "sec_access_analyzer_finding" {
     "detail-type" = ["Access Analyzer Finding"]
     detail        = { status = ["ACTIVE"] }
   })
-  tags = local.sec_tags
+  tags = merge(local.sec_tags, local.alert_tags.page_locked) # AA-1171: page, security finding
 }
 
 resource "aws_cloudwatch_event_target" "sec_access_analyzer_finding" {
@@ -116,7 +116,7 @@ resource "aws_cloudwatch_event_rule" "sec_trail_tamper" {
       eventName = ["StopLogging", "DeleteTrail", "UpdateTrail", "PutEventSelectors", "PutInsightSelectors", "DeleteEventDataStore"]
     }
   })
-  tags = local.sec_tags
+  tags = merge(local.sec_tags, local.alert_tags.page_locked) # AA-1171: page, security: CloudTrail tampering
 }
 
 resource "aws_cloudwatch_event_rule" "sec_sg_change" {
@@ -133,7 +133,7 @@ resource "aws_cloudwatch_event_rule" "sec_sg_change" {
       "$or" = local.sec_unexpected_principal
     }
   })
-  tags = local.sec_tags
+  tags = merge(local.sec_tags, local.alert_tags.page_locked) # AA-1171: page, security: security group change
 }
 
 resource "aws_cloudwatch_event_rule" "sec_iam_change" {
@@ -155,7 +155,7 @@ resource "aws_cloudwatch_event_rule" "sec_iam_change" {
       "$or" = local.sec_unexpected_principal
     }
   })
-  tags = local.sec_tags
+  tags = merge(local.sec_tags, local.alert_tags.page_locked) # AA-1171: page, security: IAM change
 }
 
 # Root: console sign-in, every write call, and every read-only call that did NOT come from a console session (root
@@ -186,7 +186,7 @@ resource "aws_cloudwatch_event_rule" "sec_root_activity" {
       },
     ]
   })
-  tags = local.sec_tags
+  tags = merge(local.sec_tags, local.alert_tags.page_locked) # AA-1171: page, security: root user activity
 }
 
 locals {

@@ -429,10 +429,10 @@ resource "aws_cloudwatch_metric_alarm" "crm_web_no_healthy_task" {
   comparison_operator = "LessThanThreshold"
   threshold           = 1
   treat_missing_data  = "notBreaching"
-  alarm_actions       = [var.alerts_topic_arn]
-  ok_actions          = [var.alerts_topic_arn]
+  alarm_actions       = local.alert_actions.ticket
+  ok_actions          = local.alert_actions.ticket
 
-  tags = merge(var.ecosys_tags, { App = "crm" })
+  tags = merge(var.ecosys_tags, { App = "crm" }, var.alert_tags.ticket, { Component = "web" }) # AA-1171: ticket, service down on Dev (no real users yet)
 }
 
 # -----------------------------------------------------------------------------

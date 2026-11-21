@@ -71,7 +71,7 @@ resource "aws_cloudwatch_event_rule" "sec_guardduty_finding" {
     "detail-type" = ["GuardDuty Finding"]
     detail        = { severity = [{ numeric = [">=", 4] }] }
   })
-  tags = local.sec_tags
+  tags = merge(local.sec_tags, local.alert_tags.page_locked) # AA-1171: page, security finding
 }
 
 resource "aws_cloudwatch_event_target" "sec_guardduty_finding" {

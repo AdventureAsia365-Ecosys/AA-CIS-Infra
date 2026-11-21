@@ -351,7 +351,7 @@ resource "aws_cloudwatch_event_rule" "identity_partner_pool_config" {
     }
   })
 
-  tags = local.idpartner_tags
+  tags = merge(local.idpartner_tags, local.alert_tags.page_locked) # AA-1171: page, identity: partner pool configuration changed
 }
 
 resource "aws_cloudwatch_event_target" "identity_partner_pool_config" {
@@ -402,7 +402,7 @@ resource "aws_cloudwatch_event_rule" "identity_partner_admin_bypass" {
     }
   })
 
-  tags = local.idpartner_tags
+  tags = merge(local.idpartner_tags, local.alert_tags.page_locked) # AA-1171: page, identity: partner pool admin bypass
 }
 
 resource "aws_cloudwatch_event_target" "identity_partner_admin_bypass" {

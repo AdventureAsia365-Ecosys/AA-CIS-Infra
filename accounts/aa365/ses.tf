@@ -263,10 +263,10 @@ resource "aws_cloudwatch_metric_alarm" "ses_bounce_rate" {
   comparison_operator = "GreaterThanThreshold"
   threshold           = 0.025
   treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
+  alarm_actions       = local.alert_actions.ticket
+  ok_actions          = local.alert_actions.ticket
 
-  tags = local.ses_tags
+  tags = merge(local.ses_tags, local.alert_tags.ticket) # AA-1171: ticket, SES reputation rate (D10: enough for Dev)
 }
 
 resource "aws_cloudwatch_metric_alarm" "ses_complaint_rate" {
@@ -280,10 +280,10 @@ resource "aws_cloudwatch_metric_alarm" "ses_complaint_rate" {
   comparison_operator = "GreaterThanThreshold"
   threshold           = 0.0005
   treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
+  alarm_actions       = local.alert_actions.ticket
+  ok_actions          = local.alert_actions.ticket
 
-  tags = local.ses_tags
+  tags = merge(local.ses_tags, local.alert_tags.ticket) # AA-1171: ticket, SES reputation rate (D10: enough for Dev)
 }
 
 # -----------------------------------------------------------------------------

@@ -347,6 +347,12 @@ accounts/
                                    shared RDS down / stopped / failed / low storage -> SNS alerts (free; the
                                    aa-sec- prefix reuses the existing topic policy and CI grants);
                                    sns:Publish grants for the in-app checks),
+                                   alert_severity.tf (AA-1171, S287: Severity page | ticket + Mutable tags on
+                                   every alarm and SNS-notifying rule (guard: gen_docs.py check-source), the
+                                   page topic aa-ecosys-<env>-page-alerts (page alarms and rules notify both
+                                   topics; recipients managed on the CIS admin page), the alerts topic
+                                   delivery-failed watchdog, CIS worker liveness and CIS API 5xx rate; the Booking
+                                   pair is modules/environment/booking_alarms.tf),
                                    diagnostics.tf (Dev flow logs: REJECT only, 30 days)
     dns.tf                        (Route 53 public zone lumiguides.it.com + records copied from Namecheap, AA-811)
     db_dns.tf                     (AA-829: private zone <env>.internal on the VPC, CNAME db.<env>.internal -> RDS,

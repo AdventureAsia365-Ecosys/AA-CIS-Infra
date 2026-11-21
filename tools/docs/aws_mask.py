@@ -18,6 +18,8 @@ What is masked:
     as its account field.
   * an EC2 / VPC resource id (vpc-, subnet-, sg-, rtb-, igw-, eni-, i-, nat-, eipalloc-, vpce-, acl-,
     pl-) -> `<prefix>-{masked}`. Pages keep the Name column next to it.
+  * (AA-1171) the id of a load balancer or target group ARN suffix (`app/<name>/<16 hex>`,
+    `targetgroup/<name>/<16 hex>`, the CloudWatch alarm dimensions; a listener id after it too) -> `app/<name>/{masked}`.
 UUIDs are left alone (their last group can be 12 digits, e.g. the AA master tenant id).
 
 Alias table: env AWS_ACCOUNT_ALIASES = "acc2=<id>,acc3=<id>" (comma, space or newline
@@ -55,6 +57,9 @@ ARN = r"arn:(?P<partition>aws(?:-[a-z]+)*):(?P<service>[A-Za-z0-9-]+):(?P<region
 ACCOUNT = r"(?<![0-9A-Za-z])(?P<id>\d{12})(?![0-9A-Za-z])"
 TOKEN_RE = re.compile(f"(?P<uuid>{UUID})|(?P<arn>{ARN})|{ACCOUNT}")
 SECRET_SUFFIX_RE = re.compile(r"-[A-Za-z0-9]{6}$")
+# AA-1171: the ARN suffix of a load balancer or target group (the CloudWatch dimension LoadBalancer =
+# app/<name>/<id>, TargetGroup = targetgroup/<name>/<id>): the name stays, the 16-hex id is masked.
+ELB_ID_RE = re.compile(r"\b(?P<kind>app|net|gwy|targetgroup)/(?P<name>[A-Za-z0-9-]{1,32})/[0-9a-f]{16}(?P<sub>/[0-9a-f]{16})?\b")
 EC2_ID_RE = re.compile(r"\b(?P<prefix>vpc|subnet|sg|rtb|igw|eni|i|nat|eipalloc|vpce|acl|pl)-(?:[0-9a-f]{17}|[0-9a-f]{8})\b")
 
 LEAK_ID_RE = re.compile(r"\b\d{12}\b")
@@ -121,6 +126,8 @@ def mask_text(text: str, aliases: Optional[Mapping[str, str]] = None) -> str:
     # '^arn:aws:acm:us-east-1:[0-9]{12}:certificate/...', a truncated value): mask its partition too, so the
     # generator's own leak guard cannot fail on text that names no account.
     text = RESIDUAL_ARN_RE.sub("arn:{partition}:", text)
+    text = ELB_ID_RE.sub(
+        lambda m: f"{m.group('kind')}/{m.group('name')}/{{masked}}" + ("/{masked}" if m.group("sub") else ""), text)
     return EC2_ID_RE.sub(lambda m: f"{m.group('prefix')}-{{masked}}", text)
 
 
@@ -140,6 +147,9 @@ def find_leaks(text: str) -> list[str]:
     n = len(EC2_ID_RE.findall(scrubbed))
     if n:
         leaks.append(f"{n} EC2/VPC resource id(s)")
+    n = len(ELB_ID_RE.findall(scrubbed))
+    if n:
+        leaks.append(f"{n} load balancer / target group id(s)")
     return leaks
 
 

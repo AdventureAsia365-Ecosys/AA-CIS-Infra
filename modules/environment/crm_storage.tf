@@ -436,7 +436,7 @@ resource "aws_cloudwatch_metric_alarm" "crm_kms_decrypt_anomaly" {
   datapoints_to_alarm = 2
   threshold_metric_id = "band"
   treat_missing_data  = "notBreaching"
-  alarm_actions       = [var.alerts_topic_arn]
+  alarm_actions       = local.alert_actions.page
 
   metric_query {
     id          = "band"
@@ -456,7 +456,7 @@ resource "aws_cloudwatch_metric_alarm" "crm_kms_decrypt_anomaly" {
     }
   }
 
-  tags = merge(local.crm_tags, { Issue = "AA-932", Component = "security" })
+  tags = merge(local.crm_tags, { Issue = "AA-932", Component = "security" }, var.alert_tags.page_locked) # AA-1171: page, security: CRM KMS decrypt anomaly
 }
 
 output "crm_bucket_names" {

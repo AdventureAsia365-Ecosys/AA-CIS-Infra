@@ -382,6 +382,6 @@ resource "aws_cloudwatch_metric_alarm" "crm_edge_rate_blocked" {
   threshold           = var.crm_edge_rate_alarm_threshold
   comparison_operator = "GreaterThanOrEqualToThreshold"
   treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-  tags                = local.crm_edge_tags
+  alarm_actions       = local.alert_actions.ticket
+  tags                = merge(local.crm_edge_tags, local.alert_tags.ticket) # AA-1171: ticket, WAF rate alarm: abuse signal, no outage
 }

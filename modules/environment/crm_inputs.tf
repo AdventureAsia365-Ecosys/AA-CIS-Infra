@@ -43,6 +43,42 @@ variable "ecosys_tags" {
   type        = map(string)
 }
 
+variable "page_topic_arn" {
+  description = "AA-1171 (D5): the page-severity SNS topic (accounts/aa365 alert_severity.tf aws_sns_topic.page). Page alarms and page rules notify it next to the alerts topic."
+  type        = string
+}
+
+variable "alert_tags" {
+  description = "AA-1171: the severity tag sets (accounts/aa365 alert_severity.tf local.alert_tags: page, page_locked, ticket, ticket_locked -> Severity + Mutable). Every alarm and SNS-notifying rule merges one."
+  type        = map(map(string))
+}
+
+variable "api_5xx_rate" {
+  description = "AA-1171: the API 5xx rate alarm thresholds (accounts/aa365 alert_severity.tf var.api_5xx_rate), used here by the Booking API alarm."
+  type = object({
+    five_xx_percent = number
+    min_requests    = number
+    alarm_periods   = number
+    alarm_breaching = number
+  })
+}
+
+variable "booking_worker_liveness" {
+  description = "AA-1171: the Booking job worker liveness alarm (booking_alarms.tf): period_s = window of the job checks sampler log count, periods = consecutive windows without a sample before the alarm."
+  type = object({
+    period_s = number
+    periods  = number
+  })
+}
+
+locals {
+  # alarm_actions / ok_actions per severity (accounts/aa365 alert_severity.tf local.alert_actions).
+  alert_actions = {
+    page   = [var.alerts_topic_arn, var.page_topic_arn]
+    ticket = [var.alerts_topic_arn]
+  }
+}
+
 variable "runbook_suffix" {
   description = "Alarm description suffixes, ' Runbook: <url>' per runbook key (alarm_runbooks.tf local.runbook_suffix)."
   type        = map(string)

@@ -24,6 +24,8 @@ locals {
     { name = "SES_CONFIGURATION_SET", value = var.ses_configuration_set },
     { name = "ALERTS_TOPIC_ARN", value = var.alerts_topic_arn },
     { name = "ALERT_BOOTSTRAP_EMAIL", value = var.alert_bootstrap_email },
+    # AA-1171 (D5): the page-severity topic; the same admin page manages its e-mail subscriptions ("Page alerts only").
+    { name = "PAGE_TOPIC_ARN", value = var.page_topic_arn },
   ]
 
   # AA-902: the Bedrock / Cost Explorer satellite account ID (shared/llm_client/bedrock_satellite.py
@@ -32,6 +34,9 @@ locals {
   bedrock_satellite_env = [
     { name = "BEDROCK_ACCT_PRIMARY", value = var.bedrock_acct_primary },
     { name = "BEDROCK_ACCT_PAYER", value = var.bedrock_acct_payer },
+    # AA-1171 (D7): the AA management account, so Platform > Alerts > Catalogue names its budgets by account ID
+    # (static rows; no cross-account read). Empty = "ID not configured".
+    { name = "AWS_MGMT_ACCOUNT_ID", value = var.mgmt_account_id },
   ]
 
   # AA-847 lines: the place_shape job's kill switch (AA-CIS-App services/jobs/place_shape_job.py; the job runs on the
@@ -574,6 +579,30 @@ resource "aws_iam_role_policy" "ecs_task_infra_status_readonly" {
       # AA-1003 R4 part 2 — logs:DescribeLogStreams on the same group: the reader first lists the day's migrator
       # streams (newest last event first, 2-3 pages a day) and then searches only those streams by name; a search by
       # stream prefix alone scanned the api / worker streams too and timed out (18 s for 16 h on Dev, 30/10/2026).
+      # AA-1171 (alerts catalogue P0, S287 decision D1): Platform > Alerts > Catalogue (AA-CIS-App
+      # api/services/alerts_catalogue/) lists every alarm and SNS-notifying EventBridge rule with its App / Severity /
+      # Component / Mutable tags. Read only, cached 5 minutes in Redis, free within the API free tier.
+      # tag:GetResources has no resource-level permission (Resource "*" is the only form AWS accepts; it returns ARNs
+      # and tags, never values); events:ListRules likewise. ListTagsForResource (the fallback when GetResources is
+      # refused) and ListTargetsByRule (which topic a rule notifies) take the alarm / rule ARN, so they are scoped to
+      # this account and region. No write verb: no TagResource (the Mutable tag must stay out of the app's reach), no
+      # PutMetricAlarm (D2: Terraform is the only writer of alarm thresholds), no Budgets read (budgets are shown from
+      # the Terraform docs output, D7).
+      {
+        Sid      = "AlertsCatalogueListRead"
+        Effect   = "Allow"
+        Action   = ["tag:GetResources", "events:ListRules"]
+        Resource = "*"
+      },
+      {
+        Sid    = "AlertsCatalogueScopedRead"
+        Effect = "Allow"
+        Action = ["cloudwatch:ListTagsForResource", "events:ListTargetsByRule", "events:ListTagsForResource"]
+        Resource = [
+          "arn:aws:cloudwatch:${var.aws_region}:005097885195:alarm:*",
+          "arn:aws:events:${var.aws_region}:005097885195:rule/*",
+        ]
+      },
       {
         Sid      = "FilterOwnLogGroup"
         Effect   = "Allow"

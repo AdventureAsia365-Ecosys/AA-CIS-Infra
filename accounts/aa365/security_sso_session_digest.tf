@@ -233,8 +233,8 @@ resource "aws_cloudwatch_metric_alarm" "sec_admin_session_digest_errors" {
   threshold           = 1
   comparison_operator = "GreaterThanOrEqualToThreshold"
   treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-  tags                = local.sec_digest_tags
+  alarm_actions       = local.alert_actions.page
+  tags                = merge(local.sec_digest_tags, local.alert_tags.page_locked) # AA-1171: page, security: the admin session digest is not running
 }
 
 # ── EventBridge Scheduler → Lambda (dedicated invoke role) ───────────────────

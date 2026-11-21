@@ -93,6 +93,10 @@ module "environment" {
   dns_zone_name                 = var.dns_zone_name
   ecosys_tags                   = local.ecosys_tags
   runbook_suffix                = local.runbook_suffix
+  page_topic_arn                = aws_sns_topic.page.arn      # AA-1171 (D5)
+  alert_tags                    = local.alert_tags            # AA-1171 severity tag sets
+  api_5xx_rate                  = var.api_5xx_rate            # AA-1171: Booking API 5xx rate alarm
+  booking_worker_liveness       = var.booking_worker_liveness # AA-1171: Booking worker liveness alarm
   m2m_crm_client_secret_arn     = aws_secretsmanager_secret.m2m_crm_client.arn
   crm_api_security_group_id     = aws_security_group.crm_api.id
   crm_web_security_group_id     = aws_security_group.crm_web.id

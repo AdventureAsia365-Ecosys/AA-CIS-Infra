@@ -284,8 +284,8 @@ resource "aws_cloudwatch_metric_alarm" "rds_snapshot_expiry_errors" {
   threshold           = 1
   comparison_operator = "GreaterThanOrEqualToThreshold"
   treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-  tags                = local.rds_snapshot_expiry_tags
+  alarm_actions       = local.alert_actions.ticket
+  tags                = merge(local.rds_snapshot_expiry_tags, local.alert_tags.ticket) # AA-1171: ticket, backup housekeeping Lambda errors
 }
 
 # AA-942 (CRM-14, V1): an instance holds a backup copy older than the promise (30 days): a kept manual snapshot made
@@ -303,9 +303,9 @@ resource "aws_cloudwatch_metric_alarm" "rds_backup_copy_age" {
   evaluation_periods  = 2
   datapoints_to_alarm = 2
   treat_missing_data  = "breaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
-  tags                = merge(local.rds_snapshot_expiry_tags, { Issue = "AA-942" })
+  alarm_actions       = local.alert_actions.ticket
+  ok_actions          = local.alert_actions.ticket
+  tags                = merge(local.rds_snapshot_expiry_tags, { Issue = "AA-942" }, local.alert_tags.ticket) # AA-1171: ticket, backup copy older than its window; the instance is up
 
   metric_query {
     id          = "worst"
