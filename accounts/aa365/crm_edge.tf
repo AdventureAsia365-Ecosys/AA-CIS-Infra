@@ -355,3 +355,33 @@ output "crm_edge" {
     vpc_origin_id       = aws_cloudfront_vpc_origin.crm[0].id
   } : null
 }
+
+# AA-1165 (S287, tech lead "ok" to 0.10 USD/month): alarm when CloudFrontViewerRateLimit blocks requests, so a viewer
+# hitting the limit (abuse, a runaway client, or a limit set too low) reaches the alerts topic the same 5 minutes.
+variable "crm_edge_rate_alarm_threshold" {
+  description = "AA-1165: blocked requests of rule CloudFrontViewerRateLimit in 5 minutes that raise the alarm (1 = any block). An operator changes it here or in terraform.tfvars, then plans and applies (docs/waf-count-review.md)."
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = floor(var.crm_edge_rate_alarm_threshold) == var.crm_edge_rate_alarm_threshold && var.crm_edge_rate_alarm_threshold >= 1
+    error_message = "crm_edge_rate_alarm_threshold must be a whole number of at least 1."
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "crm_edge_rate_blocked" {
+  count               = local.crm_edge_on
+  alarm_name          = "${var.project}-${var.environment}-crm-edge-rate-blocked"
+  alarm_description   = "WAF rule CloudFrontViewerRateLimit blocked requests on the CRM hosts (one viewer past the per-viewer limit). Check the WAF log for the viewer and whether the limit fits real use. AA-1165.${local.runbook_suffix.incident}"
+  namespace           = "AWS/WAFV2"
+  metric_name         = "BlockedRequests"
+  dimensions          = { WebACL = module.waf.web_acl_name, Region = var.aws_region, Rule = "CloudFrontViewerRateLimit" }
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = var.crm_edge_rate_alarm_threshold
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  tags                = local.crm_edge_tags
+}

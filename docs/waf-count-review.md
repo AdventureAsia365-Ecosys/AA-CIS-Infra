@@ -118,5 +118,9 @@ It started in COUNT (`crm_edge_rate_count_only = true` in `accounts/aa365/terraf
 4. To change the limit: set `crm_edge_rate_limit = <n>` in `terraform.tfvars` (a whole number of at least 100), plan,
    apply. The value in force is published read-only in the root output `platform_limits` (`waf` group).
 
+5. Alarm: `aa-cis-dev-crm-edge-rate-blocked` sends to the alerts topic when the rule blocks at least
+   `crm_edge_rate_alarm_threshold` requests in 5 minutes (default 1, `accounts/aa365/crm_edge.tf`; 0.10 USD/month).
+   Change the threshold in `terraform.tfvars`, plan, apply.
+
 The WAF log (`aws-waf-logs-aa-cis-dev`, only requests a rule acted on) records each counted or blocked request with
 `CloudFrontViewerRateLimit` as the matching rule.
