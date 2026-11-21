@@ -79,18 +79,42 @@ It started in COUNT (`crm_edge_rate_count_only = true` in `accounts/aa365/terraf
    aws cloudwatch get-metric-statistics --namespace AWS/WAFV2 --metric-name CountedRequests --dimensions Name=WebACL,Value=aa-cis-dev-waf Name=Region,Value=us-west-1 Name=Rule,Value=CloudFrontViewerRateLimit --start-time <UTC start> --end-time <UTC end> --period 300 --statistics Sum --profile aa365-admin --region us-west-1
    ```
 
-2. A burst from one address past the limit is counted (COUNT) or refused with 429 (BLOCK). AWS WAF evaluates rate
-   rules with a delay of up to about a minute, so the first refusals come a little after the limit. Burst on the
-   cheap CRM API health path of the partner host, for example 6000 requests with 50 in parallel, and tally the codes:
+2. A burst from one address past the limit is counted (COUNT) or refused with 429 (BLOCK). Two things make a naive
+   burst prove nothing:
+   - The CRM API limits its public routes itself (AA-Partner `app.ratelimit`, `crm.rate.public_per_minute`, 60 a
+     minute per viewer by default), and `/crm/health` is one of them. Most of a burst is answered 429 by the app
+     whether or not this rule exists, so a tally of status codes alone looks like a pass. Tell the two answers apart
+     by the body: the WAF answers `{"error":"rate_limited"}`, the app `{"detail":"rate_limited"}`.
+   - AWS WAF evaluates rate rules with a delay of up to about a minute. A burst that ends a few seconds after it
+     crosses the limit may see no WAF answer at all. Go well past the limit and keep it up for at least 2 to 3
+     minutes.
+
+   Burst on the CRM API health path of the partner host (only `/crm` and `/crm/*` reach the origin there, every
+   other path is a 301 at the edge), 18000 requests with 20 in parallel (about 3 minutes at about 100 requests a
+   second), and tally the status code with the first JSON key of the body:
 
    ```
-   seq 6000 | xargs -P 50 -I{} curl -s -o /dev/null -w '%{http_code}\n' https://partner-dev.lumiguides.it.com/crm/health | sort | uniq -c
+   seq 18000 | xargs -P 20 -I{} sh -c 'echo "$(curl -s -w " %{http_code}" https://partner-dev.lumiguides.it.com/crm/health)"' | sed -E 's/^\{"([a-z_]+)".* ([0-9]{3})$/\2 \1/' | sort | uniq -c
    ```
 
-   Then wait out the 5-minute window before using the CRM from that address again.
+   (Each line is written by one `echo`, so the 20 parallel calls cannot interleave inside a line.) Read the tally: `200 status` = served, `429 detail` = the app's own limiter, `429 error` = this WAF rule. In COUNT
+   expect `200 status` and `429 detail` lines only; in BLOCK expect a non-zero `429 error` line. If the run took less
+   than 2 minutes, run it again at once (the 5-minute window still holds the first run's count).
+
+   The required evidence is the rule's own metric, not the tally: a non-zero sum of `CountedRequests` (COUNT) or
+   `BlockedRequests` (BLOCK) for `Rule=CloudFrontViewerRateLimit` over the burst minutes (period 60; the metric can
+   take a few minutes to appear):
+
+   ```
+   aws cloudwatch get-metric-statistics --namespace AWS/WAFV2 --metric-name CountedRequests --dimensions Name=WebACL,Value=aa-cis-dev-waf Name=Region,Value=us-west-1 Name=Rule,Value=CloudFrontViewerRateLimit --start-time <UTC burst start> --end-time <UTC burst end + 5 min> --period 60 --statistics Sum --profile aa365-admin --region us-west-1
+   ```
+
+   (`--metric-name BlockedRequests` for BLOCK.) Then wait out the 5-minute window before using the CRM from that
+   address again.
 3. To flip to BLOCK: a PR that removes the `crm_edge_rate_count_only = true` line from `terraform.tfvars` (the
-   variable defaults to `false`), plan, apply, repeat step 2 and expect `429` lines with the JSON body
-   `{"error":"rate_limited"}`, plus `BlockedRequests` on the same dimensions.
+   variable defaults to `false`), plan, apply, repeat step 2 and expect a non-zero `429 error` line in the tally
+   (the WAF body `{"error":"rate_limited"}`; `429 detail` lines are the app and do not count) plus a non-zero
+   `BlockedRequests` sum for `Rule=CloudFrontViewerRateLimit`.
 4. To change the limit: set `crm_edge_rate_limit = <n>` in `terraform.tfvars` (a whole number of at least 100), plan,
    apply. The value in force is published read-only in the root output `platform_limits` (`waf` group).
 
