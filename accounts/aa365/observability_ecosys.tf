@@ -113,10 +113,10 @@ resource "aws_cloudwatch_metric_alarm" "nat_system_check_recover" {
   comparison_operator = "GreaterThanOrEqualToThreshold"
   threshold           = 1
   treat_missing_data  = "notBreaching"
-  alarm_actions       = ["arn:aws:automate:${var.aws_region}:ec2:recover", aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
+  alarm_actions       = concat(["arn:aws:automate:${var.aws_region}:ec2:recover"], local.alert_actions.page)
+  ok_actions          = local.alert_actions.page
 
-  tags = merge(local.ecosys_tags, { App = "shared" })
+  tags = merge(local.ecosys_tags, { App = "shared" }, local.alert_tags.page_locked, { Component = "network" }) # AA-1171: page, NAT: every private egress; a mute would also stop the EC2 recover action
 }
 
 # NAT guest OS failure (hung kernel, broken iptables / forwarding): recover does not fix it and nothing else sees it.
@@ -137,10 +137,10 @@ resource "aws_cloudwatch_metric_alarm" "nat_instance_check_failed" {
   comparison_operator = "GreaterThanOrEqualToThreshold"
   threshold           = 1
   treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
+  alarm_actions       = local.alert_actions.page
+  ok_actions          = local.alert_actions.page
 
-  tags = merge(local.ecosys_tags, { App = "shared" })
+  tags = merge(local.ecosys_tags, { App = "shared" }, local.alert_tags.page, { Component = "network" }) # AA-1171: page, NAT: every private egress (LLM, SNS, Sentry)
 }
 
 # AA-Booking service health, through its ALB target group (Container Insights is disabled on the
@@ -159,10 +159,10 @@ resource "aws_cloudwatch_metric_alarm" "booking_no_healthy_task" {
   comparison_operator = "LessThanThreshold"
   threshold           = 1
   treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
+  alarm_actions       = local.alert_actions.ticket
+  ok_actions          = local.alert_actions.ticket
 
-  tags = merge(local.ecosys_tags, { App = "booking" })
+  tags = merge(local.ecosys_tags, { App = "booking" }, local.alert_tags.ticket, { Component = "api" }) # AA-1171: ticket, service down on Dev (no real users yet)
 }
 
 # S263 (AA-1025): the CIS api had no service-down alarm. aa-cis-dev-ecs-running-tasks-low read
@@ -181,10 +181,10 @@ resource "aws_cloudwatch_metric_alarm" "cis_api_no_healthy_task" {
   comparison_operator = "LessThanThreshold"
   threshold           = 1
   treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
+  alarm_actions       = local.alert_actions.ticket
+  ok_actions          = local.alert_actions.ticket
 
-  tags = merge(local.ecosys_tags, { App = "cis" })
+  tags = merge(local.ecosys_tags, { App = "cis" }, local.alert_tags.ticket, { Component = "api" }) # AA-1171: ticket, service down on Dev (no real users yet)
 }
 
 # TripPlanner Lambdas — errors (3+ in 5 minutes) and sustained throttling on browse (see below). Event alarms: no OK
@@ -203,9 +203,9 @@ resource "aws_cloudwatch_metric_alarm" "tripplanner_lambda_errors" {
   comparison_operator = "GreaterThanOrEqualToThreshold"
   threshold           = 3
   treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
+  alarm_actions       = local.alert_actions.ticket
 
-  tags = merge(local.ecosys_tags, { App = "tripplanner" })
+  tags = merge(local.ecosys_tags, { App = "tripplanner" }, local.alert_tags.ticket, { Component = "api" }) # AA-1171: ticket, Lambda error count
 }
 
 # AA-833: was "Sum > 0 in one 5-minute period". A single burst (a page prefetch fan-out after a deploy or ISR expiry)
@@ -225,9 +225,9 @@ resource "aws_cloudwatch_metric_alarm" "tripplanner_lambda_throttles" {
   comparison_operator = "GreaterThanThreshold"
   threshold           = 5
   treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
+  alarm_actions       = local.alert_actions.ticket
 
-  tags = merge(local.ecosys_tags, { App = "tripplanner" })
+  tags = merge(local.ecosys_tags, { App = "tripplanner" }, local.alert_tags.ticket, { Component = "api" }) # AA-1171: ticket, Lambda throttling
 }
 
 # Shared RDS (aa-cis-dev-db: CIS + TripPlanner + Booking). AA-824: storage autoscaling to 100 GB
@@ -246,10 +246,10 @@ resource "aws_cloudwatch_metric_alarm" "rds_free_storage_low" {
   comparison_operator = "LessThanThreshold"
   threshold           = module.rds.allocated_storage * 1073741824 * 0.5 # 50% of base GB, in bytes
   treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
+  alarm_actions       = local.alert_actions.ticket
+  ok_actions          = local.alert_actions.ticket
 
-  tags = merge(local.ecosys_tags, { App = "shared" })
+  tags = merge(local.ecosys_tags, { App = "shared" }, local.alert_tags.ticket, { Component = "db" }) # AA-1171: ticket, early warning at 50 % of base storage, autoscaling covers it
 }
 
 # max_connections = LEAST(DBInstanceClassMemory/9531392, 5000) = 181 on db.t4g.small (measured
@@ -269,10 +269,10 @@ resource "aws_cloudwatch_metric_alarm" "rds_connections_high" {
   comparison_operator = "GreaterThanThreshold"
   threshold           = floor(local.rds_max_connections * 0.6)
   treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
+  alarm_actions       = local.alert_actions.ticket
+  ok_actions          = local.alert_actions.ticket
 
-  tags = merge(local.ecosys_tags, { App = "shared" })
+  tags = merge(local.ecosys_tags, { App = "shared" }, local.alert_tags.ticket, { Component = "db" }) # AA-1171: ticket, early warning at 60 % of max_connections
 }
 
 # RDS down, stopped, failed or out of storage (S263 alert diet review, AA-1025). The removed "sampling stopped"
@@ -302,7 +302,7 @@ resource "aws_cloudwatch_event_rule" "rds_instance_event" {
       ]
     }
   })
-  tags = merge(local.ecosys_tags, { App = "shared", Issue = "AA-1025" })
+  tags = merge(local.ecosys_tags, { App = "shared", Issue = "AA-1025" }, local.alert_tags.page_locked, { Component = "db" }) # AA-1171: page, RDS down, stopped, failed or out of storage
 }
 
 resource "aws_cloudwatch_event_target" "rds_instance_event" {

@@ -1376,8 +1376,8 @@ resource "aws_cloudwatch_metric_alarm" "identity_trigger_unexpected" {
   threshold           = 1
   comparison_operator = "GreaterThanOrEqualToThreshold"
   treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-  tags                = local.id_tags
+  alarm_actions       = local.alert_actions.page
+  tags                = merge(local.id_tags, local.alert_tags.page_locked, { Component = "auth" }) # AA-1171: page, identity: sign-in path broken
 }
 
 resource "aws_cloudwatch_metric_alarm" "identity_trigger_errors" {
@@ -1393,8 +1393,8 @@ resource "aws_cloudwatch_metric_alarm" "identity_trigger_errors" {
   threshold           = 20
   comparison_operator = "GreaterThanOrEqualToThreshold"
   treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-  tags                = local.id_tags
+  alarm_actions       = local.alert_actions.page
+  tags                = merge(local.id_tags, local.alert_tags.page_locked, { Component = "auth" }) # AA-1171: page, identity: sign-in path broken
 }
 
 resource "aws_cloudwatch_log_metric_filter" "identity_breakglass" {
@@ -1421,8 +1421,8 @@ resource "aws_cloudwatch_metric_alarm" "identity_breakglass" {
   threshold           = 1
   comparison_operator = "GreaterThanOrEqualToThreshold"
   treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-  tags                = local.id_tags
+  alarm_actions       = local.alert_actions.page
+  tags                = merge(local.id_tags, local.alert_tags.page_locked, { Component = "security" }) # AA-1171: page, identity: break-glass token issued
 }
 
 # =============================================================================

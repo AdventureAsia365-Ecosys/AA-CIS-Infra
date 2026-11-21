@@ -101,14 +101,14 @@ resource "aws_cloudwatch_metric_alarm" "rds_cpu_high" {
   threshold           = 80
   treat_missing_data  = "notBreaching" # AA-832: data standard C4.1a (was the default "missing")
   alarm_description   = "RDS ${local.name_prefix}-db CPU above 80% for 15 minutes.${local.runbook_suffix.database}"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
+  alarm_actions       = local.alert_actions.ticket
+  ok_actions          = local.alert_actions.ticket
 
   dimensions = {
     DBInstanceIdentifier = "${local.name_prefix}-db"
   }
 
-  tags = merge(local.shared_tags, { Issue = "AA-284", Component = "observability" })
+  tags = merge(local.shared_tags, { Issue = "AA-284", Component = "observability" }, local.alert_tags.ticket, { Component = "db" }) # AA-1171: ticket, RDS capacity early warning, the database is up
 }
 
 # -----------------------------------------------------------------------------

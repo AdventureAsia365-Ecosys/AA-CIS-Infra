@@ -54,7 +54,7 @@ class MaskText(unittest.TestCase):
         self.assertEqual(self.m(f"arn:aws:iam::{A2}:role/aa-cis-dev-agent-session"), "arn:{partition}:iam::{acc2}:role/aa-cis-dev-agent-session")
         self.assertEqual(
             self.m(f"arn:aws:elasticloadbalancing:us-west-1:{A2}:listener/app/aa-cis-dev-alb/0123456789abcdef/fedcba9876543210"),
-            "arn:{partition}:elasticloadbalancing:us-west-1:{acc2}:listener/app/aa-cis-dev-alb/0123456789abcdef/fedcba9876543210",
+            "arn:{partition}:elasticloadbalancing:us-west-1:{acc2}:listener/app/aa-cis-dev-alb/{masked}/{masked}",  # AA-1171
         )
         self.assertEqual(self.m(f"arn:aws:ecs:us-west-1:{A2}:task-definition/aa-cis-dev-db-migrate:76"), "arn:{partition}:ecs:us-west-1:{acc2}:task-definition/aa-cis-dev-db-migrate:76")
         self.assertEqual(self.m("arn:aws:iam::aws:policy/ReadOnlyAccess"), "arn:{partition}:iam::aws:policy/ReadOnlyAccess")
@@ -94,6 +94,17 @@ class MaskText(unittest.TestCase):
         self.assertEqual(out, "vpc-{masked} subnet-{masked} sg-{masked} i-{masked} eni-{masked} igw-{masked} rtb-{masked}")
         # Names that only look alike stay.
         self.assertEqual(self.m("aa-cis-dev-sg-alb aa-cis-dev-api-5xx d-abcde12345"), "aa-cis-dev-sg-alb aa-cis-dev-api-5xx d-abcde12345")
+
+    def test_load_balancer_and_target_group_ids(self):
+        # AA-1171: the alarm dimensions of docs/generated/alarms.md (invented names and ids).
+        s = "[LoadBalancer=app/aa-test-alb/0123456789abcdef, TargetGroup=targetgroup/aa-test-api-tg/fedcba9876543210]"
+        self.assertEqual(len(am.find_leaks(s)), 1)
+        out = self.m(s)
+        self.assertEqual(out, "[LoadBalancer=app/aa-test-alb/{masked}, TargetGroup=targetgroup/aa-test-api-tg/{masked}]")
+        self.assertEqual(am.find_leaks(out), [])
+        self.assertEqual(self.m(out), out)
+        # A path that only looks alike (no 16-hex id) stays.
+        self.assertEqual(self.m("app/admin/platform"), "app/admin/platform")
 
     def test_uuids_and_other_numbers_stay(self):
         s = f"USING (tenant_id = '{UUID_TENANT}'::uuid) 1234567890123 12345678901 PostgreSQL 15.17"

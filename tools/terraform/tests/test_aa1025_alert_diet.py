@@ -45,8 +45,9 @@ class NatInstanceCheckAlarmTest(unittest.TestCase):
         self.assertIn('treat_missing_data  = "notBreaching"', self.alarm)
 
     def test_state_alarm_mails_alarm_and_ok_without_ec2_action(self):
-        self.assertRegex(self.alarm, r"alarm_actions\s*=\s*\[aws_sns_topic\.alerts\.arn\]")
-        self.assertRegex(self.alarm, r"ok_actions\s*=\s*\[aws_sns_topic\.alerts\.arn\]")
+        # AA-1171: page severity, both topics (alert_severity.tf local.alert_actions.page).
+        self.assertRegex(self.alarm, r"alarm_actions\s*=\s*local\.alert_actions\.page")
+        self.assertRegex(self.alarm, r"ok_actions\s*=\s*local\.alert_actions\.page")
         self.assertNotIn("arn:aws:automate", self.alarm)
 
 
@@ -63,7 +64,7 @@ class IdentityUnexpectedErrorAlarmTest(unittest.TestCase):
     def test_one_error_is_enough_and_mails_on_alarm_only(self):
         self.assertIn('metric_name         = "TriggerUnexpectedError"', self.alarm)
         self.assertIn("threshold           = 1", self.alarm)
-        self.assertRegex(self.alarm, r"alarm_actions\s*=\s*\[aws_sns_topic\.alerts\.arn\]")
+        self.assertRegex(self.alarm, r"alarm_actions\s*=\s*local\.alert_actions\.page")  # AA-1171: page severity
         self.assertNotIn("ok_actions", self.alarm)
 
     def test_identity_event_metrics_have_no_default_value(self):

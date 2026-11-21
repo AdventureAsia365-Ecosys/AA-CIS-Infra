@@ -154,6 +154,11 @@ class Resource:
     def app(self) -> str:
         return str(self.tags.get("App") or "")
 
+    @property
+    def severity(self) -> str:
+        """AA-1171: the Severity tag (page | ticket), "" when the resource has none."""
+        return str(self.tags.get("Severity") or "")
+
 
 @dataclass
 class TfDoc:
@@ -427,17 +432,22 @@ def render_alarms(doc: TfDoc, root_dir: Optional[Path], problems: Problems) -> s
         desc, url = split_runbook(v.get("alarm_description") or "")
         name = v.get("alarm_name") or a.address
         by_app.setdefault(a.app or "untagged", []).append(
-            [code(name), alarm_condition(v), actions_text(v), runbook_cell(name, url, root_dir, problems), desc]
+            [code(name), a.severity or "untagged", alarm_condition(v), actions_text(v), runbook_cell(name, url, root_dir, problems), desc]
         )
 
     lines = [
         "Every CloudWatch metric alarm and every EventBridge rule that notifies an SNS topic in the acc2 stack",
         "(`accounts/aa365` and its modules). Each row links to the runbook the alarm e-mail names; the link is",
         "the `Runbook:` suffix of the alarm description (AA-CIS-Infra `accounts/aa365/alarm_runbooks.tf`).",
-        "Severity and first steps for every alarm: [incident response](../ops/incident-response.md).",
+        "Severity (AA-1171): the `Severity` tag, `page` (a person acts now: security, identity, the NAT instance, the",
+        "database down, the alert path) or `ticket` (working hours); page alarms notify the page topic as well. The live",
+        "list with states, in-app checks and budgets is the CIS admin page Platform > Alerts > Catalogue.",
+        "First steps for every alarm: [incident response](../ops/incident-response.md).",
         "",
         f"**Totals:** {len(alarms)} metric alarms, "
-        f"{sum(1 for n in rules if n in sns_targets)} EventBridge alarm rules.",
+        f"{sum(1 for n in rules if n in sns_targets)} EventBridge alarm rules; "
+        f"page severity: {sum(1 for a in alarms if a.severity == 'page') + sum(1 for n in rules if n in sns_targets and rules[n].severity == 'page')}, "
+        f"ticket: {sum(1 for a in alarms if a.severity == 'ticket') + sum(1 for n in rules if n in sns_targets and rules[n].severity == 'ticket')}.",
         "",
         "## Metric alarms",
         "",
@@ -445,7 +455,7 @@ def render_alarms(doc: TfDoc, root_dir: Optional[Path], problems: Problems) -> s
     ]
     for app in sorted(by_app):
         rows = sorted(by_app[app], key=lambda r: r[0])
-        lines += ["", f"### {app}", "", table(["Alarm", "Condition", "Notifies", "Runbook", "What it means"], rows)]
+        lines += ["", f"### {app}", "", table(["Alarm", "Severity", "Condition", "Notifies", "Runbook", "What it means"], rows)]
 
     ev_rows = []
     for name in sorted(n for n in rules if n in sns_targets):
@@ -455,6 +465,7 @@ def render_alarms(doc: TfDoc, root_dir: Optional[Path], problems: Problems) -> s
             [
                 code(name),
                 r.app or "untagged",
+                r.severity or "untagged",
                 event_summary(r.values),
                 ", ".join(sorted(sns_targets[name])),
                 runbook_cell(name, url, root_dir, problems),
@@ -462,7 +473,7 @@ def render_alarms(doc: TfDoc, root_dir: Optional[Path], problems: Problems) -> s
             ]
         )
     lines += ["", "## EventBridge alarm rules", "", "Rules whose target is an SNS topic (the e-mail is the target's input template)."]
-    lines += ["", table(["Rule", "App", "Event", "Notifies", "Runbook", "What it means"], ev_rows) if ev_rows else "None."]
+    lines += ["", table(["Rule", "App", "Severity", "Event", "Notifies", "Runbook", "What it means"], ev_rows) if ev_rows else "None."]
     lines += render_platform_limits(doc)
     return "\n".join(lines) + "\n"
 
@@ -1088,6 +1099,50 @@ def check_source(dirs: Iterable[Path]) -> list[str]:
     return problems
 
 
+SEVERITY_RE = re.compile(r"\b(?:local|var)\.alert_tags\.(page_locked|page|ticket_locked|ticket)\b")
+
+
+def check_severity(dirs: Iterable[Path]) -> list[str]:
+    """AA-1171 (D5) offline guard: every alarm and every SNS-notifying EventBridge rule merges a severity tag set
+    (``local.alert_tags.<page|page_locked|ticket|ticket_locked>``, ``var.alert_tags.*`` in a module; accounts/aa365
+    alert_severity.tf), and an alarm's actions follow its severity: a page alarm notifies ``alert_actions.page`` (both
+    topics), a ticket alarm never the page topic."""
+    problems = []
+    rules: dict[str, tuple[str, str]] = {}
+    sns_rules: set[str] = set()
+    for d in dirs:
+        for tf in sorted(Path(d).rglob("*.tf")):
+            if ".terraform" in tf.parts:
+                continue
+            text = tf.read_text(encoding="utf-8")
+            for m in BLOCK_RE.finditer(text):
+                rtype, rname = m.group(1), m.group(2)
+                block = _block(text, m.end() - 1)
+                where = f"{tf}:{text.count(chr(10), 0, m.start()) + 1}"
+                sev = SEVERITY_RE.search(_attr_line(block, "tags"))
+                if rtype == "aws_cloudwatch_metric_alarm":
+                    if not sev:
+                        problems.append(f"{where}: aws_cloudwatch_metric_alarm.{rname} has no severity tags (merge local.alert_tags.<page|ticket> into tags)")
+                        continue
+                    actions = _attr_line(block, "alarm_actions") + " " + _attr_line(block, "ok_actions")
+                    if sev.group(1).startswith("page") and "alert_actions.page" not in actions:
+                        problems.append(f"{where}: aws_cloudwatch_metric_alarm.{rname} is page severity but its actions are not alert_actions.page")
+                    if sev.group(1).startswith("ticket") and ("alert_actions.page" in actions or "page_topic" in actions or "aws_sns_topic.page" in actions):
+                        problems.append(f"{where}: aws_cloudwatch_metric_alarm.{rname} is ticket severity but notifies the page topic")
+                elif rtype == "aws_cloudwatch_event_rule":
+                    rules[rname] = (where, "yes" if sev else "")
+                else:
+                    arn = _attr_line(block, "arn")
+                    if "aws_sns_topic." in arn or "topic_arn" in arn:
+                        rm = re.search(r"aws_cloudwatch_event_rule\.([A-Za-z0-9_-]+)\.", _attr_line(block, "rule"))
+                        if rm:
+                            sns_rules.add(rm.group(1))
+    for rule in sorted(sns_rules):
+        if rule in rules and not rules[rule][1]:
+            problems.append(f"{rules[rule][0]}: aws_cloudwatch_event_rule.{rule} notifies SNS but has no severity tags (merge local.alert_tags.<page|ticket> into tags)")
+    return problems
+
+
 # --------------------------------------------------------------------------- CLI
 
 
@@ -1111,7 +1166,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     c.add_argument("--max-age-days", type=int, default=30)
     c.add_argument("--date", default=dt.datetime.now(dt.timezone.utc).date().isoformat())
 
-    s = sub.add_parser("check-source", help="offline runbook-suffix guard on .tf files")
+    s = sub.add_parser("check-source", help="offline runbook-suffix and severity guard on .tf files")
     s.add_argument("dirs", nargs="+", type=Path)
 
     args = ap.parse_args(argv)
@@ -1147,7 +1202,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"::error title=alarm runbook::{p}")
     if not problems:
         print("every alarm and SNS-notifying EventBridge rule carries a runbook suffix")
-    return 1 if problems else 0
+    severity = check_severity(args.dirs)
+    for p in severity:
+        print(f"::error title=alarm severity::{p}")
+    if not severity:
+        print("every alarm and SNS-notifying EventBridge rule carries a severity tag set and matching actions")
+    return 1 if (problems or severity) else 0
 
 
 if __name__ == "__main__":

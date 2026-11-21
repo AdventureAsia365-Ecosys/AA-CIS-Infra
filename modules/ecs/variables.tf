@@ -237,6 +237,18 @@ variable "alert_bootstrap_email" {
   default     = ""
 }
 
+variable "page_topic_arn" {
+  description = "AA-1171 (D5) — PAGE_TOPIC_ARN: the page-severity topic whose e-mail subscriptions the admin page manages next to the alerts topic; empty = only the alerts topic is managed."
+  type        = string
+  default     = ""
+}
+
+variable "mgmt_account_id" {
+  description = "AA-1171 (D7) — AWS_MGMT_ACCOUNT_ID: the AA management account ID, shown on the alerts catalogue's static budget rows; empty = not configured."
+  type        = string
+  default     = ""
+}
+
 variable "bedrock_acct_primary" {
   description = "AA-902: acc3 (the only Bedrock satellite, AA-998) account ID, env BEDROCK_ACCT_PRIMARY on api and worker"
   type        = string

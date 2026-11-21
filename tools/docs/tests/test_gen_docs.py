@@ -53,7 +53,7 @@ def _alarm(name: str, app: str, runbook: str | None, **extra) -> dict:
         "ok_actions": [TOPIC],
         "actions_enabled": True,
         "metric_query": [],
-        "tags": {"App": app},
+        "tags": {"App": app, "Severity": "ticket"},
     }
     v.update(extra)
     return _res(f"aws_cloudwatch_metric_alarm.{name.replace('-', '_')}", "aws_cloudwatch_metric_alarm", v)
@@ -82,7 +82,7 @@ def state_doc() -> dict:
                 "name": "aa-identity-dev-breakglass",
                 "description": f"Break-glass secret read. Runbook: {BLOB}docs/ops/runbooks/break-glass.md",
                 "event_pattern": json.dumps({"source": ["aws.secretsmanager"], "detail-type": ["AWS API Call via CloudTrail"], "detail": {"$or": [{"eventName": ["GetSecretValue"]}, {"eventName": ["BatchGetSecretValue"]}]}}),
-                "tags": {"App": "identity"},
+                "tags": {"App": "identity", "Severity": "page"},
             },
         ),
         _res("aws_cloudwatch_event_target.breakglass", "aws_cloudwatch_event_target", {"rule": "aa-identity-dev-breakglass", "arn": TOPIC}),
@@ -183,7 +183,9 @@ class AlarmTests(unittest.TestCase):
         self.assertEqual(problems, [])
         self.assertIn("[ops/playbooks/5xx-spike.md](../ops/playbooks/5xx-spike.md)", body)
         self.assertIn("[ops/runbooks/break-glass.md](../ops/runbooks/break-glass.md)", body)
-        self.assertIn("**Totals:** 3 metric alarms, 1 EventBridge alarm rules.", body)
+        self.assertIn("**Totals:** 3 metric alarms, 1 EventBridge alarm rules; page severity: 1, ticket: 3.", body)
+        self.assertIn("| `aa-cis-dev-api-5xx` | ticket |", body)
+        self.assertIn("| `aa-identity-dev-breakglass` | identity | page |", body)
         self.assertIn("### booking", body)
         self.assertIn("aa-test-alerts (ALARM + OK)", body)
         self.assertIn("AWS/ApiGateway/5XXError Sum [ApiName=api, Stage=dev] >= 5 per 5 min", body)
@@ -379,6 +381,32 @@ class SourceGuardTests(unittest.TestCase):
         self.assertEqual(len(problems), 2)
         fixed = tf.replace('description = "no link"', 'description = "x.${local.runbook_suffix.incident}"').replace('\\"text\\"', '\\"text${local.runbook_suffix.incident}\\"')
         self.assertEqual(self.check(fixed), [])
+
+    def test_severity_tags_required_on_alarms_and_sns_rules(self):
+        # AA-1171: an alarm without local.alert_tags, a page alarm on the ticket actions and an untagged SNS rule fail.
+        tf = (
+            'resource "aws_cloudwatch_metric_alarm" "none" {\n  alarm_actions = local.alert_actions.ticket\n  tags = { App = "cis" }\n}\n'
+            'resource "aws_cloudwatch_metric_alarm" "pg" {\n  alarm_actions = local.alert_actions.ticket\n  tags = merge(local.x, local.alert_tags.page_locked)\n}\n'
+            'resource "aws_cloudwatch_metric_alarm" "tk" {\n  alarm_actions = local.alert_actions.page\n  tags = merge(local.x, local.alert_tags.ticket)\n}\n'
+            'resource "aws_cloudwatch_metric_alarm" "ok" {\n  alarm_actions = local.alert_actions.page\n  ok_actions = local.alert_actions.page\n  tags = merge(local.x, var.alert_tags.page)\n}\n'
+            'resource "aws_cloudwatch_event_rule" "r" {\n  tags = local.sec_tags\n}\n'
+            'resource "aws_cloudwatch_event_target" "t" {\n  rule = aws_cloudwatch_event_rule.r.name\n  arn  = aws_sns_topic.alerts.arn\n}\n'
+            'resource "aws_cloudwatch_event_rule" "l" {\n  tags = local.sec_tags\n}\n'
+            'resource "aws_cloudwatch_event_target" "lt" {\n  rule = aws_cloudwatch_event_rule.l.name\n  arn  = aws_lambda_function.x.arn\n}\n'
+        )
+        with tempfile.TemporaryDirectory() as t:
+            (Path(t) / "x.tf").write_text(tf, encoding="utf-8")
+            problems = gd.check_severity([Path(t)])
+        self.assertEqual(len(problems), 4, problems)
+        joined = "\n".join(problems)
+        for name in ("aws_cloudwatch_metric_alarm.none", "aws_cloudwatch_metric_alarm.pg", "aws_cloudwatch_metric_alarm.tk",
+                     "aws_cloudwatch_event_rule.r"):
+            self.assertIn(name, joined)
+        self.assertNotIn("metric_alarm.ok", joined)
+        self.assertNotIn("event_rule.l ", joined)
+
+    def test_this_repo_has_a_severity_on_every_alarm(self):
+        self.assertEqual(gd.check_severity([REPO_ROOT / "accounts", REPO_ROOT / "modules"]), [])
 
     def test_this_repo_has_a_runbook_on_every_alarm(self):
         problems = gd.check_source([REPO_ROOT / "accounts", REPO_ROOT / "modules"])

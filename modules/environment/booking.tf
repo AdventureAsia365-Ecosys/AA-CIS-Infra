@@ -383,6 +383,10 @@ resource "aws_ecs_task_definition" "booking" {
       { name = "JOB_TEST_KINDS", value = var.environment == "dev" ? "1" : "0" },
       # S263 (AA-1025): the in-app job checks (app/jobs/ops_checks.py) publish their alerts to this topic.
       { name = "ALERTS_TOPIC_ARN", value = var.alerts_topic_arn },
+      # AA-1171: the CIS admin app client of the WORKFORCE pool. Booking accepts its access token on one read route
+      # only, GET /booking/ops/checks (the job check registry the CIS alerts catalogue reads with the staff member's own
+      # token); every staff route keeps accepting the booking-staff client alone. Not a secret (a client id).
+      { name = "COGNITO_CIS_ADMIN_CLIENT_ID", value = var.cognito_workforce_cis_admin_client_id },
       # AA-1093 (S279): the bk_tenant_erase kill switch (booking_variables.tf); "false" unless an approved erasure runs.
       { name = "TENANT_ERASE_APPLY_ENABLED", value = var.booking_tenant_erase_apply_enabled },
       ], var.booking_sentry_enabled ? [
