@@ -10,7 +10,10 @@ writes (shared.admin_users.custom_role and one shared.staff_app_grant row), with
 
 Rules:
 - Only the A10g address (matched in WHERE on lower(email); the e-mail is never selected or printed).
-- Refuses (raises, nothing changes) when no row or more than one row matches, when the row's CIS role is not
+- Creates the directory row when none exists yet (S287: the maker had never been added on the Staff page, and CIS
+  refuses a WORKFORCE sign-in with no row): the same insert as the Staff page's Add staff (role content_lead, active,
+  no password, not an owner), audited as ``staff.created``. The Cognito identity is linked at the maker's next sign-in.
+- Refuses (raises, nothing changes) when more than one row matches, when the row's CIS role is not
   content_lead (the A10g CHECK branch of admin_users_email_chk needs it), when the row is an owner or the business
   owner, or when either custom role is missing, archived, or does not hold its seed capability count (18 / 24).
 - Reports, does not refuse: is_active and whether a Cognito identity is linked (shared.v_staff_booking_grant shows
@@ -44,6 +47,8 @@ BOOKING_CUSTOM = "custom_product_ops_accounting"
 BOOKING_CUSTOM_CAPS = 24
 AUDIT_ACTION = "staff.roles_changed"
 AUDIT_ACTOR = "script:db-migrate-aa1155"
+MAKER_USERNAME = "e2e-custom-maker"
+MAKER_DISPLAY = "E2E custom role maker"
 
 ROW_SQL = (
     "SELECT u.id, u.role::text AS role, u.custom_role, u.is_active, u.is_owner, u.is_business_owner, "
@@ -73,6 +78,11 @@ UPSERT_GRANT_SQL = (
 AUDIT_SQL = (
     "INSERT INTO acp_shared.audit_log (actor, action, resource_type, resource_id, details) "
     "VALUES ($1, $2, 'admin_user', $3, $4::jsonb)"
+)
+USERNAME_TAKEN_SQL = "SELECT count(*) FROM shared.admin_users WHERE username = $1"
+INSERT_ROW_SQL = (
+    "INSERT INTO shared.admin_users (username, password_hash, role, is_active, email, display_name, is_owner) "
+    "VALUES ($1, NULL, 'content_lead'::shared.admin_role, true, $2, $3, false) RETURNING id"
 )
 GRANT_VIEW_COUNT_SQL = (
     "SELECT count(*) FROM shared.v_staff_booking_grant v JOIN shared.admin_users u ON u.cognito_sub = v.cognito_sub "
@@ -129,6 +139,16 @@ async def run(conn, *, apply: bool) -> int:
     out("mode", {"script": SCRIPT_NAME, "apply": apply})
     if not apply:
         await check_roles(conn)
+        n = len(await conn.fetch(ROW_SQL, MAKER_EMAIL, BOOKING_APP))
+        if n == 0:
+            taken = await conn.fetchval(USERNAME_TAKEN_SQL, MAKER_USERNAME)
+            out("match", {"rows": 0})
+            if taken:
+                raise RuntimeError("no row for the A10g address but its username is taken: refusing")
+            out("plan", {"insert_row": True, "role": {"before": None, "after": CIS_CUSTOM},
+                         "booking_role": {"before": None, "after": BOOKING_CUSTOM}})
+            out("summary", {"rows_matched": 0, "writes_planned": 3, "dry_run": True})
+            return 0
         r = await read_target(conn)
         plan = {
             "set_custom_role": r["custom_role"] != CIS_CUSTOM,
@@ -142,9 +162,17 @@ async def run(conn, *, apply: bool) -> int:
     async with conn.transaction():
         await conn.execute("SET LOCAL lock_timeout = '5s'")
         locked = await conn.fetch(ROW_LOCK_SQL, MAKER_EMAIL)
+        await check_roles(conn)
+        if not locked:
+            if await conn.fetchval(USERNAME_TAKEN_SQL, MAKER_USERNAME):
+                raise RuntimeError("no row for the A10g address but its username is taken: refusing")
+            new_id = await conn.fetchval(INSERT_ROW_SQL, MAKER_USERNAME, MAKER_EMAIL, MAKER_DISPLAY)
+            await conn.execute(AUDIT_SQL, AUDIT_ACTOR, "staff.created", str(new_id),
+                               json.dumps({"role": CIS_BASE_ROLE, "source": "db-script:aa1155"}))
+            out("created", {"fingerprint": fingerprint(new_id), "role": CIS_BASE_ROLE})
+            locked = await conn.fetch(ROW_LOCK_SQL, MAKER_EMAIL)
         if len(locked) != 1:
             raise RuntimeError(f"expected exactly one directory row for the A10g address, found {len(locked)}: refusing")
-        await check_roles(conn)
         r = await read_target(conn)
         row_id = str(r["id"])
         writes = 0
