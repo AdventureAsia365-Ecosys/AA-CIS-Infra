@@ -55,6 +55,10 @@
 #     included whatever its identity policy says (and that policy is scoped to inbound/*, which does not match
 #     inbound-admin/...). The statement has no count: harmless while the prefix is empty, and it protects the prefix
 #     name on every environment. The 1-day lifecycle (filter {}) covers the prefix too.
+#   - A10h (AA-1176, S288, root ADR 0006a A10h): the Dev-only E2E owner e2e-owner@ (booking-admin + cis-admin, an
+#     administrator with the CIS owner marker, not read-only) is a recipient of e2e-cognito-admin ONLY. Its code is an
+#     administrator sign-in; the MFA admin role being the only reader of inbound-admin/ is what lets CIS, AA-Booking and
+#     AA-Partner exempt it from their administrator MFA switches on Dev. Never add it to e2e-cognito.
 #
 # CI: the apply role needs ses:*ReceiptRule* (cicd_split.tf, Sid SESReceiptRuleManage). That is a
 # bootstrap grant: local MFA targeted apply of aws_iam_role_policy.tf_apply first, then Terraform
@@ -132,6 +136,11 @@ locals {
     "e2e-cis-content-lead@${local.e2e_mail_domain}",
     "e2e-custom-maker@${local.e2e_mail_domain}",
   ]
+  # AA-1176 (S288, root ADR 0006a A10h): the Dev-only E2E owner (booking-admin + cis-admin, owner marker in the CIS
+  # directory, NOT read-only); must equal workforce.py E2E_OWNER_TEST_STAFF_EMAIL. Same rule and prefix as A10b (MFA
+  # admin reads only), never on e2e-cognito: reading this code is the second factor of an administrator session, so no
+  # CI role may ever read it.
+  e2e_mail_owner_recipient = "e2e-owner@${local.e2e_mail_domain}"
 }
 
 # ── 1. DNS: MX for the sub-domain ────────────────────────────────────────────
@@ -361,7 +370,7 @@ resource "aws_ses_receipt_rule" "e2e_cognito_admin" {
   name          = local.e2e_mail_admin_rule
   rule_set_name = aws_ses_receipt_rule_set.e2e.rule_set_name
   after         = aws_ses_receipt_rule.crm_ingest.name
-  recipients    = concat([local.e2e_mail_admin_recipient, local.e2e_mail_crm_staff_recipient, local.e2e_mail_cis_cs_recipient], local.e2e_mail_booking_writer_recipients, local.e2e_mail_custom_role_recipients)
+  recipients    = concat([local.e2e_mail_admin_recipient, local.e2e_mail_crm_staff_recipient, local.e2e_mail_cis_cs_recipient], local.e2e_mail_booking_writer_recipients, local.e2e_mail_custom_role_recipients, [local.e2e_mail_owner_recipient])
   enabled       = true
   scan_enabled  = true
   tls_policy    = "Require"

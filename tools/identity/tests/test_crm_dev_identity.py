@@ -652,3 +652,50 @@ def test_e2e_custom_maker_refuses_other_groups_and_other_environments(capsys):
     assert "booking-admin" in capsys.readouterr().err and idp.added == []
     assert run(["--env", "stg", "e2e-custom-maker", "--apply"], PerUserWorkforceIdp()) == 1
     assert "Dev only" in capsys.readouterr().err
+
+
+# ── AA-1176: the Dev-only E2E owner (root ADR 0006a A10h) ────────────────────────────────────────────────────────────
+OWNER = "e2e-owner@e2e-mail.lumiguides.it.com"
+
+
+def test_e2e_owner_is_created_with_suppress_and_both_groups(capsys):
+    idp = PerUserWorkforceIdp()
+    assert run(["e2e-owner"], idp) == 0
+    dry = lines(capsys)
+    assert [(r["email"], r["action"], r["groups"]) for r in dry] == [
+        (OWNER, "would_create", ["booking-admin", "cis-admin"])]
+    assert idp.created == [] and idp.added == []
+    assert run(["e2e-owner", "--apply"], idp) == 0
+    assert [r["action"] for r in lines(capsys)] == ["created"]
+    (created,) = idp.created
+    assert created["MessageAction"] == "SUPPRESS" and "TemporaryPassword" not in created
+    assert {a["Name"]: a["Value"] for a in created["UserAttributes"]} == {
+        "email": OWNER, "email_verified": "true", "name": "E2E owner"}
+    assert {u: sorted(g) for u, g in idp.by_user.items()} == {OWNER: ["booking-admin", "cis-admin"]}
+    assert run(["e2e-owner", "--apply"], idp) == 0
+    again = lines(capsys)
+    assert [r["action"] for r in again] == ["exists"] and again[0]["groups_added"] == []
+
+
+def test_e2e_owner_matches_the_trigger_and_the_mailbox():
+    workforce = (REPO / "accounts" / "aa365" / "lambda_src" / "identity_triggers" / "workforce.py").read_text()
+    mailbox = (REPO / "accounts" / "aa365" / "e2e_mailbox.tf").read_text()
+    local, groups, _ = tool.E2E_OWNER
+    assert groups == ("booking-admin", "cis-admin") and "crm-platform-admin" not in groups
+    assert f'E2E_OWNER_TEST_STAFF_EMAIL = "{local}@e2e-mail.lumiguides.it.com"' in workforce
+    assert f'E2E_OWNER_TEST_STAFF_GROUPS = ("{groups[0]}", "{groups[1]}")' in workforce
+    assert f'e2e_mail_owner_recipient = "{local}@${{local.e2e_mail_domain}}"' in mailbox
+
+
+@pytest.mark.parametrize("extra", ["crm-platform-admin", "cis-content", "booking-finance"])
+def test_e2e_owner_refuses_other_groups(extra, capsys):
+    idp = PerUserWorkforceIdp({OWNER: "sub-9"}, groups={OWNER: {"cis-admin", extra}})
+    assert run(["e2e-owner", "--apply"], idp) == 1
+    assert extra in capsys.readouterr().err and idp.added == []
+
+
+@pytest.mark.parametrize("env", ["stg", "prod", "Dev", "dev "])
+def test_e2e_owner_is_dev_only(env, capsys):
+    idp = PerUserWorkforceIdp()
+    assert run(["--env", env, "e2e-owner", "--apply"], idp) == 1
+    assert "Dev only" in capsys.readouterr().err and idp.created == []

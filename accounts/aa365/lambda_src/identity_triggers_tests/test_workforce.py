@@ -396,6 +396,10 @@ CIS_CONTENT_LEAD_E2E_ATTRS = {"email": CIS_CONTENT_LEAD_E2E, "email_verified": "
 CUSTOM_MAKER_E2E = "e2e-custom-maker@e2e-mail.lumiguides.it.com"
 CUSTOM_MAKER_E2E_ATTRS = {"email": CUSTOM_MAKER_E2E, "email_verified": "true"}
 CUSTOM_GROUPS = ["booking-custom", "cis-custom"]
+# A10h (AA-1176, S288): the Dev-only E2E owner (an administrator like the tech lead, never the business owner).
+OWNER_E2E = "e2e-owner@e2e-mail.lumiguides.it.com"
+OWNER_E2E_ATTRS = {"email": OWNER_E2E, "email_verified": "true"}
+OWNER_GROUPS = ["booking-admin", "cis-admin"]
 
 
 @pytest.fixture
@@ -421,6 +425,7 @@ def test_cis_admin_e2e_constants_and_dev_only_map():
         BK_PRICING_CHECKER_E2E: ("booking-contracting",),
         CIS_CONTENT_LEAD_E2E: ("cis-content_lead",),
         CUSTOM_MAKER_E2E: ("cis-custom", "booking-custom"),
+        OWNER_E2E: ("booking-admin", "cis-admin"),
     }
     assert CIS_ADMIN_E2E not in workforce.E2E_TEST_STAFF
     assert set(workforce.E2E_TEST_STAFF) == {E2E, BOOKING_E2E}
@@ -601,7 +606,7 @@ def test_cis_admin_e2e_address_has_its_own_rule_and_prefix():
     assert "count         = local.e2e_admin_enabled ? 1 : 0" in admin
     assert re.search(r"recipients\s*=\s*concat\(\[local\.e2e_mail_admin_recipient, local\.e2e_mail_crm_staff_recipient, "
                      r"local\.e2e_mail_cis_cs_recipient\], local\.e2e_mail_booking_writer_recipients, "
-                     r"local\.e2e_mail_custom_role_recipients\)", admin)
+                     r"local\.e2e_mail_custom_role_recipients, \[local\.e2e_mail_owner_recipient\]\)", admin)
     # A10e (AA-1087): the Booking writers share the admin rule and prefix, never e2e-cognito (CI-readable inbound/).
     writers = re.search(r"e2e_mail_booking_writer_recipients = \[(.*?)\]", tf, re.S).group(1)
     assert re.findall(r'"([^"]+)"', writers) == [f"{e.split('@', 1)[0]}@${{local.e2e_mail_domain}}" for e in BK_WRITERS]
@@ -796,7 +801,8 @@ def test_every_e2e_address_maps_to_its_own_group_set():
     # No address borrows another address's groups: the tuples are pairwise distinct, except the A10e finance maker /
     # checker pair, which shares booking-finance on purpose (AA-Booking separates the two by address).
     tuples = list(workforce.E2E_TEST_STAFF.values()) + list(workforce.E2E_DEV_ONLY_TEST_STAFF.values())
-    assert len(tuples) == 11 and len(set(tuples)) == 10
+    assert len(tuples) == 12 and len(set(tuples)) == 11
+    assert len({frozenset(t) for t in tuples}) == 11   # also distinct as sets (the trigger compares sorted groups)
     shared = [e for e, g in workforce.E2E_DEV_ONLY_TEST_STAFF.items() if g == ("booking-finance",)]
     assert sorted(shared) == sorted([BK_MAKER_E2E, BK_CHECKER_E2E])
     assert not set(workforce.E2E_TEST_STAFF) & set(workforce.E2E_DEV_ONLY_TEST_STAFF)
@@ -1045,3 +1051,112 @@ def test_a10f_a10g_are_recipients_of_the_admin_rule_only():
     assert "local.e2e_mail_custom_role_recipients" in admin
     cognito = _resource_block(tf, "aws_ses_receipt_rule", "e2e_cognito")
     assert "custom" not in cognito and "content-lead" not in cognito
+
+
+# ------------------------------------------------------------------ A10h (AA-1176): the Dev-only E2E owner
+def test_a10h_constants_and_scope():
+    assert workforce.E2E_OWNER_TEST_STAFF_EMAIL == OWNER_E2E
+    assert workforce.E2E_OWNER_TEST_STAFF_GROUPS == ("booking-admin", "cis-admin")
+    assert OWNER_E2E not in workforce.E2E_TEST_STAFF   # Dev-only map only
+    assert OWNER_E2E not in workforce.E2E_DEV_ONLY_EXTRA_GROUP_SETS   # one exact set
+    assert set(workforce.E2E_OWNER_TEST_STAFF_GROUPS) <= set(workforce.DEFAULT_STAFF_GROUPS.split(","))
+    # The tech lead's set without the CRM platform group: the E2E owner never administers the CRM.
+    assert "crm-platform-admin" not in workforce.E2E_OWNER_TEST_STAFF_GROUPS
+    # No other E2E address holds an administrator group of two apps at once.
+    others = [g for e, g in workforce.E2E_DEV_ONLY_TEST_STAFF.items() if e != OWNER_E2E]
+    assert not any({"cis-admin", "booking-admin"} <= set(g) for g in others)
+
+
+@pytest.mark.parametrize("groups", [OWNER_GROUPS, ["cis-admin", "booking-admin"]])
+@pytest.mark.parametrize("source", ["TokenGeneration_HostedAuth", "TokenGeneration_RefreshTokens"])
+def test_a10h_gets_exactly_its_groups_with_the_flag(groups, source, dev_flag_on, capsys):
+    assert workforce.pre_sign_up(admin_create(OWNER_E2E))["response"]["autoConfirmUser"] is False
+    out = workforce.pre_token_generation(token_event(OWNER_E2E_ATTRS, groups + ["rogue"], source=source,
+                                                     client_id="cis"))
+    assert out["response"]["claimsAndScopeOverrideDetails"]["groupOverrideDetails"]["groupsToOverride"] == OWNER_GROUPS
+    assert out["response"]["claimsAndScopeOverrideDetails"]["accessTokenGeneration"] == {
+        "claimsToAddOrOverride": {"email": OWNER_E2E}}
+    assert {"event": "workforce_e2e_test_token_issued", "trigger": source, "client_id": "cis",
+            "email": OWNER_E2E} in _events(capsys)
+
+
+@pytest.mark.parametrize("groups", [
+    ["cis-admin"],
+    ["booking-admin"],
+    ["booking-admin", "cis-admin", "crm-platform-admin"],
+    ["booking-admin", "cis-admin", "cis-content"],
+    ["booking-admin", "cis-admin", "booking-finance"],
+    ["booking-admin", "cis-admin", "cis-custom"],
+    ["booking-admin", "cis-content_lead"],
+    ["booking-sales", "cis-admin"],
+    ["crm-platform-admin"],
+    [],
+])
+def test_a10h_with_any_other_set_is_denied(groups, dev_flag_on, capsys):
+    denied(workforce.pre_token_generation, token_event(OWNER_E2E_ATTRS, groups))
+    assert "workforce_e2e_test_token_issued" not in {e["event"] for e in _events(capsys)}
+
+
+def test_a10h_is_denied_without_a_verified_email(dev_flag_on):
+    denied(workforce.pre_token_generation, token_event({"email": OWNER_E2E, "email_verified": "false"}, OWNER_GROUPS))
+    denied(workforce.pre_token_generation, token_event({"email": OWNER_E2E}, OWNER_GROUPS))
+
+
+@pytest.mark.parametrize("flag", [None, "false", "True", "TRUE", " true", "true ", "1", ""])
+def test_a10h_is_denied_unless_the_flag_is_exactly_true(flag, monkeypatch):
+    if flag is None:
+        monkeypatch.delenv(FLAG, raising=False)
+    else:
+        monkeypatch.setenv(FLAG, flag)
+    denied(workforce.pre_sign_up, admin_create(OWNER_E2E))
+    denied(workforce.pre_token_generation, token_event(OWNER_E2E_ATTRS, OWNER_GROUPS))
+
+
+@pytest.mark.parametrize("email", [
+    "e2e-owner2@e2e-mail.lumiguides.it.com",
+    "e2e-owner+x@e2e-mail.lumiguides.it.com",
+    "e2e-owners@e2e-mail.lumiguides.it.com",
+    "owner@e2e-mail.lumiguides.it.com",
+    "e2e-owner@x.e2e-mail.lumiguides.it.com",
+    "e2e-owner@e2e-mail.lumiguides.it.com.",
+    "e2e-owner@e2e-mail.lumiguides.it.com.evil.com",
+    "e2e-owner@lumiguides.it.com",
+    "e2e-owner@adventure.asia.e2e-mail.lumiguides.it.com",
+    # Non-ASCII look-alikes: zero-width space, fullwidth 'o', Kelvin sign.
+    "e2e-owner@e2e-mail.lumiguides.it.com\u200b",
+    "e2e-\uff4fwner@e2e-mail.lumiguides.it.com",
+    "e2e-owner@e2e-mail.lumiguides.it.\u212aom",
+])
+def test_look_alikes_of_the_a10h_address_are_denied(email, dev_flag_on, capsys):
+    denied(workforce.pre_sign_up, admin_create(email))
+    denied(workforce.pre_token_generation, token_event({"email": email, "email_verified": "true"}, OWNER_GROUPS))
+    events = {e["event"] for e in _events(capsys)}
+    assert "workforce_e2e_test_create_allowed" not in events and "workforce_e2e_test_token_issued" not in events
+
+
+def test_a_non_ascii_raw_value_never_reaches_the_a10h_entry(dev_flag_on):
+    assert workforce._e2e_groups(OWNER_E2E, OWNER_E2E) == ("booking-admin", "cis-admin")
+    assert workforce._e2e_groups(OWNER_E2E.replace("o", "\u1d0f", 1), OWNER_E2E) is None
+    assert workforce._e2e_groups(OWNER_E2E + "\u200b", OWNER_E2E) is None
+
+
+@pytest.mark.parametrize("attrs", [E2E_ATTRS, BOOKING_E2E_ATTRS, CIS_ADMIN_E2E_ATTRS, CRM_STAFF_E2E_ATTRS,
+                                   CIS_CS_E2E_ATTRS, CIS_CONTENT_LEAD_E2E_ATTRS, CUSTOM_MAKER_E2E_ATTRS,
+                                   {"email": BK_STAFF_E2E, "email_verified": "true"},
+                                   {"email": BK_PRICING_CHECKER_E2E, "email_verified": "true"}])
+def test_no_other_e2e_account_borrows_the_a10h_set(attrs, dev_flag_on):
+    denied(workforce.pre_token_generation, token_event(attrs, OWNER_GROUPS))
+
+
+def test_a10h_is_a_recipient_of_the_admin_rule_only():
+    tf = _mailbox_tf()
+    locals_ = dict(re.findall(r'^\s*(e2e_mail_\w+)\s*=\s*"([^"]*)"', tf, re.M))
+    assert locals_["e2e_mail_owner_recipient"] == "e2e-owner@${local.e2e_mail_domain}"
+    assert workforce.E2E_OWNER_TEST_STAFF_EMAIL.split("@", 1)[0] == "e2e-owner"
+    admin = _resource_block(tf, "aws_ses_receipt_rule", "e2e_cognito_admin")
+    assert "local.e2e_mail_owner_recipient" in admin
+    assert "object_key_prefix = local.e2e_mail_admin_prefix" in admin
+    cognito = _resource_block(tf, "aws_ses_receipt_rule", "e2e_cognito")
+    assert "owner" not in cognito
+    # No other rule of the file names it (crm ingest lives in crm_mail.tf; this file has exactly the two rules).
+    assert tf.count("local.e2e_mail_owner_recipient") == 1

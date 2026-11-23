@@ -369,7 +369,8 @@ accounts/
                                    e2e-cis-admin@, after aa-crm-dev-ingest; A10c e2e-crm-staff@, A10d e2e-cis-cs@ and,
                                    AA-1087 A10e, the Booking write users e2e-booking-staff@ / -maker@ / -checker@,
                                    AA-1091 A10e-2 the pricing checker e2e-booking-pricing-checker@ and, AA-1155
-                                   A10f / A10g, e2e-cis-content-lead@ and the custom-role maker e2e-custom-maker@ too)
+                                   A10f / A10g, e2e-cis-content-lead@ and the custom-role maker e2e-custom-maker@ and,
+                                   AA-1176 A10h, the Dev-only E2E owner e2e-owner@ too)
                                    -> inbound-admin/, object reads there denied
                                    to every principal except the MFA admin role (the reader role included). Any future
                                    SES receiving in us-west-1 adds rules to this set)
