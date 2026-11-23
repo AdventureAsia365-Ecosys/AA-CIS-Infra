@@ -234,6 +234,9 @@ owners:
       # AA-1155: the Booking custom roles and their capabilities for the CIS "Roles & permissions" page and the Staff page
       # pickers (key-only: codes, labels, capability names; no person). The base tables stay Booking-only.
       - {grantee: cis_app, privilege: "USAGE, SELECT", object: booking.v_staff_role_capability, status: contract, source: "bk-062 (AA-1155, custom staff roles for the CIS matrix page and Staff pickers)", expected_from: bk-062}
+      # AA-1151: the add-ons of a CIS place per day with an in-force price (supply.place_addons.v1) for the TripPlanner
+      # day cards; no net, price or supplier. The offer tables stay Booking-only.
+      - {grantee: tripplanner, privilege: "USAGE, SELECT", object: booking.v_place_addons, status: contract, source: "bk-068 (AA-1151, supply.place_addons.v1)", expected_from: bk-068}
 
   tripplanner:
     repo: AA-TripPlanner-Web
