@@ -22,14 +22,18 @@ Rules:
   {is_owner: {before, after}}.
 - Every audit row: actor ``script:db-migrate-aa1176``, resource_type admin_user, details carry
   ``source: "db-script:aa1176"`` and ``e2e_owner: true``. Idempotent: a second apply writes nothing (no audit row).
-- REMOVE = True (removal, root ADR 0006a A10h): owner marker off, row inactive, Booking grant deleted, audited
-  ``staff.owner_marker_cleared`` and ``staff.disabled``. The Cognito user is disabled and signed out on the CIS Staff
-  page (Disable) or deleted with tools/identity at the A10 family removal; this script makes no Cognito call.
+- REMOVE = True (cleanup after the removal, root ADR 0006a A10h): owner marker off, Booking grant deleted, audited
+  ``staff.owner_marker_cleared`` and ``staff.roles_changed``. It is never the removal itself: this script makes no
+  Cognito call, and the Cognito user's token alone still opens Booking (admin from its groups) and the CRM (cis-admin
+  reader). The only immediate removal is Platform › Staff › Disable (row inactive, AdminDisableUser, global sign-out),
+  so REMOVE refuses while the row is still active, and every REMOVE run ends with a ``cognito`` line saying the
+  Cognito user was NOT touched here. The Cognito user is deleted with tools/identity at the A10 family removal.
 
 Modes (DB Migrate mode=run-script, runs as the RDS master; db/scripts/README.md):
 - READ_ONLY = True (this file as merged): DRY RUN. Read-only session; prints the current state and the planned writes.
 - Apply: a one-line follow-up PR sets READ_ONLY = False after the DRY RUN output was reviewed; dispatch again.
-- Remove: a one-line PR sets REMOVE = True (with READ_ONLY = True first for its own DRY RUN, then False).
+- Remove (after Staff › Disable): a one-line PR sets REMOVE = True (with READ_ONLY = True first for its own DRY RUN,
+  then False).
 - Local test: ``python3 db/scripts/aa1176_e2e_owner_row.py <DSN> [--apply] [--remove]`` (DRY RUN without --apply).
 
 Prints counts, roles, booleans and a fingerprint (first 12 hex of sha256 of the row id); no e-mail, name, sub, id or DSN.
@@ -79,8 +83,12 @@ SET_OWNER_SQL = (
     "AND password_hash IS NULL AND is_active"
 )
 REMOVE_SQL = (
-    "UPDATE shared.admin_users SET is_owner = false, is_active = false, updated_at = now() WHERE id = $1::uuid"
+    "UPDATE shared.admin_users SET is_owner = false, updated_at = now() WHERE id = $1::uuid AND NOT is_active"
 )
+STILL_ACTIVE = ("the A10h row is still active: disable it on Platform › Staff first (row inactive, Cognito disable, "
+                "global sign-out); REMOVE is the cleanup after that, never instead of it; refusing")
+COGNITO_NOTE = {"cognito_user": "NOT touched by this script",
+                "check": "Platform › Staff › Disable ran both steps (disable_user, global_sign_out) without an error"}
 DELETE_GRANT_SQL = "DELETE FROM shared.staff_app_grant WHERE admin_user_id = $1::uuid AND app = $2"
 AUDIT_SQL = (
     "INSERT INTO acp_shared.audit_log (actor, action, resource_type, resource_id, details) "
@@ -132,6 +140,8 @@ async def read_target(conn, label="before"):
     if r["is_business_owner"]:
         raise RuntimeError("the A10h row must never be the business owner: refusing")
     if REMOVE:
+        if r["is_active"]:
+            raise RuntimeError(STILL_ACTIVE)
         return r
     if r["role"] != CIS_ROLE or r["custom_role"] is not None:
         raise RuntimeError(f"row role is {r['role']} / custom {r['custom_role']}, A10h needs admin, no custom role")
@@ -149,9 +159,10 @@ async def read_target(conn, label="before"):
 async def plan(conn) -> int:
     r = await read_target(conn)
     if REMOVE:
-        writes = 0 if r is None else int(r["is_owner"]) + int(r["is_active"]) + int(r["booking_role"] is not None)
+        writes = 0 if r is None else int(r["is_owner"]) + int(r["booking_role"] is not None)
         out("plan", {"remove": True, "row": r is not None, "writes_planned": writes})
         out("summary", {"rows_matched": 0 if r is None else 1, "writes_planned": writes, "dry_run": True})
+        out("cognito", COGNITO_NOTE)
         return 0
     if r is None:
         if await conn.fetchval(USERNAME_TAKEN_SQL, OWNER_USERNAME):
@@ -213,28 +224,24 @@ async def remove(conn) -> int:
         r = await read_target(conn)
         if r is None:
             out("summary", {"rows_matched": 0, "audit_rows": 0, "dry_run": False})
+            out("cognito", COGNITO_NOTE)
             return 0
         row_id, audits = str(r["id"]), 0
-        if r["is_owner"] or r["is_active"]:
+        if r["is_owner"]:
             status = await conn.execute(REMOVE_SQL, row_id)
             if status != "UPDATE 1":
                 raise RuntimeError(f"unexpected remove status {status}: rolling back")
-            if r["is_owner"]:
-                await conn.execute(AUDIT_SQL, AUDIT_ACTOR, "staff.owner_marker_cleared", row_id,
-                                   details(is_owner={"before": True, "after": False}))
-                audits += 1
-            if r["is_active"]:
-                await conn.execute(AUDIT_SQL, AUDIT_ACTOR, "staff.disabled", row_id,
-                                   details(is_active={"before": True, "after": False}))
-                audits += 1
+            await conn.execute(AUDIT_SQL, AUDIT_ACTOR, "staff.owner_marker_cleared", row_id,
+                               details(is_owner={"before": True, "after": False}))
+            audits += 1
         if r["booking_role"] is not None:
             await conn.execute(DELETE_GRANT_SQL, row_id, BOOKING_APP)
             await conn.execute(AUDIT_SQL, AUDIT_ACTOR, "staff.roles_changed", row_id,
                                details(booking_role={"before": r["booking_role"], "after": None}))
             audits += 1
         await read_target(conn, "after")
-        out("summary", {"rows_matched": 1, "audit_rows": audits, "dry_run": False,
-                        "note": "disable and sign out the Cognito user on the CIS Staff page"})
+        out("summary", {"rows_matched": 1, "audit_rows": audits, "dry_run": False})
+        out("cognito", COGNITO_NOTE)
     return 0
 
 

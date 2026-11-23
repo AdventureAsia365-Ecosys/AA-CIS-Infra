@@ -126,9 +126,9 @@ class FakeDB:
                 r["is_owner"] = True
             return f"UPDATE {len(hit)}"
         if sql == script.REMOVE_SQL:
-            hit = [r for r in self.rows if str(r["id"]) == args[0]]
+            hit = [r for r in self.rows if str(r["id"]) == args[0] and not r["is_active"]]
             for r in hit:
-                r["is_owner"], r["is_active"] = False, False
+                r["is_owner"] = False
             return f"UPDATE {len(hit)}"
         if sql == script.AUDIT_SQL:
             self.audit.append({"actor": args[0], "action": args[1], "resource_id": args[2],
@@ -269,20 +269,34 @@ class Apply(unittest.TestCase):
 
 
 class Remove(unittest.TestCase):
-    def test_remove_clears_the_marker_disables_and_drops_the_grant(self):
+    def test_remove_refuses_while_the_row_is_active(self):
+        """REMOVE makes no Cognito call, so it never stands in for Staff › Disable (the token alone still opens
+        Booking and the CRM): an active row is refused in the DRY RUN and the apply, nothing changes."""
         db = FakeDB()
         run(db, apply=True)
+        before = json.dumps([db.rows, db.grants, db.audit], default=str)
+        for apply in (False, True):
+            with self.subTest(apply=apply), self.assertRaises(RuntimeError) as err:
+                run(db, apply=apply, remove=True)
+            self.assertIn("Platform › Staff first", str(err.exception))
+            self.assertIn("never instead of it", str(err.exception))
+        self.assertEqual(json.dumps([db.rows, db.grants, db.audit], default=str), before)
+
+    def test_remove_after_staff_disable_clears_the_marker_and_drops_the_grant(self):
+        db = FakeDB()
+        run(db, apply=True)
+        (row,) = db.rows
+        row["is_active"] = False          # Platform › Staff › Disable ran first
         _, dry = run(db, apply=False, remove=True)
-        self.assertEqual(lines(dry, "summary")[-1]["writes_planned"], 3)
+        self.assertEqual(lines(dry, "summary")[-1]["writes_planned"], 2)
+        self.assertEqual(lines(dry, "cognito")[-1]["cognito_user"], "NOT touched by this script")
         db.audit.clear()
         result, text = run(db, apply=True, remove=True)
         self.assertEqual(result, 0)
-        (row,) = db.rows
         self.assertEqual((row["is_owner"], row["is_active"]), (False, False))
         self.assertEqual(db.grants, {})
-        self.assertEqual([a["action"] for a in db.audit],
-                         ["staff.owner_marker_cleared", "staff.disabled", "staff.roles_changed"])
-        self.assertIn("CIS Staff page", text)
+        self.assertEqual([a["action"] for a in db.audit], ["staff.owner_marker_cleared", "staff.roles_changed"])
+        self.assertEqual(lines(text, "cognito")[-1]["cognito_user"], "NOT touched by this script")
         _, again = run(db, apply=True, remove=True)
         self.assertEqual(lines(again, "summary")[-1]["audit_rows"], 0)
 

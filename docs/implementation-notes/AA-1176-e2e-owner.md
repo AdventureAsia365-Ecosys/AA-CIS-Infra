@@ -26,7 +26,8 @@ AA-CIS-App, AA-Booking and AA-Partner `docs/implementation-notes/AA-1176-e2e-own
   (admin, no custom role, no password, not the business owner, active), audits each write (actor
   `script:db-migrate-aa1176`, `source: db-script:aa1176`, `e2e_owner: true`), and refuses two rows, a business owner,
   another role, a custom role, a password, a disabled row (a person re-enables it) or a CRM role. `REMOVE = True` is the
-  removal mode (marker off, row disabled, grant deleted, audited). It refuses to run before CIS 473 is applied.
+  cleanup after Staff › Disable (marker off, grant deleted, audited): it refuses while the row is still active and ends
+  every run with a `cognito` line saying the Cognito user was NOT touched. It refuses to run before CIS 473 is applied.
 
 ## Changed
 - `accounts/aa365/lambda_src/identity_triggers/workforce.py` (+ docstring A10h) and its tests.
@@ -39,8 +40,13 @@ AA-CIS-App, AA-Booking and AA-Partner `docs/implementation-notes/AA-1176-e2e-own
 - An owner-level identity exempt from the MFA switches is the real widening. It holds because: the token exists only on
   Dev (flag + precondition, and CIS / Booking / CRM each refuse it outside dev), its groups are exact, its code is
   readable only by the MFA admin role, and the row can never be the business owner (CHECK + code).
-- The run-script does not disable the Cognito user in REMOVE mode (no Cognito access from the migrator task): the CIS
-  Staff page Disable does both at once and is the first removal step.
+- The run-script does not disable the Cognito user in REMOVE mode (no Cognito access from the migrator task). That
+  matters: Booking takes `admin` from the token's groups (and its own staff row), the CRM is token-only, so after a
+  database-only removal the enabled Cognito user would still be a full, MFA-exempt Booking administrator and a CRM
+  reader; only CIS would refuse it. So Platform › Staff › Disable (row inactive + AdminDisableUser + global sign-out) is
+  the only immediate removal, and REMOVE refuses an active row: it can only run as the cleanup after Disable, never
+  instead of it (review finding, S288). Rejected: giving the migrator task Cognito rights (a new IAM grant to a
+  master-DB task for one Dev identity).
 
 ## Should know — expected Terraform plan (Terraform Plan on main, then Apply)
 Only these changes; anything else: stop.
@@ -61,8 +67,11 @@ Verify after apply:
 6. CIS sign-in first (AA-CIS-App `tests/e2e/admin-evidence/owner-live.spec.ts`, `E2EOWNER=1`), then Booking.
 
 ## Removal
-- At once: a CIS owner disables the row on Platform › Staff (AdminDisableUser + global sign-out); or the run-script's
-  REMOVE mode.
+- At once, and only this way: a CIS owner disables the row on Platform › Staff (row inactive, AdminDisableUser, global
+  sign-out); check that both Cognito steps report no error. Database-only removal is NOT a removal (the token alone
+  still opens Booking and the CRM).
+- Afterwards (cleanup, optional before the family removal): the run-script's REMOVE mode clears the owner marker and
+  deletes the Booking grant; it refuses while the row is still active.
 - With the A10 family (AA-1054): the trigger entry, the recipient, the tool command, the run-script, the app constants
   and guards, the row (DRY RUN procedure) and the Cognito user, a CIS migration restoring the 462 CHECK, Terraform
   Apply.
