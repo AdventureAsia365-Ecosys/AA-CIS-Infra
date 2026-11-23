@@ -156,10 +156,8 @@ class Shape(unittest.TestCase):
     def test_merged_read_only_with_a_valid_shape(self):
         source = (ROOT / PATH).read_text()
         self.assertEqual(rm.script_errors(source, PATH), [])
-        # S288 one-shot write window (dry run reviewed, run 45197375276): READ_ONLY False for one DB Migrate run;
-        # the follow-up PR restores READ_ONLY True and these two asserts.
-        self.assertFalse(rm.script_is_read_only(source))
-        self.assertIs(script.READ_ONLY, False)
+        self.assertTrue(rm.script_is_read_only(source))
+        self.assertIs(script.READ_ONLY, True)
         self.assertIs(script.REMOVE, False)
 
     def test_constants_match_the_trigger_and_the_tool(self):

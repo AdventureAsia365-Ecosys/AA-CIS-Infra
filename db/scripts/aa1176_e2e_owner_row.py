@@ -42,7 +42,7 @@ Prints counts, roles, booleans and a fingerprint (first 12 hex of sha256 of the 
 import hashlib
 import json
 
-READ_ONLY = False
+READ_ONLY = True
 REMOVE = False
 
 SCRIPT_NAME = "aa1176_e2e_owner_row"
