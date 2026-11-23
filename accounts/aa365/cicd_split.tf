@@ -314,6 +314,8 @@ data "aws_iam_policy_document" "tf_apply_boundary" {
   # never changes their policy, deletion or state, whatever a key policy or a later identity grant
   # says. A boundary deny also beats a key policy that names this role directly. Keys are matched by
   # the App = crm tag, which cicd_crm.tf makes mandatory at CreateKey and impossible to untag via CI.
+  # AA-1158 part 2 (S289): the same deny covers the Booking supplier bank account key (App = booking, cicd_sec.tf
+  # BookingKms*): one statement, two tag values, so the boundary does not grow by a statement. The Sid keeps its name.
   statement {
     sid    = "DenyCrmKeyUseAndPolicyEdits"
     effect = "Deny"
@@ -326,7 +328,7 @@ data "aws_iam_policy_document" "tf_apply_boundary" {
     condition {
       test     = "StringEquals"
       variable = "aws:ResourceTag/App"
-      values   = ["crm"]
+      values   = ["crm", "booking"]
     }
   }
 

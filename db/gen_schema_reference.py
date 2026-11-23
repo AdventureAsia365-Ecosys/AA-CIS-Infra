@@ -100,6 +100,8 @@ PII_ALLOWLIST = {
     "booking.v_supply_hotels.address": "a hotel (business) address (bk-023 contract view of hotels.address)",
     "booking.staff_role.label": "a custom staff role name (bk-062), not a person",
     "booking.v_staff_role_capability.label": "a custom staff role name (bk-062 view of staff_role.label), not a person",
+    "booking.supplier_profile_option.label_en": "the English name of a supplier profile choice (bk-067)",
+    "booking.supplier_profile_option.label_vi": "the Vietnamese name of a supplier profile choice (bk-067)",
     "booking.v_supply_services.working_title": "internal working title of a supplier service (bk-023 contract view "
                                                "of services.title), no customer data",
     "tripplanner.narration_cache.itinerary_hash": "hash of a catalog itinerary (cache key), no identity",

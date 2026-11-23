@@ -24,6 +24,12 @@
 # CreateGrant or any crypto use. CreateKey carries the key policy, so creating the key goes through CI; a later key
 # policy change or a key deletion is a local MFA apply.
 #
+# AA-1158 part 2 (S289): the same create / manage grants for the Booking supplier bank account key (App = booking tag,
+# alias aa-booking-*), with the same limits (boundary DenyCrmKeyUseAndPolicyEdits, now also on App = booking,
+# cicd_split.tf). Bootstrap again: apply this policy and the boundary locally with the MFA admin profile BEFORE the
+# CI apply that creates the key (otherwise CreateKey is AccessDenied, and every later CI apply fails to refresh it):
+#   terraform plan / apply -target=aws_iam_policy.tf_apply_sec -target=aws_iam_policy.tf_apply_boundary
+#
 # Apply (orchestrator, local, MFA admin profile, from main after merge):
 #   1. terraform plan, then apply, with -target=aws_iam_policy.tf_apply_sec
 #        -target=aws_iam_role_policy_attachment.tf_apply_managed -target=aws_iam_role_policy_attachment.tf_apply_sec
@@ -157,6 +163,57 @@ data "aws_iam_policy_document" "tf_apply_sec" {
     sid       = "SharedKmsAlias"
     actions   = ["kms:CreateAlias", "kms:DeleteAlias", "kms:UpdateAlias"]
     resources = ["arn:aws:kms:${var.aws_region}:${var.account_id}:alias/${local.name_prefix}-*"]
+  }
+
+  # AA-1158 part 2 (S289): the Booking supplier bank account key (modules/environment/booking_supplier_bank.tf), created
+  # only with the App = booking tag, then the same non-destructive verbs as the shared keys above. The boundary
+  # (cicd_split.tf DenyCrmKeyUseAndPolicyEdits, App = crm or booking) keeps CI off its crypto use, policy, deletion and state.
+  statement {
+    sid       = "BookingKmsCreateTagged"
+    actions   = ["kms:CreateKey", "kms:TagResource"]
+    resources = ["*"]
+    condition {
+      test     = "StringEquals"
+      variable = "aws:RequestTag/App"
+      values   = ["booking"]
+    }
+  }
+
+  statement {
+    sid = "BookingKmsManageTagged"
+    actions = [
+      "kms:DescribeKey", "kms:GetKeyPolicy", "kms:GetKeyRotationStatus", "kms:ListKeyPolicies",
+      "kms:ListResourceTags", "kms:EnableKeyRotation", "kms:UpdateKeyDescription", "kms:CancelKeyDeletion",
+      "kms:CreateAlias", "kms:DeleteAlias", "kms:UpdateAlias",
+    ]
+    resources = ["arn:aws:kms:${var.aws_region}:${var.account_id}:key/*"]
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/App"
+      values   = ["booking"]
+    }
+  }
+
+  statement {
+    sid       = "BookingKmsUntagExceptApp"
+    actions   = ["kms:UntagResource"]
+    resources = ["arn:aws:kms:${var.aws_region}:${var.account_id}:key/*"]
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/App"
+      values   = ["booking"]
+    }
+    condition {
+      test     = "ForAllValues:StringNotEquals"
+      variable = "aws:TagKeys"
+      values   = ["App"]
+    }
+  }
+
+  statement {
+    sid       = "BookingKmsAlias"
+    actions   = ["kms:CreateAlias", "kms:DeleteAlias", "kms:UpdateAlias"]
+    resources = ["arn:aws:kms:${var.aws_region}:${var.account_id}:alias/aa-booking-*"]
   }
 }
 

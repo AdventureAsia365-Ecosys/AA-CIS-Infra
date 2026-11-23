@@ -249,8 +249,10 @@ resource "aws_iam_role_policy" "booking_ecs_execution" {
 # aws_iam_role_policy.booking_ecs_task_ops_docs, vouchers / evidence / bills, AA-682; the bucket policy denies every
 # other principal the objects), and
 # s3:PutObject on archive/booking/* of the CIS bronze bucket (aws_iam_role_policy.booking_ecs_task_retention_archive
-# below: the bk_retention_job archive of failed / cancelled jobs before delete, AA-825). No Bedrock, no other S3, no
-# CIS secrets: add them only when a feature needs them.
+# below: the bk_retention_job archive of failed / cancelled jobs before delete, AA-825), and kms:GenerateDataKey /
+# Decrypt on the supplier bank account key under its encryption context (booking_supplier_bank.tf
+# aws_iam_role_policy.booking_ecs_task_supplier_bank, AA-1158 part 2). No Bedrock, no other S3, no CIS secrets: add
+# them only when a feature needs them.
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "booking_ecs_task" {
   name                 = "${local.bk_name_prefix}-ecs-task-role"
@@ -342,6 +344,7 @@ resource "aws_iam_role_policy" "booking_ecs_task_retention_archive" {
 # override unless ENVIRONMENT is dev / test / local AND this is "true" (fail closed, no default), so only dev sets it.
 # AA-993 G4: JOB_TEST_KINDS ("1" on dev only) registers the test job kind bk_noop_sleep for the worker-drain proof;
 # it stays on dev after the proof, like the CIS one (harmless: exempt, never deploy-blocking; reused by later proofs).
+# AA-1158 part 2: SUPPLIER_BANK_KMS_KEY_ID (booking_supplier_bank.tf), the alias of the supplier bank account key.
 #
 # A change here registers a new revision that the service ignores (ignore_changes below); the next
 # AA-Booking deploy copies the family's LATEST revision (deploy-dev.yml, AA-811) and carries it to the task.
@@ -389,6 +392,10 @@ resource "aws_ecs_task_definition" "booking" {
       { name = "COGNITO_CIS_ADMIN_CLIENT_ID", value = var.cognito_workforce_cis_admin_client_id },
       # AA-1093 (S279): the bk_tenant_erase kill switch (booking_variables.tf); "false" unless an approved erasure runs.
       { name = "TENANT_ERASE_APPLY_ENABLED", value = var.booking_tenant_erase_apply_enabled },
+      # AA-1158 part 2: the alias of the supplier bank account key (booking_supplier_bank.tf); the app wraps each bank
+      # account's data key with it (GenerateDataKey / Decrypt under the {purpose, supplier_id} context). A name, not a
+      # secret; empty would make bank account entry and reads answer 503.
+      { name = "SUPPLIER_BANK_KMS_KEY_ID", value = aws_kms_alias.booking_supplier_bank.name },
       ], var.booking_sentry_enabled ? [
       { name = "SENTRY_REQUIRED", value = "true" },
     ] : [])
