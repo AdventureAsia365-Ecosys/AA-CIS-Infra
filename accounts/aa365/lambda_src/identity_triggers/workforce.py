@@ -75,6 +75,15 @@ A10g (AA-1155, S286, root ADR 0006a A10g): the custom-role maker, the write-capa
     AdminCreateUser + SUPPRESS, no password (tools/identity/crm_dev_identity.py e2e-booking-writers), then linked to
     its CIS directory row (role content_lead, never an owner or the business owner, migration 462). AA-Booking holds
     it to synthetic records, Dev only. Codes in inbound-admin/ like A10e.
+A10h (AA-1176, S288, root ADR 0006a A10h): the Dev-only E2E owner, an administrator like the tech lead for the
+orchestrating agent's live checks (view-as, compliance Refresh, staff invites, sale exceptions):
+  - E2E_OWNER_TEST_STAFF_EMAIL, exactly booking-admin + cis-admin (the tech lead's set without crm-platform-admin; never
+    the business owner). Created with AdminCreateUser + SUPPRESS, no password (tools/identity/crm_dev_identity.py
+    e2e-owner), its CIS directory row (role admin, owner marker, never the business owner, CIS migration 473) is written
+    by the master run-script db/scripts/aa1176_e2e_owner_row.py. NOT read-only in CIS or AA-Booking, unlike every other
+    E2E identity, so CIS, AA-Booking and AA-Partner each refuse it unless their ENVIRONMENT is exactly "dev". Codes in
+    the A10b prefix inbound-admin/ (rule e2e-cognito-admin), readable by the MFA admin role only: that read is the
+    second factor that stands in for the authenticator code the administrator MFA switches ask of a person.
 The map is consulted only while the Lambda env E2E_DEV_ONLY_STAFF_ENABLED is exactly the string "true" (read per call,
 no strip / lower; missing or anything else = off, fail closed). identity.tf sets it to "true" only when
 var.environment == "dev" and a precondition refuses "true" anywhere else. The flag can only switch ON an entry whose
@@ -145,6 +154,12 @@ E2E_CIS_CONTENT_LEAD_TEST_STAFF_GROUPS = ("cis-content_lead",)
 # and the CIS 462 admin_users_email_chk. The two groups say "custom role" only; the role itself is directory data.
 E2E_CUSTOM_ROLE_MAKER_TEST_STAFF_EMAIL = "e2e-custom-maker@e2e-mail.lumiguides.it.com"
 E2E_CUSTOM_ROLE_MAKER_TEST_STAFF_GROUPS = ("cis-custom", "booking-custom")
+# A10h (AA-1176, S288): the Dev-only E2E owner (an administrator, owner marker in the CIS directory, never the business
+# owner); must equal AA-CIS-App e2e_staff.E2E_OWNER_TEST_STAFF_EMAIL, AA-Booking app/auth/e2e_staff.E2E_OWNER_EMAIL,
+# AA-Partner app/auth/e2e_staff.E2E_OWNER_EMAIL and the CIS 473 admin_users_email_chk. No crm-platform-admin: the CRM
+# sees it as a cis-admin reader only.
+E2E_OWNER_TEST_STAFF_EMAIL = "e2e-owner@e2e-mail.lumiguides.it.com"
+E2E_OWNER_TEST_STAFF_GROUPS = ("booking-admin", "cis-admin")
 E2E_DEV_ONLY_TEST_STAFF = MappingProxyType({
     E2E_CIS_ADMIN_TEST_STAFF_EMAIL: E2E_CIS_ADMIN_TEST_STAFF_GROUPS,
     E2E_CRM_STAFF_TEST_STAFF_EMAIL: E2E_CRM_STAFF_TEST_STAFF_GROUPS,
@@ -155,6 +170,7 @@ E2E_DEV_ONLY_TEST_STAFF = MappingProxyType({
     E2E_BOOKING_PRICING_CHECKER_TEST_STAFF_EMAIL: E2E_BOOKING_PRICING_CHECKER_TEST_STAFF_GROUPS,
     E2E_CIS_CONTENT_LEAD_TEST_STAFF_EMAIL: E2E_CIS_CONTENT_LEAD_TEST_STAFF_GROUPS,
     E2E_CUSTOM_ROLE_MAKER_TEST_STAFF_EMAIL: E2E_CUSTOM_ROLE_MAKER_TEST_STAFF_GROUPS,
+    E2E_OWNER_TEST_STAFF_EMAIL: E2E_OWNER_TEST_STAFF_GROUPS,
 })
 # Other exact group sets a Dev-only address may hold, besides its own tuple above (read-only, code constants). Any set
 # that is neither still DENIES the token.

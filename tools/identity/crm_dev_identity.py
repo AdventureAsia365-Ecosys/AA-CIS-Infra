@@ -63,6 +63,12 @@ Subcommands
       The Dev-only custom-role maker e2e-custom-maker@ in cis-custom + booking-custom (exactly), the same way as
       e2e-staff. The two groups grant nothing alone: CIS and Booking read WHICH custom role from the CIS directory row
       (CIS 462), which the CIS Staff page links to this Cognito user afterwards. Codes land in inbound-admin/.
+  e2e-owner [--apply]   (AA-1176, root ADR 0006a A10h; WORKFORCE pool, dev only)
+      The Dev-only E2E owner e2e-owner@ in booking-admin + cis-admin (exactly), the same way as e2e-staff: the
+      administrator the orchestrating agent signs in as for live checks (an administrator like the tech lead, never the
+      business owner, no CRM group). Its CIS directory row, Booking grant and owner marker are NOT made here: the master
+      run-script db/scripts/aa1176_e2e_owner_row.py writes them (DB Migrate mode=run-script). Codes land in
+      inbound-admin/ (MFA admin reads only). Removal: root ADR 0006a A10h.
 
   invitee-reset [--invitee crm|studio-viewer|studio-editor] [--apply]   (AA-939, --pool partner)
       Deletes the partner-pool account of an invitee address (AdminDeleteUser) so its next invitation starts from no
@@ -134,6 +140,10 @@ E2E_BOOKING_WRITERS: tuple[tuple[str, tuple[str, ...], str], ...] = (
 # E2E_CUSTOM_ROLE_MAKER_TEST_STAFF_EMAIL / _GROUPS and AA-Booking app/auth/e2e_staff.py.
 E2E_CUSTOM_MAKER: tuple[str, tuple[str, ...], str] = (
     "e2e-custom-maker", ("cis-custom", "booking-custom"), "E2E custom role maker")
+# AA-1176 (root ADR 0006a A10h): the Dev-only E2E owner (local part, exact groups, name); must equal workforce.py
+# E2E_OWNER_TEST_STAFF_EMAIL / _GROUPS, AA-CIS-App e2e_staff.E2E_OWNER_TEST_STAFF_EMAIL and AA-Booking
+# app/auth/e2e_staff.E2E_OWNER_EMAIL.
+E2E_OWNER: tuple[str, tuple[str, ...], str] = ("e2e-owner", ("booking-admin", "cis-admin"), "E2E owner")
 PASSWORD_SYMBOLS = "!#$%&*+-=?@^_"
 
 
@@ -604,6 +614,15 @@ def e2e_custom_maker(idp: Any, workforce_pool_id: str, *, env: str, zone: str, a
     return _ensure_workforce_e2e_user(idp, workforce_pool_id, f"{local}@e2e-mail.{zone}", groups, name, apply=apply)
 
 
+def e2e_owner(idp: Any, workforce_pool_id: str, *, env: str, zone: str, apply: bool) -> dict[str, Any]:
+    """AA-1176 (A10h): the Dev-only E2E owner in exactly booking-admin + cis-admin (SUPPRESS, no password,
+    idempotent). The directory row and the owner marker come from db/scripts/aa1176_e2e_owner_row.py."""
+    if env != "dev":
+        raise ToolError("e2e-owner is Dev only (root ADR 0006a A10h)")
+    local, groups, name = E2E_OWNER
+    return _ensure_workforce_e2e_user(idp, workforce_pool_id, f"{local}@e2e-mail.{zone}", groups, name, apply=apply)
+
+
 def _ensure_workforce_e2e_user(idp: Any, workforce_pool_id: str, email: str, groups: tuple[str, ...], name: str, *,
                                apply: bool) -> dict[str, Any]:
     """One WORKFORCE E2E user in exactly ``groups``: AdminCreateUser (SUPPRESS, email_verified, no password) when
@@ -682,6 +701,8 @@ def build_parser() -> argparse.ArgumentParser:
     eb.add_argument("--apply", action="store_true")
     ec = sub.add_parser("e2e-custom-maker", help="AA-1155: the Dev-only custom-role maker (cis-custom + booking-custom)")
     ec.add_argument("--apply", action="store_true")
+    eo = sub.add_parser("e2e-owner", help="AA-1176: the Dev-only E2E owner (booking-admin + cis-admin)")
+    eo.add_argument("--apply", action="store_true")
     r = sub.add_parser("invitee-reset", help="delete the invitee account(s) before the timed invitation E2E (--pool partner)")
     r.add_argument("--invitee", choices=INVITEE_TARGETS, default="crm",
                    help="crm (default): the CRM invitation E2E address; studio-<role>: one AA-979 studio invitee")
@@ -706,18 +727,22 @@ def main(argv: list[str] | None = None, clients: tuple[Any, Any, Any] | None = N
             out(web_sentry_dsn(sm, env=args.env, dsn=args.sentry_dsn, apply=args.apply))
             return 0
         if args.command in ("staff-web-secret", "academy-web-secret", "e2e-staff", "e2e-booking-writers",
-                            "e2e-custom-maker"):
+                            "e2e-custom-maker", "e2e-owner"):
             if args.command == "e2e-staff" and args.env != "dev":
                 raise ToolError("e2e-staff is Dev only (root ADR 0006a A10c)")
             if args.command == "e2e-booking-writers" and args.env != "dev":
                 raise ToolError("e2e-booking-writers is Dev only (root ADR 0006a A10e)")
             if args.command == "e2e-custom-maker" and args.env != "dev":
                 raise ToolError("e2e-custom-maker is Dev only (root ADR 0006a A10g)")
+            if args.command == "e2e-owner" and args.env != "dev":
+                raise ToolError("e2e-owner is Dev only (root ADR 0006a A10h)")
             workforce_pool = f"aa-workforce-{args.env}"
             workforce_id = find_pool_id(idp, workforce_pool)
             if args.command == "e2e-booking-writers":
                 for row in e2e_booking_writers(idp, workforce_id, env=args.env, zone=args.zone, apply=args.apply):
                     out(row)
+            elif args.command == "e2e-owner":
+                out(e2e_owner(idp, workforce_id, env=args.env, zone=args.zone, apply=args.apply))
             elif args.command == "e2e-custom-maker":
                 out(e2e_custom_maker(idp, workforce_id, env=args.env, zone=args.zone, apply=args.apply))
             elif args.command == "e2e-staff":
