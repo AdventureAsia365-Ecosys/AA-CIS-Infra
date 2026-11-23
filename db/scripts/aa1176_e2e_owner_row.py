@@ -57,7 +57,7 @@ SOURCE = "db-script:aa1176"
 
 ROW_SQL = (
     "SELECT u.id, u.role::text AS role, u.custom_role, u.is_active, u.is_owner, u.is_business_owner, "
-    "(u.password_hash IS NULL) AS no_password, (u.cognito_sub IS NOT NULL) AS has_identity, "
+    "(u.password_hash IS NULL) AS no_local_login, (u.cognito_sub IS NOT NULL) AS has_identity, "
     "(SELECT g.role FROM shared.staff_app_grant g WHERE g.admin_user_id = u.id AND g.app = $2) AS booking_role "
     "FROM shared.admin_users u WHERE lower(u.email) = $1 ORDER BY u.id"
 )
@@ -134,7 +134,7 @@ async def read_target(conn, label="before"):
     out(label, {
         "fingerprint": fingerprint(r["id"]), "role": r["role"], "custom_role": r["custom_role"],
         "booking_role": r["booking_role"], "is_active": r["is_active"], "is_owner": r["is_owner"],
-        "is_business_owner": r["is_business_owner"], "no_password": r["no_password"],
+        "is_business_owner": r["is_business_owner"], "no_local_login": r["no_local_login"],
         "has_cognito_identity": r["has_identity"], "crm_roles": crm,
     })
     if r["is_business_owner"]:
@@ -145,7 +145,7 @@ async def read_target(conn, label="before"):
         return r
     if r["role"] != CIS_ROLE or r["custom_role"] is not None:
         raise RuntimeError(f"row role is {r['role']} / custom {r['custom_role']}, A10h needs admin, no custom role")
-    if not r["no_password"]:
+    if not r["no_local_login"]:
         raise RuntimeError("the A10h row must not have a password: refusing")
     if not r["is_active"]:
         raise RuntimeError("the A10h row is disabled: a person re-enables it on the Staff page first; refusing")

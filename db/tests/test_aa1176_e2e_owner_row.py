@@ -82,7 +82,7 @@ class FakeDB:
             for r in self._mine(args[0]):
                 out.append({"id": r["id"], "role": r["role"], "custom_role": r["custom_role"],
                             "is_active": r["is_active"], "is_owner": r["is_owner"],
-                            "is_business_owner": r["is_business_owner"], "no_password": r["password_hash"] is None,
+                            "is_business_owner": r["is_business_owner"], "no_local_login": r["password_hash"] is None,
                             "has_identity": r["cognito_sub"] is not None,
                             "booking_role": self.grants.get(str(r["id"]))})
             return out
