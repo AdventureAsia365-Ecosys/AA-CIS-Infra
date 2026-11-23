@@ -625,7 +625,8 @@ modules/          ← reusable building blocks, consumed by the account roots
                     (AA-Booking ECS service, ECR, REST API on the existing VPC link, OIDC deploy role trusting
                     environment:<env> + ref main, secret shells booking/<env>/database-url and sentry-dsn),
                     booking_media.tf (supplier-photo bucket, CIS task role denied writes), booking_ops_docs.tf (ops
-                    documents bucket, PII, only the Booking task role touches objects). The listener rule /booking/*
+                    documents bucket, PII, only the Booking task role touches objects), booking_supplier_bank.tf
+                    (AA-1158 part 2: the supplier bank account KMS key, only the Booking task role uses it). The listener rule /booking/*
                     stays in the root (alb_rules.tf). Slice 2: the AA-Partner CRM stack (crm_app.tf, crm_web.tf,
                     crm_data.tf, crm_storage.tf, crm_mail.tf, crm_scrub.tf, crm_llm.tf, crm_llm_acc1.tf (crm_portal.tf was retired in AA-1036); crm_inputs.tf =
                     the CRM naming contract + the root inputs, crm_outputs.tf = what the root reads back); the CRM
@@ -787,7 +788,10 @@ ALB and RDS: ECS service `aa-booking-dev-api` (created at `desired_count = 0`, s
 own execution/task roles, secret `booking/dev/database-url` (container only, value set out-of-band),
 supplier-photo bucket `aa-booking-dev-supply-media-<account>` (`booking_media.tf`, AA-835; CIS reads it to copy
 rights-cleared photos, never writes), operations-document bucket `aa-booking-dev-ops-docs-<account>`
-(`booking_ops_docs.tf`, AA-682; PII, only the Booking task role touches its objects).
+(`booking_ops_docs.tf`, AA-682; PII, only the Booking task role touches its objects), KMS key
+`alias/aa-booking-dev-supplier-bank` (`booking_supplier_bank.tf`, AA-1158 part 2: envelope encryption of supplier bank
+accounts, rotation on; crypto use only by the Booking task role under the context `{purpose, supplier_id}`; CI creates
+and describes it, never uses it; env `SUPPLIER_BANK_KMS_KEY_ID`).
 Routing: its own REST API `aa-booking-dev-api` on the existing VPC link → NLB → ALB HTTP listener
 rule `/booking`, `/booking/*` (priority 100) → target group `aa-booking-dev-api-tg` (health
 `/booking/health`). That listener rule (in the root, `alb_rules.tf`) is the only object attached to a CIS resource. Dev uses
