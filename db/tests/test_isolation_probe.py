@@ -474,9 +474,10 @@ class BuildCellsTest(unittest.TestCase):
         # bk-057: AA-1093 the Booking erasure report the CIS tenant_erasure_saga reads.
         # tp-034: AA-1126 TripPlanner's AI notice events the CIS worker relays into its bells.
         # 462 / bk-062: AA-1155, the custom staff role transport view and the Booking roles view.
+        # bk-068: AA-1151, the place add-ons TripPlanner reads (supply.place_addons.v1).
         self.assertEqual(p.CONSUMER_GRANT_KEYS, ("379", "404", "462", "bk-017", "bk-023", "bk-025", "bk-039", "bk-040",
-                                                 "bk-042", "bk-057", "bk-062", "tp-015", "tp-020", "tp-022", "tp-030",
-                                                 "tp-034"))
+                                                 "bk-042", "bk-057", "bk-062", "bk-068", "tp-015", "tp-020", "tp-022",
+                                                 "tp-030", "tp-034"))
         for k in p.CONSUMER_GRANT_KEYS:
             self.assertIn(k, p.VERSION_KEYS)
             self.assertIn(k, p.KEY_TEXT)
@@ -687,6 +688,21 @@ class BuildCellsTest(unittest.TestCase):
                     c["missing"] = []
             st, _ = statuses(f)
             self.assertEqual(st[f"consumer.contract_grants.{key}"], "pass")
+
+    def test_place_addons_reader_grant_is_its_own_cell(self):
+        # AA-1151: TripPlanner reads booking.v_place_addons (supply.place_addons.v1); the grant comes with the contract
+        # file bk-068, so its cell waits for that apply and passes once bk-068 is registered.
+        objs = {c[2]: (c[0], c[3]) for c in p.CONSUMER_GRANTS if c[3] == "bk-068"}
+        self.assertEqual(objs, {"booking.v_place_addons": ("tripplanner", "bk-068")})
+        f = today_facts()
+        st, _ = statuses(f)
+        self.assertEqual(st["consumer.contract_grants.bk-068"], "pending")
+        f["catalog"]["registered"] = ["bk-068"]
+        for c in f["consumer"]["grants"]:
+            if c["from"] == "bk-068":
+                c["missing"] = []
+        st, _ = statuses(f)
+        self.assertEqual(st["consumer.contract_grants.bk-068"], "pass")
 
     def test_custom_role_base_tables_stay_cross_app_closed(self):
         # AA-1155: the view is the only door; booking never reads the directory tables, cis_app never the Booking ones.
