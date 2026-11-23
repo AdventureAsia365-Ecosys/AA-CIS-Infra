@@ -16,7 +16,8 @@
 #      DenyCrmKeyUseAndPolicyEdits (App = crm or booking) forbids any crypto use, PutKeyPolicy, ScheduleKeyDeletion, DisableKey and
 #      CreateGrant), the plan role through ReadOnlyAccess, the MFA admin role for a policy edit (a local MFA apply).
 #      It also satisfies the CreateKey lockout safety check (root may PutKeyPolicy).
-#   2. BookingRuntimeEnvelope — GenerateDataKey / Decrypt / Encrypt only for the Booking task role (aws:PrincipalArn),
+#   2. BookingRuntimeEnvelope — GenerateDataKey / Decrypt only (the app never calls Encrypt: least privilege) for
+#      the Booking task role (aws:PrincipalArn),
 #      only with the encryption context {purpose = supplier_bank_account, supplier_id = <uuid>} the app sends: a
 #      wrapped key of one supplier never unwraps under another supplier's context. The statement delegates to IAM
 #      (principal = the account), so the task role's identity policy below must allow the same.
@@ -63,7 +64,7 @@ data "aws_iam_policy_document" "booking_supplier_bank_kms" {
 
   statement {
     sid       = "BookingRuntimeEnvelope"
-    actions   = ["kms:GenerateDataKey", "kms:Decrypt", "kms:Encrypt"]
+    actions   = ["kms:GenerateDataKey", "kms:Decrypt"]
     resources = ["*"]
     principals {
       type        = "AWS"
@@ -136,7 +137,8 @@ resource "aws_kms_alias" "booking_supplier_bank" {
 }
 
 # The identity side of BookingRuntimeEnvelope (the key policy delegates to IAM, so both must allow), with the same
-# context conditions. No ReEncrypt: a re-wrap is Decrypt + Encrypt in the app.
+# context conditions. Only the two verbs the app calls (bank_crypto.py: GenerateDataKey on entry, Decrypt on read);
+# no Encrypt, no ReEncrypt (a future re-wrap adds the verb it needs then).
 resource "aws_iam_role_policy" "booking_ecs_task_supplier_bank" {
   name = "${local.bk_name_prefix}-ecs-task-supplier-bank"
   role = aws_iam_role.booking_ecs_task.id
@@ -147,7 +149,7 @@ resource "aws_iam_role_policy" "booking_ecs_task_supplier_bank" {
       {
         Sid      = "SupplierBankEnvelope"
         Effect   = "Allow"
-        Action   = ["kms:GenerateDataKey", "kms:Decrypt", "kms:Encrypt"]
+        Action   = ["kms:GenerateDataKey", "kms:Decrypt"]
         Resource = aws_kms_key.booking_supplier_bank.arn
         Condition = {
           "ForAllValues:StringEquals" = { "kms:EncryptionContextKeys" = ["purpose", "supplier_id"] }

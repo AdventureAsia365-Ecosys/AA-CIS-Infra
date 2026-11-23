@@ -790,7 +790,8 @@ supplier-photo bucket `aa-booking-dev-supply-media-<account>` (`booking_media.tf
 rights-cleared photos, never writes), operations-document bucket `aa-booking-dev-ops-docs-<account>`
 (`booking_ops_docs.tf`, AA-682; PII, only the Booking task role touches its objects), KMS key
 `alias/aa-booking-dev-supplier-bank` (`booking_supplier_bank.tf`, AA-1158 part 2: envelope encryption of supplier bank
-accounts, rotation on; crypto use only by the Booking task role under the context `{purpose, supplier_id}`; CI creates
+accounts, rotation on; crypto use only by the Booking task role (GenerateDataKey + Decrypt, no Encrypt) under the
+context `{purpose, supplier_id}`; CI creates
 and describes it, never uses it; env `SUPPLIER_BANK_KMS_KEY_ID`).
 Routing: its own REST API `aa-booking-dev-api` on the existing VPC link → NLB → ALB HTTP listener
 rule `/booking`, `/booking/*` (priority 100) → target group `aa-booking-dev-api-tg` (health

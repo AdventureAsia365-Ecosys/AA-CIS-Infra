@@ -2,10 +2,10 @@
 
 1. One customer managed symmetric key with automatic rotation, the App = booking tag (the CI grants and the boundary
    deny key on it) and the alias aa-booking-<env>-supplier-bank.
-2. Key policy: no wildcard principal anywhere; the only crypto Allow is GenerateDataKey / Decrypt / Encrypt for the
+2. Key policy: no wildcard principal anywhere; the only crypto Allow is GenerateDataKey / Decrypt (never Encrypt) for the
    Booking task role with the {purpose, supplier_id} context; every other principal of the account is denied every
    crypto verb; CreateGrant is denied; the administration statement carries no crypto verb.
-3. The task role's identity policy allows exactly the same three verbs on this key with the same context.
+3. The task role's identity policy allows exactly the same two verbs on this key with the same context.
 4. The Booking task definition gets SUPPLIER_BANK_KMS_KEY_ID from the alias (a name, no account id).
 5. CI: the apply role may create (App = booking) and describe the key and manage aliases aa-booking-*, never use it,
    change its policy, delete or disable it (the boundary deny covers App = booking).
@@ -86,7 +86,8 @@ class KeyPolicyTest(unittest.TestCase):
 
     def test_runtime_is_the_task_role_with_the_context(self):
         body = self.stmts["BookingRuntimeEnvelope"]
-        self.assertIn('actions   = ["kms:GenerateDataKey", "kms:Decrypt", "kms:Encrypt"]', body)
+        self.assertIn('actions   = ["kms:GenerateDataKey", "kms:Decrypt"]', body)
+        self.assertNotIn("kms:Encrypt", body.replace("kms:EncryptionContext", ""))  # least privilege: wrap + unwrap only
         self.assertNotIn("effect", body)  # an Allow
         self.assertIn("values   = [aws_iam_role.booking_ecs_task.arn]", body)
         self.assertIn('variable = "aws:PrincipalArn"', body)
@@ -119,7 +120,8 @@ class TaskRoleTest(unittest.TestCase):
     def test_identity_policy_matches_the_key_policy(self):
         pol = _block(KMS, 'resource "aws_iam_role_policy" "booking_ecs_task_supplier_bank"')
         self.assertIn("role = aws_iam_role.booking_ecs_task.id", pol)
-        self.assertIn('Action   = ["kms:GenerateDataKey", "kms:Decrypt", "kms:Encrypt"]', pol)
+        self.assertIn('Action   = ["kms:GenerateDataKey", "kms:Decrypt"]', pol)
+        self.assertNotIn("kms:Encrypt", pol.replace("kms:EncryptionContext", ""))
         self.assertIn("Resource = aws_kms_key.booking_supplier_bank.arn", pol)
         self.assertIn('"kms:EncryptionContextKeys" = ["purpose", "supplier_id"]', pol)
         self.assertIn('"kms:EncryptionContext:purpose" = local.bk_supplier_bank_purpose', pol)

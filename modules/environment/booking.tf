@@ -250,7 +250,7 @@ resource "aws_iam_role_policy" "booking_ecs_execution" {
 # other principal the objects), and
 # s3:PutObject on archive/booking/* of the CIS bronze bucket (aws_iam_role_policy.booking_ecs_task_retention_archive
 # below: the bk_retention_job archive of failed / cancelled jobs before delete, AA-825), and kms:GenerateDataKey /
-# Decrypt / Encrypt on the supplier bank account key under its encryption context (booking_supplier_bank.tf
+# Decrypt on the supplier bank account key under its encryption context (booking_supplier_bank.tf
 # aws_iam_role_policy.booking_ecs_task_supplier_bank, AA-1158 part 2). No Bedrock, no other S3, no CIS secrets: add
 # them only when a feature needs them.
 # -----------------------------------------------------------------------------
