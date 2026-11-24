@@ -17,6 +17,7 @@
 # Lean guard (AA-1161): every mode but --ci also runs tools/repo/lean_guard.py on <base>...HEAD (change-guard.yml job
 # `lean`): a raster image > 500 KiB, > 10 MiB of images, a dist/**/*.zip (the Lambda zips are built by archive_file),
 # an ELF / Mach-O / PE binary or a file > 5 MiB that .lean-allow does not list blocks the push; a missing base is a note.
+# The same check runs tools/repo/gitleaksignore_guard.py (S290): a change that drops a pinned .gitleaksignore line fails.
 #
 # Installed as the pre-push hook by scripts/install-hooks.sh (.githooks/pre-push calls this file).
 # Bypass for one push: git push --no-verify
@@ -594,7 +595,11 @@ run_check() {
     lean-guard)
       step "$c" "lean_guard.py (change-guard.yml lean)" "" \
         "$PYQ -B tools/repo/lean_guard.py --base $(printf '%q' "$BASE") --allow-missing-base" \
-        "compress images with AA-Ecosys tools/docs/compress_images.py; build artifacts and binaries stay out of git; a justified big file goes in .lean-allow with a reason" ;;
+        "compress images with AA-Ecosys tools/docs/compress_images.py; build artifacts and binaries stay out of git; a justified big file goes in .lean-allow with a reason"
+      # S290: a pinned .gitleaksignore fingerprint is never dropped (old commits stay on refs/pull/*/head).
+      step "$c" "gitleaksignore_guard.py (change-guard.yml lean)" "" \
+        "$PYQ -B tools/repo/gitleaksignore_guard.py --base $(printf '%q' "$BASE") --allow-missing-base" \
+        "after a history rewrite ADD the pins of the new SHAs and keep the old ones; retire a pin only with '# retired <fingerprint> <reason>'" ;;
     hook-self-test)
       step "$c" "--self-test" "" "bash scripts/pre-push.sh --self-test"
       # S273 (AA-1024): hook, this script and the git-init test drop git's repo-local variables (sentinel clone)
