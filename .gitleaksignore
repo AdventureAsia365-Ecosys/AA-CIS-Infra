@@ -19,6 +19,11 @@
 # Add a short comment above each entry: what the value is and why it is not a secret. Never write the value here.
 # A real secret is never ignored here: remove it, rotate it, then pin the old commit.
 # A change to this file needs the PR label `secret-scan-baseline-reviewed` (see the workflow header).
+# History rewrites (git filter-repo + force push) give the branch commits new SHAs, but GitHub keeps every pull
+# request head (refs/pull/*/head), and through them the OLD commits, for ever; the full-history job reads them. So a
+# remap ADDS the pins of the new SHAs and keeps the old ones. tools/repo/gitleaksignore_guard.py (change-guard.yml job
+# `lean` and scripts/pre-push.sh) refuses a change that drops a pinned line, unless the file retires it with a reason:
+# `# retired <fingerprint> <reason>`, only once no ref on GitHub reaches that commit any more.
 
 # --- Full-history baseline (AA-981, S248). Historical findings that were already in history when the
 # full-history job started (then in secret-scan.yml, now secret-scan-history.yml). Each entry is pinned to its commit, so the same file/line
@@ -31,6 +36,16 @@ ffd60f477dbd3e55145c174cd5428c7c51d9536e:envs/dev/terraform.tfvars:terraform-pla
 ffd60f477dbd3e55145c174cd5428c7c51d9536e:envs/dev/terraform.tfvars:terraform-plaintext-secret:40
 ffd60f477dbd3e55145c174cd5428c7c51d9536e:envs/dev/terraform.tfvars:uri-embedded-credentials:36
 d7f68878120176c87f7fc98b918a8e818d194e92:envs/dev/terraform.tfvars:uri-embedded-credentials:36
+# S290 (24/11/2026): the same six findings on their PRE-REWRITE commits. The S287 history rewrite (21/11) remapped
+# the pins to the rewritten SHAs above and dropped these; the old commits are on no branch any more but stay
+# reachable through old pull request heads (refs/pull/*/head), so Secret Scan (full history) run 45325621288 reported
+# them again. Same lines, same content as the pins above (checked line by line); status per the private record.
+10ff474952c8ee45417c40eeda1f06db4abe256d:envs/dev/terraform.tfvars:uri-embedded-credentials:36
+38690ddd9149e6e9272bacda19704ed58cd09942:envs/dev/terraform.tfvars:uri-embedded-credentials:36
+38690ddd9149e6e9272bacda19704ed58cd09942:envs/dev/terraform.tfvars:credential-key-literal:39
+38690ddd9149e6e9272bacda19704ed58cd09942:envs/dev/terraform.tfvars:terraform-plaintext-secret:39
+38690ddd9149e6e9272bacda19704ed58cd09942:envs/dev/terraform.tfvars:credential-key-literal:40
+38690ddd9149e6e9272bacda19704ed58cd09942:envs/dev/terraform.tfvars:terraform-plaintext-secret:40
 
 # AA-981 canary (test/aa981-canary, closed unmerged): a FAKE random value committed on purpose to prove
 # the scan goes red. Its PR head stays fetchable, so it is pinned by commit.
