@@ -106,6 +106,12 @@ PII_ALLOWLIST = {
                                                "of services.title), no customer data",
     "booking.v_supply_suppliers.company_name": "a supplier company name (bk-073 contract view of "
                                                "suppliers.company_name); no contact person",
+    "booking.supplier_contract_seasons.name": "a season name of a supplier contract (bk-069, e.g. Low, Peak), "
+                                              "supply data, no customer data",
+    "booking.rate_sheet_imports.file_name": "the uploaded rate-sheet file name of a DMC contract import (bk-069), "
+                                            "supply data, no customer data",
+    "booking.v_place_addons.title": "AA's name of an add-on service (bk-070 contract view of services.title), no "
+                                    "customer data",
     "tripplanner.narration_cache.itinerary_hash": "hash of a catalog itinerary (cache key), no identity",
     "tripplanner.job.payload": "job payloads carry flags and counts only (DM-6.3; tp-021, the retention kind's "
                                "trigger / dry_run / max_rows)",

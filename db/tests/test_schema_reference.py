@@ -561,6 +561,27 @@ class PiiTagTest(unittest.TestCase):
                 self.assertTrue(reason.strip())
 
 
+class BookingSupplyAllowlistTest(unittest.TestCase):
+    """S290 follow-up: the untagged supply columns of bk-069 (contract seasons, rate-sheet imports) and bk-070 (the
+    add-on title of the place add-ons view) are allowlisted with a reason, so the reference lists no booking candidate
+    for them; the other booking candidates are unchanged."""
+
+    KEYS = ("booking.supplier_contract_seasons.name", "booking.rate_sheet_imports.file_name",
+            "booking.v_place_addons.title")
+
+    def test_bk069_bk070_columns_are_allowlisted_not_candidates(self):
+        rels = {"supplier_contract_seasons": {"columns": [{"name": "name", "type": "text"}]},
+                "rate_sheet_imports": {"columns": [{"name": "file_name", "type": "text"},
+                                                   {"name": "file_sha256", "type": "text"}]},
+                "v_place_addons": {"columns": [{"name": "title", "type": "text"}]},
+                "invented_new": {"columns": [{"name": "guest_name", "type": "text"}]}}
+        p = gen.pii_tags({"relations": {"booking": rels}})
+        self.assertEqual(sorted(p["allowlisted"]), sorted(self.KEYS))
+        self.assertEqual(p["candidates"], ["booking.invented_new.guest_name"])
+        for key in self.KEYS:
+            self.assertTrue(gen.PII_ALLOWLIST[key].strip())
+
+
 class CrmTagClassesTest(unittest.TestCase):
     """Data standards v1.3 (AA-929): the partner CRM classes are known to the reference and to the migration lint;
     any other class fails the lint (Done-when R: a column tagged with an unknown class fails lint)."""
