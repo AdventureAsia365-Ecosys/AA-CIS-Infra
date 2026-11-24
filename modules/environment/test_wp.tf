@@ -79,12 +79,14 @@ locals {
   # Static file in both document roots (start.sh): the target group health never depends on WordPress itself.
   test_wp_health_path = "/license.txt"
 
-  # wordpress:7.1.5-php8.4-apache, multi-arch index digest (linux/arm64/v8 included), read 21/11/2026 from
+  # wordpress:7.1.5-php8.4-apache, multi-arch index digest (linux/arm64/v8 included), read 25/11/2026 from
   # public.ecr.aws/docker/library/wordpress. A digest, never a tag: the official images are rebuilt under the same tag.
-  # AA-1164: moved from the 7.1.4 digest of 09/11, which the nightly Image Scan found with fixable CRITICAL / HIGH
-  # findings (apache2, zlib1g, linux-libc-dev); this digest had none fixable on 21/11. The new image reaches the
-  # running task at the next Booking admin deploy (the deploy copies the family's latest revision).
-  test_wp_image = "public.ecr.aws/docker/library/wordpress@sha256:9ad529b57c01fd71f161f331f638b83ef50ac7f095095d52bb222b7bc3b4d10b"
+  # AA-1164: the 7.1.4 digest of 09/11 moved to the 7.1.5 digest of 21/11 (fixable apache2, zlib1g, linux-libc-dev);
+  # S292: that 21/11 digest went red in the nightly Image Scan from 22/11 (88 gate rows: krb5, glibc and
+  # linux-libc-dev, fixed in Debian 13 point updates). The official image was rebuilt under the same tag; this digest
+  # had no fixable finding at any severity on 25/11 (Trivy 0.70.0, linux/arm64). The new image reaches the running
+  # task at the next Booking admin deploy (the deploy copies the family's latest revision).
+  test_wp_image = "public.ecr.aws/docker/library/wordpress@sha256:98a3fba3639b89fe1ade0cf6d37e61bc8934de872cf26d9dc5286962b554e3d1"
 
   # Fetched by start.sh at every start, checksums verified before use (sha256 of the release zip on wordpress.org;
   # sha512 published next to the wp-cli phar on GitHub).
