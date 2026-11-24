@@ -329,6 +329,12 @@ lines (component ids only) as the undo. Idempotent.
 `aa990_reader_checks.py` also prints `pins_chain` / `tp_pins_served_chain`: the same pin checks resolved the
 TripPlanner way (chain over both sources); compare them with the one-hop `pins` / `tp_pins_served` baseline.
 
+`aa838_s291_explain.py` (AA-838 / AA-1126, S291, one-off before the AA-CIS-App S291 follow-ups merge; read-only,
+`READ_ONLY = True`): old vs new plans of the CIS reads changed in S291 (`REQUEST_TOURS_SQL`, anomaly-breaker
+`TODAY_SQL` / `BASELINE_SQL`, the two Tenant 360 cost sums). Prints `SCRIPT ` lines: timings, buffers, plan node types,
+relation / index names and old = new parity only, never row values or ids. Delete it once the C4.3 W49 review confirms
+the change.
+
 `aa838_capacity_probe.py` (AA-838, S255, monthly C8 capacity review; read-only, `READ_ONLY = True`): database size and
 cache hit, size per schema, top tables (heap / index / toast, estimated rows, dead tuples), unused indexes, ledger row
 counts and age against the C5.4 / DM-7 retention windows, job durations per kind (30 days), connections per role and
