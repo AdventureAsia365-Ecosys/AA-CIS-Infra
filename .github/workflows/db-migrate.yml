@@ -105,12 +105,39 @@ permissions:
   actions: write     # dispatch db-schema-dump.yml and db-isolation-probe.yml after an apply
 
 jobs:
+  # AA-1119 (S282 audit): the inputs are checked first, in a job with no GitHub environment, no AWS credentials and no
+  # secret (db/db_migrate_inputs.py, lists from db/owners.yaml): main only (from another ref every job below skipped
+  # and the run looked green), mode, environment, each mode's own input, the migration file or db/scripts/ script on
+  # main, the owner and the set-password role from the registry, the override reason. Every reason is printed at once
+  # and nothing below starts. The "Unused inputs" and "Validate input" steps of `migrate` stay as they are.
+  inputs:
+    name: Inputs (before any AWS call)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check the inputs
+        env:
+          MODE: ${{ inputs.mode }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          MIGRATION_INPUT: ${{ inputs.migration }}
+          ROLE_INPUT: ${{ inputs.role }}
+          SCRIPT_INPUT: ${{ inputs.script }}
+          OVERRIDE_BUSY_JOBS: ${{ inputs.override_busy_jobs }}
+        run: python3 db/db_migrate_inputs.py
+
   # AA-1004 P0: environment=prod is an input path, guarded like Deploy Prod (.github/scripts/prod-guard.sh). This job
   # has no GitHub environment and no AWS access: for prod it refuses unless the repo variable PROD_ACCOUNT_READY is
   # exactly "true" (prod plan P2) and the GitHub environment `prod` has a required reviewer and a deployment branch
   # policy, so no unreviewed `prod` environment job starts. Dev passes straight through.
   target:
     name: Target (${{ inputs.environment }})
+    needs: inputs
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
     timeout-minutes: 5
