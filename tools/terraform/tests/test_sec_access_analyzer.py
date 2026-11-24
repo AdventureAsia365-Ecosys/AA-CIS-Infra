@@ -76,7 +76,8 @@ class ArchiveRuleTest(unittest.TestCase):
     def test_every_oidc_trust_pins_audience_and_subject(self):
         for name, f, block in oidc_roles():
             with self.subTest(role=name, file=f):
-                self.assertIn('"token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"', block)
+                # terraform fmt pads the "=" when a longer key (job_workflow_ref, AA-1173) is in the same map
+                self.assertRegex(block, r'"token\.actions\.githubusercontent\.com:aud"\s+=\s+"sts\.amazonaws\.com"')
                 m = re.search(r'"token\.actions\.githubusercontent\.com:sub"\s*=\s*(\[.*?\]|.+)', block, re.S)
                 sub = m.group(1)
                 seen, todo = set(), set(re.findall(r"local\.([a-z0-9_]+)", sub))

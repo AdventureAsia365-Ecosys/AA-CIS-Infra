@@ -1,0 +1,267 @@
+name: Compliance AWS
+
+# AA-1173 (S290, compliance readiness phase 2; tech lead decisions S287 Q6 / Q8 / Q11): the AWS evidence behind the CIS
+# admin page Platform › Compliance. Root advisory docs/audits/2026-11-21-S287-compliance-tracking/README.md section 4
+# C.4 / C.5.
+#
+#   nightly  tools/compliance/aws_checks.py: eleven read-only checks of the account (CloudTrail, S3 Block Public
+#            Access, KMS rotation, IAM MFA, open security groups, Access Analyzer, RDS protections, ECR immutable +
+#            scan, the WAF rate rule, alarms on the alerts topic, Audit Manager off) -> one bundle (source aws_nightly)
+#   weekly   Prowler (open source, free; no Security Hub, no AWS Config, Q11) from its container image pinned BY
+#            DIGEST (the checksum pin; public ECR, so no GitHub release download) -> JSON-OCSF findings ->
+#            tools/compliance/prowler_summary.py -> one bundle (source prowler_weekly); the findings file is kept raw
+#
+# Each run seals its files into the Object Lock evidence bucket with tools/compliance/seal.py (write-once objects and a
+# manifest that links the previous one of the source: a hash chain). The CIS API reads the newest sealed bundle of each
+# source (AA-CIS-App api/services/compliance_store.py) and grades it (validity windows and the Prowler tolerance are
+# settings on Platform › Settings, cis.compliance.*).
+#
+# AWS: the role aa-cis-<env>-compliance-evidence (accounts/aa365/compliance_evidence.tf: SecurityAudit +
+# ViewOnlyAccess + a few reads, write-once on evidence/ of the bucket only), trusted for THIS file on main only
+# (job_workflow_ref + ref + the immutable repo subject). Secrets COMPLIANCE_EVIDENCE_ROLE_ARN and
+# COMPLIANCE_EVIDENCE_BUCKET (secrets, not variables: WL1); without them the AWS jobs stop with a notice. The role
+# name is verified before use. On a pull request only the unit tests run (no AWS).
+#
+# Public repo (advisory C.5): this log prints counts only. The account id is masked before any AWS call answers;
+# Prowler's stdout and stderr go to a file in RUNNER_TEMP that is sealed privately, never printed and never uploaded as
+# an artifact; no shell tracing; no pull_request_target. tools/compliance/tests/test_workflow.py checks these rules.
+#
+# Cost: Actions minutes are free on a public repo (the weekly Prowler run takes about 20-40 minutes); AWS read APIs
+# are free; ~12 S3 PUT a night and a few MB a week in the evidence bucket < 0.05 USD/month. Pulling the Prowler image
+# from public ECR to a GitHub runner is free (anonymous public ECR pulls to the internet: 500 GB/month free).
+on:
+  schedule:
+    - cron: "23 3 * * *"   # nightly AWS checks, 03:23 UTC (the CIS heartbeat window is longer)
+    - cron: "47 4 * * 0"   # weekly Prowler scan, Sunday 04:47 UTC
+  workflow_dispatch:
+    inputs:
+      prowler:
+        description: "Run the Prowler scan too (20-40 minutes)"
+        required: false
+        type: boolean
+        default: false
+  pull_request:
+    branches: [main]
+    paths:
+      - "tools/compliance/**"
+      - "tools/docs/aws_mask.py"
+      - ".github/workflows/compliance-aws.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: compliance-aws-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  # Prowler 5.48.0 (2026-11-06), multi-arch index digest. Raise it by digest only (tools/compliance/tests).
+  PROWLER_IMAGE: public.ecr.aws/prowler-cloud/prowler@sha256:18c46f938c19f0409be29a0b39b33ac43187e6d0eabaf6371d7468cc682d875b
+  PROWLER_VERSION: "5.48.0"
+  AWS_REGION: us-west-1
+
+jobs:
+  test:
+    name: Compliance collector unit tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install pytest and PyYAML
+        run: python -m pip install "pytest>=8,<10" pyyaml==6.0.2
+
+      - name: Unit tests (invented AWS answers and findings; no network)
+        run: python -m pytest -p no:cacheprovider -q tools/compliance/tests
+
+  aws:
+    name: Nightly AWS checks (sealed)
+    needs: test
+    if: >-
+      github.ref == 'refs/heads/main' && github.event_name != 'pull_request' &&
+      (github.event_name == 'workflow_dispatch' || github.event.schedule == '23 3 * * *')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      HAS_AWS: ${{ secrets.COMPLIANCE_EVIDENCE_ROLE_ARN != '' && secrets.COMPLIANCE_EVIDENCE_BUCKET != '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The runner context is not available in a job's env (actionlint), so the work directory is set here.
+      - name: Work directory
+        run: echo "OUT=$RUNNER_TEMP/compliance" >> "$GITHUB_ENV"
+
+      - name: AWS not configured
+        if: env.HAS_AWS != 'true'
+        run: echo "::notice title=Compliance AWS::COMPLIANCE_EVIDENCE_ROLE_ARN / COMPLIANCE_EVIDENCE_BUCKET are not set; nothing collected."
+
+      - name: AWS credentials (OIDC, compliance evidence role)
+        if: env.HAS_AWS == 'true'
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ secrets.COMPLIANCE_EVIDENCE_ROLE_ARN }}
+          aws-region: us-west-1
+          role-session-name: compliance-aws-${{ github.run_id }}
+          mask-aws-account-id: true
+
+      - name: Verify the role and mask the account
+        if: env.HAS_AWS == 'true'
+        run: |
+          set -euo pipefail
+          ACC=$(aws sts get-caller-identity --query Account --output text)
+          echo "::add-mask::$ACC"
+          ARN=$(aws sts get-caller-identity --query Arn --output text)
+          case "$ARN" in
+            *:assumed-role/aa-cis-*-compliance-evidence/*) echo "role: compliance-evidence" ;;
+            *) echo "::error::this workflow must run with the compliance evidence role (got another role)"; exit 1 ;;
+          esac
+
+      - name: Collect (counts only in this log)
+        if: env.HAS_AWS == 'true'
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p "$OUT"
+          python3 tools/compliance/aws_checks.py --out "$OUT/bundle.json" > "$OUT/counts.json"
+          python3 - "$OUT" <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, sys
+          out = sys.argv[1]
+          counts = json.load(open(f"{out}/counts.json", encoding="utf-8"))
+          bundle = json.load(open(f"{out}/bundle.json", encoding="utf-8"))
+          print("### Compliance AWS (nightly)")
+          print(f"- {counts['checks']} checks: " + ", ".join(f"{k} {v}" for k, v in sorted(counts["by_status"].items())))
+          print("")
+          print("| Check | Status |")
+          print("|---|---|")
+          for c in bundle["checks"]:
+              print(f"| {c['check_id']} | {c['status']} |")
+          PY
+
+      - name: Seal into the evidence bucket
+        if: env.HAS_AWS == 'true'
+        env:
+          BUCKET: ${{ secrets.COMPLIANCE_EVIDENCE_BUCKET }}
+        run: |
+          set -euo pipefail
+          python3 tools/compliance/seal.py --bucket "$BUCKET" --source aws_nightly --bundle "$OUT/bundle.json" \
+            --run "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --run-ref "compliance-aws #$GITHUB_RUN_NUMBER" \
+            --version "$GITHUB_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  prowler:
+    name: Weekly Prowler scan (sealed)
+    needs: test
+    if: >-
+      github.ref == 'refs/heads/main' && github.event_name != 'pull_request' &&
+      (github.event.schedule == '47 4 * * 0' || (github.event_name == 'workflow_dispatch' && inputs.prowler))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      HAS_AWS: ${{ secrets.COMPLIANCE_EVIDENCE_ROLE_ARN != '' && secrets.COMPLIANCE_EVIDENCE_BUCKET != '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The runner context is not available in a job's env (actionlint), so the work directory is set here.
+      - name: Work directory
+        run: echo "OUT=$RUNNER_TEMP/prowler" >> "$GITHUB_ENV"
+
+      - name: AWS not configured
+        if: env.HAS_AWS != 'true'
+        run: echo "::notice title=Compliance AWS::COMPLIANCE_EVIDENCE_ROLE_ARN / COMPLIANCE_EVIDENCE_BUCKET are not set; no scan."
+
+      # Before any credential is in the job: the image by digest (the pull verifies every layer against it).
+      - name: Pull the Prowler image (pinned by digest)
+        if: env.HAS_AWS == 'true'
+        run: |
+          set -euo pipefail
+          for i in 1 2 3; do docker pull --quiet "$PROWLER_IMAGE" > /dev/null && break; sleep $((i * 20)); done
+          docker image inspect "$PROWLER_IMAGE" > /dev/null
+          echo "Prowler $PROWLER_VERSION pulled by digest"
+
+      - name: AWS credentials (OIDC, compliance evidence role)
+        if: env.HAS_AWS == 'true'
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ secrets.COMPLIANCE_EVIDENCE_ROLE_ARN }}
+          aws-region: us-west-1
+          role-session-name: compliance-prowler-${{ github.run_id }}
+          role-duration-seconds: 3600
+          mask-aws-account-id: true
+
+      - name: Verify the role and mask the account
+        if: env.HAS_AWS == 'true'
+        run: |
+          set -euo pipefail
+          ACC=$(aws sts get-caller-identity --query Account --output text)
+          echo "::add-mask::$ACC"
+          ARN=$(aws sts get-caller-identity --query Arn --output text)
+          case "$ARN" in
+            *:assumed-role/aa-cis-*-compliance-evidence/*) echo "role: compliance-evidence" ;;
+            *) echo "::error::this workflow must run with the compliance evidence role (got another role)"; exit 1 ;;
+          esac
+
+      # Every byte Prowler prints goes to run.log (its failing findings would otherwise reach this public log). Exit
+      # code 3 = the scan finished with failing findings (a result, not an error).
+      - name: Scan (output to files only)
+        if: env.HAS_AWS == 'true'
+        run: |
+          set -uo pipefail
+          umask 077
+          mkdir -p "$OUT/raw"
+          chmod 0777 "$OUT/raw"
+          rc=0
+          docker run --rm -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_SESSION_TOKEN -e AWS_REGION \
+            -v "$OUT/raw:/home/prowler/output" "$PROWLER_IMAGE" aws --output-formats json-ocsf \
+            --output-directory /home/prowler/output --output-filename prowler --no-banner \
+            --filter-region us-west-1 us-east-1 > "$OUT/run.log" 2>&1 || rc=$?
+          echo "prowler exit code $rc"
+          if [ "$rc" != 0 ] && [ "$rc" != 3 ]; then echo "::warning::Prowler ended with code $rc (see the sealed run log)"; fi
+          echo "PROWLER_RC=$rc" >> "$GITHUB_ENV"
+
+      - name: Summarize (counts only in this log)
+        if: env.HAS_AWS == 'true'
+        run: |
+          set -euo pipefail
+          FINDINGS=$(find "$OUT/raw" -name '*.ocsf.json' -print -quit)
+          python3 tools/compliance/prowler_summary.py --findings "${FINDINGS:-$OUT/raw/missing.ocsf.json}" \
+            --out "$OUT/bundle.json" --prowler-version "$PROWLER_VERSION" > "$OUT/counts.json"
+          [ -n "$FINDINGS" ] && gzip -c "$FINDINGS" > "$OUT/prowler-findings.ocsf.json.gz"
+          gzip -c "$OUT/run.log" > "$OUT/prowler-run.log.gz"
+          python3 - "$OUT/bundle.json" <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, sys
+          b = json.load(open(sys.argv[1], encoding="utf-8"))
+          print("### Compliance AWS (weekly Prowler)")
+          for c in b["checks"]:
+              print(f"- {c['check_id']}: {c['status']} ({c['summary']})")
+          PY
+
+      - name: Seal into the evidence bucket
+        if: env.HAS_AWS == 'true'
+        env:
+          BUCKET: ${{ secrets.COMPLIANCE_EVIDENCE_BUCKET }}
+        run: |
+          set -euo pipefail
+          RAW=(--raw "$OUT/prowler-run.log.gz")
+          [ -f "$OUT/prowler-findings.ocsf.json.gz" ] && RAW+=(--raw "$OUT/prowler-findings.ocsf.json.gz")
+          python3 tools/compliance/seal.py --bucket "$BUCKET" --source prowler_weekly --bundle "$OUT/bundle.json" \
+            "${RAW[@]}" --run "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --run-ref "compliance-aws #$GITHUB_RUN_NUMBER" \
+            --version "$GITHUB_SHA" | tee -a "$GITHUB_STEP_SUMMARY"

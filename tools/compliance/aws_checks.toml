@@ -1,0 +1,18 @@
+# AA-1173 (S290): the names and values tools/compliance/aws_checks.py needs. Configuration of the checks, not
+# thresholds: the one tolerance the business may set (failing Prowler findings) is a CIS setting on Platform › Settings
+# (cis.compliance.prowler_critical_high_max).
+
+# The account's main region (the regional web ACLs; CloudFront web ACLs are read in us-east-1).
+region = "us-west-1"
+
+# Ports a security group may open to 0.0.0.0/0 or ::/0 (the public web entry points). Anything else open to the
+# internet fails aws_open_security_groups.
+web_ports = [80, 443]
+
+# The SNS topic every alarm of the account should send to (observability.tf aws_sns_topic.alerts), by name suffix.
+alerts_topic_suffix = "-acp-alerts"
+
+# The IAM credential report is built asynchronously: aws_iam_mfa polls generate-credential-report up to this many times,
+# pausing this many seconds in between, then reports an error row (never a pass).
+credential_report_polls = 10
+credential_report_pause_seconds = 3
