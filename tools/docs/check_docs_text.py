@@ -13,16 +13,21 @@ resource-ids    Literal AWS resource IDs in prose: sg-/subnet-/vpc-/... IDs, sta
                 --mode warn (root and Infra, private) or --mode error (public repos).
                 --block vpc,apigw keeps those kinds failing in warn mode (Infra: no VPC
                 resource ID or API Gateway host in any page; ARNs and account IDs warn).
-                Kinds: vpc, arn, user-pool, apigw, account.
+                Kinds: vpc, elb (a load balancer or target group id, app/<name>/<16 hex>;
+                AA-1118, S282 audit R26), arn, user-pool, apigw, account.
 
-retired-phrases  A phrase that describes something retired as if it were live (AA-1134, the S283
-                docs audit and AA-1118 lint slice 1): "acc3 only" LLM serving, Vercel previews,
-                the `portal/` copy and aa-crm-dev-portal, the retired Booking kind
-                bk_inquiry_pull, 7-day Dev RDS backups. A line that says the thing is gone
-                (retired, removed, no longer, was, ...) is history and passes. Scope: docs/**,
-                skill/**, .kiro/steering/**, .claude/**, minus journals, generated pages, ADRs,
-                exported Linear issues and archived pages (records keep their words).
-                --mode warn (default in CI while the AA-1118 rewrite lands) or --mode error.
+retired-phrases  A phrase that describes something retired as if it were live, or a fact that is no
+                longer true (AA-1134, the S283 docs audit, AA-1118): "acc3 only" LLM serving, Bedrock
+                or "the LLM account" on acc3 alone, acc1 "removed from the ecosystem" without its
+                S278 Bedrock role, a `develop` branch, `:latest` image tags, Vercel previews, the
+                `portal/` copy and aa-crm-dev-portal, the retired Booking kind bk_inquiry_pull, 7-day
+                Dev RDS backups. For most phrases a line that says the thing is gone (retired,
+                removed, no longer, was, ...) is history and passes; a phrase whose own words are
+                history-like (acc1 removed) instead passes when the line or the next lines state
+                today's fact (its `allow` words). Scope: docs/**, skill/**, .kiro/steering/**,
+                .claude/**, minus journals, generated pages, ADRs, exported Linear issues and
+                archived pages (records keep their words). --scope DIR narrows it (the docs lint runs
+                --scope docs --mode error and the agent files with --mode warn).
 
 --all scans every tracked .md file of the repo (minus journals) instead of the check's
 default scope. --scope DIR (repeatable) scans the tracked .md files under DIR instead; the docs
@@ -48,6 +53,7 @@ import argparse
 import re
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 from docslib import (
     IGNORE_MARKER,
@@ -64,23 +70,68 @@ AWS_SCOPE = ["docs", "skill", ".kiro/steering", ".kiro/specs", ".claude"]
 ID_SCOPE = ["docs"]
 RETIRED_SCOPE = AWS_SCOPE
 
-# (pattern, live truth). Each pattern names a thing that is retired; the message says what runs instead. Update this
-# list when an ADR retires something that docs keep describing (docs/STYLE.md).
-RETIRED_PHRASES: list[tuple[re.Pattern[str], str]] = [
-    (re.compile(r"(?i)(?<!and )\bacc3[- ]only\b|\bonly (?:on )?acc3\b|\bacc3 is the only\b"),
-     "acc1 serves Bedrock first since S278 (AA-1095); acc3 is the fallback behind it (root ADR 0001a, Note S278)."),
-    (re.compile(r"(?i)\bVercel preview"),
-     "There are no Vercel previews: the frontends run on ECS (AA-911, AA-1038, AA-979) and the UI smoke runs "
-     "after the ECS deploy."),
-    (re.compile(r"(?:AA-Partner|AA-CIS-App)/portal/|`portal/`|\baa-crm-dev-portal\b"),
-     "The tenant portal lives in the CRM web since AA-1036 R3 (service aa-crm-dev-web, host portal.); the CIS "
-     "portal/ copy was deleted at P2b."),
-    (re.compile(r"\bbk_inquiry_pull\b"),
-     "The Booking B2C inquiry kinds are retired (AA-1046, root ADR 0019 d8/d11)."),
-    (re.compile(r"(?i)\b(?:7|seven)[- ]days?\b[^.|;]{0,40}\b(?:PITR|backups?)\b|"
-                r"\b(?:PITR|backups?)\b[^.|;]{0,40}\b(?:7|seven)[- ]days?\b"),
-     "Dev RDS backups are kept 14 days (root ADR 0019 d16)."),
+
+
+class RetiredPhrase(NamedTuple):
+    """A phrase that is wrong today. `truth` is what runs instead. With `history_ok` a line that says the thing is gone
+    (RETIRED_HISTORY) passes; `allow` (checked on the line and the next ALLOW_WINDOW lines) passes a line whose
+    paragraph states today's fact or negates the phrase ("no `develop` branch")."""
+
+    pattern: re.Pattern[str]
+    truth: str
+    history_ok: bool = True
+    allow: re.Pattern[str] | None = None
+
+
+ACC1_TRUTH = ("acc1 serves Bedrock first since S278 (AA-1095); acc3 is the fallback behind it (root ADR 0001a, "
+              "Note S278).")
+# Update this list when an ADR retires something that docs keep describing (docs/STYLE.md); derive each entry from
+# CONTEXT.md / CLAUDE.md facts and fix the hits in the same PR.
+RETIRED_PHRASES: list[RetiredPhrase] = [
+    RetiredPhrase(re.compile(r"(?i)(?<!and )\bacc3[- ]only\b|\bonly (?:on )?acc3\b|\bacc3 is the only\b"), ACC1_TRUTH),
+    # AA-1118: Bedrock / the LLM account named as acc3 alone. A paragraph that also names acc1 or the fallback passes.
+    RetiredPhrase(
+        re.compile(r"(?i)\b(?:Bedrock|LLMs?|model calls?|AI models?|chat models?)\b[^.|;]{0,25}\b(?:on|in) acc3\b|"
+                   r"\bthe LLM account \(acc3\)|\bLLM account \(acc3\)"),
+        ACC1_TRUTH, history_ok=False,
+        allow=re.compile(r"(?i)S278|AA-1095|fallback|behind (?:it|acc1)|\bacc1 (?:first|serves|and acc3|then acc3)|"
+                         r"\bacc1 *(?:\+|/|->|→) *acc3")),
+    # AA-1118: "acc1 was removed from the ecosystem" without its S278 exception reads as "acc1 does nothing".
+    RetiredPhrase(
+        # the sentence may wrap: "... no longer part of" / "the ecosystem" on the next line
+        re.compile(r"(?i)\bacc1\b[^.;|]{0,40}\b(?:(?:is no longer part of|was removed from|removed from|left) the "
+                   r"ecosystem|(?:no longer part of|removed from)(?: the)?\s*$)"),
+        "acc1 left the ecosystem with AA-998 but serves Bedrock first since S278 (AA-1095, root ADR 0001a Note "
+        "S278): say both.", history_ok=False,
+        allow=re.compile(r"(?i)S278|AA-1095|serves? (?:the )?(?:Amazon )?Bedrock|Bedrock (?:LLM )?serving|since "
+                         r"2026-11-12|12/11/2026")),
+    # AA-1118: trunk-based (ADR-2026-023): branches start from origin/main (root: master); there is no develop.
+    RetiredPhrase(
+        re.compile(r"(?i)`develop`|\bdevelop branch\b|\borigin/develop\b|\b(?:in)?to develop\b"),
+        "There is no develop branch: trunk-based, branches from origin/main (root repo: master) (ADR-2026-023).",
+        history_ok=False,
+        allow=re.compile(r"(?i)\bno\b|\bnot\b|\bnever\b|\bwithout\b|không|trunk")),
+    # AA-1118: ECR repositories are IMMUTABLE and deploys use dev-<git sha> / git SHA tags (AA-869).
+    RetiredPhrase(
+        re.compile(r"[\w./-]*:latest(?![\w-])"),
+        "ECR tags are immutable git-SHA tags (dev-<sha> for CIS, the SHA for Booking; AA-869); never :latest.",
+        history_ok=False,
+        allow=re.compile(r"(?i)\bno\b|\bnot\b|\bnever\b|\bwithout\b|\bimmutable\b|instead of|\bavoid|không")),
+    RetiredPhrase(re.compile(r"(?i)\bVercel preview"),
+                  "There are no Vercel previews: the frontends run on ECS (AA-911, AA-1038, AA-979) and the UI smoke "
+                  "runs after the ECS deploy."),
+    RetiredPhrase(re.compile(r"(?:AA-Partner|AA-CIS-App)/portal/|`portal/`|\baa-crm-dev-portal\b"),
+                  "The tenant portal lives in the CRM web since AA-1036 R3 (service aa-crm-dev-web, host portal.); "
+                  "the CIS portal/ copy was deleted at P2b."),
+    RetiredPhrase(re.compile(r"\bbk_inquiry_pull\b"),
+                  "The Booking B2C inquiry kinds are retired (AA-1046, root ADR 0019 d8/d11)."),
+    # RDS backups only: the tenant export prefixes really are kept 7 days (bucket rule exports-expire).
+    RetiredPhrase(re.compile(r"(?i)\b(?:7|seven)[- ]days?\b[^.|;]{0,40}\b(?:PITR|(?:automated|RDS) backups?)\b|"
+                             r"\b(?:PITR|(?:automated|RDS) backups?)\b[^.|;*]{0,40}\b(?:7|seven)[- ]days?\b"),
+                  "Dev RDS backups are kept 14 days (root ADR 0019 d16)."),
 ]
+# allow words count on the matched line and this many lines after it (a paragraph wraps at 120 characters).
+ALLOW_WINDOW = 3
 # Records, not living pages: an ADR keeps the words of its decision (amendments say what changed), exported Linear
 # issues and archived pages are history.
 RETIRED_SKIP_PREFIXES = ("docs/adr/", "docs/linear-export/", "docs/archive/", "docs/ops/postmortems/2",
@@ -99,6 +150,9 @@ _HEX_ID = r"[0-9a-f]{8}(?:[0-9a-f]{9})?"
 RESOURCE_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("VPC resource ID",
      re.compile(rf"(?<![\w-])(?:sg|subnet|vpc|vpce|rtb|igw|nat|eni|acl|eipalloc|tgw)-{_HEX_ID}(?![\w-])")),
+    # The name stays readable, the 16-hex id is the identifier (Infra tools/docs/aws_mask.py masks it as {masked}).
+    ("Load balancer or target group ID",
+     re.compile(r"(?<![\w-])(?:app|net|gwy|targetgroup)/[A-Za-z0-9-]{1,32}/[0-9a-f]{16}(?![\w-])")),
     ("ARN with account ID", re.compile(r"arn:aws[a-z-]*:[a-z0-9-]+:[a-z0-9-]*:\d{12}:")),
     ("Cognito user-pool ID", re.compile(r"(?<![\w-])[a-z]{2}-[a-z]+-\d_[A-Za-z0-9]{9}(?![\w-])")),
     ("API Gateway host", re.compile(r"(?<![\w-])[a-z0-9]{10}\.execute-api\.")),
@@ -108,6 +162,7 @@ RESOURCE_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
 ]
 KIND_KEYS = {
     "VPC resource ID": "vpc",
+    "Load balancer or target group ID": "elb",
     "ARN with account ID": "arn",
     "Cognito user-pool ID": "user-pool",
     "API Gateway host": "apigw",
@@ -160,6 +215,19 @@ def check_resource_ids(root: Path, files: list[str]) -> list[Finding]:
     return findings
 
 
+def _retired_hit(lines: list[str], n: int) -> tuple[str, RetiredPhrase] | None:
+    """The first retired phrase line n (1-based) states as live, with the text it matched, or None."""
+    line = lines[n - 1]
+    history = bool(RETIRED_HISTORY.search(line)) or "~~" in line  # struck-through items are closed
+    for phrase in RETIRED_PHRASES:
+        if history and phrase.history_ok:
+            continue
+        m = phrase.pattern.search(line)
+        if m and not (phrase.allow and phrase.allow.search(" ".join(lines[n - 1:n + ALLOW_WINDOW]))):
+            return m.group(0), phrase
+    return None
+
+
 def check_retired_phrases(root: Path, files: list[str]) -> list[Finding]:
     findings: list[Finding] = []
     for relpath in files:
@@ -173,15 +241,11 @@ def check_retired_phrases(root: Path, files: list[str]) -> list[Finding]:
             if line.lstrip().startswith("```"):
                 fenced = not fenced
                 continue
-            if fenced or IGNORE_MARKER in line or RETIRED_HISTORY.search(line):
-                continue
-            for pattern, truth in RETIRED_PHRASES:
-                m = pattern.search(line)
-                if m:
-                    findings.append(Finding(relpath, n, "Retired phrase",
-                                            f"'{m.group(0)}' describes a retired thing as live. {truth}",
-                                            kind="retired"))
-                    break
+            hit = None if fenced or IGNORE_MARKER in line else _retired_hit(lines, n)
+            if hit:
+                findings.append(Finding(relpath, n, "Retired phrase",
+                                        f"'{hit[0]}' describes a retired thing as live. {hit[1].truth}",
+                                        kind="retired"))
     return findings
 
 
@@ -210,7 +274,7 @@ def main(argv: list[str] | None = None) -> int:
         findings = check_aws_multiline(root, files)
         errors, warnings = findings, []
     elif args.check == "retired-phrases":
-        files = _select(root, ["."] if args.all else RETIRED_SCOPE, args.files)
+        files = _select(root, ["."] if args.all else args.scope or RETIRED_SCOPE, args.files)
         findings = check_retired_phrases(root, files)
         errors, warnings = (findings, []) if args.mode == "error" else ([], findings)
     else:

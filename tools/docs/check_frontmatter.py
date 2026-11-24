@@ -5,6 +5,8 @@ Default mode (CI, every docs PR):
   * every docs/**/*.md file, and a CONTEXT.md at the repo root (the app and Infra repos), that
     starts with a '---' block must validate against the schema;
   * catalog IDs must be unique (templates excluded, they share placeholder IDs);
+  * (AA-1118) every runbook (docs/ops/runbooks/*.md) says whether it was tested: `last_tested` is a date, with
+    `tested_where` and `tested_evidence` naming where it ran and what was tested, or the word `untested`;
   * exit 1 on any error.
 
 --freshness-report PATH (weekly schedule, warn-only):
@@ -47,12 +49,18 @@ SCHEMA_PATH = "docs/templates/frontmatter.schema.json"
 SCOPE = ["docs", "CONTEXT.md"]
 DEFAULT_REVIEW_DAYS = 90
 RUNBOOK_TEST_DAYS = 180
+# AA-1118 (S282 audit R12): a runbook states whether it was ever run; null or a missing key is not an answer.
+RUNBOOK_DIR = "docs/ops/runbooks/"
+UNTESTED = "untested"
 
 
 def _stringify_dates(value):
-    """YAML turns 2026-10-19 into a date; the schema expects the ISO string."""
-    if isinstance(value, (dt.date, dt.datetime)):
-        return value.isoformat()[:10]
+    """YAML turns 2026-10-19 into a date; the schema expects the ISO string. A date-time (a postmortem's
+    detected_at with seconds) keeps its time and offset."""
+    if isinstance(value, dt.datetime):
+        return value.isoformat()
+    if isinstance(value, dt.date):
+        return value.isoformat()
     if isinstance(value, dict):
         return {k: _stringify_dates(v) for k, v in value.items()}
     if isinstance(value, list):
@@ -104,6 +112,7 @@ def validate(root: Path, pages: list[tuple[str, dict]]) -> list[Finding]:
             errors.append(Finding(relpath, 1, "Front-matter",
                                   f"only a translation file (<name>.<lang>.md, lang one of {', '.join(TRANSLATION_LANGS)}) "
                                   f"may set translation_of or a lang other than {SOURCE_LANG}"))
+        errors += _check_runbook(relpath, data)
         page_id = data.get("id")
         if isinstance(page_id, str) and not is_template(relpath):
             if page_id in seen:
@@ -113,6 +122,27 @@ def validate(root: Path, pages: list[tuple[str, dict]]) -> list[Finding]:
             else:
                 seen[page_id] = relpath
     return errors
+
+
+def is_runbook_page(relpath: str) -> bool:
+    return relpath.startswith(RUNBOOK_DIR) and relpath.endswith(".md") and not relpath.endswith("/README.md")
+
+
+def _check_runbook(relpath: str, data: dict) -> list[Finding]:
+    """AA-1118: last_tested is a date (with where and what) or `untested`; never null or missing."""
+    if not is_runbook_page(relpath):
+        return []
+    tested = data.get("last_tested")
+    if tested == UNTESTED:
+        return []
+    if tested is None:
+        return [Finding(relpath, 1, "Runbook test",
+                        "last_tested is missing or null: set the date the steps last ran (with tested_where and "
+                        "tested_evidence) or `untested` (docs/STYLE.md, Runbooks and \"tested\")")]
+    if _parse_date(tested) is None:
+        return []  # the schema reports the bad format
+    return [Finding(relpath, 1, "Runbook test", f"last_tested {tested} needs {key}: where it ran / what was tested")
+            for key in ("tested_where", "tested_evidence") if not data.get(key)]
 
 
 def _check_translation(relpath: str, lang: str, data: dict, by_path: dict[str, dict]) -> list[Finding]:

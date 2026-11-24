@@ -12,7 +12,11 @@ the copies in AA-Booking, AA-Partner, AA-TripPlanner-Web and AA-CIS-Infra: `docs
 `docs/templates/frontmatter.schema.json`. Only this README is repo-specific. `test_docs_tools.py` tests only these
 vendored scripts; a root-only tool (for example the AI gateway names check) keeps its tests in its own root file
 (AA-1134). `check_docs_text.py retired-phrases` (AA-1134) flags phrases that describe a retired thing as live; this
-repo's docs job does not run it yet.
+repo's docs job does not run it yet. AA-1118 (synced from the root): the phrase list grew (Bedrock on acc3 alone, acc1
+"removed" without its S278 Bedrock role, a `develop` branch, `:latest` tags) and `--scope` narrows it;
+`resource-ids` has a kind `elb` (a load balancer or target group id); `check_frontmatter.py` requires `last_tested` (a
+date with evidence, or `untested`) on pages under `docs/ops/runbooks/` and keeps a date-time's offset; the schema adds
+the postmortem fields `detected_at` / `resolved_at`.
 
 Change a rule in AA-Ecosys first, then copy the files to the four other repos in the same session. There is no
 automatic drift check yet (the root repo is public now, so a CI check could read it: a follow-up). Compare from the
