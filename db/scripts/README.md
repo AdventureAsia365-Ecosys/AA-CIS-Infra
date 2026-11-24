@@ -329,6 +329,12 @@ lines (component ids only) as the undo. Idempotent.
 `aa990_reader_checks.py` also prints `pins_chain` / `tp_pins_served_chain`: the same pin checks resolved the
 TripPlanner way (chain over both sources); compare them with the one-hop `pins` / `tp_pins_served` baseline.
 
+`aa838_s291_crm_load_counts.py` (AA-838, S291, one-off after the AA-Partner CRM job-load change; read-only,
+`READ_ONLY = True`): two `pg_stat_statements` snapshots 120 s apart, calls per minute and mean shared buffers per call
+for the CRM job-worker statement groups (accepted-proposal check, agency status read, job history prune, savepoint
+texts) and the eviction rate. Prints `COUNTS ` lines: counters only, never row values; never resets the statistics.
+Delete it once the C4.3 W49 review confirms the change.
+
 `aa838_s291_explain.py` (AA-838 / AA-1126, S291, one-off before the AA-CIS-App S291 follow-ups merge; read-only,
 `READ_ONLY = True`): old vs new plans of the CIS reads changed in S291 (`REQUEST_TOURS_SQL`, anomaly-breaker
 `TODAY_SQL` / `BASELINE_SQL`, the two Tenant 360 cost sums). Prints `SCRIPT ` lines: timings, buffers, plan node types,
