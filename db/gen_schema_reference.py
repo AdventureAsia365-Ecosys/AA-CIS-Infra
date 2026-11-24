@@ -104,6 +104,8 @@ PII_ALLOWLIST = {
     "booking.supplier_profile_option.label_vi": "the Vietnamese name of a supplier profile choice (bk-067)",
     "booking.v_supply_services.working_title": "internal working title of a supplier service (bk-023 contract view "
                                                "of services.title), no customer data",
+    "booking.v_supply_suppliers.company_name": "a supplier company name (bk-073 contract view of "
+                                               "suppliers.company_name); no contact person",
     "tripplanner.narration_cache.itinerary_hash": "hash of a catalog itinerary (cache key), no identity",
     "tripplanner.job.payload": "job payloads carry flags and counts only (DM-6.3; tp-021, the retention kind's "
                                "trigger / dry_run / max_rows)",

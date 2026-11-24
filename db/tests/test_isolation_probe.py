@@ -475,9 +475,10 @@ class BuildCellsTest(unittest.TestCase):
         # tp-034: AA-1126 TripPlanner's AI notice events the CIS worker relays into its bells.
         # 462 / bk-062: AA-1155, the custom staff role transport view and the Booking roles view.
         # bk-068: AA-1151, the place add-ons TripPlanner reads (supply.place_addons.v1).
+        # bk-073: AA-1148, the supplier identity the CIS content workspace reads (supply.supplier.v1).
         self.assertEqual(p.CONSUMER_GRANT_KEYS, ("379", "404", "462", "bk-017", "bk-023", "bk-025", "bk-039", "bk-040",
-                                                 "bk-042", "bk-057", "bk-062", "bk-068", "tp-015", "tp-020", "tp-022",
-                                                 "tp-030", "tp-034"))
+                                                 "bk-042", "bk-057", "bk-062", "bk-068", "bk-073", "tp-015", "tp-020",
+                                                 "tp-022", "tp-030", "tp-034"))
         for k in p.CONSUMER_GRANT_KEYS:
             self.assertIn(k, p.VERSION_KEYS)
             self.assertIn(k, p.KEY_TEXT)

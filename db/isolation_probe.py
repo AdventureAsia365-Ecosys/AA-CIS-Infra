@@ -212,6 +212,7 @@ CONSUMER_GRANTS = (
     ("booking", ("USAGE", "SELECT"), "shared.v_staff_booking_grant", "462"),       # AA-1155 custom role transport
     ("cis_app", ("USAGE", "SELECT"), "booking.v_staff_role_capability", "bk-062"), # AA-1155 roles matrix page
     ("tripplanner", ("USAGE", "SELECT"), "booking.v_place_addons", "bk-068"),     # AA-1151 supply.place_addons.v1
+    ("cis_app", ("USAGE", "SELECT"), "booking.v_supply_suppliers", "bk-073"),     # AA-1148 supply.supplier.v1
 )
 CONSUMER_GRANT_KEYS = tuple(sorted({k for *_, k in CONSUMER_GRANTS if k}))
 # DB Migrate mode=set-password (X1 S12) ends with COMMENT ON ROLE <role> IS '<marker> <UTC time> …': a

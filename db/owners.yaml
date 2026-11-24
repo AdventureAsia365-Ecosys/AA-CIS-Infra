@@ -237,6 +237,9 @@ owners:
       # AA-1151: the add-ons of a CIS place per day with an in-force price (supply.place_addons.v1) for the TripPlanner
       # day cards; no net, price or supplier. The offer tables stay Booking-only.
       - {grantee: tripplanner, privilege: "USAGE, SELECT", object: booking.v_place_addons, status: contract, source: "bk-068 (AA-1151, supply.place_addons.v1)", expected_from: bk-068}
+      # AA-1148: the identity of every AA supplier (supply.supplier.v1: id, code, company name, categories, country,
+      # status) for the CIS content workspace, which links a source tour to its supplier. No contact, note or price.
+      - {grantee: cis_app, privilege: "USAGE, SELECT", object: booking.v_supply_suppliers, status: contract, source: "bk-073 (AA-1148, supply.supplier.v1)", expected_from: bk-073}
 
   tripplanner:
     repo: AA-TripPlanner-Web
