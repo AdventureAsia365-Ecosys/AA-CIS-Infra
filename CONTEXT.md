@@ -377,6 +377,19 @@ accounts/
     image_scan.tf                 (AA-1164: GitHub OIDC role aa-cis-<env>-image-scan-upload, trusted only by this repo
                                    on refs/heads/main; PutObject on docs-reader/security/image-scan/summary.json of the
                                    bronze bucket, nothing else: the nightly Image Scan's masked summary. < $0.01/month)
+    compliance_evidence.tf        (AA-1173, compliance readiness phase 2; tech lead S287 Q6 / Q8 / Q11): bucket
+                                   aa-cis-<env>-compliance-evidence-<account> (versioning + Object Lock GOVERNANCE,
+                                   var.compliance_evidence_retention_days = 365, SSE-S3, private, TLS only; the bucket
+                                   policy denies every principal delete, version delete, retention / legal-hold change,
+                                   governance bypass, a PutObject without If-None-Match (write-once) and any write but
+                                   the collector role's under evidence/) and the GitHub OIDC role
+                                   aa-cis-<env>-compliance-evidence (SecurityAudit + ViewOnlyAccess + a few reads,
+                                   List/Get/Put on evidence/ only, explicit deny of every tamper action; trust = the
+                                   immutable subject + ref + job_workflow_ref of the root "Compliance evidence" workflow
+                                   on master and this repo's "Compliance AWS" workflow on main). The CIS task role
+                                   reads evidence/ (ecs_read_compliance_evidence). Layout and writer:
+                                   tools/compliance/seal.py; reader: AA-CIS-App api/services/compliance_store.py.
+                                   < $0.05/month)
     docs_reader.tf                (AA-898: GitHub OIDC role aa-cis-<env>-docs-sync, trusted only by the root repo
                                    AA-Ecosys on refs/heads/master (immutable subject), ListBucket on docs-reader/ +
                                    Put/Delete on docs-reader/* + Get on docs-reader/manifest.json only (AA-1132: the
@@ -664,6 +677,15 @@ tools/
                     register (docs/security/vuln-exceptions.toml) read from root master; fails on a fixable finding the
                     gate in image_scan.toml names. Every output masked (aws_mask). Tests in tools/security/tests
                     (image-scan-test.yml).
+  compliance/     ← AA-1173 (compliance readiness phase 2): aws_checks.py + aws_checks.toml (eleven nightly read-only
+                    checks: CloudTrail, S3 Block Public Access, KMS rotation, IAM MFA, open security groups, Access
+                    Analyzer, RDS protections, ECR immutable + scan, the WAF rate rule, alarms on the alerts topic, Audit
+                    Manager off), prowler_summary.py (the weekly Prowler JSON-OCSF findings -> counts by severity and
+                    framework; the critical / high tolerance is the CIS setting cis.compliance.prowler_critical_high_max)
+                    and seal.py (write-once objects + a hash-chained manifest per source in the evidence bucket; the
+                    same file as AA-Ecosys tools/compliance/seal.py, hash pinned in both test suites). Workflow
+                    compliance-aws.yml (nightly checks, Prowler weekly from its image pinned by digest, role
+                    aa-cis-<env>-compliance-evidence, counts only in the log). Tests in tools/compliance/tests.
   secrets/        ← register_check.py (AA-878): metadata-only drift check of the root repo's
                     docs/security/secrets-register.yaml against Secrets Manager list-secrets, GitHub
                     secret lists, Vercel env names and Lambda env keys collected beforehand; never
@@ -878,7 +900,8 @@ makes CI Terraform Plan fail with 403.
   (`aa-tripplanner-dev-app-deploy`), `modules/environment/booking.tf` (`aa-booking-dev-app-deploy`) and `crm_app.tf`
   (`aa-crm-dev-app-deploy`, AA-Partner, AA-933), plus `crm_scrub.tf` (`aa-crm-dev-scrub-corpus`, AA-Partner
   "Scrub corpus" workflow, environment `scrub-corpus`, AA-938), `docs_reader.tf` (`aa-cis-dev-docs-sync`, the root repo's
-  "Docs sync" workflow on `master`, AA-898) and `image_scan.tf` (`aa-cis-dev-image-scan-upload`, this repo's "Image
+  "Docs sync" workflow on `master`, AA-898), `compliance_evidence.tf` (`aa-cis-dev-compliance-evidence`, the root
+  "Compliance evidence" and this repo's "Compliance AWS" workflows, each pinned by `job_workflow_ref`, AA-1173) and `image_scan.tf` (`aa-cis-dev-image-scan-upload`, this repo's "Image
   Scan" workflow on `main`: PutObject on one summary key only, AA-1164; its reads use the plan role). Each app repo
   and each job type gets its **own** role. The old shared `aa-cis-dev-role` is retired (AA-806
   step 3); the apply boundary denies every write on that name so it cannot come back.
