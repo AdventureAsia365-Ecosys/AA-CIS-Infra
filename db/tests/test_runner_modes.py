@@ -625,7 +625,9 @@ class MigratorWorkflowTest(unittest.TestCase):
                 names = set(re.findall(r'\{name: "([A-Z0-9_]+)", value:', text))
                 self.assertLessEqual(names, TASK_ENV_NAMES)
         # Job-level env of DB Migrate: role/script fold into MIGRATION, no ROLE / SCRIPT variable.
-        block = WORKFLOWS["db-migrate"].split("    env:\n", 1)[1].split("    steps:\n", 1)[0]
+        # The `migrate` job's own env block (AA-1119: the `inputs` job before it has a step-level env of its own).
+        migrate = WORKFLOWS["db-migrate"].split("\n  migrate:\n", 1)[1]
+        block = migrate.split("\n    env:\n", 1)[1].split("    steps:\n", 1)[0]
         keys = set(re.findall(r"^      ([A-Z0-9_]+):", block, re.M))
         self.assertEqual(keys, JOB_ENV_NAMES["db-migrate"])
 
