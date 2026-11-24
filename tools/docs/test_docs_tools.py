@@ -102,6 +102,15 @@ class ResourceIdTest(TempRepo):
         self.assertEqual(self.ids(f"pool {POOL}"), [POOL])
         self.assertEqual(self.ids(f"https://{APIGW}us-west-1.amazonaws.com"), [APIGW])
 
+    def test_load_balancer_ids_are_a_blockable_kind(self) -> None:
+        # AA-1118 (S282 R26): the 16-hex id after app/<name>/ or targetgroup/<name>/ is an identifier; {masked} passes.
+        lb = "app/aa-test-alb/" + "0123456789abcdef"
+        self.assertEqual(self.ids(f"[LoadBalancer={lb}]"), [lb])
+        self.assertEqual(self.ids("[LoadBalancer=app/aa-test-alb/{masked}]"), [])
+        self.write("docs/ops/lb.md", f"{lb}\n")
+        args = ["resource-ids", "docs/ops/lb.md", "--mode", "warn", "--block", "elb", "--root", str(self.root)]
+        self.assertEqual(self.run_quiet(check_docs_text.main, args), 1)
+
     def test_names_and_conventions_pass(self) -> None:
         self.assertEqual(self.ids("Bucket aa-cis-bronze-123456789012 and aa-cis-api-sg."), [])
         self.assertEqual(self.ids("Run 20261019123045 at 2026-10-19; sg-xyz is a name."), [])
@@ -177,7 +186,41 @@ class RetiredPhrasesTest(TempRepo):
         self.assertEqual(self.found("Edit `portal/` for tenant pages.\n"), ["`portal/`"])
         self.assertEqual(self.found("Roll back aa-crm-dev-portal.\n"), ["aa-crm-dev-portal"])
         self.assertEqual(self.found("Exempt kinds: bk_inquiry_pull.\n"), ["bk_inquiry_pull"])
-        self.assertEqual(self.found("Dev keeps 7-day PITR backups.\n"), ["7-day PITR backups"])
+        self.assertEqual(self.found("Dev keeps 7-day PITR backups.\n"), ["7-day PITR"])
+        self.assertEqual(self.found("Automated backups 7 days, encrypted.\n"), ["Automated backups 7 days"])
+
+    def test_aa1118_phrases_are_flagged(self) -> None:
+        # Bedrock on acc3 alone, acc1 "removed" without its S278 role (also when the sentence wraps), develop, :latest
+        self.assertEqual(self.found("Model calls run on Amazon Bedrock in acc3; see the map.\n"),
+                         ["Model calls run on Amazon Bedrock in acc3"])
+        self.assertEqual(self.found("Holds the LLM account (acc3) and the management account.\n"),
+                         ["the LLM account (acc3)"])
+        self.assertEqual(self.found("acc1 (a personal account) was removed from the ecosystem on 2026-10-28.\n"),
+                         ["acc1 (a personal account) was removed from the ecosystem"])
+        self.assertEqual(self.found("Profiles differ. acc1 is no longer part of\nthe ecosystem (AA-998).\n"),
+                         ["acc1 is no longer part of"])
+        self.assertEqual(self.found("Open the PR against `develop`.\n"), ["`develop`"])
+        self.assertEqual(self.found("Deploy the image aa-cis-dev-api:latest.\n"), ["aa-cis-dev-api:latest"])
+
+    def test_aa1118_phrases_pass_with_todays_fact(self) -> None:
+        self.assertEqual(self.found("Bedrock runs on acc1 first and in acc3 behind it.\n"), [])
+        self.assertEqual(self.found("Chat models in acc3 are the fallback.\n"), [])
+        self.assertEqual(self.found("acc1 was removed from the ecosystem on 2026-10-28 (AA-998);\n"
+                                    "since 2026-11-12 it serves the Bedrock chat models (S278).\n"), [])
+        self.assertEqual(self.found("No `develop` branch: trunk-based.\n"), [])
+        self.assertEqual(self.found("Tags are immutable; never :latest.\n"), [])
+        self.assertEqual(self.found("Tenant exports are kept 7 days; the backup's 7 days end first.\n"), [])
+        self.assertEqual(self.found("1. ~~**Vercel Preview** secret~~ closed.\n"), [])
+
+    def test_scope_narrows_the_retired_check(self) -> None:
+        self.write("docs/ops/x.md", "Runs on acc3 only.\n")
+        self.write("skill/s/SKILL.md", "Runs on acc3 only.\n")
+        args = ["retired-phrases", "--mode", "error", "--scope", "docs", "--root", str(self.root)]
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(check_docs_text.main(args), 1)
+        self.assertIn("docs/ops/x.md", out.getvalue())
+        self.assertNotIn("skill/s/SKILL.md", out.getvalue())
 
     def test_history_fences_ignore_and_true_statements_pass(self) -> None:
         self.assertEqual(self.found("bk_inquiry_pull was retired by the B2B model.\n"), [])
@@ -268,6 +311,49 @@ class FrontMatterTest(TempRepo):
         self.write("docs/templates/how-to.md", GOOD_FM)
         msgs = self.errors()
         self.assertEqual([m for m in msgs if "duplicate id" in m], ["duplicate id OPS-02 (also in docs/ops/a.md)"])
+
+    def test_runbook_states_last_tested(self) -> None:
+        # AA-1118: a runbook page needs a date (with where and what) or `untested`; null and a missing key fail.
+        tested = GOOD_FM.replace("tested_where: dev-acc2\n", "tested_where: dev-acc2\ntested_evidence: docs/audits/x/\n")
+        self.write("docs/ops/runbooks/ok-date.md", tested.replace("OPS-02", "OPS-02-a"))
+        self.write("docs/ops/runbooks/ok-untested.md",
+                   GOOD_FM.replace("OPS-02", "OPS-02-b").replace("last_tested: 2026-01-01\ntested_where: dev-acc2\n",
+                                                                "last_tested: untested\n"))
+        self.write("docs/ops/runbooks/null.md", GOOD_FM.replace("OPS-02", "OPS-02-c").replace(
+            "last_tested: 2026-01-01", "last_tested: null"))
+        self.write("docs/ops/runbooks/missing.md", GOOD_FM.replace("OPS-02", "OPS-02-d").replace(
+            "last_tested: 2026-01-01\ntested_where: dev-acc2\n", ""))
+        self.write("docs/ops/runbooks/no-evidence.md", GOOD_FM.replace("OPS-02", "OPS-02-e"))
+        self.write("docs/ops/runbooks/bad-word.md", GOOD_FM.replace("OPS-02", "OPS-02-f").replace(
+            "last_tested: 2026-01-01", "last_tested: never"))
+        # outside the runbook folder the rule does not apply (templates keep null)
+        self.write("docs/templates/runbook.md", GOOD_FM.replace("last_tested: 2026-01-01", "last_tested: null"))
+        pages, parse_errors = check_frontmatter.load_pages(self.root)
+        found = parse_errors + check_frontmatter.validate(self.root, pages)
+        by_path = {}
+        for f in found:
+            by_path.setdefault(f.path, []).append(f.message)
+        self.assertNotIn("docs/ops/runbooks/ok-date.md", by_path)
+        self.assertNotIn("docs/ops/runbooks/ok-untested.md", by_path)
+        self.assertNotIn("docs/templates/runbook.md", by_path)
+        self.assertIn("missing or null", by_path["docs/ops/runbooks/null.md"][0])
+        self.assertIn("missing or null", by_path["docs/ops/runbooks/missing.md"][0])
+        self.assertEqual(by_path["docs/ops/runbooks/no-evidence.md"],
+                         ["last_tested 2026-01-01 needs tested_evidence: where it ran / what was tested"])
+        self.assertIn("does not match", by_path["docs/ops/runbooks/bad-word.md"][0])
+
+    def test_postmortem_times_keep_their_offset(self) -> None:
+        pm = GOOD_FM.replace("type: how-to", "type: report").replace(
+            "last_tested: 2026-01-01\ntested_where: dev-acc2\n",
+            "detected_at: 2026-10-29T13:50:00+07:00\nresolved_at: \"2026-11-12T09:00+07:00\"\n")
+        self.write("docs/ops/postmortems/2026-10-29-x.md", pm)
+        self.write("docs/ops/postmortems/2026-10-30-y.md", pm.replace("OPS-02", "OPS-03").replace(
+            "resolved_at: \"2026-11-12T09:00+07:00\"", "resolved_at: yesterday"))
+        pages, _ = check_frontmatter.load_pages(self.root)
+        self.assertEqual(dict(pages)["docs/ops/postmortems/2026-10-29-x.md"]["detected_at"], "2026-10-29T13:50:00+07:00")
+        msgs = self.errors()
+        self.assertEqual(len(msgs), 1)
+        self.assertIn("'yesterday' does not match", msgs[0])
 
     def test_translation_shares_the_english_id(self) -> None:
         vi = GOOD_FM.replace("---\n\n#", "lang: vi\ntranslation_of: docs/ops/rollback.md\n---\n\n#")

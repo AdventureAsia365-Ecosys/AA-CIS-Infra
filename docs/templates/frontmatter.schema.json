@@ -87,17 +87,27 @@
       "pattern": "^docs/(?:[A-Za-z0-9._-]+/)*[A-Za-z0-9._-]+\\.md$"
     },
     "last_tested": {
-      "description": "Runbooks only: ISO date the steps were last executed (Dev, drill, incident or dry run).",
+      "description": "Runbooks only: ISO date the write steps were last executed (Dev, drill, incident or dry run), or the word untested. Every page under docs/ops/runbooks/ sets it; a date also needs tested_where and tested_evidence (check_frontmatter.py, AA-1118). null is only for templates.",
       "type": ["string", "null"],
-      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+      "pattern": "^(?:[0-9]{4}-[0-9]{2}-[0-9]{2}|untested)$"
     },
     "tested_where": {
       "description": "Runbooks only: where the last test ran.",
       "enum": ["dev-acc2", "drill", "incident", "dry-run", null]
     },
     "tested_evidence": {
-      "description": "Runbooks only: link to the evidence (Linear comment, docs/audits/<date>-S<nnn>-<slug>/...).",
+      "description": "Runbooks only: link to the evidence (Linear comment, docs/audits/<date>-S<nnn>-<slug>/...) and what was tested.",
       "type": ["string", "null"]
+    },
+    "detected_at": {
+      "description": "Postmortems only (docs/ops/postmortems/): when the incident was first detected (alarm, report or person), ISO date or date-time with offset, e.g. 2026-10-29T13:50+07:00 (AA-1118, the K-INC-TTD / K-INC-TTR clock).",
+      "type": ["string", "null"],
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}(?:T[0-9]{2}:[0-9]{2}(?::[0-9]{2})?(?:Z|[+-][0-9]{2}:[0-9]{2}))?$"
+    },
+    "resolved_at": {
+      "description": "Postmortems only: when service was restored (not when the follow-up actions closed), same format as detected_at; null while the incident is open.",
+      "type": ["string", "null"],
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}(?:T[0-9]{2}:[0-9]{2}(?::[0-9]{2})?(?:Z|[+-][0-9]{2}:[0-9]{2}))?$"
     },
     "generated": {
       "description": "true when a workflow writes the page; humans do not edit it.",
