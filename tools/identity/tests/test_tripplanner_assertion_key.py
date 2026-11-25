@@ -57,7 +57,7 @@ def _write(sm, **kw):
     kw.setdefault("rotate", False)
     kw.setdefault("grace_hours", 24)
     kw.setdefault("apply", True)
-    return tool.write_secret(sm, "dev", now=NOW, make_key=lambda: NEW, **kw)
+    return tool.write_entry(sm, "dev", now=NOW, make_key=lambda: NEW, **kw)
 
 
 def test_first_fill_writes_current_and_the_cut_over_window():
@@ -100,8 +100,8 @@ def test_the_next_step_waits_for_the_lambda_secret_cache(rotate):
     # A web task that signs with the new current before a warm Lambda re-read the secret would be refused (401).
     sm = FakeSm({NAME: json.dumps({"current": OLD})} if rotate else {NAME: None})
     got = _write(sm, rotate=rotate)
-    assert tool.LAMBDA_SECRET_CACHE_S == 600  # AA-TripPlanner-Web config.API_KEY_CACHE_SECONDS
-    assert got["deploy_not_before"] == NOW + tool.LAMBDA_SECRET_CACHE_S
+    assert tool.LAMBDA_CACHE_S == 600  # AA-TripPlanner-Web config.API_KEY_CACHE_SECONDS
+    assert got["deploy_not_before"] == NOW + tool.LAMBDA_CACHE_S
     assert got["next"].startswith("wait 10 minutes")
 
 
@@ -155,7 +155,7 @@ def test_end_cutover_drops_the_edge_window_and_keeps_the_key():
     sm = FakeSm({NAME: json.dumps({"current": OLD, "edge_derived_until": NOW + 3600})})
     got = _write(sm, end_cutover=True)
     assert sm.puts == [(NAME, {"current": OLD})]
-    assert got["mode"] == "end_cutover" and got["refused_from"] == NOW + tool.LAMBDA_SECRET_CACHE_S
+    assert got["mode"] == "end_cutover" and got["refused_from"] == NOW + tool.LAMBDA_CACHE_S
 
 
 def test_end_cutover_keeps_a_running_previous_and_drops_an_expired_one():

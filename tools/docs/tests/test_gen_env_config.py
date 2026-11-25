@@ -117,7 +117,7 @@ class FakeAws:
 def _aws_model() -> dict:
     aws = FakeAws({n: _task_def(n, "worker" if "worker" in n else "api") for n in ec.REQUIRED_ECS},
                   list(ec.REQUIRED_LAMBDA) + ["aa-identity-dev-pre-token"])
-    names, warn = ec.secret_names_by_arn(aws)
+    names, warn = ec.sm_names_by_arn(aws)
     assert warn is None
     return {
         "format": 1,
@@ -215,7 +215,7 @@ class SecretRefs(unittest.TestCase):
         self.assertEqual(ec.secret_ref("/aa/dev/flag"), {"store": "ssm", "secret": "/aa/dev/flag", "key": None})
 
     def test_listsecrets_denied_falls_back_with_warning(self):
-        names, warn = ec.secret_names_by_arn(FakeAws({}, sm_fail=True))
+        names, warn = ec.sm_names_by_arn(FakeAws({}, sm_fail=True))
         self.assertEqual(names, {})
         self.assertIn("ListSecrets", warn)
 

@@ -374,3 +374,24 @@ def test_academy_verify_page():
     assert chk.eval_academy_verify(503, b"", "text/html")[0]
     assert not chk.eval_academy_verify(404, b"Not Found", "text/plain")[0]
     assert not chk.eval_academy_verify(200, b"{}", "application/json")[0]
+
+
+def test_get_via_refuses_tls_below_1_2(monkeypatch):
+    """AA-1111 (CodeQL py/insecure-protocol): the pinned-host check never negotiates TLS 1.0 or 1.1."""
+    import socket
+    import ssl
+
+    seen = {}
+
+    class Stop(Exception):
+        pass
+
+    def wrap(self, sock, server_hostname=None):
+        seen["min"], seen["host"] = self.minimum_version, server_hostname
+        raise Stop
+
+    monkeypatch.setattr(socket, "create_connection", lambda addr, timeout=None: object())
+    monkeypatch.setattr(ssl.SSLContext, "wrap_socket", wrap)
+    with pytest.raises(Stop):
+        chk.get_via("192.0.2.1", "agency.example.invalid", "/")
+    assert seen == {"min": ssl.TLSVersion.TLSv1_2, "host": "agency.example.invalid"}

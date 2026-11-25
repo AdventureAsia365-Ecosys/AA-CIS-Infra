@@ -208,7 +208,7 @@ def test_each_deploy_grant_is_scoped_to_its_own_app():
         assert "StringLikeIfExists" in update and f"{scope}.task_def_pattern" in update
         assert f"{scope}.service_arn" in update
         pass_role = _statement(policy, "PassStaffWebTaskRoles")
-        assert "ecs-tasks.amazonaws.com" in pass_role
+        assert re.search(r'"iam:PassedToService"\s*=\s*"ecs-tasks\.amazonaws\.com"', pass_role)
         assert f'"{other}"' not in code and f".{other}." not in code, f"grant names the {other} app"
     assert 'aws_iam_role.staff_web_ecs_execution["booking"].arn' in _statement(booking, "PassStaffWebTaskRoles")
     assert "local.cis_staff_web_scope.execution_role_arn" in _statement(cis, "PassStaffWebTaskRoles")

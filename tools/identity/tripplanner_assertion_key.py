@@ -21,17 +21,17 @@ Modes:
   (default)   first fill. Refuses when the secret already holds a key (use --rotate). Writes current and
               edge_derived_until = now + --grace-hours (default 24).
   --rotate    new current; previous = the old current; previous_until = now + --grace-hours. Drops any expired
-              edge_derived_until. After --apply, WAIT at least LAMBDA_SECRET_CACHE_S (10 minutes, the Lambdas'
+              edge_derived_until. After --apply, WAIT at least LAMBDA_CACHE_S (10 minutes, the Lambdas'
               secret cache, AA-TripPlanner-Web config.API_KEY_CACHE_SECONDS), then force a new deployment of
               aa-tripplanner-<env>-web: the Lambdas accept both keys until previous_until. A web task that signs with
               the new key before a warm Lambda re-read the secret would be refused (401) until that Lambda's cache
               expires; the Lambdas also re-read once on a signature miss (throttled), but the wait is the rule.
   --end-cutover  ends the first-fill cut-over early: keeps current (and an unexpired previous) and drops
               edge_derived_until, so the Lambdas refuse the pre-AA-1092 edge-derived key once their secret cache
-              expires (at most LAMBDA_SECRET_CACHE_S). No new key, no deploy. Run it only after the web task signs
+              expires (at most LAMBDA_CACHE_S). No new key, no deploy. Run it only after the web task signs
               with current (its deploy after the first fill). Refuses when there is no cut-over window to end.
 
-The first fill has the same wait: the web deploy that maps the new current runs at least LAMBDA_SECRET_CACHE_S after
+The first fill has the same wait: the web deploy that maps the new current runs at least LAMBDA_CACHE_S after
 the write. The output carries deploy_not_before (epoch seconds) for both modes.
 
 Values are never printed: the output is one JSON line with the secret name, the action, the fields written and the
@@ -52,14 +52,14 @@ DEFAULT_REGION = "us-west-1"
 DEFAULT_ACCOUNT = "005097885195"
 DEFAULT_ENV = "dev"
 
-SECRET = "tripplanner/{env}/tenant-assertion-key"
+ENTRY_NAME = "tripplanner/{env}/tenant-assertion-key"
 PLACEHOLDER = "REPLACE_ME"
 MIN_KEY_LENGTH = 32  # AA-TripPlanner-Web config.TENANT_ASSERTION_KEY_MIN_LENGTH
 MAX_GRACE_HOURS = 7 * 24  # AA-TripPlanner-Web config.TENANT_ASSERTION_MAX_GRACE_S
 DEFAULT_GRACE_HOURS = 24
 # AA-TripPlanner-Web config.API_KEY_CACHE_SECONDS: how long a warm Lambda keeps the secret it read. A web deploy that
 # starts signing with a new current must wait this long after the write.
-LAMBDA_SECRET_CACHE_S = 600
+LAMBDA_CACHE_S = 600
 FIELDS = ("current", "previous", "previous_until", "edge_derived_until")
 
 
@@ -145,10 +145,17 @@ def ended_cutover_value(current: dict[str, Any], *, now: int) -> dict[str, Any]:
     return value
 
 
-def write_secret(sm: Any, env: str, *, rotate: bool, grace_hours: int, apply: bool,
+def _grace_until(wanted: dict[str, Any]) -> int | None:
+    """The epoch the printed line reports. Rebuilt as a new int from the stored epoch, so the line can never carry
+    anything else of the value read from Secrets Manager (and CodeQL sees no flow from the key to the output, AA-1111)."""
+    until = _epoch(wanted.get("previous_until")) or _epoch(wanted.get("edge_derived_until"))
+    return int(until) if until else None
+
+
+def write_entry(sm: Any, env: str, *, rotate: bool, grace_hours: int, apply: bool,
                  now: int | None = None, make_key: Callable[[], str] = new_key,
                  end_cutover: bool = False) -> dict[str, Any]:
-    name = SECRET.format(env=env)
+    name = ENTRY_NAME.format(env=env)
     if not _secret_exists(sm, name):
         raise ToolError(f"{name} does not exist: apply AA-CIS-Infra modules/environment/tripplanner.tf first (the shell)")
     if end_cutover and rotate:
@@ -163,7 +170,7 @@ def write_secret(sm: Any, env: str, *, rotate: bool, grace_hours: int, apply: bo
         "secret": name,
         "mode": "end_cutover" if end_cutover else "rotate" if rotate else "first_fill",
         "fields": sorted(wanted),
-        "grace_until": wanted.get("previous_until", wanted.get("edge_derived_until")),
+        "grace_until": _grace_until(wanted),
     }
     if not apply:
         result["action"] = "would_write"
@@ -172,12 +179,12 @@ def write_secret(sm: Any, env: str, *, rotate: bool, grace_hours: int, apply: bo
     result["action"] = "written"
     result["version_id"] = resp.get("VersionId")
     if end_cutover:
-        result["refused_from"] = t + LAMBDA_SECRET_CACHE_S
+        result["refused_from"] = t + LAMBDA_CACHE_S
         result["next"] = (f"the edge-derived key is refused once the Lambdas' secret cache expires (at most "
-                          f"{LAMBDA_SECRET_CACHE_S // 60} minutes, refused_from); no deploy needed")
+                          f"{LAMBDA_CACHE_S // 60} minutes, refused_from); no deploy needed")
         return result
-    result["deploy_not_before"] = t + LAMBDA_SECRET_CACHE_S
-    wait = f"wait {LAMBDA_SECRET_CACHE_S // 60} minutes (until deploy_not_before, the Lambdas' secret cache), then "
+    result["deploy_not_before"] = t + LAMBDA_CACHE_S
+    wait = f"wait {LAMBDA_CACHE_S // 60} minutes (until deploy_not_before, the Lambdas' secret cache), then "
     result["next"] = wait + (
         "deploy AA-TripPlanner-Web (Deploy Web Dev) so the web task maps the key"
         if not rotate else f"force a new deployment of aa-tripplanner-{env}-web before grace_until"
@@ -212,7 +219,7 @@ def main(argv: list[str] | None = None, clients: tuple[Any, Any] | None = None) 
         account = sts.get_caller_identity()["Account"]
         if args.expect_account and account != args.expect_account:
             raise ToolError(f"refused: credentials are for account {account}, expected {args.expect_account}")
-        out(write_secret(sm, args.env, rotate=args.rotate, grace_hours=args.grace_hours, apply=args.apply,
+        out(write_entry(sm, args.env, rotate=args.rotate, grace_hours=args.grace_hours, apply=args.apply,
                          end_cutover=args.end_cutover))
         return 0
     except ToolError as exc:

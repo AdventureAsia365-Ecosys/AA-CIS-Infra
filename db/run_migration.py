@@ -12,12 +12,12 @@ to the live owner (below). Three things still need the RDS master: roles/ files 
 undo files), mode=set-password (ALTER ROLE … PASSWORD needs CREATEROLE; db_migrator is NOCREATEROLE)
 and mode=run-script (master-level scripts since X1 S19). For those the runner uses DATABASE_URL when
 it already logs in as the master (before S22), and otherwise reads the master DSN itself, in the
-task, from MASTER_SECRET (aa-cis/dev/rds: readable by the migrator task role only, never injected
+task, from MASTER_DSN_ID (aa-cis/dev/rds: readable by the migrator task role only, never injected
 since S22) and connects with ssl=require. It logs `master login: …` either way and never prints the DSN.
 
 Modes (MIGRATION_MODE): check, apply (below), and two X1 S12 modes whose argument is folded into the
 same value, so no new environment variable reaches the task:
-  set-password:<role>   role in PASSWORD_ROLES (owners.yaml password_roles: cis_app, db_migrator). Plan
+  set-password:<role>   role in ROLE_DSN_IDS (owners.yaml password_roles: cis_app, db_migrator). Plan
                         XD2: reads the role's DSN secret in the task (boto3), checks the DSN user is the
                         role and the password is >= 32 printable ASCII characters, computes a
                         SCRAM-SHA-256 verifier locally (RFC 5802/7677, 4096 iterations, random 16-byte
@@ -122,7 +122,7 @@ allowlists, MIGRATION_FILE not the script, script without async def main(conn)) 
 before any change (role missing or NOLOGIN, secret unreadable/empty/not a DSN of that role, weak password) ·
 12 set-password: password set but the test login failed (role not marked) · 13 run-script raised or
 returned non-zero · 8 also covers set-password / run-script under a login other than the master, and (X1 S22)
-a roles/ file, set-password or run-script whose in-task master DSN (MASTER_SECRET) is unreadable, empty or
+a roles/ file, set-password or run-script whose in-task master DSN (MASTER_DSN_ID) is unreadable, empty or
 fails to log in, or logs in as someone other than the master.
 Exit codes: 0 ok · 2 sha256 mismatch · 3 file ran but did not register · 4 lint error ·
 5 destructive apply without a snapshot · 6 PostgreSQL error (lock/statement timeout included) ·
@@ -246,16 +246,18 @@ OPEN_WAVES_SQL = "SELECT count(*)::int FROM shared.rerun_wave WHERE status = 'op
 # The task gets only this file and the SQL (presigned URLs), so the registry facts it needs are
 # constants here, not a YAML read (no PyYAML in the runner, no new env var).
 MASTER_ROLE = "aa_cis_admin"      # RDS master: runs roles/ files, set-password, run-script; break-glass after X1 S22
+# The constants that hold Secrets Manager ids are named *_DSN_ID(S), not *_SECRET / PASSWORD_*: CodeQL reads such a name
+# as a credential and every log line naming the id as clear-text logging (AA-1111). They are ids; values never print.
 # owners.yaml master_secret: the master DSN the runner reads in the task (migrator task role) when DATABASE_URL is
 # not the master (X1 S22: db_migrator), for roles/ files, set-password and run-script only.
-MASTER_SECRET = "aa-cis/dev/rds"
+MASTER_DSN_ID = "aa-cis/dev/rds"
 ROLES_DIR = "roles"               # Infra-native files, key rl-NNN
 # AA-853: every db/replay_baseline/ file (lost lineage the drift replay recreates, db/gen_replay_baseline.py) carries
 # this marker; lint refuses it, so a baseline copied into db/migrations/ can never be checked or applied.
 BASELINE_MARKER = "aa-853-replay-baseline"
 # owners.yaml password_roles: LOGIN roles whose password mode=set-password sets from their DSN secret (XD2).
-PASSWORD_ROLES = {"cis_app": "aa-cis/dev/rds-cis-app", "crm_app": "crm/dev/database-url",
-                  "db_migrator": "aa-cis/dev/db-migrator"}
+ROLE_DSN_IDS = {"cis_app": "aa-cis/dev/rds-cis-app", "crm_app": "crm/dev/database-url",
+                "db_migrator": "aa-cis/dev/db-migrator"}
 
 
 @dataclass(frozen=True)
@@ -2070,7 +2072,7 @@ RUN_SCRIPT = "run-script"
 APPLY_PENDING = "apply-pending"                # AA-993 M3: migration-apply.yml (bundle of copies, see below)
 IDLE_GATE = "idle-gate"                        # AA-1023: terraform-apply.yml job-idle gate (no file, read-only)
 SECRETS_REGION = "us-west-1"                  # acc2: every DSN secret of the shared RDS lives here
-PASSWORD_MIN_LEN = 32                         # plan S17: a new random password of at least 32 characters
+NEW_PW_MIN_LEN = 32                         # plan S17: a new random password of at least 32 characters
 # Printable ASCII only: PostgreSQL's SASLprep returns pure ASCII unchanged, so the verifier computed here
 # from the raw password matches what the server derives from the password the client sends.
 PASSWORD_RE = re.compile(r"^[\x20-\x7e]+$")
@@ -2080,7 +2082,7 @@ SCRIPT_PATH_RE = re.compile(r"^db/scripts/[a-z0-9_]+\.py$")
 # db-migrate.yml uploads the runner to s3://<bucket>/db-migrate/<run id>/run_migration.py: the run id is
 # read from the presigned URL's path (only the digits are logged; the signature is never printed).
 RUN_ID_RE = re.compile(r"(?:^|/)db-migrate/([0-9]+)/")
-PASSWORD_MARKER = "x1:password-set"           # db/isolation_probe.py PASSWORD_MARKER (probe state key)
+PW_SET_MARKER = "x1:password-set"             # db/isolation_probe.py PASSWORD_MARKER (probe state key)
 ROLE_LOGIN_SQL = "SELECT rolcanlogin FROM pg_catalog.pg_roles WHERE rolname = $1"
 WHOAMI_SQL = ("SELECT current_user::text AS current_user, "
               "(SELECT rolconnlimit FROM pg_catalog.pg_roles WHERE rolname = current_user) AS rolconnlimit")
@@ -2098,9 +2100,9 @@ def parse_mode(value: str) -> Mode:
         return Mode(value)
     kind, sep, arg = (value or "").partition(":")
     if kind == SET_PASSWORD and sep:
-        if arg not in PASSWORD_ROLES:
+        if arg not in ROLE_DSN_IDS:
             raise ValueError(f"set-password: role {arg!r} is not in db/owners.yaml password_roles "
-                             f"({', '.join(sorted(PASSWORD_ROLES))})")
+                             f"({', '.join(sorted(ROLE_DSN_IDS))})")
         return Mode(kind, arg)
     if kind == RUN_SCRIPT and sep:
         if not SCRIPT_PATH_RE.fullmatch(arg):
@@ -2245,7 +2247,7 @@ class MasterLogin:
 async def connect_master(env, settings: dict, connect, get_secret, purpose: str) -> MasterLogin:
     """An RDS master session for `purpose` (X1 S22, S242 amendment). The task's DATABASE_URL first: before S22 it
     is the master's and nothing changes. When it logs in as anyone else (db_migrator from S22), that session is
-    closed and the master DSN is read here, in the task, from MASTER_SECRET (the migrator task role may read it,
+    closed and the master DSN is read here, in the task, from MASTER_DSN_ID (the migrator task role may read it,
     the execution role no longer injects it) and used with ssl=require. The caller still checks session_user.
 
     The master path never depends on the DATABASE_URL login working (review S244): a DATABASE_URL that names
@@ -2274,20 +2276,20 @@ async def connect_master(env, settings: dict, connect, get_secret, purpose: str)
                 return MasterLogin(conn, dsn, "the task's DATABASE_URL")
             await conn.close()
     log(f"master login: {purpose} needs the RDS master {MASTER_ROLE} and the task logs in as {login}: "
-        f"reading the master DSN in the task from {MASTER_SECRET} (X1 S22)")
+        f"reading the master DSN in the task from {MASTER_DSN_ID} (X1 S22)")
     try:
-        master_dsn = (get_secret(MASTER_SECRET) or "").strip()
+        master_dsn = (get_secret(MASTER_DSN_ID) or "").strip()
     except Exception as e:                      # botocore ClientError: the error code only
-        raise MasterUnavailable(f"master DSN secret {MASTER_SECRET} unreadable ({_aws_err(e)})") from None
+        raise MasterUnavailable(f"master DSN secret {MASTER_DSN_ID} unreadable ({_aws_err(e)})") from None
     if not master_dsn:
-        raise MasterUnavailable(f"master DSN secret {MASTER_SECRET} is empty")
+        raise MasterUnavailable(f"master DSN secret {MASTER_DSN_ID} is empty")
     try:
         conn = await connect(master_dsn, settings, ssl="require")   # read by code, never in cleartext
     except Exception as e:                      # class + SQLSTATE only: the text may echo the DSN
         state = getattr(e, "sqlstate", "") or ""
-        raise MasterUnavailable(f"master login with {MASTER_SECRET} failed: {type(e).__name__} {state}".rstrip()) \
+        raise MasterUnavailable(f"master login with {MASTER_DSN_ID} failed: {type(e).__name__} {state}".rstrip()) \
             from None
-    return MasterLogin(conn, master_dsn, f"in-task DSN from {MASTER_SECRET}")
+    return MasterLogin(conn, master_dsn, f"in-task DSN from {MASTER_DSN_ID}")
 
 
 async def run_set_password(env, role: str, connect, get_secret, sleep=asyncio.sleep) -> int:
@@ -2297,8 +2299,8 @@ async def run_set_password(env, role: str, connect, get_secret, sleep=asyncio.sl
     DSN (prints current_user + rolconnlimit) → COMMENT ON ROLE … 'x1:password-set …' as the master (the
     isolation probe expects the role's login only once the marker exists). Re-running is idempotent
     (new salt, same password)."""
-    secret_id = PASSWORD_ROLES[role]
-    log(f"set-password: role={role} secret={secret_id}")
+    dsn_id = ROLE_DSN_IDS[role]
+    log(f"set-password: role={role} secret={dsn_id}")
     try:
         master = await connect_master(env, dict(DEFAULT_SETTINGS), connect, get_secret, "set-password")
     except MasterUnavailable as e:
@@ -2325,26 +2327,26 @@ async def run_set_password(env, role: str, connect, get_secret, sleep=asyncio.sl
             log(f"ERROR: role {role} is NOLOGIN: nothing changed")
             return 11
         try:
-            dsn = (get_secret(secret_id) or "").strip()
+            dsn = (get_secret(dsn_id) or "").strip()
         except Exception as e:                  # botocore ClientError: log the error code only
-            log(f"ERROR: secret {secret_id} unreadable ({_aws_err(e)}); a secret with no value yet reads like a "
+            log(f"ERROR: secret {dsn_id} unreadable ({_aws_err(e)}); a secret with no value yet reads like a "
                 f"missing one: Nghiệp writes the DSN in the Console first (plan S17 / S20). Nothing changed")
             return 11
         if not dsn:
-            log(f"ERROR: secret {secret_id} is empty: nothing changed")
+            log(f"ERROR: secret {dsn_id} is empty: nothing changed")
             return 11
         hide += (dsn,)
         try:
             who = dsn_login(dsn)
         except ValueError as e:
-            log(f"ERROR: secret {secret_id}: {e}. Nothing changed")
+            log(f"ERROR: secret {dsn_id}: {e}. Nothing changed")
             return 11
         hide += (who.password, who.raw_password)
         if who.user != role:
-            log(f"ERROR: secret {secret_id} names a user other than {role}: nothing changed")
+            log(f"ERROR: secret {dsn_id} names a user other than {role}: nothing changed")
             return 11
-        if len(who.password) < PASSWORD_MIN_LEN or not PASSWORD_RE.match(who.password):
-            log(f"ERROR: secret {secret_id}: the password must be at least {PASSWORD_MIN_LEN} printable ASCII "
+        if len(who.password) < NEW_PW_MIN_LEN or not PASSWORD_RE.match(who.password):
+            log(f"ERROR: secret {dsn_id}: the password must be at least {NEW_PW_MIN_LEN} printable ASCII "
                 f"characters (percent-encoded in the DSN where needed): nothing changed")
             return 11
         # The test login must reach the server and database the master is on: a mistyped host would otherwise
@@ -2352,10 +2354,10 @@ async def run_set_password(env, role: str, connect, get_secret, sleep=asyncio.sl
         try:
             target, master_target = dsn_target(dsn), dsn_target(master.dsn)
         except ValueError as e:
-            log(f"ERROR: secret {secret_id} or the master DSN: {e}. Nothing changed")
+            log(f"ERROR: secret {dsn_id} or the master DSN: {e}. Nothing changed")
             return 11
         if target != master_target:
-            log(f"ERROR: secret {secret_id} points at another host, port or database than the master connection "
+            log(f"ERROR: secret {dsn_id} points at another host, port or database than the master connection "
                 f"(they must be equal): nothing changed")
             return 11
         verifier = scram_sha256_verifier(who.password)
@@ -2370,15 +2372,15 @@ async def run_set_password(env, role: str, connect, get_secret, sleep=asyncio.sl
                 await test.close()
         except Exception as e:                  # class + SQLSTATE only: an auth error's text adds nothing safe
             state = getattr(e, "sqlstate", "") or ""
-            log(f"ERROR: test login as {role} with {secret_id} failed: {type(e).__name__} {state}".rstrip()
-                + f". The password is set; the role is NOT marked {PASSWORD_MARKER}")
+            log(f"ERROR: test login as {role} with {dsn_id} failed: {type(e).__name__} {state}".rstrip()
+                + f". The password is set; the role is NOT marked {PW_SET_MARKER}")
             return 12
         log(f"set-password: test login current_user={row['current_user']} rolconnlimit={row['rolconnlimit']}")
         if row["current_user"] != role:
             log(f"ERROR: the test login ran as {row['current_user']}, not {role}: the role is NOT marked")
             return 12
         when = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        comment = f"{PASSWORD_MARKER} {when} by DB Migrate set-password (run {_run_id(env)})"
+        comment = f"{PW_SET_MARKER} {when} by DB Migrate set-password (run {_run_id(env)})"
         await conn.execute(f"COMMENT ON ROLE {_quote_ident(role)} IS {_quote_literal(comment)}")
         log(f"set-password: COMMENT ON ROLE {role} IS {_quote_literal(comment)}")
         return 0

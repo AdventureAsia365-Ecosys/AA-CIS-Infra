@@ -58,7 +58,7 @@ def dev_world():
         "connections": [
             conn_row("acc3", "bedrock", "aws_only", auth="assume_role"),
             conn_row("openai-direct", "openai", "vendor_direct"),
-            conn_row("anthropic-direct", "anthropic", "vendor_direct", secret=script.DEV_SECRET, enabled=False),
+            conn_row("anthropic-direct", "anthropic", "vendor_direct", secret=script.DEV_SM_NAME, enabled=False),
         ],
         "policies": [],
         "catalog": [
@@ -296,6 +296,9 @@ class DryRunTest(unittest.TestCase):
         self.assertEqual(len(c), 1)
         self.assertIn("enabled=False", c[0])
         self.assertIn("monthly_budget_usd=150.00", c[0])
+        # AA-1111: the line says whether the connection names the Dev key entry; it does not print the entry name.
+        self.assertIn("dev_secret_name=True", c[0])
+        self.assertNotIn(script.DEV_SM_NAME, c[0])
 
 
 class ApplyTest(unittest.TestCase):
@@ -311,7 +314,7 @@ class ApplyTest(unittest.TestCase):
         self.assertEqual(scopes_of(db, "j1_judge"), BOTH)
         c = anthropic_conn(db)
         self.assertFalse(c["enabled"])
-        self.assertEqual(c["secret_name"], script.DEV_SECRET)
+        self.assertEqual(c["secret_name"], script.DEV_SM_NAME)
         self.assertEqual(c["monthly_budget_usd"], Decimal("150.00"))
         self.assertTrue(any(d["model_key"] == "anth-beta" and d["connection_key"] == "anthropic-direct"
                             for d in db["deployments"]))

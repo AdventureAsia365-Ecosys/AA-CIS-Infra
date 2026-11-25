@@ -98,6 +98,7 @@ def get_via(connect_host: str, host: str, path: str, headers: dict | None = None
     import ssl
 
     ctx = ssl.create_default_context()
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2  # CloudFront serves TLS 1.2+; never fall back to TLS 1.0 / 1.1
     raw = socket.create_connection((connect_host, 443), timeout=timeout)
     conn = http.client.HTTPSConnection(host, timeout=timeout, context=ctx)
     conn.sock = ctx.wrap_socket(raw, server_hostname=host)

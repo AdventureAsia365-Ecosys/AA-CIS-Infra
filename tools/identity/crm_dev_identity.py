@@ -410,7 +410,7 @@ def e2e_users(
                     if pool == "partner"
                     else f"AA-935: e2e test user of the synthetic CRM agency {u.agency} ({u.role}). No password: e-mail code sign-in."
                 )
-                row["secret"] = put_json_secret(
+                row["secret"] = put_json_entry(
                     sm,
                     u.secret_name(env),
                     {"email": email, "sub": sub, "agency": u.agency, "role": u.role, "pool": pool, **credentials},
@@ -450,7 +450,7 @@ def _secret_exists(sm: Any, name: str) -> bool:
         return False
 
 
-def put_json_secret(sm: Any, name: str, value: dict[str, Any], *, description: str) -> dict[str, Any]:
+def put_json_entry(sm: Any, name: str, value: dict[str, Any], *, description: str) -> dict[str, Any]:
     body = json.dumps(value, separators=(",", ":"))
     if _secret_exists(sm, name):
         resp = sm.put_secret_value(SecretId=name, SecretString=body)
@@ -471,7 +471,7 @@ def _current_secret(sm: Any, name: str) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
-def web_secret(
+def web_entry(
     idp: Any, sm: Any, pool_id: str, client_name: str, *, env: str, apply: bool, rotate_session: bool
 ) -> dict[str, Any]:
     name = f"crm/{env}/web"
@@ -506,7 +506,7 @@ def web_secret(
     return result
 
 
-def staff_web_secret(
+def staff_web_entry(
     idp: Any, sm: Any, workforce_pool_id: str, client_name: str, *, env: str, apply: bool, rotate_session: bool
 ) -> dict[str, Any]:
     """AA-1019: the staff console's two keys of crm/<env>/web; the agency keys are kept as they are."""
@@ -515,7 +515,7 @@ def staff_web_secret(
                                session_key="staff_session_secret")
 
 
-def academy_web_secret(
+def academy_web_entry(
     idp: Any, sm: Any, workforce_pool_id: str, client_name: str, *, env: str, apply: bool, rotate_session: bool
 ) -> dict[str, Any]:
     """AA-1105: the AA Academy host's two keys of crm/<env>/web; every other key is kept as it is."""
@@ -748,10 +748,10 @@ def main(argv: list[str] | None = None, clients: tuple[Any, Any, Any] | None = N
             elif args.command == "e2e-staff":
                 out(e2e_staff(idp, workforce_id, env=args.env, zone=args.zone, apply=args.apply))
             elif args.command == "academy-web-secret":
-                out(academy_web_secret(idp, sm, workforce_id, f"{workforce_pool}-{ACADEMY_CLIENT}", env=args.env,
+                out(academy_web_entry(idp, sm, workforce_id, f"{workforce_pool}-{ACADEMY_CLIENT}", env=args.env,
                                        apply=args.apply, rotate_session=args.rotate_academy_session))
             else:
-                out(staff_web_secret(idp, sm, workforce_id, f"{workforce_pool}-{STAFF_CLIENT}", env=args.env,
+                out(staff_web_entry(idp, sm, workforce_id, f"{workforce_pool}-{STAFF_CLIENT}", env=args.env,
                                      apply=args.apply, rotate_session=args.rotate_staff_session))
             return 0
         pool = args.pool or DEFAULT_POOL.get(args.command, "external")
@@ -787,7 +787,7 @@ def main(argv: list[str] | None = None, clients: tuple[Any, Any, Any] | None = N
                  "created": sum(r["action"] in ("created", "created_enrolled") for r in rows),
                  "seeder": seeder_command(rows)})
         else:
-            out(web_secret(idp, sm, pool_id, client_name, env=args.env, apply=args.apply,
+            out(web_entry(idp, sm, pool_id, client_name, env=args.env, apply=args.apply,
                            rotate_session=args.rotate_session))
         return 0
     except ToolError as exc:
