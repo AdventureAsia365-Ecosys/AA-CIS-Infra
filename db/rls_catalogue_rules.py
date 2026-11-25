@@ -196,7 +196,8 @@ ALLOWLIST: dict[str, dict[str, str]] = {
         "booking.v_supply_outbox:cis_app": "contract: the supply feed CIS pulls (bk-023)",
         "booking.v_ops_data_totals:cis_app": "contract: CIS data coverage page, counts only (bk-025)",
         "booking.v_ops_trip_plan_keys:cis_app": "contract: CIS data coverage page, plan catalog keys only (bk-025)",
-        "booking.v_ops_inquiry_inbox:cis_app": "contract: CIS TP-03 handoff check, keys and states (bk-035)",
+        # AA-1061: booking.v_ops_inquiry_inbox:cis_app (bk-035, the retired TP-03 handoff check) left with bk-076,
+        # which drops the view and its grant; a grant back is a violation again.
         "booking.v_from_prices:cis_app": "contract: price.from.v1, the Content studio Marketplace from price (bk-040)",
         "booking.v_supply_suppliers:cis_app":
             "contract: supply.supplier.v1, supplier identity for the CIS content workspace links (bk-073)",
