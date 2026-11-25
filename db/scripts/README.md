@@ -341,6 +341,19 @@ Delete it once the C4.3 W49 review confirms the change.
 relation / index names and old = new parity only, never row values or ids. Delete it once the C4.3 W49 review confirms
 the change.
 
+`aa1179_tenant_read_cost.py` (AA-1179, S293, one-off after the AA-CIS-App AA-1179 merge; read-only,
+`READ_ONLY = True`): the cost per call of the CIS tenant served-badge lookup (`REQUEST_TOURS_SQL`, the W48 statement vs
+today's, typical inputs of the 3 busiest tenants, as the master and as `aa_app_user` when the master may switch to it)
+and of the anomaly-breaker `BASELINE_SQL` (W48, S291, S293; 7, 14 and 28 days per app). The PII guard refuses EXPLAIN
+statements, so it measures through `pg_stat_statements` deltas of wrapped statements (execution ms, shared hit / read,
+temp written per call), client p50 / p95 and `pg_stat_xact_user_tables` scan counts, then prints the issue's
+Done-when verdicts. `SCRIPT ` lines: counts, timings and table names only, never row values or ids.
+
+`aa1179_tenant_read_parity.py` (AA-1179, S293, same run; read-only, `READ_ONLY = True`): the W48 and today's
+`REQUEST_TOURS_SQL` over every tenant and every angle-gate request (and today's as `aa_app_user` against the master),
+and the three `BASELINE_SQL` generations over every app and window; prints only counts and the number of differing
+rows / medians (`SCRIPT verdict ... ok=True` needs 0). Delete both once the C4.3 W49 review confirms the change.
+
 `aa838_capacity_probe.py` (AA-838, S255, monthly C8 capacity review; read-only, `READ_ONLY = True`): database size and
 cache hit, size per schema, top tables (heap / index / toast, estimated rows, dead tuples), unused indexes, ledger row
 counts and age against the C5.4 / DM-7 retention windows, job durations per kind (30 days), connections per role and
