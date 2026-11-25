@@ -5,7 +5,8 @@
 # WHAT THIS FILE ADDS:
 #   - user pool aa-partner-<env>: Essentials tier, deletion protection ACTIVE, the immutable settings of ADR 0006
 #     decision 1 (e-mail usernames, case-insensitive), ADMIN-CREATE ONLY (invitations, decision 5), account recovery
-#     admin_only, e-mail change only after verification, MFA REQUIRED ("ON") with TOTP (authenticator app);
+#     admin_only, e-mail change only after verification, MFA REQUIRED ("ON") with TOTP (authenticator app), a
+#     length-only password policy (14+, no character classes) and one-day temporary passwords (S294);
 #   - one confidential app client, partner-web (the AA-Partner CRM web on the partner host): authorization code +
 #     PKCE, scopes openid email profile, ALLOW_USER_AUTH only, refresh-token rotation, the same settings as the EXTERNAL
 #     cis-portal client it replaces (30 min access / 168 h refresh: the CRM web session lasts 7 days);
@@ -124,13 +125,16 @@ resource "aws_cognito_user_pool" "partner" {
     enabled = true
   }
 
+  # Length only, no character-class rules (S294 hardening, current password guidance: a long passphrase beats forced
+  # classes). The temporary password is shown once on the CRM claim page and used at once for the first sign-in, so it
+  # lives one day; an unused one is replaced by claiming a new invitation (AdminCreateUser RESEND).
   password_policy {
     minimum_length                   = 14
-    require_lowercase                = true
-    require_uppercase                = true
-    require_numbers                  = true
-    require_symbols                  = true
-    temporary_password_validity_days = 7
+    require_lowercase                = false
+    require_uppercase                = false
+    require_numbers                  = false
+    require_symbols                  = false
+    temporary_password_validity_days = 1
   }
 
   # Password then the authenticator. An e-mail code is never enough here (OTP sign-in is incompatible with required
