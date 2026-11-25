@@ -699,3 +699,38 @@ def test_e2e_owner_is_dev_only(env, capsys):
     idp = PerUserWorkforceIdp()
     assert run(["--env", env, "e2e-owner", "--apply"], idp) == 1
     assert "Dev only" in capsys.readouterr().err and idp.created == []
+
+
+# AA-948: the builder map's public Mapbox token key. Invented values only (never a real token shape of 60+ chars).
+MAP_TOKEN = "pk.example-public.fake-part"
+
+
+def test_web_mapbox_token_adds_the_key_keeps_every_other_and_never_prints_it(capsys):
+    other = {"cognito_client_secret": "agency-cs", "session_secret": "a" * 40, "sentry_dsn": WEB_DSN}
+    sm = FakeSm({"crm/dev/web": json.dumps(other)})
+    assert run(["web-mapbox-token"], sm=sm) == 0
+    assert lines(capsys)[0] == {"secret": "crm/dev/web", "changed": [], "map": "off", "action": "unchanged"}
+    assert run(["web-mapbox-token", "--mapbox-token", MAP_TOKEN], sm=sm) == 0
+    dry = lines(capsys)[0]
+    assert dry["action"] == "would_write" and dry["changed"] == ["mapbox_public_token"] and dry["map"] == "on"
+    assert sm.writes == []
+    assert run(["web-mapbox-token", "--mapbox-token", MAP_TOKEN, "--apply"], sm=sm) == 0
+    out = capsys.readouterr().out
+    assert MAP_TOKEN not in out and json.loads(out)["action"] == "written"
+    assert json.loads(sm.values["crm/dev/web"]) == {**other, "mapbox_public_token": MAP_TOKEN}
+    assert run(["web-mapbox-token", "--mapbox-token", MAP_TOKEN, "--apply"], sm=sm) == 0
+    assert lines(capsys)[0]["action"] == "unchanged" and len(sm.writes) == 1
+
+
+def test_web_mapbox_token_reads_stdin_and_refuses_a_secret_token(capsys, monkeypatch):
+    import io
+
+    sm = FakeSm({"crm/dev/web": json.dumps({"session_secret": "a" * 40})})
+    monkeypatch.setattr("sys.stdin", io.StringIO(MAP_TOKEN + "\n"))
+    assert run(["web-mapbox-token", "--mapbox-token", "-", "--apply"], sm=sm) == 0
+    assert json.loads(sm.values["crm/dev/web"])["mapbox_public_token"] == MAP_TOKEN
+    capsys.readouterr()
+    assert run(["web-mapbox-token", "--mapbox-token", "sk.example-secret.fake-part", "--apply"], sm=sm) == 1
+    assert "never a secret sk. token" in capsys.readouterr().err
+    assert run(["web-mapbox-token", "--mapbox-token", "", "--apply"], sm=sm) == 0
+    assert lines(capsys)[0]["map"] == "off"

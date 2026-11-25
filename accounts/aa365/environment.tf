@@ -151,6 +151,7 @@ module "environment" {
   crm_partner_signin_enabled   = var.crm_partner_signin_enabled
   crm_web_client_hosts         = var.crm_web_client_hosts
   crm_web_sentry_enabled       = var.crm_web_sentry_enabled
+  crm_web_mapbox_enabled       = var.crm_web_mapbox_enabled
   crm_audit_compliance_enabled = var.crm_audit_compliance_enabled
   crm_ingest_subdomain         = var.crm_ingest_subdomain
   crm_mail_oauth_enabled       = var.crm_mail_oauth_enabled
