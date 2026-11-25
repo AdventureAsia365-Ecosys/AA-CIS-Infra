@@ -34,13 +34,16 @@
 # Alarms (S294, the part 2 follow-up; same pattern as the CRM keys, crm_data.tf aa-crm-<env>-kms-*): two CloudTrail
 # EventBridge rules at page severity, locked (AA-1171 D5), each with a target on the alerts topic and one on the page
 # topic carrying the same e-mail text:
-#   aa-booking-<env>-kms-key-admin    key policy, grant, deletion, disable, rotation-off, alias, tag or key material
-#                                     change on this key or its alias. Only a planned local MFA apply may do that.
-#   aa-booking-<env>-kms-foreign-use  a crypto call on this key (allowed or denied) by any principal other than the
-#                                     Booking task role or an AWS service (DenyCryptoOutsideBookingRuntime refuses
-#                                     it; the alarm says someone tried).
-# The page topic policy admits rule/aa-booking-* (accounts/aa365 alert_severity.tf AllowPageEventBridgeRules). The
-# apply order and the topic and CI grants these rules rely on are tracked in AA-1158.
+#   aa-sec-<env>-booking-kms-key-admin    key policy, grant, deletion, disable, rotation-off, alias, tag or key
+#                                         material change on this key or its alias. Only a planned local MFA apply
+#                                         may do that.
+#   aa-sec-<env>-booking-kms-foreign-use  a crypto call on this key (allowed or denied) by any principal other than
+#                                         the Booking task role or an AWS service (DenyCryptoOutsideBookingRuntime
+#                                         refuses it; the alarm says someone tried).
+# Named under aa-sec-* on purpose: the CI apply role's SecEventRuleManage (accounts/aa365 cicd_sec.tf) and both topic
+# policies (alerts: identity_alerts.tf AllowSecurityEventBridgeRules; page: alert_severity.tf
+# AllowPageEventBridgeRules) already admit rule/aa-sec-*, so a CI apply creates them with no IAM or topic policy
+# change. The App = booking tag keeps them under Booking in the alerts catalogue (the tag wins over the name prefix).
 #
 # Cost (us-west-1, est.): 1 customer managed key = 1 USD/month; automatic rotation adds 1 USD/month for each of its
 # first two rotations (from month 13); requests (a few per bank account entry or read) stay inside the 20,000/month
@@ -177,6 +180,8 @@ resource "aws_iam_role_policy" "booking_ecs_task_supplier_bank" {
 # -----------------------------------------------------------------------------
 
 locals {
+  # The rule name prefix: aa-sec-<env>-booking (see the header: the grants and topic policies admit rule/aa-sec-*).
+  bk_kms_rule_prefix = "aa-sec-${var.environment}-booking"
   # CloudTrail logs requestParameters.keyId as the caller passed it (key id, key ARN, alias name or alias ARN);
   # resources[].ARN is the key ARN. Match all four.
   bk_supplier_bank_key_match = [
@@ -196,7 +201,7 @@ locals {
 }
 
 resource "aws_cloudwatch_event_rule" "booking_kms_key_admin" {
-  name        = "${local.bk_name_prefix}-kms-key-admin"
+  name        = "${local.bk_kms_rule_prefix}-kms-key-admin"
   description = "Booking supplier bank account KMS key: key policy, grant, deletion, disable, rotation-off, alias, tag or key-material change (CloudTrail). AA-1158.${var.runbook_suffix.incident}"
   state       = "ENABLED"
 
@@ -233,7 +238,7 @@ resource "aws_cloudwatch_event_target" "booking_kms_key_admin" {
 }
 
 resource "aws_cloudwatch_event_rule" "booking_kms_foreign_use" {
-  name        = "${local.bk_name_prefix}-kms-foreign-use"
+  name        = "${local.bk_kms_rule_prefix}-kms-foreign-use"
   description = "Booking supplier bank account KMS key: a crypto call (allowed or denied) by a principal other than the Booking task role or an AWS service. AA-1158.${var.runbook_suffix.incident}"
   state       = "ENABLED_WITH_ALL_CLOUDTRAIL_MANAGEMENT_EVENTS"
 
@@ -269,7 +274,7 @@ resource "aws_cloudwatch_event_target" "booking_kms_foreign_use" {
 }
 
 # Page severity (AA-1171 D5): each rule gets a second target on the page topic with the same e-mail text (the page
-# topic policy admits rule/aa-booking-*, accounts/aa365 alert_severity.tf).
+# topic policy admits rule/aa-sec-*, accounts/aa365 alert_severity.tf).
 resource "aws_cloudwatch_event_target" "booking_kms_page" {
   for_each = {
     key_admin   = aws_cloudwatch_event_target.booking_kms_key_admin

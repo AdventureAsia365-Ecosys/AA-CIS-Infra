@@ -9,9 +9,10 @@
 4. The Booking task definition gets SUPPLIER_BANK_KMS_KEY_ID from the alias (a name, no account id).
 5. CI: the apply role may create (App = booking) and describe the key and manage aliases aa-booking-*, never use it,
    change its policy, delete or disable it (the boundary deny covers App = booking).
-6. Alarms (S294): rules aa-booking-<env>-kms-key-admin and -kms-foreign-use, page severity (locked), each with an
-   alerts-topic and a page-topic target; their event patterns, evaluated offline with the matcher of
-   test_crm_kms_alarm_check.py, catch key administration and any crypto call but the task role's or an AWS service's.
+6. Alarms (S294): rules aa-sec-<env>-booking-kms-key-admin and -kms-foreign-use (the aa-sec-* prefix the CI apply
+   grant and both topic policies already admit, App = booking tag), page severity (locked), each with an alerts-topic
+   and a page-topic target; their event patterns, evaluated offline with the matcher of test_crm_kms_alarm_check.py,
+   catch key administration and any crypto call but the task role's or an AWS service's.
 
 Run: python3 -m pytest -q tools/terraform/tests/test_aa1158_booking_bank_kms.py
 """
@@ -204,13 +205,30 @@ def _patterns() -> dict:
 
 class AlarmTest(unittest.TestCase):
     def test_rules_are_named_for_booking_and_page_locked(self):
+        self.assertIn('bk_kms_rule_prefix = "aa-sec-${var.environment}-booking"', KMS)
         for name, suffix in (("booking_kms_key_admin", "kms-key-admin"), ("booking_kms_foreign_use", "kms-foreign-use")):
             rule = _rule(name)
-            self.assertIn(f'name        = "${{local.bk_name_prefix}}-{suffix}"', rule)
+            self.assertIn(f'name        = "${{local.bk_kms_rule_prefix}}-{suffix}"', rule)
             self.assertRegex(rule, r"tags\s*=\s*merge\(local\.bk_tags, .*var\.alert_tags\.page_locked\)")
             self.assertIn('Component = "security"', rule)
             self.assertIn("${var.runbook_suffix.incident}", rule)
         self.assertIn('state       = "ENABLED_WITH_ALL_CLOUDTRAIL_MANAGEMENT_EVENTS"', _rule("booking_kms_foreign_use"))
+
+    def test_rule_prefix_is_admitted_with_no_new_grant(self):
+        # Option B (S294): the names fall under rule/aa-sec-*, which the CI apply role and both topic policies already
+        # admit; neither the page policy nor the CI grants name an aa-booking rule prefix.
+        self.assertIn('sec_prefix = "aa-sec-${var.environment}"', (AA365 / "security_baseline.tf").read_text(encoding="utf-8"))
+        self.assertIn(':rule/aa-sec-*"]', _statements(_block(SEC, 'data "aws_iam_policy_document" "tf_apply_sec"'))["SecEventRuleManage"])
+        alerts = _statements(_block((AA365 / "identity_alerts.tf").read_text(encoding="utf-8"),
+                                    'data "aws_iam_policy_document" "alerts_topic"'))
+        self.assertIn("rule/${local.sec_prefix}-*", alerts["AllowSecurityEventBridgeRules"])
+        page = _block((AA365 / "alert_severity.tf").read_text(encoding="utf-8"), 'data "aws_iam_policy_document" "page_topic"')
+        self.assertIn("rule/${local.sec_prefix}-*", page)
+        self.assertNotIn("bk_name_prefix", page)
+        # The alerts catalogue groups a rule by its App tag (the name prefix aa-sec-* alone would say "shared").
+        self.assertRegex(BOOKING, r'bk_tags = \{\s*App\s*=\s*"booking"')
+        for name in ("aa-sec-dev-booking-kms-key-admin", "aa-sec-dev-booking-kms-foreign-use"):
+            self.assertLessEqual(len(name), 64)  # EventBridge rule name limit
 
     def test_patterns_reference_this_key_and_the_task_role(self):
         admin, foreign = _rule("booking_kms_key_admin"), _rule("booking_kms_foreign_use")
