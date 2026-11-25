@@ -9,15 +9,26 @@
 4. The Booking task definition gets SUPPLIER_BANK_KMS_KEY_ID from the alias (a name, no account id).
 5. CI: the apply role may create (App = booking) and describe the key and manage aliases aa-booking-*, never use it,
    change its policy, delete or disable it (the boundary deny covers App = booking).
+6. Alarms (S294): rules aa-sec-<env>-booking-kms-key-admin and -kms-foreign-use (the aa-sec-* prefix the CI apply
+   grant and both topic policies already admit, App = booking tag), page severity (locked), each with an alerts-topic
+   and a page-topic target; their event patterns, evaluated offline with the matcher of test_crm_kms_alarm_check.py,
+   catch key administration and any crypto call but the task role's or an AWS service's.
 
 Run: python3 -m pytest -q tools/terraform/tests/test_aa1158_booking_bank_kms.py
 """
 
 import re
+import sys
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(ROOT / "tools" / "terraform"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import crm_kms_alarm_check as chk  # noqa: E402  the CloudTrail sample events
+from test_crm_kms_alarm_check import matches  # noqa: E402  the offline EventBridge matcher
+
 MOD = ROOT / "modules" / "environment"
 AA365 = ROOT / "accounts" / "aa365"
 KMS = (MOD / "booking_supplier_bank.tf").read_text(encoding="utf-8")
@@ -158,6 +169,123 @@ class CiTest(unittest.TestCase):
         self.assertIn('values   = ["crm", "booking"]', deny)
         for verb in ("kms:Decrypt", "kms:PutKeyPolicy", "kms:ScheduleKeyDeletion", "kms:DisableKey", "kms:CreateGrant"):
             self.assertIn(f'"{verb}"', deny)
+
+
+ACCOUNT, REGION, ENV = "000000000000", "us-west-1", "dev"
+KEY_ID = "bank-0000-1111"
+KEY_ARN = f"arn:aws:kms:{REGION}:{ACCOUNT}:key/{KEY_ID}"
+ALIAS = f"alias/aa-booking-{ENV}-supplier-bank"
+TASK_ROLE = f"aa-booking-{ENV}-ecs-task-role"
+
+
+def _rule(name: str) -> str:
+    return _block(KMS, f'resource "aws_cloudwatch_event_rule" "{name}"')
+
+
+def _event_names(name: str) -> list:
+    return re.findall(r'"([A-Za-z]+)"', re.search(r"eventName = \[(.*?)\]", _rule(name), re.S).group(1))
+
+
+def _patterns() -> dict:
+    """The two rule patterns as Terraform renders them, with sample key values (the same shape as the HCL)."""
+    match = [KEY_ID, KEY_ARN, ALIAS, f"arn:aws:kms:{REGION}:{ACCOUNT}:{ALIAS}"]
+    task = f"arn:aws:iam::{ACCOUNT}:role/{TASK_ROLE}"
+    admin = {"source": ["aws.kms"], "detail-type": ["AWS API Call via CloudTrail"], "detail": {
+        "eventSource": ["kms.amazonaws.com"], "eventName": _event_names("booking_kms_key_admin"),
+        "$or": [{"resources": {"ARN": [KEY_ARN]}}, {"requestParameters": {"keyId": match}},
+                {"requestParameters": {"aliasName": [ALIAS]}}]}}
+    foreign = {"source": ["aws.kms"], "detail-type": ["AWS API Call via CloudTrail"], "detail": {
+        "eventSource": ["kms.amazonaws.com"], "eventName": _event_names("booking_kms_foreign_use"),
+        "resources": {"ARN": [KEY_ARN]},
+        "$or": [{"userIdentity": {"type": [{"anything-but": ["AssumedRole", "AWSService"]}]}},
+                {"userIdentity": {"type": ["AssumedRole"],
+                                  "sessionContext": {"sessionIssuer": {"arn": [{"anything-but": [task]}]}}}}]}}
+    return {"admin": admin, "foreign": foreign}
+
+
+class AlarmTest(unittest.TestCase):
+    def test_rules_are_named_for_booking_and_page_locked(self):
+        self.assertIn('bk_kms_rule_prefix = "aa-sec-${var.environment}-booking"', KMS)
+        for name, suffix in (("booking_kms_key_admin", "kms-key-admin"), ("booking_kms_foreign_use", "kms-foreign-use")):
+            rule = _rule(name)
+            self.assertIn(f'name        = "${{local.bk_kms_rule_prefix}}-{suffix}"', rule)
+            self.assertRegex(rule, r"tags\s*=\s*merge\(local\.bk_tags, .*var\.alert_tags\.page_locked\)")
+            self.assertIn('Component = "security"', rule)
+            self.assertIn("${var.runbook_suffix.incident}", rule)
+        self.assertIn('state       = "ENABLED_WITH_ALL_CLOUDTRAIL_MANAGEMENT_EVENTS"', _rule("booking_kms_foreign_use"))
+
+    def test_rule_prefix_is_admitted_with_no_new_grant(self):
+        # Option B (S294): the names fall under rule/aa-sec-*, which the CI apply role and both topic policies already
+        # admit; neither the page policy nor the CI grants name an aa-booking rule prefix.
+        self.assertIn('sec_prefix = "aa-sec-${var.environment}"', (AA365 / "security_baseline.tf").read_text(encoding="utf-8"))
+        self.assertIn(':rule/aa-sec-*"]', _statements(_block(SEC, 'data "aws_iam_policy_document" "tf_apply_sec"'))["SecEventRuleManage"])
+        alerts = _statements(_block((AA365 / "identity_alerts.tf").read_text(encoding="utf-8"),
+                                    'data "aws_iam_policy_document" "alerts_topic"'))
+        self.assertIn("rule/${local.sec_prefix}-*", alerts["AllowSecurityEventBridgeRules"])
+        page = _block((AA365 / "alert_severity.tf").read_text(encoding="utf-8"), 'data "aws_iam_policy_document" "page_topic"')
+        self.assertIn("rule/${local.sec_prefix}-*", page)
+        self.assertNotIn("bk_name_prefix", page)
+        # The alerts catalogue groups a rule by its App tag (the name prefix aa-sec-* alone would say "shared").
+        self.assertRegex(BOOKING, r'bk_tags = \{\s*App\s*=\s*"booking"')
+        for name in ("aa-sec-dev-booking-kms-key-admin", "aa-sec-dev-booking-kms-foreign-use"):
+            self.assertLessEqual(len(name), 64)  # EventBridge rule name limit
+
+    def test_patterns_reference_this_key_and_the_task_role(self):
+        admin, foreign = _rule("booking_kms_key_admin"), _rule("booking_kms_foreign_use")
+        self.assertIn("{ resources = { ARN = [aws_kms_key.booking_supplier_bank.arn] } }", admin)
+        self.assertIn("{ requestParameters = { keyId = local.bk_supplier_bank_key_match } }", admin)
+        self.assertIn("{ requestParameters = { aliasName = [local.bk_supplier_bank_alias] } }", admin)
+        self.assertIn("resources = { ARN = [aws_kms_key.booking_supplier_bank.arn] }", foreign)
+        self.assertIn('"anything-but" = [aws_iam_role.booking_ecs_task.arn]', foreign)
+        match = KMS.split("bk_supplier_bank_key_match = [", 1)[1].split("]", 1)[0]
+        for ref in ("aws_kms_key.booking_supplier_bank.key_id", "aws_kms_key.booking_supplier_bank.arn",
+                    "local.bk_supplier_bank_alias", ":${local.bk_supplier_bank_alias}"):
+            self.assertIn(ref, match)
+
+    def test_each_rule_notifies_both_topics_with_the_same_text(self):
+        for name in ("booking_kms_key_admin", "booking_kms_foreign_use"):
+            target = _block(KMS, f'resource "aws_cloudwatch_event_target" "{name}"')
+            self.assertIn(f"rule      = aws_cloudwatch_event_rule.{name}.name", target)
+            self.assertIn("arn       = var.alerts_topic_arn", target)
+            self.assertIn("input_paths    = local.bk_kms_alert_input_paths", target)
+            self.assertIn("[aa-booking]", target)
+        page = _block(KMS, 'resource "aws_cloudwatch_event_target" "booking_kms_page"')
+        self.assertIn("arn       = var.page_topic_arn", page)
+        self.assertIn('target_id = "page-sns"', page)
+        self.assertIn("each.value.input_transformer[0].input_template", page)
+
+    def test_admin_events_cover_the_ci_boundary_verbs(self):
+        # Everything the CI boundary keeps for a local MFA apply, plus tag changes (the boundary keys on App = booking).
+        self.assertLessEqual(set(chk.ADMIN_EVENTS) | {"DisableKeyRotation", "UpdateAlias", "DeleteAlias"},
+                             set(_event_names("booking_kms_key_admin")))
+        self.assertLessEqual({"Decrypt", "GenerateDataKey", "Encrypt", "ReEncrypt"},
+                             set(_event_names("booking_kms_foreign_use")))
+
+    def test_sample_events(self):
+        pats = _patterns()
+        admin_role = chk.role_identity(ACCOUNT, chk.ADMIN_ROLE)
+        task = chk.role_identity(ACCOUNT, TASK_ROLE)
+        other = chk.role_identity(ACCOUNT, "aa-cis-dev-ecs-task-role")
+        ev = lambda name, ident, key_id=KEY_ID, arn=KEY_ARN: chk.cloudtrail_event(  # noqa: E731
+            ACCOUNT, REGION, name, arn, key_id, ident)
+        cases = [
+            ("admin PutKeyPolicy", "admin", ev("PutKeyPolicy", admin_role), True),
+            ("admin ScheduleKeyDeletion", "admin", ev("ScheduleKeyDeletion", admin_role), True),
+            ("admin by alias name", "admin", ev("DisableKey", admin_role, key_id=ALIAS), True),
+            ("admin on another key", "admin",
+             ev("PutKeyPolicy", admin_role, key_id="other-key", arn=KEY_ARN.replace(KEY_ID, "other-key")), False),
+            ("Decrypt by the task role", "foreign", ev("Decrypt", task), False),
+            ("GenerateDataKey by the task role", "foreign", ev("GenerateDataKey", task), False),
+            ("Decrypt by the admin role", "foreign", ev("Decrypt", admin_role), True),
+            ("Decrypt by another app task role", "foreign", ev("Decrypt", other), True),
+            ("Decrypt by an IAM user", "foreign", ev("Decrypt", {"type": "IAMUser", "arn": "arn:x"}), True),
+            ("Decrypt by an AWS service", "foreign", ev("Decrypt", chk.SERVICE_IDENTITY), False),
+            ("Decrypt on another key", "foreign",
+             ev("Decrypt", admin_role, key_id="other-key", arn=KEY_ARN.replace(KEY_ID, "other-key")), False),
+        ]
+        for cid, rule, event, expected in cases:
+            with self.subTest(case=cid):
+                self.assertIs(matches(pats[rule], event), expected)
 
 
 if __name__ == "__main__":

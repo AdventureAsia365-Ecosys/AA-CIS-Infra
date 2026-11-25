@@ -27,6 +27,7 @@ ECS = (ROOT / "modules" / "ecs" / "main.tf").read_text(encoding="utf-8")
 MAIN = (AA365 / "main.tf").read_text(encoding="utf-8")
 BK = (MOD / "booking_alarms.tf").read_text(encoding="utf-8")
 CRM_DATA = (MOD / "crm_data.tf").read_text(encoding="utf-8")
+BK_BANK = (MOD / "booking_supplier_bank.tf").read_text(encoding="utf-8")
 
 
 def _block(text: str, opener: str) -> str:
@@ -80,6 +81,14 @@ class PageTopicTest(unittest.TestCase):
         target = _block(CRM_DATA, 'resource "aws_cloudwatch_event_target" "crm_kms_page"')
         self.assertIn("aws_cloudwatch_event_target.crm_kms_key_admin", target)
         self.assertIn("aws_cloudwatch_event_target.crm_kms_foreign_use", target)
+        self.assertIn("arn       = var.page_topic_arn", target)
+
+    def test_booking_kms_rules_page_target(self):
+        # AA-1158 (S294): the Booking supplier bank key rules, same shape as the CRM ones (named aa-sec-<env>-booking-*,
+        # so the page policy's rule/${local.sec_prefix}-* admits them).
+        target = _block(BK_BANK, 'resource "aws_cloudwatch_event_target" "booking_kms_page"')
+        self.assertIn("aws_cloudwatch_event_target.booking_kms_key_admin", target)
+        self.assertIn("aws_cloudwatch_event_target.booking_kms_foreign_use", target)
         self.assertIn("arn       = var.page_topic_arn", target)
 
 

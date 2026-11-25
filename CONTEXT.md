@@ -814,7 +814,10 @@ rights-cleared photos, never writes), operations-document bucket `aa-booking-dev
 `alias/aa-booking-dev-supplier-bank` (`booking_supplier_bank.tf`, AA-1158 part 2: envelope encryption of supplier bank
 accounts, rotation on; crypto use only by the Booking task role (GenerateDataKey + Decrypt, no Encrypt) under the
 context `{purpose, supplier_id}`; CI creates
-and describes it, never uses it; env `SUPPLIER_BANK_KMS_KEY_ID`).
+and describes it, never uses it; env `SUPPLIER_BANK_KMS_KEY_ID`). Alarms on it (S294, page severity, App = booking):
+`aa-sec-dev-booking-kms-key-admin` (policy/grant/deletion/disable/rotation/alias/tag change) and
+`aa-sec-dev-booking-kms-foreign-use` (crypto by anyone but the Booking task role / an AWS service); the `aa-sec-*`
+prefix is the one the CI apply grant and both alert topic policies already admit.
 Routing: its own REST API `aa-booking-dev-api` on the existing VPC link → NLB → ALB HTTP listener
 rule `/booking`, `/booking/*` (priority 100) → target group `aa-booking-dev-api-tg` (health
 `/booking/health`). That listener rule (in the root, `alb_rules.tf`) is the only object attached to a CIS resource. Dev uses
