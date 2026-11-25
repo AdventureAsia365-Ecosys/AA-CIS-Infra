@@ -146,3 +146,9 @@ variable "cloudfront_viewer_rate" {
     error_message = "cloudfront_viewer_rate.limit must be a whole number of at least 100 (a page load is dozens of requests)."
   }
 }
+
+variable "custom_response_header_quota" {
+  type        = number
+  description = "AWS WAF quota: custom response headers per web ACL, 100 by default and adjustable in Service Quotas at no cost. The web ACL precondition keeps every custom response header of the ACL under it (AA-1111, S294). Raise it only after AWS raised the quota."
+  default     = 100
+}
