@@ -2072,7 +2072,7 @@ RUN_SCRIPT = "run-script"
 APPLY_PENDING = "apply-pending"                # AA-993 M3: migration-apply.yml (bundle of copies, see below)
 IDLE_GATE = "idle-gate"                        # AA-1023: terraform-apply.yml job-idle gate (no file, read-only)
 SECRETS_REGION = "us-west-1"                  # acc2: every DSN secret of the shared RDS lives here
-NEW_PW_MIN_LEN = 32                         # plan S17: a new random password of at least 32 characters
+NEW_PW_MIN_LEN = 32                           # plan S17: a new random password of at least 32 characters
 # Printable ASCII only: PostgreSQL's SASLprep returns pure ASCII unchanged, so the verifier computed here
 # from the raw password matches what the server derives from the password the client sends.
 PASSWORD_RE = re.compile(r"^[\x20-\x7e]+$")

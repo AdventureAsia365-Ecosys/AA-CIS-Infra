@@ -749,10 +749,10 @@ def main(argv: list[str] | None = None, clients: tuple[Any, Any, Any] | None = N
                 out(e2e_staff(idp, workforce_id, env=args.env, zone=args.zone, apply=args.apply))
             elif args.command == "academy-web-secret":
                 out(academy_web_entry(idp, sm, workforce_id, f"{workforce_pool}-{ACADEMY_CLIENT}", env=args.env,
-                                       apply=args.apply, rotate_session=args.rotate_academy_session))
+                                      apply=args.apply, rotate_session=args.rotate_academy_session))
             else:
                 out(staff_web_entry(idp, sm, workforce_id, f"{workforce_pool}-{STAFF_CLIENT}", env=args.env,
-                                     apply=args.apply, rotate_session=args.rotate_staff_session))
+                                    apply=args.apply, rotate_session=args.rotate_staff_session))
             return 0
         pool = args.pool or DEFAULT_POOL.get(args.command, "external")
         if args.command == "web-secret" and pool not in WEB_CLIENT:
@@ -788,7 +788,7 @@ def main(argv: list[str] | None = None, clients: tuple[Any, Any, Any] | None = N
                  "seeder": seeder_command(rows)})
         else:
             out(web_entry(idp, sm, pool_id, client_name, env=args.env, apply=args.apply,
-                           rotate_session=args.rotate_session))
+                          rotate_session=args.rotate_session))
         return 0
     except ToolError as exc:
         print(f"error: {exc}", file=sys.stderr)

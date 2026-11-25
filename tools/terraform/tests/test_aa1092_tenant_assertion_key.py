@@ -78,7 +78,7 @@ class Readers(unittest.TestCase):
 
 class Tool(unittest.TestCase):
     def test_tool_names_the_same_secret(self) -> None:
-        self.assertIn('SECRET = "tripplanner/{env}/tenant-assertion-key"', TOOL)
+        self.assertIn('ENTRY_NAME = "tripplanner/{env}/tenant-assertion-key"', TOOL)
 
 
 if __name__ == "__main__":

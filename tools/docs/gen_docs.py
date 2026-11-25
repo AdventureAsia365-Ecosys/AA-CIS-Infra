@@ -806,7 +806,8 @@ def trust_text(policy_json: str) -> str:
             who.append(svc)
         for fed in _as_list(principal.get("Federated")):
             # The provider ARN ends in "oidc-provider/<host>": compare the host part whole, not as a substring.
-            who.append("GitHub OIDC" if fed.rsplit("/", 1)[-1] == "token.actions.githubusercontent.com" else arn_name(fed))
+            github = fed.rsplit("/", 1)[-1] == "token.actions.githubusercontent.com"
+            who.append("GitHub OIDC" if github else arn_name(fed))
         for aws in _as_list(principal.get("AWS")):
             who.append(aws if not aws.startswith("arn:aws:iam::") else aws.split("::", 1)[1])
         cond_bits = []

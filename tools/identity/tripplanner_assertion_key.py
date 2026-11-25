@@ -147,14 +147,15 @@ def ended_cutover_value(current: dict[str, Any], *, now: int) -> dict[str, Any]:
 
 def _grace_until(wanted: dict[str, Any]) -> int | None:
     """The epoch the printed line reports. Rebuilt as a new int from the stored epoch, so the line can never carry
-    anything else of the value read from Secrets Manager (and CodeQL sees no flow from the key to the output, AA-1111)."""
+    anything else of the value read from Secrets Manager (CodeQL then sees no flow from the key to the output,
+    AA-1111)."""
     until = _epoch(wanted.get("previous_until")) or _epoch(wanted.get("edge_derived_until"))
     return int(until) if until else None
 
 
 def write_entry(sm: Any, env: str, *, rotate: bool, grace_hours: int, apply: bool,
-                 now: int | None = None, make_key: Callable[[], str] = new_key,
-                 end_cutover: bool = False) -> dict[str, Any]:
+                now: int | None = None, make_key: Callable[[], str] = new_key,
+                end_cutover: bool = False) -> dict[str, Any]:
     name = ENTRY_NAME.format(env=env)
     if not _secret_exists(sm, name):
         raise ToolError(f"{name} does not exist: apply AA-CIS-Infra modules/environment/tripplanner.tf first (the shell)")
@@ -220,7 +221,7 @@ def main(argv: list[str] | None = None, clients: tuple[Any, Any] | None = None) 
         if args.expect_account and account != args.expect_account:
             raise ToolError(f"refused: credentials are for account {account}, expected {args.expect_account}")
         out(write_entry(sm, args.env, rotate=args.rotate, grace_hours=args.grace_hours, apply=args.apply,
-                         end_cutover=args.end_cutover))
+                        end_cutover=args.end_cutover))
         return 0
     except ToolError as exc:
         print(f"error: {exc}", file=sys.stderr)
