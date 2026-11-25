@@ -2,8 +2,13 @@
 
 What they hold:
   - every block action of the WAF web ACL (modules/waf) answers a custom response carrying
-    local.security_response_headers (HSTS without preload, nosniff, X-Frame-Options, a deny-all CSP); no bare
-    `block {}` is left (ZAP counted the WAF 403s of the staff hosts and the API stages as the apps' own pages);
+    local.security_response_headers (HSTS without preload, nosniff, a deny-all CSP with frame-ancestors, the apps'
+    Permissions-Policy); no bare `block {}` is left (ZAP counted the WAF 403s of the staff hosts and the API stages as
+    the apps' own pages);
+  - S294: the managed AWSManagedRulesCommonRuleSet blocks too (NoUserAgent_HEADER answered ZAP's first requests with
+    the ALB's bare 403): every documented sub-rule has a rule_action_override, COUNT for
+    var.managed_rule_count_overrides as before, else BLOCK with the 403, the "blocked" text body and the headers; the
+    custom response headers of the whole ACL stay within the AWS quota (precondition + the Dev count here);
   - both REST APIs (CIS modules/api_gateway, Booking modules/environment/booking.tf) set DEFAULT_4XX and DEFAULT_5XX
     gateway responses with HSTS + nosniff and the default JSON message, and both deployments hash them and depend on
     them (a stage serves a frozen snapshot: the AA-432 trap).
@@ -48,25 +53,142 @@ def _block_after(text: str, start: int) -> str:
     raise AssertionError("unbalanced braces")
 
 
+# The apps' Permissions-Policy (AA-CIS-App frontend/lib/securityHeaders.ts, the same value in the other apps).
+PERMISSIONS_POLICY = "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+
+# AWSManagedRulesCommonRuleSet, default version Version_1.23 (describe-managed-rule-group, read 25/11/2026; the AWS
+# developer guide lists the same 22). A new AWS version with another sub-rule: add it here and in modules/waf.
+CRS_RULES = [
+    "NoUserAgent_HEADER",
+    "UserAgent_BadBots_HEADER",
+    "SizeRestrictions_QUERYSTRING",
+    "SizeRestrictions_Cookie_HEADER",
+    "SizeRestrictions_BODY",
+    "SizeRestrictions_URIPATH",
+    "EC2MetaDataSSRF_BODY",
+    "EC2MetaDataSSRF_COOKIE",
+    "EC2MetaDataSSRF_URIPATH",
+    "EC2MetaDataSSRF_QUERYARGUMENTS",
+    "GenericLFI_QUERYARGUMENTS",
+    "GenericLFI_URIPATH",
+    "GenericLFI_BODY",
+    "RestrictedExtensions_URIPATH",
+    "RestrictedExtensions_QUERYARGUMENTS",
+    "GenericRFI_QUERYARGUMENTS",
+    "GenericRFI_BODY",
+    "GenericRFI_URIPATH",
+    "CrossSiteScripting_COOKIE",
+    "CrossSiteScripting_QUERYARGUMENTS",
+    "CrossSiteScripting_BODY",
+    "CrossSiteScripting_URIPATH",
+]
+# The count overrides of the module default (enforced since AA-806; the aa365 root passes no other list).
+COUNT_OVERRIDES = ["SizeRestrictions_BODY", "CrossSiteScripting_BODY", "GenericLFI_BODY"]
+# AWS WAF default quota: custom response headers per web ACL.
+HEADER_QUOTA = 100
+
+
+def _header_set(waf: str) -> dict[str, str]:
+    block = _block_after(waf, waf.index("security_response_headers = {"))
+    return dict(re.findall(r'"([A-Za-z-]+)"\s*=\s*"([^"]*)"', block))
+
+
 def test_waf_header_set():
-    waf = _code(_read(WAF))
-    headers = _block_after(waf, waf.index("security_response_headers = {"))
-    assert f'"Strict-Transport-Security" = "{HSTS}"' in headers
-    assert "preload" not in headers
-    assert '"X-Content-Type-Options"    = "nosniff"' in headers
-    assert '"X-Frame-Options"           = "DENY"' in headers
-    assert "\"Content-Security-Policy\"   = \"frame-ancestors 'none'; default-src 'none'\"" in headers
+    headers = _header_set(_code(_read(WAF)))
+    assert headers == {
+        "Strict-Transport-Security": HSTS,
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'",
+        "Permissions-Policy": PERMISSIONS_POLICY,
+    }
+    assert "preload" not in headers["Strict-Transport-Security"]
+
+
+def _blocks(waf: str) -> list[str]:
+    """Every block action: static `block {` and the content of `dynamic "block" {`."""
+    out = [_block_after(waf, m.start()) for m in re.finditer(r"\bblock\s*\{", waf)]
+    for m in re.finditer(r'dynamic\s+"block"\s*\{', waf):
+        dyn = _block_after(waf, m.start())
+        out.append(_block_after(dyn, dyn.index("content {")))
+    return out
 
 
 def test_every_waf_block_answers_with_the_headers():
     waf = _code(_read(WAF))
     assert not re.search(r"block\s*\{\s*\}", waf), "a bare block {} answers without the security headers"
-    blocks = [m.start() for m in re.finditer(r"\bblock\s*\{", waf)]
-    assert len(blocks) >= 5, "TripPlanner x2, RateLimit1000, GeoBlockNonAllowed, StaffWebRateLimit"
-    for start in blocks:
-        body = _block_after(waf, start)
+    blocks = _blocks(waf)
+    # TripPlanner x2, RateLimit1000, GeoBlockNonAllowed, StaffWebRateLimit, CloudFrontViewerRateLimit, the managed group.
+    assert len(blocks) >= 7
+    for body in blocks:
         assert "custom_response {" in body
         assert 'dynamic "response_header"' in body and "for_each = local.security_response_headers" in body
+        code = re.search(r"response_code\s*=\s*(\d+)", body)
+        assert code, body
+        key = re.search(r'custom_response_body_key\s*=\s*"([a-z_]+)"', body)
+        assert key, "every block answers a static body"
+        if code.group(1) == "403":
+            assert key.group(1) == "blocked"
+        else:
+            assert (code.group(1), key.group(1)) == ("429", "rate_limited")
+
+
+def test_blocked_body_is_static_text():
+    waf = _code(_read(WAF))
+    i = waf.index('key          = "blocked"')
+    body = waf[waf.rindex("custom_response_body {", 0, i) :]
+    body = _block_after(body, 0)
+    assert 'content_type = "TEXT_PLAIN"' in body
+    content = re.search(r'content\s*=\s*"([^"]*)"', body).group(1)
+    assert len(content) <= 64 and not re.search(r"\d", content), "tiny, no version or product text"
+    # Not behind a for_each: the 403s exist on every ACL of this module.
+    assert not waf[: waf.index("custom_response_body {")].rstrip().endswith('dynamic "custom_response_body" {')
+
+
+def test_common_rule_set_rule_list():
+    waf = _code(_read(WAF))
+    block = waf[waf.index("common_rule_set_rules = [") :]
+    block = block[: block.index("]") + 1]
+    assert re.findall(r'"([A-Za-z0-9_]+)"', block) == CRS_RULES
+    assert "common_rule_set_overrides = distinct(concat(local.common_rule_set_rules, var.managed_rule_count_overrides))" in waf
+    assert (
+        "common_rule_set_blocks    = [for r in local.common_rule_set_overrides : r if "
+        "!contains(var.managed_rule_count_overrides, r)]"
+    ) in waf
+    variables = _read(os.path.join(REPO_ROOT, "modules", "waf", "variables.tf"))
+    default = _block_after(variables, variables.index('variable "managed_rule_count_overrides"'))
+    assert re.findall(r'"([A-Za-z_]+)"', default[default.index("default") :]) == COUNT_OVERRIDES
+
+
+def test_every_managed_sub_rule_is_count_or_a_block_with_the_headers():
+    """The group keeps its decisions: the same names in COUNT, every other sub-rule BLOCK (its own action)."""
+    waf = _code(_read(WAF))
+    name = waf.index('name     = "AWSManagedRulesCommonRuleSet"')
+    rule = _block_after(waf, waf.rindex("rule {", 0, name))
+    override = _block_after(rule, rule.index('dynamic "rule_action_override"'))
+    assert "for_each = local.common_rule_set_overrides" in override
+    assert "for_each = contains(var.managed_rule_count_overrides, rule_action_override.value) ? [1] : []" in override
+    assert "for_each = contains(var.managed_rule_count_overrides, rule_action_override.value) ? [] : [1]" in override
+    assert rule.count('dynamic "rule_action_override"') == 1, "one override per sub-rule, no duplicate names"
+    block = _block_after(override, override.index('dynamic "block"'))
+    assert "response_code            = 403" in block
+    assert 'custom_response_body_key = "blocked"' in block
+    assert "for_each = local.security_response_headers" in block
+    # The group-level switch is untouched: count_only still turns the whole group into COUNT.
+    assert 'dynamic "count" {\n        for_each = var.common_rules_count_only ? [1] : []' in rule
+
+
+def test_custom_response_headers_fit_the_quota():
+    waf = _code(_read(WAF))
+    lifecycle = _block_after(waf, waf.index("precondition {"))
+    assert "local.custom_response_header_count <= var.custom_response_header_quota" in lifecycle
+    variables = _read(os.path.join(REPO_ROOT, "modules", "waf", "variables.tf"))
+    quota = _block_after(variables, variables.index('variable "custom_response_header_quota"'))
+    assert f"default     = {HEADER_QUOTA}" in quota
+    # The Dev ACL: 19 managed blocks + TripPlanner x2 + CloudFrontViewerRateLimit (enforced) + RateLimit1000 +
+    # GeoBlockNonAllowed + StaffWebRateLimit = 25 responses, each with every header of the set.
+    managed_blocks = len([r for r in CRS_RULES if r not in COUNT_OVERRIDES])
+    responses = managed_blocks + 2 + 1 + 2 + 1
+    assert responses * len(_header_set(waf)) <= HEADER_QUOTA
 
 
 def _gateway_checks(text: str, resource: str, api_ref: str, locals_prefix: str) -> None:

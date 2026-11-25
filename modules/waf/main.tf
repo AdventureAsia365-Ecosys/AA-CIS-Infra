@@ -60,12 +60,64 @@ locals {
   # the staff hosts and the API stages as the apps' own). Same HSTS value as the apps (two years, sub-domains, no
   # preload); the body is empty or the JSON rate_limited body, so the CSP refuses everything. Free (custom responses
   # carry no WAF fee).
+  # AA-1111 (S294, ZAP re-run): the managed CommonRuleSet blocks answer the same response (local.common_rule_set_rules
+  # below), so a request without a User-Agent (NoUserAgent_HEADER, ZAP's first requests) no longer gets the ALB's bare
+  # 403. Four headers, not the apps' six: AWS WAF allows 100 custom response headers per web ACL (default quota) and
+  # this ACL answers up to 25 custom responses (19 managed sub-rules + 6 rules), var.custom_response_header_quota.
+  # The CSP's frame-ancestors 'none' does the job of X-Frame-Options (every current browser, and ZAP's anti-clickjacking
+  # rule accepts it); Referrer-Policy is moot on a text/plain body with no link. Permissions-Policy = the apps' value.
   security_response_headers = {
     "Strict-Transport-Security" = "max-age=63072000; includeSubDomains"
     "X-Content-Type-Options"    = "nosniff"
-    "X-Frame-Options"           = "DENY"
-    "Content-Security-Policy"   = "frame-ancestors 'none'; default-src 'none'"
+    "Content-Security-Policy"   = "default-src 'none'; frame-ancestors 'none'"
+    "Permissions-Policy"        = "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
   }
+
+  # AA-1111 (S294): the sub-rules of AWSManagedRulesCommonRuleSet as AWS documents them (developer guide, "Baseline rule
+  # groups", Core rule set) and as describe-managed-rule-group lists them for the default version (Version_1.23, read
+  # 25/11/2026): 22 rules, all with the action Block. Each one gets a rule_action_override: COUNT for the
+  # names in var.managed_rule_count_overrides (as before), else BLOCK with the custom response, which is the rule's
+  # own action with our answer, so no match and no count/block decision changes. A name in
+  # var.managed_rule_count_overrides that AWS adds later is appended (COUNT). A sub-rule AWS adds later and that is not
+  # listed here still blocks, with the plain ALB 403 (tools/terraform/tests/test_aa1111_security_headers.py pins the
+  # list; refresh it from aws wafv2 describe-managed-rule-group when AWS publishes a new version).
+  common_rule_set_rules = [
+    "NoUserAgent_HEADER",
+    "UserAgent_BadBots_HEADER",
+    "SizeRestrictions_QUERYSTRING",
+    "SizeRestrictions_Cookie_HEADER",
+    "SizeRestrictions_BODY",
+    "SizeRestrictions_URIPATH",
+    "EC2MetaDataSSRF_BODY",
+    "EC2MetaDataSSRF_COOKIE",
+    "EC2MetaDataSSRF_URIPATH",
+    "EC2MetaDataSSRF_QUERYARGUMENTS",
+    "GenericLFI_QUERYARGUMENTS",
+    "GenericLFI_URIPATH",
+    "GenericLFI_BODY",
+    "RestrictedExtensions_URIPATH",
+    "RestrictedExtensions_QUERYARGUMENTS",
+    "GenericRFI_QUERYARGUMENTS",
+    "GenericRFI_BODY",
+    "GenericRFI_URIPATH",
+    "CrossSiteScripting_COOKIE",
+    "CrossSiteScripting_QUERYARGUMENTS",
+    "CrossSiteScripting_BODY",
+    "CrossSiteScripting_URIPATH",
+  ]
+  common_rule_set_overrides = distinct(concat(local.common_rule_set_rules, var.managed_rule_count_overrides))
+  common_rule_set_blocks    = [for r in local.common_rule_set_overrides : r if !contains(var.managed_rule_count_overrides, r)]
+
+  # Every custom response this ACL can answer, for the quota precondition on the web ACL: the managed blocks, the two
+  # TripPlanner 429s, CloudFrontViewerRateLimit when it blocks, RateLimit1000, GeoBlockNonAllowed, StaffWebRateLimit.
+  custom_response_count = (
+    length(local.common_rule_set_blocks)
+    + (local.tp_on ? 2 : 0)
+    + (local.cfv_on && !try(local.cfv.count_only, true) ? 1 : 0)
+    + 2
+    + (local.staff_host_regex != null ? 1 : 0)
+  )
+  custom_response_header_count = local.custom_response_count * length(local.security_response_headers)
 
   rule_priorities = {
     common_rule_set         = 1
@@ -123,6 +175,14 @@ resource "aws_wafv2_web_acl" "main" {
 
   default_action {
     allow {}
+  }
+
+  # AA-1111 (S294): the body of every 403 this ACL answers (the managed CommonRuleSet blocks, RateLimit1000,
+  # GeoBlockNonAllowed, StaffWebRateLimit). Static text, no product or version, served as text/plain.
+  custom_response_body {
+    key          = "blocked"
+    content      = "Request blocked.\n"
+    content_type = "TEXT_PLAIN"
   }
 
   # AA-1038: the JSON body of the TripPlanner rate rules' 429 (only while those rules exist); AA-1165: also the 429 of
@@ -190,14 +250,36 @@ resource "aws_wafv2_web_acl" "main" {
         # content save whose first 8 KB holds a relative "../" link (HTML href/src or markdown), on CIS
         # admin + tenant edits and Booking notes/terms, so it is in COUNT too. Review the WAF log
         # (label awswaf:managed:aws:core-rule-set:*) and tighten.
+        # AA-1111 (S294): every other sub-rule is overridden to its own action, BLOCK, with the custom response, so a
+        # managed block answers with the security headers instead of the ALB's bare 403 (local.common_rule_set_rules).
+        # With var.common_rules_count_only the group-level COUNT above still wins over every override.
         dynamic "rule_action_override" {
-          for_each = var.managed_rule_count_overrides
+          for_each = local.common_rule_set_overrides
 
           content {
             name = rule_action_override.value
 
             action_to_use {
-              count {}
+              dynamic "count" {
+                for_each = contains(var.managed_rule_count_overrides, rule_action_override.value) ? [1] : []
+                content {}
+              }
+              dynamic "block" {
+                for_each = contains(var.managed_rule_count_overrides, rule_action_override.value) ? [] : [1]
+                content {
+                  custom_response {
+                    response_code            = 403
+                    custom_response_body_key = "blocked"
+                    dynamic "response_header" {
+                      for_each = local.security_response_headers
+                      content {
+                        name  = response_header.key
+                        value = response_header.value
+                      }
+                    }
+                  }
+                }
+              }
             }
           }
         }
@@ -855,7 +937,8 @@ resource "aws_wafv2_web_acl" "main" {
     action {
       block {
         custom_response {
-          response_code = 403
+          response_code            = 403
+          custom_response_body_key = "blocked"
           dynamic "response_header" {
             for_each = local.security_response_headers
             content {
@@ -962,7 +1045,8 @@ resource "aws_wafv2_web_acl" "main" {
     action {
       block {
         custom_response {
-          response_code = 403
+          response_code            = 403
+          custom_response_body_key = "blocked"
           dynamic "response_header" {
             for_each = local.security_response_headers
             content {
@@ -1042,7 +1126,8 @@ resource "aws_wafv2_web_acl" "main" {
       action {
         block {
           custom_response {
-            response_code = 403
+            response_code            = 403
+            custom_response_body_key = "blocked"
             dynamic "response_header" {
               for_each = local.security_response_headers
               content {
@@ -1096,6 +1181,15 @@ resource "aws_wafv2_web_acl" "main" {
     Module = "waf"
     Issue  = "AA-59"
   })
+
+  lifecycle {
+    # AA-1111 (S294): fail the plan, not the apply, when the custom responses would carry more headers than AWS allows
+    # per web ACL (UpdateWebACL refuses the whole change with WAFLimitsExceededException).
+    precondition {
+      condition     = local.custom_response_header_count <= var.custom_response_header_quota
+      error_message = "The web ACL's custom responses carry ${local.custom_response_header_count} headers, over var.custom_response_header_quota (${var.custom_response_header_quota}). Raise the AWS WAF quota first (Service Quotas, free), then the variable."
+    }
+  }
 }
 
 # Associate WAF with ALB

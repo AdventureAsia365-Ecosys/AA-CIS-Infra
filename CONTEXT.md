@@ -779,10 +779,16 @@ CloudFrontOriginAllow → RateLimit → GeoBlock (→ StaffWebRateLimit), in the
 `local.rule_priorities`; rate and
 geo only bite on REST API stages (`var.waf_protect_rest_api_stages`, needs `apigateway:SetWebACL`
 on the CI role). RDS `aa-cis-dev-db` has deletion protection on.
-**Security headers on edge answers (AA-1111, S284 ZAP baseline):** every block of the web ACL answers a custom
-response (403, or the TripPlanner 429 with its JSON body) carrying `local.security_response_headers` (HSTS two years
-with sub-domains and no preload, `nosniff`, `X-Frame-Options: DENY`, CSP `frame-ancestors 'none'; default-src
-'none'`); the ALB's own `Server: awselb/2.0` cannot be removed. Both REST APIs (CIS `modules/api_gateway`, Booking
+**Security headers on edge answers (AA-1111, S284 ZAP baseline; S294 managed blocks):** every block of the web ACL
+answers a custom response (403 with the static text body `blocked`, or the TripPlanner / CloudFront viewer 429 with its
+JSON body) carrying `local.security_response_headers` (HSTS two years with sub-domains and no preload, `nosniff`, CSP
+`default-src 'none'; frame-ancestors 'none'`, the apps' Permissions-Policy). Since S294 that includes the managed
+CommonRuleSet: every sub-rule (`local.common_rule_set_rules`, the 22 of the default version) has a rule action
+override, COUNT for `managed_rule_count_overrides` as before, else its own BLOCK with the custom response, so a
+request without a User-Agent (`NoUserAgent_HEADER`) no longer gets a bare 403. Four headers per response because AWS
+allows 100 custom response headers per web ACL (default quota, `var.custom_response_header_quota`, a plan-time
+precondition); Dev uses 25 x 4 = 100, so a new block rule needs a quota increase first. The ALB's own
+`Server: awselb/2.0` on these answers cannot be removed (accepted). Both REST APIs (CIS `modules/api_gateway`, Booking
 `modules/environment/booking.tf`) set `DEFAULT_4XX` / `DEFAULT_5XX` gateway responses with HSTS + `nosniff` and the
 default JSON message, hashed into the stage deployment (AA-432 trap). The apps send the same headers on their own
 responses (Next.js config / proxy, FastAPI middleware).
