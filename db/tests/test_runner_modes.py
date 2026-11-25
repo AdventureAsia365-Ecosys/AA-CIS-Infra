@@ -31,7 +31,7 @@ ROOT = HERE.parent.parent
 PASSWORD = "Xk9-tR2_vL8.wQ4~zN7!pS3*hJ6(mB1)"            # 32 printable ASCII characters
 assert len(PASSWORD) == 32
 MASTER_DSN = "postgresql://aa_cis_admin:master-not-used@db.example:5432/aa_cis_dev"
-# X1 S22: the task's DATABASE_URL is db_migrator's; the master DSN comes from rm.MASTER_SECRET in the task.
+# X1 S22: the task's DATABASE_URL is db_migrator's; the master DSN comes from rm.MASTER_DSN_ID in the task.
 MIGRATOR_DSN = "postgresql://db_migrator:migrator-not-used@db.example:5432/aa_cis_dev"
 CIS_APP_DSN = f"postgresql://cis_app:{PASSWORD}@db.example:5432/aa_cis_dev?sslmode=require"
 RUNNER_URL = ("https://aa-cis-bronze-005097885195.s3.us-west-1.amazonaws.com/db-migrate/4242/run_migration.py"
@@ -204,7 +204,7 @@ class SetPasswordTest(unittest.TestCase):
                migrator=None, master_secret=MASTER_DSN, master_error=None, migrator_error=None,
                migrator_dsn=MIGRATOR_DSN):
         """migrator (X1 S22): the task's DATABASE_URL is MIGRATOR_DSN and logs in as this connection; the master
-        DSN is then read from rm.MASTER_SECRET (master_secret: its value or an exception to raise)."""
+        DSN is then read from rm.MASTER_DSN_ID (master_secret: its value or an exception to raise)."""
         self.master = master or PwConn()
         self.test = test or TestConn()
         self.migrator = migrator
@@ -227,7 +227,7 @@ class SetPasswordTest(unittest.TestCase):
 
         def get_secret(sid):
             self.secret_reads.append(sid)
-            value = master_secret if sid == rm.MASTER_SECRET else secret
+            value = master_secret if sid == rm.MASTER_DSN_ID else secret
             if isinstance(value, Exception):
                 raise value
             return value
@@ -260,7 +260,7 @@ class SetPasswordTest(unittest.TestCase):
         self.assertEqual(_server_accepts(verifier, proof, auth), server_sig)    # the DSN's password logs in
         self.assertRegex(comment, r"""^COMMENT ON ROLE "cis_app" IS 'x1:password-set [0-9]{4}-[0-9]{2}-[0-9]{2}T"""
                                   r"""[0-9:]{8}Z by DB Migrate set-password \(run 4242\)'$""")
-        self.assertIn(rm.PASSWORD_MARKER, comment)
+        self.assertIn(rm.PW_SET_MARKER, comment)
         self.assertEqual([d for d, _ in self.connects], [MASTER_DSN, CIS_APP_DSN])
         self.assertEqual(self.connect_kw, [{}, {"ssl": "require"}])         # test login never in cleartext
         self.assertIn("MIGRATE set-password: test login current_user=cis_app rolconnlimit=90\n", self.out)
@@ -307,7 +307,7 @@ class SetPasswordTest(unittest.TestCase):
     def test_only_the_master_may_set_passwords(self):
         # The task logs in as db_migrator and the in-task "master" DSN does too: refused, the role's secret unread.
         self.assertEqual(self.run_sp(migrator=PwConn(login="db_migrator"), master=PwConn(login="db_migrator")), 8)
-        self.assertEqual((self.secret_reads, self.master.executed), ([rm.MASTER_SECRET], []))
+        self.assertEqual((self.secret_reads, self.master.executed), ([rm.MASTER_DSN_ID], []))
         self.assertIn("set-password runs only as the RDS master aa_cis_admin (login is db_migrator)", self.out)
 
     def test_s22_db_migrator_login_reads_the_master_in_the_task(self):
@@ -322,7 +322,7 @@ class SetPasswordTest(unittest.TestCase):
                       "db_migrator: reading the master DSN in the task from aa-cis/dev/rds (X1 S22)\n", self.out)
         alter, comment = self.master.executed
         self.assertTrue(alter.startswith('ALTER ROLE "cis_app" PASSWORD \'SCRAM-SHA-256$'))
-        self.assertIn(rm.PASSWORD_MARKER, comment)
+        self.assertIn(rm.PW_SET_MARKER, comment)
         self.assertIn("MIGRATE master login: aa_cis_admin (in-task DSN from aa-cis/dev/rds)\n", self.out)
         self.assertIn("MIGRATE set-password: test login current_user=cis_app rolconnlimit=90\n", self.out)
         self.assertTrue(self.master.closed and self.test.closed)
@@ -429,7 +429,7 @@ def _sha(text):
 
 class RunScriptTest(unittest.TestCase):
     def run_rs(self, source=SCRIPT, path="db/scripts/x.py", conn=None, master=None, **extra):
-        """`conn` answers the task's DATABASE_URL; `master` (X1 S22) the master DSN read from rm.MASTER_SECRET
+        """`conn` answers the task's DATABASE_URL; `master` (X1 S22) the master DSN read from rm.MASTER_DSN_ID
         (None: that read fails)."""
         env = {"MIGRATION_MODE": f"run-script:{path}", "MIGRATION_FILE": path, "MIGRATION_URL": "u",
                "MIGRATION_SHA256": _sha(source), "MIGRATION_VERSION": "", "DATABASE_URL": "postgresql://x", **extra}

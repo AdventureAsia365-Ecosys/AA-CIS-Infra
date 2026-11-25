@@ -288,7 +288,7 @@ class AwsCli:
         return json.loads(out) if out else None
 
 
-def secret_names_by_arn(aws: AwsCli) -> tuple[dict[str, str], Optional[str]]:
+def sm_names_by_arn(aws: AwsCli) -> tuple[dict[str, str], Optional[str]]:
     """Full ARN -> name from ListSecrets (metadata only). On failure the suffix heuristic is used."""
     try:
         rows = aws.call("secretsmanager", "list-secrets", "--include-planned-deletion", query=Q_LIST_SECRETS) or []
@@ -329,7 +329,7 @@ def collect_lambda(aws: AwsCli) -> list[dict]:
 
 def collect_aws(cluster: str, region: str, profile: Optional[str] = None, runner=subprocess.run) -> dict:
     aws = AwsCli(region, profile, runner)
-    names_by_arn, warning = secret_names_by_arn(aws)
+    names_by_arn, warning = sm_names_by_arn(aws)
     return {
         "format": FORMAT,
         "cluster": cluster,

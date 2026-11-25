@@ -54,8 +54,8 @@ ACTOR = f"script:{SCRIPT_NAME}"
 WRITE_ROLE = "cis_owner"
 CONNECTION = "anthropic-direct"
 PRIMARY_CONNECTION = "acc3"
-DEV_SECRET = "aa-llm/dev/anthropic-direct"
-DEV_SECRET_PREFIX = "aa-llm/dev/"
+DEV_SM_NAME = "aa-llm/dev/anthropic-direct"
+DEV_SM_PREFIX = "aa-llm/dev/"
 SECRET_PREFIX = "aa-llm/"
 MONTHLY_BUDGET_USD = Decimal("150.00")  # ~5 USD/day on Dev
 SEED_PRIORITY = 100
@@ -155,13 +155,13 @@ def dev_problems(state: dict) -> list[str]:
     else:
         if c["kind"] != "anthropic" or c["data_scope"] != VENDOR_DIRECT:
             problems.append(f"connection {CONNECTION} is kind={c['kind']} data_scope={c['data_scope']}")
-        if c["secret_name"] != DEV_SECRET:
-            problems.append(f"connection {CONNECTION} secret_name is not {DEV_SECRET}")
+        if c["secret_name"] != DEV_SM_NAME:
+            problems.append(f"connection {CONNECTION} secret_name is not {DEV_SM_NAME}")
     names = [(k, "secret_name", v["secret_name"]) for k, v in state["connections"].items()]
     names += [(k, "usage_secret_name", v.get("usage_secret_name")) for k, v in state["policies"].items()]
     for key, column, name in names:
-        if name and name.startswith(SECRET_PREFIX) and not name.startswith(DEV_SECRET_PREFIX):
-            problems.append(f"{key}.{column} is outside {DEV_SECRET_PREFIX} (not a Dev database)")
+        if name and name.startswith(SECRET_PREFIX) and not name.startswith(DEV_SM_PREFIX):
+            problems.append(f"{key}.{column} is outside {DEV_SM_PREFIX} (not a Dev database)")
     return problems
 
 
@@ -218,7 +218,7 @@ def plan(state: dict) -> dict:
     stages = []
     for s in state["stages"]:
         keys = route_keys(s)
-        api_keys, gap_keys = [], []
+        api_routes, gap_keys = [], []
         for k in keys:
             road = model_road(state, k)
             if road is None:
@@ -228,15 +228,15 @@ def plan(state: dict) -> dict:
                 gap_keys.append(k)
                 gaps[k] = detail
             else:
-                api_keys.append(k)
+                api_routes.append(k)
                 if verdict == "insert" and stage_group(s["stage"]) != "tripplanner":
                     inserts[k] = detail
         scopes = list(s["allowed_scopes"]) if s["allowed_scopes"] is not None else None
         group = stage_group(s["stage"])
         has_vendor = scopes is not None and VENDOR_DIRECT in scopes
-        widen = bool(api_keys) and group != "tripplanner" and not has_vendor
+        widen = bool(api_routes) and group != "tripplanner" and not has_vendor
         also, live_other = [], []
-        if api_keys and group != "tripplanner":
+        if api_routes and group != "tripplanner":
             for k in keys:
                 for d in state["deployments"]:
                     c = state["connections"].get(d["connection_key"])
@@ -250,7 +250,7 @@ def plan(state: dict) -> dict:
         held = widen and bool(live_other)
         widen = widen and not held
         stages.append({"stage": s["stage"], "role": s["role"], "active": s["is_active"], "group": group,
-                       "scopes": scopes, "route": keys, "api_keys": api_keys, "gap_keys": gap_keys,
+                       "scopes": scopes, "route": keys, "api_routes": api_routes, "gap_keys": gap_keys,
                        "widen": widen, "held": held, "held_by": live_other, "also_opens": also})
     conn = state["connections"].get(CONNECTION) or {}
     budget = conn.get("monthly_budget_usd")
@@ -274,19 +274,19 @@ def report(state: dict, p: dict, title: str) -> None:
     c = state["connections"].get(CONNECTION) or {}
     pol = state["policies"].get(CONNECTION)
     out("connection", key=CONNECTION, kind=c.get("kind"), enabled=c.get("enabled"), data_scope=c.get("data_scope"),
-        secret_name=c.get("secret_name"), monthly_budget_usd=c.get("monthly_budget_usd"),
+        dev_secret_name=c.get("secret_name") == DEV_SM_NAME, monthly_budget_usd=c.get("monthly_budget_usd"),
         alert_pct=pol["alert_pct"] if pol else "80(default)", hard_stop=pol["hard_stop"] if pol else "true(default)")
     for d in state["deployments"]:
         if d["connection_key"] == CONNECTION:
             out("deployment", model=d["model_key"], wire_id=d["wire_id"], priority=d["priority"],
                 enabled=d["enabled"], acc3_priority=_primary_priority(state, d["model_key"]), origin=d["origin"])
     for group in ("admin", "tenant", "tripplanner"):
-        rows = [s for s in p["stages"] if s["group"] == group and (s["api_keys"] or s["gap_keys"])]
+        rows = [s for s in p["stages"] if s["group"] == group and (s["api_routes"] or s["gap_keys"])]
         out("group", name=group, stages_naming_anthropic=len(rows),
-            with_api_road=sum(1 for s in rows if s["api_keys"]))
+            with_api_road=sum(1 for s in rows if s["api_routes"]))
         for s in rows:
             out("stage", group=group, stage=s["stage"], role=s["role"], active=s["active"],
-                scopes=_csv(s["scopes"] or ["NULL"]), api=_csv(s["api_keys"]), no_api=_csv(s["gap_keys"]),
+                scopes=_csv(s["scopes"] or ["NULL"]), api=_csv(s["api_routes"]), no_api=_csv(s["gap_keys"]),
                 also_vendor=_csv(s["also_opens"]))
             if s["held"]:
                 out("held", stage=s["stage"], why="widening would also reach a live vendor API",
@@ -317,7 +317,7 @@ async def _apply_plan(conn, state: dict, p: dict) -> None:
                 s["stage"], BOTH_SCOPES, ACTOR,
             )  # fmt: skip
             out("widen", group=s["group"], stage=s["stage"], before=_csv(s["scopes"] or ["NULL"]),
-                after=_csv(BOTH_SCOPES), api=_csv(s["api_keys"]), also_vendor=_csv(s["also_opens"]))
+                after=_csv(BOTH_SCOPES), api=_csv(s["api_routes"]), also_vendor=_csv(s["also_opens"]))
     if p["set_budget"]:
         await conn.execute(
             "UPDATE shared.llm_provider_connection SET monthly_budget_usd = $2, updated_at = now(), updated_by = $3"
@@ -343,7 +343,7 @@ def _guards(before: dict, after: dict, p_after: dict) -> list[str]:
     if pending(p_after):
         errors.append(f"{pending(p_after)} change(s) still pending after the writes")
     for s in p_after["stages"]:
-        if (s["api_keys"] and s["group"] != "tripplanner" and not s["held"]
+        if (s["api_routes"] and s["group"] != "tripplanner" and not s["held"]
                 and VENDOR_DIRECT not in (s["scopes"] or [])):
             errors.append(f"stage {s['stage']} has an API road but no vendor_direct scope")
     return errors

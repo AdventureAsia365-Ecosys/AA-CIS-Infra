@@ -182,7 +182,7 @@ class RegistryShapeTest(unittest.TestCase):
 class MirrorsAgreeTest(unittest.TestCase):
     def test_run_migration_constants(self):
         self.assertEqual(rm.MASTER_ROLE, REGISTRY["master_role"])
-        self.assertEqual(rm.MASTER_SECRET, REGISTRY["master_secret"])          # X1 S22 in-task master DSN
+        self.assertEqual(rm.MASTER_DSN_ID, REGISTRY["master_secret"])          # X1 S22 in-task master DSN
         self.assertEqual(rm.ROLES_DIR, "roles")
         self.assertEqual(set(rm.OWNER_DIRS), set(SCHEMA_OWNERS))
         for name, o in SCHEMA_OWNERS.items():
@@ -253,7 +253,7 @@ class MirrorsAgreeTest(unittest.TestCase):
 
     def test_migrator_task_definition_secrets(self):
         """X1 S22: the migrator task definition injects db_migrator's DSN; the master stays readable in the task
-        (task role) only, for roles/ files, set-password and run-script (rm.MASTER_SECRET)."""
+        (task role) only, for roles/ files, set-password and run-script (rm.MASTER_DSN_ID)."""
         self.assertEqual(REGISTRY["password_roles"][REGISTRY["migrator_role"]], REGISTRY["migrator_secret"])
         self.assertNotEqual(REGISTRY["migrator_secret"], REGISTRY["master_secret"])
         tf = (ROOT / "accounts" / "aa365" / "db_migrator.tf").read_text(encoding="utf-8")
@@ -277,11 +277,11 @@ class MirrorsAgreeTest(unittest.TestCase):
     def test_password_roles(self):
         # X1 S12 set-password: runner allowlist, workflow role regex and the probe marker agree with the registry.
         roles = REGISTRY["password_roles"]
-        self.assertEqual(rm.PASSWORD_ROLES, roles)
+        self.assertEqual(rm.ROLE_DSN_IDS, roles)
         self.assertEqual(roles["cis_app"], OWNERS["cis"]["runtime_secrets"]["cis_app"])   # the probe's login secret
         self.assertIn(REGISTRY["migrator_role"], roles)
         self.assertNotIn(REGISTRY["master_role"], roles)
-        self.assertEqual(rm.PASSWORD_MARKER, probe.PASSWORD_MARKER)
+        self.assertEqual(rm.PW_SET_MARKER, probe.PASSWORD_MARKER)
         _, run = validate_step()
         regex = re.search(r'=~ \^\(([a-z_|]+)\)\$', run).group(1)
         self.assertEqual(set(regex.split("|")), set(roles))

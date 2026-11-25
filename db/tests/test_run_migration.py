@@ -339,7 +339,7 @@ class PgError(Exception):
         self.sqlstate = sqlstate
 
 
-# X1 S22: the master DSN the runner reads in the task (rm.MASTER_SECRET) when DATABASE_URL is db_migrator's.
+# X1 S22: the master DSN the runner reads in the task (rm.MASTER_DSN_ID) when DATABASE_URL is db_migrator's.
 IN_TASK_MASTER_PW = "in-task-master-pw"                 # fake; f-string keeps the secret scan's URI rule quiet
 IN_TASK_MASTER_DSN = f"postgresql://aa_cis_admin:{IN_TASK_MASTER_PW}@db.example:5432/aa_cis_dev"
 
@@ -347,7 +347,7 @@ IN_TASK_MASTER_DSN = f"postgresql://aa_cis_admin:{IN_TASK_MASTER_PW}@db.example:
 class RunTaskTest(unittest.TestCase):
     def run_task(self, sql, mode="apply", conn=None, version="240", file="cis/x.sql", master=None, **extra):
         """`conn` answers the task's DATABASE_URL; `master` (X1 S22) the in-task master DSN read from
-        rm.MASTER_SECRET (None: the secret read fails). self.seen records connects and secret reads."""
+        rm.MASTER_DSN_ID (None: the secret read fails). self.seen records connects and secret reads."""
         raw = sql.encode()
         env = {"MIGRATION_URL": "u", "MIGRATION_SHA256": hashlib.sha256(raw).hexdigest(),
                "MIGRATION_VERSION": version, "MIGRATION_MODE": mode, "MIGRATION_FILE": file,
@@ -842,7 +842,7 @@ class RoleSwitchTest(unittest.TestCase):
         self.assertIn("roles/ files run only as the RDS master aa_cis_admin (login is db_migrator)", log)
 
     def test_roles_dir_under_db_migrator_reads_the_master_in_the_task(self):
-        """X1 S22: DATABASE_URL is db_migrator's; a roles/ file runs on the master DSN read from MASTER_SECRET."""
+        """X1 S22: DATABASE_URL is db_migrator's; a roles/ file runs on the master DSN read from MASTER_DSN_ID."""
         login, master = FakeConn(login="db_migrator"), FakeConn()
         code, conn, _, log = self.run_task(ROLES_FILE, file="roles/003_x.sql", version="rl-003", conn=login,
                                            master=master)

@@ -41,8 +41,8 @@ DEFAULT_REGION = "us-west-1"
 DEFAULT_ACCOUNT = "005097885195"
 DEFAULT_ENV = "dev"
 
-WEB_SECRET = "tripplanner/{env}/web"
-REVALIDATE_SECRET = "aa-cis/{env}/tripplanner-revalidate-hmac"
+WEB_ENTRY = "tripplanner/{env}/web"
+REVALIDATE_ENTRY = "aa-cis/{env}/tripplanner-revalidate-hmac"
 MIN_SESSION_SECRET = 32
 KEYS = ("session_secret", "catalog_revalidate_secret", "sentry_dsn")
 
@@ -110,12 +110,12 @@ def wanted_values(current: dict[str, Any], revalidate: str, sentry_dsn: str | No
     return {"session_secret": session, "catalog_revalidate_secret": revalidate, "sentry_dsn": dsn}
 
 
-def write_secret(sm: Any, env: str, sentry_dsn: str | None, *, apply: bool) -> dict[str, Any]:
-    name = WEB_SECRET.format(env=env)
+def write_entry(sm: Any, env: str, sentry_dsn: str | None, *, apply: bool) -> dict[str, Any]:
+    name = WEB_ENTRY.format(env=env)
     if not _secret_exists(sm, name):
         raise ToolError(f"{name} does not exist: apply AA-CIS-Infra modules/environment/tripplanner_web.tf first (the shell)")
     current = _current_secret(sm, name)
-    wanted = wanted_values(current, revalidate_key(sm, REVALIDATE_SECRET.format(env=env)), sentry_dsn)
+    wanted = wanted_values(current, revalidate_key(sm, REVALIDATE_ENTRY.format(env=env)), sentry_dsn)
     changed = sorted(k for k in KEYS if current.get(k) != wanted[k])
     result: dict[str, Any] = {"secret": name, "changed": changed, "sentry": "on" if wanted["sentry_dsn"] else "off"}
     if not changed:
@@ -154,7 +154,7 @@ def main(argv: list[str] | None = None, clients: tuple[Any, Any] | None = None) 
         account = sts.get_caller_identity()["Account"]
         if args.expect_account and account != args.expect_account:
             raise ToolError(f"refused: credentials are for account {account}, expected {args.expect_account}")
-        out(write_secret(sm, args.env, args.sentry_dsn, apply=args.apply))
+        out(write_entry(sm, args.env, args.sentry_dsn, apply=args.apply))
         return 0
     except ToolError as exc:
         print(f"error: {exc}", file=sys.stderr)

@@ -36,7 +36,7 @@ DEFAULT_ACCOUNT = "005097885195"
 DEFAULT_ENV = "dev"
 
 # secret name template -> {json key: WORKFORCE client key}
-SECRETS: dict[str, dict[str, str]] = {
+ENTRIES: dict[str, dict[str, str]] = {
     "aa-cis/{env}/admin-web": {
         "cis_admin_client_secret": "cis-admin",
         "breakglass_client_secret": "breakglass",
@@ -114,7 +114,7 @@ def _current_secret(sm: Any, name: str) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def write_secret(
+def write_entry(
     idp: Any, sm: Any, pool_id: str, pool_name: str, name: str, keys: dict[str, str], *, apply: bool
 ) -> dict[str, Any]:
     if not _secret_exists(sm, name):
@@ -161,10 +161,10 @@ def main(argv: list[str] | None = None, clients: tuple[Any, Any, Any] | None = N
             raise ToolError(f"refused: credentials are for account {account}, expected {args.expect_account}")
         pool_name = f"aa-workforce-{args.env}"
         pool_id = find_pool_id(idp, pool_name)
-        for template, keys in SECRETS.items():
+        for template, keys in ENTRIES.items():
             if args.only and not template.startswith("aa-cis/" if args.only == "cis" else "booking/"):
                 continue
-            out(write_secret(idp, sm, pool_id, pool_name, template.format(env=args.env), keys, apply=args.apply))
+            out(write_entry(idp, sm, pool_id, pool_name, template.format(env=args.env), keys, apply=args.apply))
         return 0
     except ToolError as exc:
         print(f"error: {exc}", file=sys.stderr)

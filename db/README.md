@@ -56,7 +56,7 @@ mirror below; with the mirrors they are green. In order:
    `CODE_COPIES`), so the Infra PR copies it after the CIS PR merges.
 2. **Infra PR:** the `owners.yaml` entry; `migrator_member_of` + the owner role; `password_roles` + the runtime role
    (DB Migrate `mode=set-password`); then the mirrors: `run_migration.py` (`OWNER_DIRS`, `IDLE_EXEMPT_KINDS` when the
-   owner has a job table, `PASSWORD_ROLES`), `check_migration_copies.py` (`OWNERS`, `PATH_RE`), `db-migrate.yml`
+   owner has a job table, `ROLE_DSN_IDS`), `check_migration_copies.py` (`OWNERS`, `PATH_RE`), `db-migrate.yml`
    (dir regex, key-prefix `case`, set-password role regex), `isolation_probe.py` (`OWNERS`, `VERSION_KEYS` with the
    transfer key, `KEY_TEXT` for the key and `<owner>_transferred`), the copied `rls_catalogue_rules.py`, and
    `check_retention_rows.py` `RETENTION_OWNERS` (a new app's tables need DM-7 rows from day one, AA-929).
