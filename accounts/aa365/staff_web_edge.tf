@@ -59,8 +59,9 @@ locals {
     booking = "booking.${var.dns_zone_name}"
   }
 
-  # The ALB will admit :443 from anywhere: the staff sign in from home and on the road (the web ACL's geo rule keeps the
-  # allowed countries). The apps authenticate every page (Cognito WORKFORCE).
+  # The ALB will admit :443 from anywhere: the staff sign in from home and on the road (AA-1111 S2: the web ACL's geo
+  # rule no longer covers these hosts, main.tf geo_exempt_hosts; administrators need password + TOTP). The apps
+  # authenticate every page (Cognito WORKFORCE).
   # S271 two-step apply (independent review M1): module.alb depends on module.vpc, so the SG would open :443 before the
   # listener default turns into the fixed 404. First apply keeps :443 closed ([]); after describe-listeners shows the
   # 404 default, a one-line follow-up sets ["0.0.0.0/0"].

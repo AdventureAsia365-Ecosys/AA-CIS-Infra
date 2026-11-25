@@ -331,6 +331,8 @@ def test_waf_scopes_staff_hosts_out_of_the_api_rate_rule():
     assert "scope_down_statement" in staff and "regex_string = local.staff_host_regex" in staff
     assert "not_statement" not in staff
     assert "staff_web_hosts      = values(local.staff_web_hosts)" in MAIN
-    # Geo still applies to the staff hosts: no scope-down on the geo rule.
+    # The geo rule itself names no staff host; AA-1111 S2 scopes the staff hosts out through geo_exempt_hosts in the
+    # root (administrator MFA enforced), never through a rule of its own.
     geo = _waf_rule("GeoBlockNonAllowed")
     assert "staff" not in geo
+    assert "values(local.staff_web_hosts)," in MAIN
