@@ -86,6 +86,9 @@ locals {
   # linux-libc-dev, fixed in Debian 13 point updates). The official image was rebuilt under the same tag; this digest
   # had no fixable finding at any severity on 25/11 (Trivy 0.70.0, linux/arm64). The new image reaches the running
   # task at the next Booking admin deploy (the deploy copies the family's latest revision).
+  # S294: the same digest went red on 25/11 on CVE-2026-124851 (libzstd1, fixed in Debian 1.5.7+dfsg-1+deb13u1 after
+  # this image was built on 24/11; no rebuilt digest of the tag upstream yet). Accepted until 02/12 in the root
+  # exception register and .trivyignore: move this pin to the first rebuilt digest, then drop both entries.
   test_wp_image = "public.ecr.aws/docker/library/wordpress@sha256:98a3fba3639b89fe1ade0cf6d37e61bc8934de872cf26d9dc5286962b554e3d1"
 
   # Fetched by start.sh at every start, checksums verified before use (sha256 of the release zip on wordpress.org;

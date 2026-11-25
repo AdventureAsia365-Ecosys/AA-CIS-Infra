@@ -1,0 +1,12 @@
+# Trivy findings accepted for now in images this repo owns (third-party images pinned by digest in Terraform, e.g. the
+# WordPress test sidecar). The nightly Image Scan (running images) accepts a finding only with a row in the root
+# exception register docs/security/vuln-exceptions.toml (repo AA-CIS-Infra, source trivy); this file mirrors those rows
+# with the same expiry so the monthly triage can cross-check them (root SEC-03). Format:
+#
+#   # <reason: why it is safe for now, and what removes it>
+#   CVE-YYYY-NNNNN exp:YYYY-MM-DD
+
+# S294: libzstd1 in the WordPress test sidecar (wordpress:7.1.5-php8.4-apache, digest of 24/11, built before the Debian
+# fix 1.5.7+dfsg-1+deb13u1; no rebuilt digest upstream on 25/11). Test site only, no customer data. Remove when
+# test_wp_image moves to a digest with the fixed package.
+CVE-2026-124851 exp:2026-12-02
