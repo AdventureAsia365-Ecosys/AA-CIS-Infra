@@ -36,6 +36,15 @@ resource "aws_api_gateway_gateway_response" "security_headers" {
   response_templates  = local.gateway_default_message
 }
 
+# S294 (AA-1111): a request the WAF blocks at the stage gets the WAF's own 403, which already carries the security
+# headers (modules/waf local.security_response_headers). Without this entry WAF_FILTERED falls under DEFAULT_4XX and
+# the gateway adds HSTS and nosniff a second time (ZAP: "Strict-Transport-Security Multiple Header Entries").
+resource "aws_api_gateway_gateway_response" "security_headers_waf_filtered" {
+  rest_api_id        = aws_api_gateway_rest_api.this.id
+  response_type      = "WAF_FILTERED"
+  response_templates = local.gateway_default_message
+}
+
 # AA-750: the tenant-key TOKEN authorizer (X-API-Key) was removed with its Lambda. No method had
 # used it since AA-432 (/v1/* is NONE; JWT is checked in FastAPI).
 
@@ -656,12 +665,14 @@ resource "aws_api_gateway_deployment" "this" {
     aws_api_gateway_integration.redoc,
     aws_api_gateway_integration.docs_oauth2_redirect,
     aws_api_gateway_integration.v1,
-    aws_api_gateway_gateway_response.security_headers, # AA-1111
+    aws_api_gateway_gateway_response.security_headers,              # AA-1111
+    aws_api_gateway_gateway_response.security_headers_waf_filtered, # S294 (AA-1111)
   ]
   triggers = {
     redeployment = sha1(join(",", [
       # AA-1111: the gateway responses' headers and bodies (a change must redeploy the stage, AA-432 trap).
       jsonencode({ for k, r in aws_api_gateway_gateway_response.security_headers : k => [r.response_parameters, r.response_templates] }),
+      jsonencode([aws_api_gateway_gateway_response.security_headers_waf_filtered.response_parameters, aws_api_gateway_gateway_response.security_headers_waf_filtered.response_templates]), # S294
       aws_api_gateway_integration.root.uri,
       aws_api_gateway_integration.health.uri,
       aws_api_gateway_integration.health_ready.uri, # AA-884: new resource must redeploy the stage

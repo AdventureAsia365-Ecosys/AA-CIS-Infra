@@ -215,3 +215,24 @@ def test_cis_api_gateway_responses():
 
 def test_booking_api_gateway_responses():
     _gateway_checks(_read(BOOKING), "booking_security_headers", "aws_api_gateway_rest_api.booking.id", "bk_")
+
+
+def _waf_filtered_checks(text: str, resource: str, api_ref: str) -> None:
+    """S294: WAF_FILTERED gets its own gateway response with no header parameters, so the WAF's block answer (which
+    already carries the security headers) is not given HSTS and nosniff a second time by DEFAULT_4XX."""
+    code = _code(text)
+    res = _block_after(code, code.index(f'resource "aws_api_gateway_gateway_response" "{resource}_waf_filtered"'))
+    assert 'response_type      = "WAF_FILTERED"' in res
+    assert f"rest_api_id        = {api_ref}" in res
+    assert "response_parameters" not in res, "the WAF's own headers are the only ones"
+    deployment = _block_after(code, code.index('resource "aws_api_gateway_deployment"'))
+    assert f"aws_api_gateway_gateway_response.{resource}_waf_filtered," in deployment, "depends_on"
+    assert f"aws_api_gateway_gateway_response.{resource}_waf_filtered.response_templates" in deployment, "hash"
+
+
+def test_cis_waf_filtered_has_no_second_header_set():
+    _waf_filtered_checks(_read(CIS_API), "security_headers", "aws_api_gateway_rest_api.this.id")
+
+
+def test_booking_waf_filtered_has_no_second_header_set():
+    _waf_filtered_checks(_read(BOOKING), "booking_security_headers", "aws_api_gateway_rest_api.booking.id")
