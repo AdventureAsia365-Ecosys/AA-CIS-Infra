@@ -6,6 +6,7 @@ output. Run: python3 -m pytest -p no:cacheprovider -q tools/security/tests
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -197,6 +198,24 @@ def test_scan_masks_outputs_and_records_failures(cfg, tmp_path):
     # the failed digest is not cached; the two others are
     assert sorted(p.name for p in (tmp_path / "cache").glob("*")) == sorted(
         tool.cache_name(i) for i in images if i.repository != "aa-crm-dev-web")
+
+
+def test_every_trivy_call_ignores_a_cwd_trivyignore(cfg, tmp_path, monkeypatch):
+    """The gate accepts a finding only through the root register (repo-scoped): a .trivyignore in the working
+    directory (the Infra checkout root in the nightly run) must not drop findings of every image before triage."""
+    (tmp_path / ".trivyignore").write_text("CVE-2099-0001\n")
+    monkeypatch.chdir(tmp_path)
+    images, _ = tool.collect(cfg, fake_aws(CLUSTER))
+    seen = []
+    assert tool.scan(cfg, images, tmp_path / "out", tmp_path / "cache", _fake_scanner(seen)) == []
+    assert {a[1] for a in seen} == {"image", "sbom"}
+    for args in seen:
+        assert args[args.index("--ignorefile") + 1] == os.devnull
+    img = images[0]
+    sbom = tool.sbom_args(cfg, img, tmp_path / "x.cdx.json")
+    vulns = tool.trivy_args(cfg, tmp_path / "x.cdx.json", tmp_path / "x.json")
+    assert sbom[-1] == img.ref and vulns[-1] == str(tmp_path / "x.cdx.json")   # the target stays the last argument
+    assert sbom[sbom.index("--ignorefile") + 1] == vulns[vulns.index("--ignorefile") + 1] == os.devnull
 
 
 def test_scan_reuses_the_cached_sbom_and_prunes_old_entries(cfg, tmp_path):

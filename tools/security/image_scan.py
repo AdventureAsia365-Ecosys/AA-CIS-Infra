@@ -43,6 +43,7 @@ import datetime as dt
 import fnmatch
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -269,12 +270,21 @@ def _now() -> str:
 # scan: one SBOM per digest (pulled once, then cached), a fresh vulnerability scan of that SBOM every night
 
 
+# Trivy reads `.trivyignore` from its working directory when no --ignorefile is given, and the nightly workflow runs
+# this tool from the AA-CIS-Infra checkout root. That file would hide a CVE in EVERY image (it has no repo scope), so
+# the finding would never reach the triage step, whose register rows are scoped to the image's owner repo. The gate
+# accepts a finding only through the root exception register: every Trivy call gets an empty ignore file, and the
+# repo-root .trivyignore stays a mirror for the monthly cross-check. os.devnull, not a missing path: Trivy 0.70 stops
+# with "ignore file not found" on an --ignorefile that does not exist (checked S294).
+NO_IGNOREFILE = ["--ignorefile", os.devnull]
+
+
 def sbom_args(cfg: dict, img: Image, out: Path) -> list[str]:
     """Trivy reads the image BY DIGEST from the registry (no docker daemon) and writes its CycloneDX SBOM."""
     s = cfg["scan"]
     return ["trivy", "image", "--quiet", "--format", s["sbom_format"], "--output", str(out),
             "--pkg-types", s["pkg_types"], "--timeout", s["timeout"], "--platform", img.platform,
-            "--image-src", "remote", img.ref]
+            *NO_IGNOREFILE, "--image-src", "remote", img.ref]
 
 
 def trivy_args(cfg: dict, sbom: Path, out: Path) -> list[str]:
@@ -282,7 +292,7 @@ def trivy_args(cfg: dict, sbom: Path, out: Path) -> list[str]:
     s = cfg["scan"]
     return ["trivy", "sbom", "--quiet", "--format", "json", "--output", str(out), "--scanners", s["scanners"],
             "--pkg-types", s["pkg_types"], "--severity", ",".join(s["severities"]), "--timeout", s["timeout"],
-            str(sbom)]
+            *NO_IGNOREFILE, str(sbom)]
 
 
 def cache_name(img: Image) -> str:
