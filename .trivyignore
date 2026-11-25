@@ -1,7 +1,9 @@
 # Trivy findings accepted for now in images this repo owns (third-party images pinned by digest in Terraform, e.g. the
 # WordPress test sidecar). The nightly Image Scan (running images) accepts a finding only with a row in the root
 # exception register docs/security/vuln-exceptions.toml (repo AA-CIS-Infra, source trivy); this file mirrors those rows
-# with the same expiry so the monthly triage can cross-check them (root SEC-03). Format:
+# with the same expiry so the monthly triage can cross-check them (root SEC-03). The nightly gate never reads this file:
+# tools/security/image_scan.py passes an empty --ignorefile to every Trivy call, since an entry here has no repo scope
+# and would hide the CVE in every running image, not only the ones this repo owns. Format:
 #
 #   # <reason: why it is safe for now, and what removes it>
 #   CVE-YYYY-NNNNN exp:YYYY-MM-DD
