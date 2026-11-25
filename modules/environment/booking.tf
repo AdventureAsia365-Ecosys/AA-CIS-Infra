@@ -614,6 +614,15 @@ resource "aws_api_gateway_gateway_response" "booking_security_headers" {
   response_templates  = local.bk_gateway_default_message
 }
 
+# S294 (AA-1111): a request the WAF blocks at the stage gets the WAF's own 403, which already carries the security
+# headers (modules/waf local.security_response_headers). Without this entry WAF_FILTERED falls under DEFAULT_4XX and
+# the gateway adds HSTS and nosniff a second time (ZAP: "Strict-Transport-Security Multiple Header Entries").
+resource "aws_api_gateway_gateway_response" "booking_security_headers_waf_filtered" {
+  rest_api_id        = aws_api_gateway_rest_api.booking.id
+  response_type      = "WAF_FILTERED"
+  response_templates = local.bk_gateway_default_message
+}
+
 resource "aws_api_gateway_deployment" "booking" {
   rest_api_id = aws_api_gateway_rest_api.booking.id
 
@@ -635,13 +644,15 @@ resource "aws_api_gateway_deployment" "booking" {
       aws_api_gateway_integration.booking_proxy_any.timeout_milliseconds,
       # AA-1111: the gateway responses' headers and bodies.
       { for k, r in aws_api_gateway_gateway_response.booking_security_headers : k => [r.response_parameters, r.response_templates] },
+      [aws_api_gateway_gateway_response.booking_security_headers_waf_filtered.response_parameters, aws_api_gateway_gateway_response.booking_security_headers_waf_filtered.response_templates], # S294
     ]))
   }
 
   depends_on = [
     aws_api_gateway_integration.booking_any,
     aws_api_gateway_integration.booking_proxy_any,
-    aws_api_gateway_gateway_response.booking_security_headers, # AA-1111
+    aws_api_gateway_gateway_response.booking_security_headers,              # AA-1111
+    aws_api_gateway_gateway_response.booking_security_headers_waf_filtered, # S294 (AA-1111)
   ]
 
   lifecycle {
