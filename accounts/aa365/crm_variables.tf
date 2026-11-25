@@ -88,6 +88,13 @@ variable "crm_web_sentry_enabled" {
   default     = false
 }
 
+# as in modules/environment/crm_web.tf
+variable "crm_web_mapbox_enabled" {
+  description = "AA-948: map key mapbox_public_token of the crm/<env>/web secret into the CRM web task (MAPBOX_PUBLIC_TOKEN, the URL-restricted public token of the proposal builder's map). Turn on only AFTER the key exists (crm_dev_identity.py web-mapbox-token --apply): a task whose secret lacks a mapped key fails to start."
+  type        = bool
+  default     = false
+}
+
 # as in modules/environment/crm_storage.tf
 variable "crm_audit_compliance_enabled" {
   description = "AA-932: put the 12-month audit bucket (aa-crm-<env>-audit-c-*) in COMPLIANCE mode. Irreversible for every locked version (nobody, root included, can shorten or lift it). Go-real only (CRM-38); a precondition refuses it on Dev (design v3 §3.6: Dev governance only)."

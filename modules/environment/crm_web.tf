@@ -37,6 +37,11 @@
 # of crm/dev/web (the server SDK of the web, Sentry project aa-partner-web; the execution role already reads this
 # secret). ORDER: write the key (crm_dev_identity.py web-sentry-dsn --apply) BEFORE the apply that turns the flag on,
 # then deploy the web (the deploy copies the family's latest revision). The browser DSN is a build arg, not this key.
+# AA-948 (card CRM-20): with var.crm_web_mapbox_enabled the task also maps MAPBOX_PUBLIC_TOKEN from the key
+# mapbox_public_token of crm/dev/web: the URL-restricted public Mapbox token of the proposal builder's map (AA-Partner
+# web/lib/mapConfig.ts reads it per request; empty or missing = the map shows its "not set up" state). Same ORDER as
+# AA-1111: write the key (crm_dev_identity.py web-mapbox-token --apply) BEFORE the apply that turns the flag on, then
+# deploy the web.
 # AA-1105 (root ADR 0022): the AA Academy host academy.<zone> (accounts/aa365 academy_edge.tf) is served by this web:
 # WEB_ACADEMY_HOSTS / ACADEMY_COGNITO_DOMAIN / ACADEMY_COGNITO_CLIENT_ID (WORKFORCE client academy-web) here,
 # ACADEMY_COGNITO_CLIENT_SECRET / ACADEMY_SESSION_SECRET from the academy_* keys of crm/dev/web. Same ORDER as AA-1019:
@@ -71,6 +76,12 @@ variable "crm_web_client_hosts" {
 
 variable "crm_web_sentry_enabled" {
   description = "AA-1111: map key sentry_dsn of the crm/<env>/web secret into the CRM web task (SENTRY_DSN, the server half of Sentry project aa-partner-web). Turn on only AFTER the key exists (crm_dev_identity.py web-sentry-dsn --apply): a task whose secret lacks a mapped key fails to start."
+  type        = bool
+  default     = false
+}
+
+variable "crm_web_mapbox_enabled" {
+  description = "AA-948: map key mapbox_public_token of the crm/<env>/web secret into the CRM web task (MAPBOX_PUBLIC_TOKEN, the URL-restricted public token of the proposal builder's map). Turn on only AFTER the key exists (crm_dev_identity.py web-mapbox-token --apply): a task whose secret lacks a mapped key fails to start."
   type        = bool
   default     = false
 }
@@ -309,6 +320,9 @@ resource "aws_ecs_task_definition" "crm_web" {
       # AA-1111: the server-side Sentry DSN (AA-Partner web/instrumentation.ts reads SENTRY_DSN; the browser DSN is the
       # build arg from the AA-Partner `dev` variable WEB_PUBLIC_SENTRY_DSN). Only while var.crm_web_sentry_enabled.
       { name = "SENTRY_DSN", valueFrom = "${aws_secretsmanager_secret.crm_web.arn}:sentry_dsn::" },
+      ] : [], var.crm_web_mapbox_enabled ? [
+      # AA-948: the public Mapbox token of the builder map (AA-Partner web/lib/mapConfig.ts). Only while the flag is on.
+      { name = "MAPBOX_PUBLIC_TOKEN", valueFrom = "${aws_secretsmanager_secret.crm_web.arn}:mapbox_public_token::" },
     ] : [])
     logConfiguration = {
       logDriver = "awslogs"

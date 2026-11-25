@@ -48,6 +48,12 @@ Subcommands
       (Sentry stays off: the web sends nothing without a DSN). Without --sentry-dsn it only reports "sentry": on/off.
       The value is never printed; every other key is kept. Run it BEFORE the apply that turns the flag on (a task
       whose secret lacks a mapped key fails to start), then deploy the web.
+  web-mapbox-token [--mapbox-token TOKEN | --mapbox-token -] [--apply]   (AA-948; no Cognito call, --pool is ignored)
+      Sets the key mapbox_public_token of crm/<env>/web: the URL-restricted public Mapbox token (pk.) of the proposal
+      builder's map, which the task maps as MAPBOX_PUBLIC_TOKEN once AA-CIS-Infra crm_web_mapbox_enabled = true.
+      "-" reads the token from stdin (keeps it out of the shell history). A secret token (sk.) is refused; '' removes
+      the map (the builder shows its "not set up" state). Without --mapbox-token it only reports "map": on/off. The
+      value is never printed; every other key is kept. Run it BEFORE the apply that turns the flag on.
   e2e-staff [--apply]   (AA-1019, root ADR 0006a A10c; WORKFORCE pool, dev only)
       The Dev-only AA-Partner staff E2E user e2e-crm-staff@e2e-mail.<zone> in groups crm-ops + crm-support exactly:
       AdminCreateUser with MessageAction=SUPPRESS and email_verified=true, no password (sign-in is the e-mail code,
@@ -88,6 +94,7 @@ import base64
 import hashlib
 import hmac
 import json
+import re
 import secrets
 import string
 import struct
@@ -126,6 +133,9 @@ ACADEMY_CLIENT = "academy-web"
 SESSION_KEYS = ("session_secret", "staff_session_secret", "academy_session_secret")
 # AA-1111: the CRM web's server-side Sentry DSN key of crm/<env>/web (crm_web.tf maps it while crm_web_sentry_enabled).
 SENTRY_DSN_KEY = "sentry_dsn"
+# AA-948: the builder map's public Mapbox token key of crm/<env>/web (crm_web.tf maps it while crm_web_mapbox_enabled).
+MAPBOX_TOKEN_KEY = "mapbox_public_token"
+MAPBOX_PUBLIC_TOKEN = re.compile(r"^pk\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$")
 # AA-1087 (root ADR 0006a A10e): the Dev-only write-capable AA-Booking E2E users (local part, exact groups, name); must
 # equal workforce.py E2E_BOOKING_{STAFF,MAKER,CHECKER}_TEST_STAFF_EMAIL / _GROUPS and AA-Booking app/auth/e2e_staff.py.
 E2E_BOOKING_WRITERS: tuple[tuple[str, tuple[str, ...], str], ...] = (
@@ -586,6 +596,31 @@ def web_sentry_dsn(sm: Any, *, env: str, dsn: str | None, apply: bool) -> dict[s
     return result
 
 
+def web_mapbox_token(sm: Any, *, env: str, token: str | None, apply: bool) -> dict[str, Any]:
+    """AA-948: the key mapbox_public_token of crm/<env>/web (MAPBOX_PUBLIC_TOKEN of the web task); never printed."""
+    name = f"crm/{env}/web"
+    if not _secret_exists(sm, name):
+        raise ToolError(f"{name} does not exist: apply AA-CIS-Infra crm_web.tf first (the secret shell)")
+    current = _current_secret(sm, name) or {}
+    stored = current.get(MAPBOX_TOKEN_KEY)
+    wanted = stored if token is None else token.strip()
+    if wanted and not (isinstance(wanted, str) and MAPBOX_PUBLIC_TOKEN.match(wanted)):
+        raise ToolError("--mapbox-token must be a public Mapbox token (pk.<...>.<...>), never a secret sk. token")
+    changed = [] if token is None or stored == wanted else [MAPBOX_TOKEN_KEY]
+    result: dict[str, Any] = {"secret": name, "changed": changed, "map": "on" if wanted else "off"}
+    if not changed:
+        result["action"] = "unchanged"
+        return result
+    if not apply:
+        result["action"] = "would_write"
+        return result
+    value = {**current, MAPBOX_TOKEN_KEY: wanted}
+    resp = sm.put_secret_value(SecretId=name, SecretString=json.dumps(value))
+    result["action"] = "written"
+    result["version_id"] = resp.get("VersionId")
+    return result
+
+
 def e2e_staff(idp: Any, workforce_pool_id: str, *, env: str, zone: str, apply: bool) -> dict[str, Any]:
     """AA-1019 (A10c): the Dev-only staff E2E user in crm-ops + crm-support (SUPPRESS, no password, idempotent)."""
     if env != "dev":
@@ -695,6 +730,10 @@ def build_parser() -> argparse.ArgumentParser:
     sd = sub.add_parser("web-sentry-dsn", help="AA-1111: the key sentry_dsn of crm/<env>/web (the web's server DSN)")
     sd.add_argument("--sentry-dsn", default=None, help="the aa-partner-web DSN; '' switches Sentry off; omit to report")
     sd.add_argument("--apply", action="store_true")
+    mb = sub.add_parser("web-mapbox-token", help="AA-948: the key mapbox_public_token of crm/<env>/web (builder map)")
+    mb.add_argument("--mapbox-token", default=None,
+                    help="the public pk. token; '-' reads it from stdin; '' removes the map; omit to report")
+    mb.add_argument("--apply", action="store_true")
     es = sub.add_parser("e2e-staff", help="AA-1019: the Dev-only staff E2E user (crm-ops + crm-support)")
     es.add_argument("--apply", action="store_true")
     eb = sub.add_parser("e2e-booking-writers", help="AA-1087: the Dev-only write-capable Booking E2E users")
@@ -725,6 +764,10 @@ def main(argv: list[str] | None = None, clients: tuple[Any, Any, Any] | None = N
             raise ToolError(f"refused: credentials are for account {account}, expected {args.expect_account}")
         if args.command == "web-sentry-dsn":
             out(web_sentry_dsn(sm, env=args.env, dsn=args.sentry_dsn, apply=args.apply))
+            return 0
+        if args.command == "web-mapbox-token":
+            token = sys.stdin.readline() if args.mapbox_token == "-" else args.mapbox_token
+            out(web_mapbox_token(sm, env=args.env, token=token, apply=args.apply))
             return 0
         if args.command in ("staff-web-secret", "academy-web-secret", "e2e-staff", "e2e-booking-writers",
                             "e2e-custom-maker", "e2e-owner"):
