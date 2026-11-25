@@ -29,12 +29,23 @@
 # rotation keep opening. Deletion window 30 days (a scheduled deletion is a local MFA apply, never CI).
 #
 # Booking task definition env SUPPLIER_BANK_KMS_KEY_ID = the alias name (booking.tf; no account id reaches the app
-# repo). Not here (follow-up): an EventBridge alarm on key administration and on a crypto call by another principal,
-# like the CRM keys (crm_data.tf aa-crm-<env>-kms-*), wired to the alert severity map.
+# repo).
+#
+# Alarms (S294, the part 2 follow-up; same pattern as the CRM keys, crm_data.tf aa-crm-<env>-kms-*): two CloudTrail
+# EventBridge rules at page severity, locked (AA-1171 D5), each with a target on the alerts topic and one on the page
+# topic carrying the same e-mail text:
+#   aa-booking-<env>-kms-key-admin    key policy, grant, deletion, disable, rotation-off, alias, tag or key material
+#                                     change on this key or its alias. Only a planned local MFA apply may do that.
+#   aa-booking-<env>-kms-foreign-use  a crypto call on this key (allowed or denied) by any principal other than the
+#                                     Booking task role or an AWS service (DenyCryptoOutsideBookingRuntime refuses
+#                                     it; the alarm says someone tried).
+# The page topic policy admits rule/aa-booking-* (accounts/aa365 alert_severity.tf AllowPageEventBridgeRules). The
+# apply order and the topic and CI grants these rules rely on are tracked in AA-1158.
 #
 # Cost (us-west-1, est.): 1 customer managed key = 1 USD/month; automatic rotation adds 1 USD/month for each of its
 # first two rotations (from month 13); requests (a few per bank account entry or read) stay inside the 20,000/month
-# free tier. About 1 USD/month now, 2-3 USD/month from the second year.
+# free tier. About 1 USD/month now, 2-3 USD/month from the second year. The two alarm rules cost nothing: AWS service
+# events on the default bus are free, and the SNS e-mails stay inside the 1,000/month free notifications.
 # =============================================================================
 
 locals {
@@ -159,6 +170,120 @@ resource "aws_iam_role_policy" "booking_ecs_task_supplier_bank" {
       },
     ]
   })
+}
+
+# -----------------------------------------------------------------------------
+# Alarms on the key (S294; the CRM pattern of crm_data.tf crm_kms_key_admin / crm_kms_foreign_use)
+# -----------------------------------------------------------------------------
+
+locals {
+  # CloudTrail logs requestParameters.keyId as the caller passed it (key id, key ARN, alias name or alias ARN);
+  # resources[].ARN is the key ARN. Match all four.
+  bk_supplier_bank_key_match = [
+    aws_kms_key.booking_supplier_bank.key_id,
+    aws_kms_key.booking_supplier_bank.arn,
+    local.bk_supplier_bank_alias,
+    "arn:aws:kms:${var.aws_region}:${var.account_id}:${local.bk_supplier_bank_alias}",
+  ]
+  bk_kms_alert_input_paths = {
+    event     = "$.detail.eventName"
+    principal = "$.detail.userIdentity.arn"
+    key       = "$.detail.resources[0].ARN"
+    ip        = "$.detail.sourceIPAddress"
+    time      = "$.detail.eventTime"
+    error     = "$.detail.errorCode"
+  }
+}
+
+resource "aws_cloudwatch_event_rule" "booking_kms_key_admin" {
+  name        = "${local.bk_name_prefix}-kms-key-admin"
+  description = "Booking supplier bank account KMS key: key policy, grant, deletion, disable, rotation-off, alias, tag or key-material change (CloudTrail). AA-1158.${var.runbook_suffix.incident}"
+  state       = "ENABLED"
+
+  event_pattern = jsonencode({
+    source        = ["aws.kms"]
+    "detail-type" = ["AWS API Call via CloudTrail"]
+    detail = {
+      eventSource = ["kms.amazonaws.com"]
+      eventName = [
+        "PutKeyPolicy", "CreateGrant", "ScheduleKeyDeletion", "DisableKey", "DisableKeyRotation",
+        "UpdateAlias", "DeleteAlias", "ImportKeyMaterial", "DeleteImportedKeyMaterial", "ReplicateKey",
+        "UpdatePrimaryRegion", "CancelKeyDeletion", "EnableKey", "TagResource", "UntagResource",
+      ]
+      "$or" = [
+        { resources = { ARN = [aws_kms_key.booking_supplier_bank.arn] } },
+        { requestParameters = { keyId = local.bk_supplier_bank_key_match } },
+        { requestParameters = { aliasName = [local.bk_supplier_bank_alias] } },
+      ]
+    }
+  })
+
+  tags = merge(local.bk_tags, { Issue = "AA-1158", Component = "security" }, var.alert_tags.page_locked) # page, security: Booking supplier bank key administration
+}
+
+resource "aws_cloudwatch_event_target" "booking_kms_key_admin" {
+  rule      = aws_cloudwatch_event_rule.booking_kms_key_admin.name
+  target_id = "alerts-sns"
+  arn       = var.alerts_topic_arn
+
+  input_transformer {
+    input_paths    = local.bk_kms_alert_input_paths
+    input_template = "\"[aa-booking] Supplier bank KMS key change: <event> on <key> by <principal> from <ip> at <time> (errorCode: <error>). Only a planned local MFA apply may change this key; otherwise treat it as an incident.${var.runbook_suffix.incident}\""
+  }
+}
+
+resource "aws_cloudwatch_event_rule" "booking_kms_foreign_use" {
+  name        = "${local.bk_name_prefix}-kms-foreign-use"
+  description = "Booking supplier bank account KMS key: a crypto call (allowed or denied) by a principal other than the Booking task role or an AWS service. AA-1158.${var.runbook_suffix.incident}"
+  state       = "ENABLED_WITH_ALL_CLOUDTRAIL_MANAGEMENT_EVENTS"
+
+  event_pattern = jsonencode({
+    source        = ["aws.kms"]
+    "detail-type" = ["AWS API Call via CloudTrail"]
+    detail = {
+      eventSource = ["kms.amazonaws.com"]
+      eventName = [
+        "Decrypt", "Encrypt", "GenerateDataKey", "GenerateDataKeyWithoutPlaintext", "GenerateDataKeyPair",
+        "GenerateDataKeyPairWithoutPlaintext", "ReEncrypt", "Sign",
+      ]
+      resources = { ARN = [aws_kms_key.booking_supplier_bank.arn] }
+      "$or" = [
+        { userIdentity = { type = [{ "anything-but" = ["AssumedRole", "AWSService"] }] } },
+        { userIdentity = { type = ["AssumedRole"], sessionContext = { sessionIssuer = { arn = [{ "anything-but" = [aws_iam_role.booking_ecs_task.arn] }] } } } },
+      ]
+    }
+  })
+
+  tags = merge(local.bk_tags, { Issue = "AA-1158", Component = "security" }, var.alert_tags.page_locked) # page, security: Booking supplier bank key used by another principal
+}
+
+resource "aws_cloudwatch_event_target" "booking_kms_foreign_use" {
+  rule      = aws_cloudwatch_event_rule.booking_kms_foreign_use.name
+  target_id = "alerts-sns"
+  arn       = var.alerts_topic_arn
+
+  input_transformer {
+    input_paths    = local.bk_kms_alert_input_paths
+    input_template = "\"[aa-booking] Supplier bank KMS key used by a foreign principal: <event> on <key> by <principal> from <ip> at <time> (errorCode: <error>). Only the Booking task role uses this key; anything else is an incident.${var.runbook_suffix.incident}\""
+  }
+}
+
+# Page severity (AA-1171 D5): each rule gets a second target on the page topic with the same e-mail text (the page
+# topic policy admits rule/aa-booking-*, accounts/aa365 alert_severity.tf).
+resource "aws_cloudwatch_event_target" "booking_kms_page" {
+  for_each = {
+    key_admin   = aws_cloudwatch_event_target.booking_kms_key_admin
+    foreign_use = aws_cloudwatch_event_target.booking_kms_foreign_use
+  }
+
+  rule      = each.value.rule
+  target_id = "page-sns"
+  arn       = var.page_topic_arn
+
+  input_transformer {
+    input_paths    = each.value.input_transformer[0].input_paths
+    input_template = each.value.input_transformer[0].input_template
+  }
 }
 
 output "booking_supplier_bank_kms_alias" {

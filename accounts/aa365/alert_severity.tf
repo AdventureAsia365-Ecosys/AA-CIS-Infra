@@ -53,8 +53,8 @@ locals {
     ticket = [aws_sns_topic.alerts.arn]
   }
 
-  # The SNS targets of the page-severity EventBridge rules of this root (the module's CRM KMS rules add their own page
-  # target, modules/environment/crm_data.tf). Each gets a second target on the page topic with the same e-mail text.
+  # The SNS targets of the page-severity EventBridge rules of this root (the module's CRM and Booking KMS rules add
+  # their own page target, modules/environment/crm_data.tf and booking_supplier_bank.tf). Each gets a second target on the page topic with the same e-mail text.
   page_event_targets = merge(
     {
       identity_breakglass_secret                  = aws_cloudwatch_event_target.identity_breakglass_secret
@@ -109,7 +109,8 @@ data "aws_iam_policy_document" "page_topic" {
     }
   }
 
-  # The page-severity EventBridge rules: identity (aa-identity-*), CRM KMS (aa-crm-*) and security / RDS (aa-sec-*).
+  # The page-severity EventBridge rules: identity (aa-identity-*), CRM KMS (aa-crm-*), Booking supplier bank KMS
+  # (aa-booking-*, AA-1158) and security / RDS (aa-sec-*).
   statement {
     sid       = "AllowPageEventBridgeRules"
     effect    = "Allow"
@@ -127,6 +128,7 @@ data "aws_iam_policy_document" "page_topic" {
       values = [
         "arn:aws:events:${var.aws_region}:${var.account_id}:rule/${local.id_prefix}-*",
         "arn:aws:events:${var.aws_region}:${var.account_id}:rule/${local.crm_name_prefix}-*",
+        "arn:aws:events:${var.aws_region}:${var.account_id}:rule/${local.bk_name_prefix}-*",
         "arn:aws:events:${var.aws_region}:${var.account_id}:rule/${local.sec_prefix}-*",
       ]
     }
