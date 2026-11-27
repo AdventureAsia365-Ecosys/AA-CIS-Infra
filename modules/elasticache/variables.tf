@@ -2,16 +2,13 @@ variable "project" { type = string }
 variable "environment" { type = string }
 variable "vpc_id" { type = string }
 variable "private_subnet_ids" { type = list(string) }
-variable "sg_app_id" { type = string }
-
 variable "ingress_sg_ids" {
-  description = "ADR 0004b (X1 S11): security groups admitted on 6379 (inline ingress, authoritative). Null keeps the old behaviour: only var.sg_app_id."
+  description = "ADR 0004b (X1 S11): security groups admitted on 6379 (inline ingress, authoritative). Required since AA-1185 removed the shared app group that used to be the fallback."
   type        = list(string)
-  default     = null
 
   validation {
-    condition     = var.ingress_sg_ids == null ? true : length(var.ingress_sg_ids) > 0
-    error_message = "ingress_sg_ids: pass null (old single source) or a non-empty list; an empty list would make an ingress rule with no source."
+    condition     = length(var.ingress_sg_ids) > 0
+    error_message = "ingress_sg_ids: pass a non-empty list; an empty list would make an ingress rule with no source."
   }
 }
 variable "node_type" {

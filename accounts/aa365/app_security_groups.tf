@@ -1,14 +1,13 @@
 # =============================================================================
 # ADR 0004b (AA-Ecosys docs/adr/0004b-per-app-security-groups.md) — one security group per caller.
-# X1 plan S11 (AA-852): EXPAND only. The six groups exist and are admitted by the RDS / Redis / EFS
-# groups next to the old shared app group (module.vpc.sg_app_id); no service, task or Lambda uses
-# them yet. (EFS and its group were removed in S257, AA-697: nothing mounted it.) S13 moves each caller onto its own group (three applies behind the job-idle gate), S14
-# drops the shared group from the data-store lists after the ENI gate.
+# X1 (AA-852) moved every service, task and Lambda from the old shared app group onto these groups (S11 expand, S13
+# move, S14 contract); AA-1185 (S296) removed the shared group itself once its last two network interfaces (left by
+# the deleted Lambda aa-cis-dev-ingestion) were deleted. (EFS and its group were removed in S257, AA-697.)
 #
-# Ingress only where a caller serves traffic: cis-api and booking-api take tcp 8000 from the ALB group
-# (today the shared app group takes every port from the ALB; the new groups narrow it to the app port).
-# Egress 0.0.0.0/0 for all: AWS APIs, Bedrock and third-party APIs leave through the NAT instance
-# (there are no VPC endpoints, so no self-443 rule either).
+# Ingress only where a caller serves traffic: each serving group takes only its app port from the ALB group.
+# Egress: each group's outbound rules are in its egress block(s) below. AWS APIs, Bedrock and third-party APIs
+# leave through the NAT instance (no VPC interface endpoints, so no self-443 rule; same-region S3 uses the gateway
+# endpoint on the private route table).
 #
 # No rule references another of these groups and none of them references a data-store group, so there
 # is no cycle with module.vpc: the groups read module.vpc.vpc_id / sg_alb_id, and the data-store groups
@@ -18,8 +17,8 @@
 locals {
   cis_port = 8000 # modules/ecs container port (api task definition, target group)
 
-  # Callers admitted by each data store (ADR 0004b decision 2). The shared app group was removed in
-  # X1 S14 (contract) once no live caller used it.
+  # Callers admitted by each data store (ADR 0004b decision 2). The shared app group left these lists in
+  # X1 S14 (contract) and was deleted in AA-1185.
   rds_ingress_sg_ids = [
     aws_security_group.cis_api.id,
     aws_security_group.cis_worker.id,

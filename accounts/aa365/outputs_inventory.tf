@@ -24,10 +24,9 @@ output "network_subnet_ids" {
 }
 
 output "network_security_group_ids" {
-  description = "Security group IDs by role (ADR 0004b: one group per caller, plus the shared legacy groups)."
+  description = "Security group IDs by role (ADR 0004b: one group per caller, plus the ALB, NLB and RDS groups)."
   value = {
     alb         = module.vpc.sg_alb_id
-    app_shared  = module.vpc.sg_app_id
     rds         = module.vpc.sg_rds_id
     nlb         = module.alb.nlb_security_group_id
     cis_api     = aws_security_group.cis_api.id

@@ -18,23 +18,16 @@ variable "private_subnet_ids" {
   description = "Private subnets for ECS tasks"
 }
 
-variable "sg_app_id" {
-  type        = string
-  description = "Security group for ECS tasks"
-}
-
-# ADR 0004b (X1 S13c): one security group per caller. When set, the api / worker service uses its
-# own group instead of the shared app group; null keeps sg_app_id (rollback = unset these).
+# ADR 0004b (X1 S13c): one security group per caller. The shared app group these used to fall back to was removed
+# in AA-1185 (S296), so both are required.
 variable "sg_api_id" {
   type        = string
-  default     = null
-  description = "Security group for the api service; null falls back to sg_app_id"
+  description = "Security group of the api service (accounts/aa365 aws_security_group.cis_api)"
 }
 
 variable "sg_worker_id" {
   type        = string
-  default     = null
-  description = "Security group for the worker service; null falls back to sg_app_id"
+  description = "Security group of the worker service (accounts/aa365 aws_security_group.cis_worker)"
 }
 
 variable "target_group_arn" {

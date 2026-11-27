@@ -57,13 +57,12 @@ variable "volume_default_tags" {
 }
 
 variable "rds_ingress_sg_ids" {
-  description = "ADR 0004b (X1 S11): security groups admitted to the RDS group on 5432 (inline ingress, authoritative). Null keeps the old behaviour: only this module's app group."
+  description = "ADR 0004b (X1 S11): security groups admitted to the RDS group on 5432 (inline ingress, authoritative). Required since AA-1185 removed the shared app group that used to be the fallback."
   type        = list(string)
-  default     = null
 
   validation {
-    condition     = var.rds_ingress_sg_ids == null ? true : length(var.rds_ingress_sg_ids) > 0
-    error_message = "rds_ingress_sg_ids: pass null (old single source) or a non-empty list; an empty list would make an ingress rule with no source."
+    condition     = length(var.rds_ingress_sg_ids) > 0
+    error_message = "rds_ingress_sg_ids: pass a non-empty list; an empty list would make an ingress rule with no source."
   }
 }
 
