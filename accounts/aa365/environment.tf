@@ -97,6 +97,7 @@ module "environment" {
   # crm_agency_edge.tf, crm_client_edge.tf, alb_rules.tf) and the identity pools / clients the CRM tasks read.
   alb_arn_suffix                = module.alb.alb_arn_suffix
   dns_zone_name                 = var.dns_zone_name
+  execute_api_endpoint_disabled = var.api_default_endpoints_disabled && var.custom_domains_enabled # AA-1185
   ecosys_tags                   = local.ecosys_tags
   runbook_suffix                = local.runbook_suffix
   page_topic_arn                = aws_sns_topic.page.arn      # AA-1171 (D5)

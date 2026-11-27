@@ -598,7 +598,10 @@ resource "aws_lambda_function" "tripplanner_assembly" {
 resource "aws_apigatewayv2_api" "tripplanner" {
   name          = "${local.tp_name_prefix}-api"
   protocol_type = "HTTP"
-  tags          = local.tp_tags
+  # AA-1185: the default execute-api endpoint is off (404 Not Found); the web BFF and the CRM call api-tripplanner.<zone>
+  # (accounts/aa365 custom_domains.tf). The $default stage auto-deploys, so no redeployment is needed for it to apply.
+  disable_execute_api_endpoint = var.execute_api_endpoint_disabled
+  tags                         = local.tp_tags
 
   # Tagging (provider default_tags -> apigateway:TagResource) — wait for the
   # CI/CD role's TagResource grant to propagate, same as the stage below.
@@ -717,7 +720,8 @@ resource "aws_lambda_permission" "tripplanner_assembly_apigw" {
 
 # The BFF calls "<api_base>/browse/..." and "<api_base>/trip/...".
 output "tripplanner_api_base_url" {
-  value = aws_apigatewayv2_stage.tripplanner.invoke_url
+  description = "Base URL of the TripPlanner HTTP API: <this>/browse/..., <this>/trip/... AA-1185: the custom domain while the default execute-api endpoint is off."
+  value       = var.execute_api_endpoint_disabled ? "https://api-tripplanner.${var.dns_zone_name}" : aws_apigatewayv2_stage.tripplanner.invoke_url
 }
 
 output "tripplanner_lambda_exec_role_arn" {

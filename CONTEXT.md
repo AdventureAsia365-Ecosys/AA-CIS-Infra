@@ -843,9 +843,17 @@ and describes it, never uses it; env `SUPPLIER_BANK_KMS_KEY_ID`). Alarms on it (
 prefix is the one the CI apply grant and both alert topic policies already admit.
 Routing: its own REST API `aa-booking-dev-api` on the existing VPC link → NLB → ALB HTTP listener
 rule `/booking`, `/booking/*` (priority 100) → target group `aa-booking-dev-api-tg` (health
-`/booking/health`). That listener rule (in the root, `alb_rules.tf`) is the only object attached to a CIS resource. Dev uses
-the execute-api URL (output `booking_api_base_url`); both CIS custom domains use an empty base
-path, so a `booking` mapping cannot be added there, and the ACM cert has no Booking name yet.
+`/booking/health`). That listener rule (in the root, `alb_rules.tf`) is the only object attached to a CIS resource. Clients
+use its own custom domain `api-booking.<zone>` (`custom_domains.tf`, output `booking_api_base_url`); both CIS custom
+domains use an empty base path, so a `booking` mapping cannot be added there.
+
+**Default execute-api endpoints off (AA-1185, S296):** the CIS and Booking REST APIs and the TripPlanner HTTP API have
+`disable_execute_api_endpoint` set (root variable `api_default_endpoints_disabled`, default true; Booking and TripPlanner
+only while `custom_domains_enabled`). Their default `<api id>.execute-api.<region>.amazonaws.com` URLs answer 403 (REST)
+or 404 (HTTP API); every caller (staff web, TripPlanner web, CRM api and web, CI smoke and deploy gates) uses
+`api-cis.`, `api-booking.` or `api-tripplanner.<zone>`. A REST API applies the setting only when its stage is updated,
+so the flag is part of each deployment trigger hash; the TripPlanner `$default` stage auto-deploys. Rollback: set the
+variable to false and apply.
 
 **DNS + email (AA-811, S237):** `lumiguides.it.com` is a Route 53 public hosted zone in this root
 (`dns.tf`, `prevent_destroy`; the CI apply role has no `route53:DeleteHostedZone`). It is served

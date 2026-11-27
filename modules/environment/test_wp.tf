@@ -87,8 +87,8 @@ locals {
   # had no fixable finding at any severity on 25/11 (Trivy 0.70.0, linux/arm64). The new image reaches the running
   # task at the next Booking admin deploy (the deploy copies the family's latest revision).
   # S294: the same digest went red on 25/11 on CVE-2026-124851 (libzstd1, fixed in Debian 1.5.7+dfsg-1+deb13u1 after
-  # this image was built on 24/11; no rebuilt digest of the tag upstream yet). Accepted until 02/12 in the root
-  # exception register and .trivyignore.
+  # this image was built on 24/11; no rebuilt digest of the tag upstream yet). It was accepted until 02/12 in the root
+  # exception register and .trivyignore; both entries were removed on 27/11 (S296) once the sidecar stopped running.
   # AA-1185 (S296, 27/11): still no rebuilt digest upstream (7.1.5-php8.4-apache, php8.5-apache and latest were all
   # built on 24/11). The site is now off outside E2E test windows (tech lead decision Q10, terraform.tfvars), so no
   # WordPress image runs and both exception entries are gone. A test window first moves this pin to a digest the

@@ -19,3 +19,14 @@ variable "custom_domain_vercel_hosts" {
     # aa-cis-frontend Vercel projects (AA-911, S272; root ADR 0006a A13).
   }
 }
+
+# AA-1185 (S296; S295 security audit SA-55, the S241 SDLC review A13): every caller reaches the three APIs through their
+# custom domains (api-cis., api-booking., api-tripplanner.; the CRM's TripPlanner URL moved in the S295 sweep), so the
+# default https://<api id>.execute-api.<region>.amazonaws.com endpoints are switched off: they answer 403 (REST) or
+# 404 (HTTP API) and the WAF, geo rules and logs in front of the custom domains can no longer be bypassed through them.
+# Setting it back to false is the rollback (one apply: the REST stages redeploy, the HTTP stage auto-deploys).
+variable "api_default_endpoints_disabled" {
+  description = "Switch off the default execute-api endpoints of the CIS and Booking REST APIs and the TripPlanner HTTP API (clients use the custom domains only). Booking and TripPlanner follow only while custom_domains_enabled = true (their custom domains exist only then)."
+  type        = bool
+  default     = true
+}

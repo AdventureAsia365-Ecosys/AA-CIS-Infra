@@ -43,8 +43,8 @@
 #   (api-cis.lumiguides.it.com, api-cis-aa365.lumiguides.it.com) use an EMPTY base path mapping,
 #   which API Gateway does not allow to coexist with a second mapping on the same domain. Booking
 #   gets its own domain api-booking.lumiguides.it.com in custom_domains.tf (AA-818), gated by
-#   var.custom_domains_enabled until the Route 53 NS switch; until then Dev uses this API's default
-#   execute-api endpoint.
+#   var.custom_domains_enabled. AA-1185: the default execute-api endpoint is off while that domain
+#   exists (var.execute_api_endpoint_disabled); every caller uses the custom domain.
 #
 # EXPOSURE: the CIS ALB is internet-facing, but since S235 Phase 0 its security group admits :80
 # only from the VPC CIDR (the VPC-link NLB), so /booking/* is reachable only through this REST API.
@@ -533,7 +533,10 @@ resource "aws_api_gateway_rest_api" "booking" {
   endpoint_configuration {
     types = ["REGIONAL"]
   }
-  tags = local.bk_tags
+  # AA-1185: the default execute-api endpoint answers 403 once the stage is updated (deployment trigger below);
+  # clients use api-booking.<zone> (accounts/aa365 custom_domains.tf).
+  disable_execute_api_endpoint = var.execute_api_endpoint_disabled
+  tags                         = local.bk_tags
 }
 
 resource "aws_api_gateway_resource" "booking" {
@@ -633,6 +636,8 @@ resource "aws_api_gateway_deployment" "booking" {
   # change forces a new deployment (the CIS AA-432/AA-465 trap).
   triggers = {
     redeployment = sha1(jsonencode([
+      # AA-1185: the default endpoint setting takes effect only when the stage is updated (a new deployment).
+      aws_api_gateway_rest_api.booking.disable_execute_api_endpoint,
       aws_api_gateway_resource.booking.id,
       aws_api_gateway_resource.booking_proxy.id,
       aws_api_gateway_method.booking_any.id,
@@ -851,8 +856,8 @@ output "booking_task_definition_family" {
 }
 
 output "booking_api_base_url" {
-  description = "Dev base URL; health = <this>/booking/health and <this>/booking/health/ready."
-  value       = aws_api_gateway_stage.booking.invoke_url
+  description = "Dev base URL; health = <this>/booking/health and <this>/booking/health/ready. AA-1185: the custom domain while the default execute-api endpoint is off (it answers 403 then)."
+  value       = var.execute_api_endpoint_disabled ? "https://api-booking.${var.dns_zone_name}" : aws_api_gateway_stage.booking.invoke_url
 }
 
 output "booking_database_url_secret_arn" {

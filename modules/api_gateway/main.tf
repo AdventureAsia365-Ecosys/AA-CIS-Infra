@@ -11,7 +11,10 @@ resource "aws_api_gateway_rest_api" "this" {
   endpoint_configuration {
     types = ["REGIONAL"]
   }
-  tags = var.tags
+  # AA-1185: the default execute-api endpoint answers 403 once the stage is updated (deployment trigger below);
+  # clients use the custom domains (aws_api_gateway_domain_name.api_cis below and the api-cis. host).
+  disable_execute_api_endpoint = var.disable_execute_api_endpoint
+  tags                         = var.tags
 }
 
 # AA-1111 (S284, ZAP baseline triage): the answers API Gateway gives itself (missing route 403 "Missing Authentication
@@ -673,6 +676,9 @@ resource "aws_api_gateway_deployment" "this" {
   ]
   triggers = {
     redeployment = sha1(join(",", [
+      # AA-1185: switching the default endpoint off (or back on) takes effect only when the stage is updated
+      # (API Gateway docs, "Disable the default endpoint for REST APIs"): a new deployment does that.
+      tostring(aws_api_gateway_rest_api.this.disable_execute_api_endpoint),
       # AA-1111: the gateway responses' headers and bodies (a change must redeploy the stage, AA-432 trap).
       jsonencode({ for k, r in aws_api_gateway_gateway_response.security_headers : k => [r.response_parameters, r.response_templates] }),
       # S295: hash only the attributes set in config. response_parameters is unset here: planned as null when the

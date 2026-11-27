@@ -11,7 +11,8 @@ Run (MFA profile, single-line AWS CLI underneath):
 
 Rules checked (aa-sec-<env>-*): security-group-change, iam-change, root-activity, cloudtrail-tamper,
 access-analyzer-finding, AA-1022 sso-admin-signin-* (security_sso_signin.tf), AA-1183 acm-expiry (all in --region)
-and global-forward, acm-expiry-forward (us-east-1). Exit 1 if any check is wrong. --skip-sso skips the AA-1022 checks (before that change is applied).
+and global-forward, acm-expiry-forward (us-east-1); AA-1185 aws-health (in --region, its events local or forwarded from
+us-east-1 by global-forward). Exit 1 if any check is wrong. --skip-sso skips the AA-1022 checks (before that change is applied).
 
 AA-873 (S263) admin session digest (security_sso_session_digest.tf), both optional:
   --digest                      read-only: the Lambda is Active with its settings, the hourly schedule is ENABLED and
@@ -129,6 +130,36 @@ def acm_cases(account: str, region: str, env: str) -> list:
     return out
 
 
+def health_event(account: str, region: str, category: str, service: str = "EC2") -> dict:
+    """An AWS Health event as Health sends it to EventBridge (AA-1185): global and us-east-1 events carry region
+    us-east-1 and reach the root region through the global forward."""
+    return {
+        "version": "0", "id": "aa1185-live-check", "detail-type": "AWS Health Event", "source": "aws.health",
+        "account": account, "time": "2026-11-27T00:00:00Z", "region": region, "resources": [],
+        "detail": {"eventArn": f"arn:aws:health:{region}::event/{service}/AWS_{service}_LIVE_CHECK/aa1185",
+                   "service": service, "eventTypeCode": f"AWS_{service}_LIVE_CHECK", "eventTypeCategory": category,
+                   "startTime": "Fri, 27 Nov 2026 00:00:00 GMT", "statusCode": "upcoming",
+                   "eventDescription": [{"language": "en_US", "latestDescription": "aa1185 live check"}]},
+    }
+
+
+def health_cases(account: str, region: str, env: str) -> list:
+    """AA-1185 AWS Health: the root-region rule takes issues, scheduled changes and account notifications (local or
+    forwarded from us-east-1, where global events are published); the us-east-1 global forward carries every Health
+    event of its region to the root region's default bus."""
+    rule, fwd = f"aa-sec-{env}-aws-health", f"aa-sec-{env}-global-forward"
+    out = []
+    for where in (region, EAST):
+        for cat in ("issue", "scheduledChange", "accountNotification"):
+            out.append((f"health.{where}.{cat}", rule, region, health_event(account, where, cat), True))
+        out.append((f"health.{where}.investigation", rule, region, health_event(account, where, "investigation"),
+                    False))
+    out.append(("forward.health.scheduledChange", fwd, EAST, health_event(account, EAST, "scheduledChange", "ACM"),
+                True))
+    out.append(("forward.health.issue-global", fwd, EAST, health_event(account, EAST, "issue", "IAM"), True))
+    return out
+
+
 def cases(account: str, region: str, env: str) -> list:
     """(check id, rule name, rule region, event, expected match)."""
     p = f"aa-sec-{env}"
@@ -211,6 +242,7 @@ def cases(account: str, region: str, env: str) -> list:
     out.append(("forward.sso-aa-admin", fwd, EAST, saml_event(account, EAST, aa_role), True))
     out.append(("forward.sso-developer", fwd, EAST, saml_event(account, EAST, dev_role), False))
     out.extend(acm_cases(account, region, env))
+    out.extend(health_cases(account, region, env))
     return out
 
 
