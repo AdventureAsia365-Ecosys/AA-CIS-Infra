@@ -39,9 +39,12 @@ resource "aws_api_gateway_gateway_response" "security_headers" {
 # S294 (AA-1111): a request the WAF blocks at the stage gets the WAF's own 403, which already carries the security
 # headers (modules/waf local.security_response_headers). Without this entry WAF_FILTERED falls under DEFAULT_4XX and
 # the gateway adds HSTS and nosniff a second time (ZAP: "Strict-Transport-Security Multiple Header Entries").
+# S295 (AA-1111): status_code is set to the WAF_FILTERED default (403). Left out, AWS still stores 403 and every plan
+# showed "status_code 403 -> null" plus a redeployment of the stage (a diff that never converged).
 resource "aws_api_gateway_gateway_response" "security_headers_waf_filtered" {
   rest_api_id        = aws_api_gateway_rest_api.this.id
   response_type      = "WAF_FILTERED"
+  status_code        = "403"
   response_templates = local.gateway_default_message
 }
 
@@ -672,7 +675,9 @@ resource "aws_api_gateway_deployment" "this" {
     redeployment = sha1(join(",", [
       # AA-1111: the gateway responses' headers and bodies (a change must redeploy the stage, AA-432 trap).
       jsonencode({ for k, r in aws_api_gateway_gateway_response.security_headers : k => [r.response_parameters, r.response_templates] }),
-      jsonencode([aws_api_gateway_gateway_response.security_headers_waf_filtered.response_parameters, aws_api_gateway_gateway_response.security_headers_waf_filtered.response_templates]), # S294
+      # S295: hash only the attributes set in config. response_parameters is unset here: planned as null when the
+      # response is created and read back as {} afterwards, so hashing it changed the hash once more after the apply.
+      jsonencode([aws_api_gateway_gateway_response.security_headers_waf_filtered.status_code, aws_api_gateway_gateway_response.security_headers_waf_filtered.response_templates]), # S294
       aws_api_gateway_integration.root.uri,
       aws_api_gateway_integration.health.uri,
       aws_api_gateway_integration.health_ready.uri, # AA-884: new resource must redeploy the stage

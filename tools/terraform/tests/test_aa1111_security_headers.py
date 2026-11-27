@@ -12,6 +12,8 @@ What they hold:
   - both REST APIs (CIS modules/api_gateway, Booking modules/environment/booking.tf) set DEFAULT_4XX and DEFAULT_5XX
     gateway responses with HSTS + nosniff and the default JSON message, and both deployments hash them and depend on
     them (a stage serves a frozen snapshot: the AA-432 trap).
+  - S295: the WAF_FILTERED gateway responses pin status_code "403" and the deployments hash only the attributes set
+    in config (status_code, response_templates), so a plan after apply converges.
 
 Offline: reads the .tf files; no Terraform, no AWS. Run from the repo root:
 python3 -m pytest -p no:cacheprovider -q tools/terraform/tests/test_aa1111_security_headers.py
@@ -225,9 +227,17 @@ def _waf_filtered_checks(text: str, resource: str, api_ref: str) -> None:
     assert 'response_type      = "WAF_FILTERED"' in res
     assert f"rest_api_id        = {api_ref}" in res
     assert "response_parameters" not in res, "the WAF's own headers are the only ones"
+    # S295: the WAF_FILTERED default status is set, else AWS stores 403 and every plan shows "403 -> null".
+    assert 'status_code        = "403"' in res, "status_code pinned to the WAF_FILTERED default"
     deployment = _block_after(code, code.index('resource "aws_api_gateway_deployment"'))
     assert f"aws_api_gateway_gateway_response.{resource}_waf_filtered," in deployment, "depends_on"
     assert f"aws_api_gateway_gateway_response.{resource}_waf_filtered.response_templates" in deployment, "hash"
+    assert f"aws_api_gateway_gateway_response.{resource}_waf_filtered.status_code" in deployment, "hash"
+    # S295: response_parameters is unset on this response (null when planned, {} once read back): hashing it changed
+    # the redeployment hash after every create, so the plan never converged.
+    assert f"aws_api_gateway_gateway_response.{resource}_waf_filtered.response_parameters" not in deployment, (
+        "hash only attributes set in config"
+    )
 
 
 def test_cis_waf_filtered_has_no_second_header_set():
