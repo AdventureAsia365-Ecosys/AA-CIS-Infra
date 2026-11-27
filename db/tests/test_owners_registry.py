@@ -279,6 +279,11 @@ class MirrorsAgreeTest(unittest.TestCase):
         roles = REGISTRY["password_roles"]
         self.assertEqual(rm.ROLE_DSN_IDS, roles)
         self.assertEqual(roles["cis_app"], OWNERS["cis"]["runtime_secrets"]["cis_app"])   # the probe's login secret
+        # AA-1182: the TripPlanner login rotates through set-password too; its DSN secret is the probe's login secret,
+        # which the migrator task role already reads (accounts/aa365/db_migrator.tf).
+        self.assertEqual(roles["tripplanner"], OWNERS["tripplanner"]["runtime_secrets"]["tripplanner"])
+        migrator_tf = (ROOT / "accounts" / "aa365" / "db_migrator.tf").read_text(encoding="utf-8")
+        self.assertIn("module.environment.tripplanner_db_secret_arn", migrator_tf)
         self.assertIn(REGISTRY["migrator_role"], roles)
         self.assertNotIn(REGISTRY["master_role"], roles)
         self.assertEqual(rm.PW_SET_MARKER, probe.PASSWORD_MARKER)

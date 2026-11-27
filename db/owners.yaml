@@ -57,7 +57,9 @@ migrator_member_of: [bk_owner, catalog_owner, cis_app, cis_owner, crm_owner, pg_
 # The legacy runtime roles (booking, tripplanner, aa_app_user) keep the passwords they have (XD1).
 # crm_app (AA-932, rl-003): the partner CRM runtime; its DSN secret crm/dev/database-url is a Terraform shell
 # (modules/environment/crm_data.tf) that Nghiệp fills in the Console before set-password.
-password_roles: {cis_app: aa-cis/dev/rds-cis-app, crm_app: crm/dev/database-url, db_migrator: aa-cis/dev/db-migrator}
+# tripplanner (AA-1182, S296): the TripPlanner Lambdas' login, so its password can be rotated the same way (the migrator
+# task already reads tripplanner/dev/database-url for the isolation probe; db_migrator.tf db_migrate_task_secret_arns).
+password_roles: {cis_app: aa-cis/dev/rds-cis-app, crm_app: crm/dev/database-url, db_migrator: aa-cis/dev/db-migrator, tripplanner: tripplanner/dev/database-url}
 
 # AA-993 M2a (root ADR 0017 d3, design Q17): tables an expand migration file must not name (only a non-unique
 # CREATE INDEX CONCURRENTLY may, and it waits for an open rerun wave). Running code reads them with SELECT * /

@@ -383,3 +383,49 @@ variable "photos_cdn_distribution_arn" {
   type        = string
   default     = ""
 }
+
+# ── AA-1182 (S296, S295 security audit SA-05 + SA-66): the task role's S3, Secrets Manager and Bedrock grants
+# (ecs_task_data_access, a customer managed policy) name what the CIS code calls instead of "*". Each list below is the
+# inventory in docs/implementation-notes/AA-1182.md (code path per entry); a new bucket, secret or Bedrock provider the
+# CIS code starts to use needs a line here first, applied locally with the MFA admin profile (bootstrap object).
+variable "gold_bucket_name" {
+  description = "AA-1182: the CIS gold bucket (modules/s3). The task role reads and writes only its tenant backup prefix exports/tenants/ (AA-CIS-App services/tenant_backup/store.py) and may list it; published-tour and webhook objects stay out of reach."
+  type        = string
+}
+
+variable "booking_supply_media_bucket_name" {
+  description = "AA-1182: the Booking supply-media bucket (modules/environment booking_media.tf). CIS reads supplier photos there (AA-CIS-App services/supply_content/photos.py); the bucket policy grants the same read and denies every CIS write. Empty = no grant."
+  type        = string
+  default     = ""
+}
+
+variable "runtime_secret_names" {
+  description = "AA-1182: secrets under <project>/<environment>/ the CIS code reads by name at run time with the task role (GetSecretValue). Values injected by the task definition (DATABASE_URL, JWT_SECRET, ADMIN_SECRET, OPENAI_API_KEY, DATAFORSEO_*, REDIS_AUTH_TOKEN) are read by the execution role and are not listed. Code path per name: docs/implementation-notes/AA-1182.md."
+  type        = list(string)
+  default = [
+    "rds-app-user",                # api/core/aa544_tenant_pool.py (tenant pool, aa_app_user)
+    "admin-secret-preview",        # api/core/staff_credential.py (deleted secret: kept so the read stays ResourceNotFound, not AccessDenied)
+    "typesafe",                    # shared/secrets.py + shared/llm_client/connections.py (provider kind)
+    "dataforseo",                  # shared/llm_client/connections.py (provider kind)
+    "geoapify",                    # shared/secrets.py + shared/llm_client/connections.py (provider kind)
+    "gdrive-photo-reader",         # services/photos/drive.py
+    "sentry-dsn-api",              # shared/sentry_init.py
+    "tripplanner-revalidate-hmac", # services/jobs/tripplanner_purge_job.py
+  ]
+
+  validation {
+    condition     = alltrue([for n in var.runtime_secret_names : can(regex("^[a-z0-9][a-z0-9-]*$", n)) && !contains(["rds", "db-migrator"], n)])
+    error_message = "runtime_secret_names are bare secret names (lower case, digits, dashes); never rds or db-migrator (the master and migrator DSNs stay denied)."
+  }
+}
+
+variable "bedrock_invoke_providers" {
+  description = "AA-1182 (SA-66): Bedrock model providers the CIS task role may invoke on this account directly (the acc2 rows of shared.llm_model_deployment and the embedding models: Amazon Nova / Titan, Anthropic, Cohere Embed v4, Meta Llama 4, Moonshot Kimi). The grant covers their foundation models in any region and this account's cross-region inference profiles (us. / global.) of them. Chat on acc1 / acc3 goes through the satellite roles and is not limited here."
+  type        = list(string)
+  default     = ["amazon", "anthropic", "cohere", "meta", "moonshotai"]
+
+  validation {
+    condition     = length(var.bedrock_invoke_providers) > 0 && alltrue([for p in var.bedrock_invoke_providers : can(regex("^[a-z0-9-]+$", p))])
+    error_message = "bedrock_invoke_providers are lower-case provider prefixes of Bedrock model ids (e.g. cohere), at least one."
+  }
+}

@@ -39,7 +39,9 @@ Always check first: `aws sts get-caller-identity --profile aa365-admin --region 
   Look IDs and DNS names up (CLI or Terraform outputs); do not paste them into docs.
 - State backend for `accounts/aa365`: S3 bucket `aa-cis-tfstate-005097885195`, key `dev/terraform.tfstate`,
   S3 lockfile locking only (`use_lockfile`; the DynamoDB lock table is retired, AA-846); Terraform pinned
-  exactly to the CI version (`required_version`); no profile in the backend block (CI uses OIDC).
+  exactly to the CI version (`required_version`); no profile in the backend block (CI uses OIDC). The bucket policy
+  (`accounts/aa365/tfstate_protection.tf`, AA-1182) lets only the CI plan / apply roles and the MFA admin role read or
+  write state; a change to that file is a local MFA admin apply.
 - Secrets: names, owners and readers are in `AA-Ecosys/docs/security/secrets-register.md` (AA-878). Never
   read a secret value; never list secret values in a doc.
 

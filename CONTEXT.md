@@ -296,6 +296,12 @@ accounts/
                                    apply boundary denies Put/DeleteResourcePolicy and ReplicateSecretToRegions on
                                    aa-ecosys/* + aa-identity/*, and the workload boundary denies GetSecretValue on both
                                    prefixes; offline guard tools/terraform/tests/test_secret_read_guards.py)
+    tfstate_protection.tf         (AA-1182, S296: on the hand-made state bucket of versions.tf, never a resource here:
+                                   versioning + bucket Block Public Access imported (no change), bucket policy: TLS
+                                   only, state objects and the S3 lockfile for the CI plan / apply roles and the MFA
+                                   admin only, the plan role writes only *.tflock, version deletes and bucket
+                                   configuration changes for the MFA admin only (so later edits are a local MFA apply);
+                                   guard tools/terraform/tests/test_aa1182_tfstate_protection.py)
     security_baseline.tf          (AA-873 PR 1, S255: account S3 Block Public Access (4 flags); IAM Access Analyzer
                                    aa-sec-<env>-external-access (ACCOUNT, external access only; no paid unused-access
                                    analyzer) + rule on ACTIVE findings; EventBridge rules aa-sec-<env>-* on CloudTrail
@@ -747,7 +753,15 @@ drain on deploy (AA-310, `modules/ecs/main.tf`). The CIS api and worker `DATABAS
 the runtime role `cis_app` (`secret_rds_arn` → `aws_secretsmanager_secret.rds_cis_app`, X1 S18), and the CIS task
 role has an explicit Deny on `GetSecretValue` for the master, `db-migrator`, `booking/*`, `tripplanner/*` and `crm/*` (AA-932) secrets,
 and since AA-873 S261 `aa-crm/*`, `aa-ecosys/*` and `aa-identity/*` (`aa-llm/*` stays readable: the LLM gateway's own namespace)
-(`DenyMasterAndOtherAppSecrets`, X1 S19), so ECS-exec scripts run as `cis_app` too. The Terraform apply role's boundary
+(`DenyMasterAndOtherAppSecrets`, X1 S19), so ECS-exec scripts run as `cis_app` too. Since AA-1182 (S296) the task role's
+allows name what the CIS code calls: S3 objects of the bronze bucket and of the gold bucket's tenant backup prefix
+`exports/tenants/` (plus a read of Booking's supply-media bucket), `GetSecretValue` on `var.runtime_secret_names` under
+`aa-cis/<env>/`, `aa-llm/<env>/*`, `acp/cms/*` and `acp/social/*`, and Bedrock invoke on the providers of
+`var.bedrock_invoke_providers` in this account; no SQS and no CloudWatch Logs writes (inventory with code paths:
+`docs/implementation-notes/AA-1182.md`). These grants are the customer managed policy `aa-cis-<env>-ecs-task-data-access`
+(the role's eleven inline policies share one 10,240-character limit and are near it): a bootstrap object, so a new
+bucket, secret or Bedrock provider used by CIS code needs its line in `modules/ecs` and a local MFA admin apply of that
+policy first. The Terraform apply role's boundary
 denies every `GetSecretValue` except `local.tf_plan_secret_arns` (`DenySecretValuesTerraformDoesNotRefresh`, AA-873 S261) and every
 resource-policy edit or replication of `aa-ecosys/*` / `aa-identity/*` (`DenyEcosystemGuardedSecretPolicyEdits`), and the workload
 boundary denies `GetSecretValue` on those two prefixes to every bounded role (`DenyEcosystemGuardedSecretValues`). A Terraform Apply that touches
@@ -885,6 +899,12 @@ makes CI Terraform Plan fail with 403.
   (`use_lockfile = true`, object `<key>.tflock`). The DynamoDB lock table
   `aa-cis-tfstate-lock-<acct>` is no longer used (AA-846, S245); its IAM grants and the
   table itself are removed in separate steps.
+- The bucket stays a hand-made bootstrap object; its versioning, Block Public Access and bucket policy are managed in
+  `accounts/aa365/tfstate_protection.tf` (AA-1182). Only the CI plan role, the CI apply role and the MFA admin role
+  (plus the company Identity Center permission sets in `var.tfstate_admin_sso_permission_sets` and, once
+  `org_access_role_enabled`, the organization break-glass role `OrganizationAccountAccessRole`) read or write state;
+  a change to that policy is applied locally with the MFA admin profile. Lock-out recovery: the account root user can
+  always replace or delete a bucket policy.
 - No `profile` is hardcoded in the aa365 backend: CI (GitHub Actions OIDC) uses ambient env-var
   credentials; locally you `export AWS_PROFILE=aa365-admin` before running Terraform.
 - The acc1 and acc3 roots are applied only by a human and **must** get the profile at backend

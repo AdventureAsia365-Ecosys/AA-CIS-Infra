@@ -255,6 +255,56 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "tripplanner_artif
   }
 }
 
+# AA-1182 (S296): the code the TripPlanner Lambdas run is written only by the app deploy role (its upload, then
+# UpdateFunctionCode), the CI apply role (the placeholder zips at create) and the MFA admin role
+# (var.lambda_artifacts_writer_role_arns); no other principal of the account may write, delete or re-tag an
+# object or version here, whatever its identity policy says. Reads stay open inside the account: the zips are built
+# from the public AA-TripPlanner-Web repo, and Terraform refresh and Lambda code updates read them. TLS only.
+# Cost: 0 USD. Guard: tools/terraform/tests/test_aa1182_tfstate_protection.py.
+data "aws_iam_policy_document" "tripplanner_artifacts" {
+  statement {
+    sid       = "DenyInsecureTransport"
+    effect    = "Deny"
+    actions   = ["s3:*"]
+    resources = [aws_s3_bucket.tripplanner_artifacts.arn, "${aws_s3_bucket.tripplanner_artifacts.arn}/*"]
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+    condition {
+      test     = "Bool"
+      variable = "aws:SecureTransport"
+      values   = ["false"]
+    }
+  }
+
+  statement {
+    sid    = "DenyCodeWritesOutsideDeployers"
+    effect = "Deny"
+    actions = [
+      "s3:PutObject", "s3:PutObjectAcl", "s3:PutObjectTagging", "s3:PutObjectVersionTagging", "s3:DeleteObject",
+      "s3:DeleteObjectVersion", "s3:DeleteObjectTagging", "s3:RestoreObject",
+    ]
+    resources = ["${aws_s3_bucket.tripplanner_artifacts.arn}/*"]
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+    condition {
+      test     = "ArnNotLike"
+      variable = "aws:PrincipalArn"
+      values   = concat([aws_iam_role.tripplanner_app_deploy.arn], var.lambda_artifacts_writer_role_arns)
+    }
+  }
+}
+
+resource "aws_s3_bucket_policy" "tripplanner_artifacts" {
+  bucket = aws_s3_bucket.tripplanner_artifacts.id
+  policy = data.aws_iam_policy_document.tripplanner_artifacts.json
+
+  depends_on = [aws_s3_bucket_public_access_block.tripplanner_artifacts]
+}
+
 # A tiny valid Lambda zip (a single placeholder.py returning 501), committed
 # at accounts/aa365/artifacts/placeholder.zip, used ONLY to create the functions on first
 # apply. The App deploy workflow (AA-TripPlanner-Web) replaces this with the
