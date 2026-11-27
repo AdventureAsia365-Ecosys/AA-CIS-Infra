@@ -617,9 +617,12 @@ resource "aws_api_gateway_gateway_response" "booking_security_headers" {
 # S294 (AA-1111): a request the WAF blocks at the stage gets the WAF's own 403, which already carries the security
 # headers (modules/waf local.security_response_headers). Without this entry WAF_FILTERED falls under DEFAULT_4XX and
 # the gateway adds HSTS and nosniff a second time (ZAP: "Strict-Transport-Security Multiple Header Entries").
+# S295 (AA-1111): status_code is set to the WAF_FILTERED default (403); left out, every plan showed
+# "status_code 403 -> null" plus a redeployment of the stage (see modules/api_gateway/main.tf).
 resource "aws_api_gateway_gateway_response" "booking_security_headers_waf_filtered" {
   rest_api_id        = aws_api_gateway_rest_api.booking.id
   response_type      = "WAF_FILTERED"
+  status_code        = "403"
   response_templates = local.bk_gateway_default_message
 }
 
@@ -644,7 +647,8 @@ resource "aws_api_gateway_deployment" "booking" {
       aws_api_gateway_integration.booking_proxy_any.timeout_milliseconds,
       # AA-1111: the gateway responses' headers and bodies.
       { for k, r in aws_api_gateway_gateway_response.booking_security_headers : k => [r.response_parameters, r.response_templates] },
-      [aws_api_gateway_gateway_response.booking_security_headers_waf_filtered.response_parameters, aws_api_gateway_gateway_response.booking_security_headers_waf_filtered.response_templates], # S294
+      # S295: only attributes set in config (response_parameters is unset: null when planned, {} once read back).
+      [aws_api_gateway_gateway_response.booking_security_headers_waf_filtered.status_code, aws_api_gateway_gateway_response.booking_security_headers_waf_filtered.response_templates], # S294
     ]))
   }
 
