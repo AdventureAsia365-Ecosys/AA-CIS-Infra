@@ -9,7 +9,8 @@
 # The host is behind the ALB's REGIONAL web ACL like every :443 host (CommonRuleSet, RateLimit1000 per client IP, geo);
 # it is not a staff host, so the staff rate rule does not apply to it.
 #
-# Switches (terraform.tfvars):
+# Switches (terraform.tfvars; both false outside an E2E test window since AA-1185, tech lead decision Q10 of the S295
+# security audit; the window steps: docs/runbooks/test-wp-window.md):
 #   test_wp_enabled           container in the Booking admin task definition, target group, the two ALB rules, this
 #                             DNS record, the staff web security group port 80 from the ALB.
 #   test_wp_service_attached  the Booking admin service registers the container in the target group. Turn it on in a
@@ -37,8 +38,10 @@ locals {
   test_wp_tags = merge(local.ecosys_tags, { App = "cis", Component = "web", Issue = "AA-1060" })
 
   # Paths of a browser sign-in, the dashboard and XML-RPC: the ALB answers 403 (the REST API with the application
-  # password is the only way in). At most 5 condition values per rule: 1 host + these 4.
-  test_wp_blocked_paths = ["/wp-login.php", "/wp-admin", "/wp-admin/*", "/xmlrpc.php"]
+  # password is the only way in). At most 5 condition values per rule: 1 host + these 3.
+  # AA-1185 (S295 audit SA-28): every value ends in "*". An exact "/xmlrpc.php" let "/xmlrpc.php/" (trailing slash,
+  # PATH_INFO) through to PHP; "/wp-admin*" covers "/wp-admin", "/wp-admin/" and everything below it.
+  test_wp_blocked_paths = ["/wp-login.php*", "/wp-admin*", "/xmlrpc.php*"]
 }
 
 resource "aws_route53_record" "test_wp" {

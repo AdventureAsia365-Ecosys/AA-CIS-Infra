@@ -74,6 +74,36 @@ if ( 'cli' !== PHP_SAPI && ! headers_sent() ) {
 	header( 'X-Robots-Tag: noindex, nofollow', true );
 }
 add_filter( 'xmlrpc_enabled', '__return_false' );
+// AA-1185 (S295 audit SA-28): no XML-RPC method at all (pingback.ping included) and no X-Pingback header.
+add_filter( 'xmlrpc_methods', '__return_empty_array' );
+add_filter(
+	'wp_headers',
+	static function ( $headers ) {
+		unset( $headers['X-Pingback'] );
+		return $headers;
+	}
+);
+// AA-1185: no user list for anonymous callers (/wp/v2/users and /wp/v2/users/<id>). The signed-in /wp/v2/users/me
+// (the CIS connection test) stays: is_user_logged_in() runs the application password check first.
+add_filter(
+	'rest_endpoints',
+	static function ( $endpoints ) {
+		if ( ! is_user_logged_in() ) {
+			unset( $endpoints['/wp/v2/users'], $endpoints['/wp/v2/users/(?P<id>[\\d]+)'] );
+		}
+		return $endpoints;
+	}
+);
+// AA-1185: no login names through the ?author=<n> redirect either.
+add_action(
+	'template_redirect',
+	static function () {
+		if ( isset( $_GET['author'] ) && ! is_user_logged_in() ) {
+			wp_die( 'Not available on this test site.', 'Not available', array( 'response' => 403 ) );
+		}
+	},
+	0
+);
 add_filter(
 	'pre_option_blog_public',
 	static function () {
@@ -197,6 +227,8 @@ setup() {
     log "no app_password in the secret: the REST sign-in stays off until the secret has one and the container restarts"
   fi
 
+  # AA-1185: readme.html of the core package names the release.
+  rm -f "$WP_DIR/readme.html"
   chown -R www-data:www-data "$WP_DIR/wp-content"
 
   # Switch the document root to WordPress (atomic rename of the symlink; apache follows it per request).
@@ -230,7 +262,20 @@ cat >/etc/apache2/conf-enabled/zz-test-wp.conf <<'CONF'
 </IfModule>
 ServerTokens Prod
 ServerSignature Off
+TraceEnable Off
+# AA-1185 (S295 audit SA-28): security headers on every answer, the fallback page included.
+<IfModule mod_headers.c>
+	Header always set X-Content-Type-Options "nosniff"
+	Header always set X-Frame-Options "DENY"
+	Header always set Referrer-Policy "no-referrer"
+	Header always set Strict-Transport-Security "max-age=31536000"
+	Header always set Permissions-Policy "camera=(), microphone=(), geolocation=()"
+	Header always set Content-Security-Policy "frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+	Header always set X-Robots-Tag "noindex, nofollow"
+	Header always unset X-Powered-By
+</IfModule>
 CONF
+a2enmod -q headers >/dev/null 2>&1 || log "mod_headers not enabled: the security headers are missing"
 cat >/usr/local/etc/php/conf.d/zz-test-wp.ini <<'INI'
 memory_limit = 96M
 opcache.memory_consumption = 32

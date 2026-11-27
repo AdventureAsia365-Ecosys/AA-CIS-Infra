@@ -1,5 +1,5 @@
 # =============================================================================
-# AA-399 — Bedrock Batch inference service role on acc3 (786888028788), same
+# AA-399 — Bedrock Batch inference service role on acc3, same
 # shape as the former acc1 aa-bedrock-batch-inference-role (removed, AA-998).
 # roleArn passed to bedrock:CreateModelInvocationJob when the caller (acc2
 # ECS task, via AA3-Bedrock-Invoker) submits a Batch job through acc3. S3

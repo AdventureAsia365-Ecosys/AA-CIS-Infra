@@ -184,7 +184,7 @@ resource "aws_s3_bucket_policy" "bronze" {
         }
       },
       # AA-399 — cross-account access for the acc3 Bedrock Batch inference
-      # service role (account 786888028788, accounts/acc3-bedrock/batch.tf),
+      # service role (account acc3, accounts/acc3-bedrock/batch.tf),
       # scoped to the batch prefixes only. AA-998: the acc1 statements
       # (AllowBedrockBatchCrossAccountAccess / AllowBedrockBatchListBucket,
       # principal acc1 aa-bedrock-batch-inference-role) are removed; they

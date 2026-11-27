@@ -37,6 +37,8 @@
 #      Expect: 1 policy + 1 attachment to add, 1 attachment (AmazonSQSFullAccess) to destroy, the boundary in place.
 #   2. If the attach fails with LimitExceeded (11 attachments for a moment: create and destroy run in parallel),
 #      run the same targeted apply again: the detach has finished by then. Then the same targeted plan: No changes.
+# AA-1185 (S296): the EBS account defaults and the NAT patch association (security_account_defaults.tf). Same bootstrap:
+#   terraform plan / apply -target=aws_iam_policy.tf_apply_sec   (local, MFA admin profile, before the CI apply)
 # Cost: 0 USD (IAM).
 # =============================================================================
 
@@ -214,6 +216,39 @@ data "aws_iam_policy_document" "tf_apply_sec" {
     sid       = "BookingKmsAlias"
     actions   = ["kms:CreateAlias", "kms:DeleteAlias", "kms:UpdateAlias"]
     resources = ["arn:aws:kms:${var.aws_region}:${var.account_id}:alias/aa-booking-*"]
+  }
+
+  # AA-1185 (S296): the EBS account defaults of security_account_defaults.tf (encryption by default, snapshot Block
+  # Public Access). Account settings, no resource ARN. The Disable verbs are what Terraform calls on destroy.
+  statement {
+    sid = "EbsAccountDefaults"
+    actions = [
+      "ec2:GetEbsEncryptionByDefault", "ec2:GetEbsDefaultKmsKeyId", "ec2:EnableEbsEncryptionByDefault",
+      "ec2:DisableEbsEncryptionByDefault", "ec2:GetSnapshotBlockPublicAccessState",
+      "ec2:EnableSnapshotBlockPublicAccess", "ec2:DisableSnapshotBlockPublicAccess",
+    ]
+    resources = ["*"]
+  }
+
+  # AA-1185: the NAT patch association (security_account_defaults.tf). Only the AWS-RunPatchBaseline document, on
+  # instances of this account; ListAssociations takes no resource.
+  statement {
+    sid = "NatPatchAssociation"
+    actions = [
+      "ssm:CreateAssociation", "ssm:UpdateAssociation", "ssm:DeleteAssociation", "ssm:DescribeAssociation",
+      "ssm:AddTagsToResource", "ssm:RemoveTagsFromResource", "ssm:ListTagsForResource",
+    ]
+    resources = [
+      "arn:aws:ssm:${var.aws_region}::document/AWS-RunPatchBaseline",
+      "arn:aws:ssm:${var.aws_region}:${var.account_id}:association/*",
+      "arn:aws:ec2:${var.aws_region}:${var.account_id}:instance/*",
+    ]
+  }
+
+  statement {
+    sid       = "SsmAssociationList"
+    actions   = ["ssm:ListAssociations"]
+    resources = ["*"]
   }
 }
 

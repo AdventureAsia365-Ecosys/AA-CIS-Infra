@@ -85,9 +85,11 @@ jobs:
         if: ${{ !cancelled() }}
         run: python tools/docs/check_docs_text.py aws-multiline --all
 
-      - name: Literal resource IDs (VPC IDs and API Gateway hosts fail, the rest warns)
+      # AA-1185 (S295 audit SA-40): the repo is public, so account IDs, ARNs with an account and user-pool IDs fail too
+      # (write `{acc2}` or the account label); only load balancer ids still warn (the generator masks them).
+      - name: Literal resource IDs (everything but load balancer ids fails)
         if: ${{ !cancelled() }}
-        run: python tools/docs/check_docs_text.py resource-ids --all --mode warn --block vpc,apigw
+        run: python tools/docs/check_docs_text.py resource-ids --all --mode warn --block vpc,apigw,arn,account,user-pool
 
       # The checkout has no .terraform or node_modules folders, so the glob only sees tracked pages.
       - name: Internal links (offline)

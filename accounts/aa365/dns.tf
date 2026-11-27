@@ -81,6 +81,28 @@ locals {
   }
 }
 
+# -----------------------------------------------------------------------------
+# AA-1185 (S295 audit SA-38): CAA at the apex. Only Amazon may issue certificates for the zone and every name under it
+# (ACM: the four CAA domains AWS documents). Every certificate of this zone is an ACM certificate (ALB, CloudFront,
+# API Gateway, Cognito custom domains); no host CNAMEs to a third party that would issue its own (the Vercel hosts
+# left at the AA-911 retirement, custom_domains_variables.tf). A future third-party host (Let's Encrypt behind
+# Vercel, for example) needs its CA added here first, or its certificate fails with a CAA error.
+# Cost: 0 USD (records in the existing hosted zone).
+# -----------------------------------------------------------------------------
+resource "aws_route53_record" "caa" {
+  zone_id = aws_route53_zone.lumiguides.zone_id
+  name    = var.dns_zone_name
+  type    = "CAA"
+  ttl     = 3600
+  records = [
+    "0 issue \"amazon.com\"",
+    "0 issue \"amazontrust.com\"",
+    "0 issue \"awstrust.com\"",
+    "0 issue \"amazonaws.com\"",
+    "0 issuewild \"amazon.com\"",
+  ]
+}
+
 resource "aws_route53_record" "parity" {
   for_each = local.dns_parity_records
 

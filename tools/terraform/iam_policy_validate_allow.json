@@ -1,0 +1,4 @@
+{
+  "_about": "AA-1185: IAM Access Analyzer findings of type ERROR or SECURITY_WARNING accepted for one resource address (tools/terraform/iam_policy_validate.py). Each row: address, issueCode and a reason of at least 20 characters; review the list at the quarterly access review.",
+  "allow": []
+}

@@ -60,6 +60,7 @@ locals {
       identity_breakglass_secret                  = aws_cloudwatch_event_target.identity_breakglass_secret
       identity_denied_secret_read                 = aws_cloudwatch_event_target.identity_denied_secret_read
       identity_workforce_admincreateuser_password = aws_cloudwatch_event_target.identity_workforce_admincreateuser_password
+      identity_workforce_admin_membership         = aws_cloudwatch_event_target.identity_workforce_admin_membership
       identity_partner_pool_config                = aws_cloudwatch_event_target.identity_partner_pool_config
       identity_partner_admin_bypass               = aws_cloudwatch_event_target.identity_partner_admin_bypass
       sec_access_analyzer_finding                 = aws_cloudwatch_event_target.sec_access_analyzer_finding

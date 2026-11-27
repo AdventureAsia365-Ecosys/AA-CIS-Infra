@@ -9,7 +9,7 @@ PY=/home/nghiep/projects/AA-Ecosys/apps/AA-CIS-App/.venv/bin/python
 T=/home/nghiep/projects/AA-Ecosys/infra/AA-CIS-Infra/tools/identity/workforce_bootstrap.py
 ```
 
-The tool first checks that the credentials are for account 005097885195 (`--expect-account`).
+The tool first checks that the credentials are for acc2 (`--expect-account`; the ID is in the private account map).
 It reuses the AWS CLI assume-role cache, so one MFA prompt covers both the tool and `aws`.
 
 | Command | What it does | Plan step |
@@ -38,7 +38,7 @@ It reuses the AWS CLI assume-role cache, so one MFA prompt covers both the tool 
   (`breakglass-otp-probe`: exit 2), prints `cleanup INCOMPLETE` with the `admin-disable-user` command to
   run by hand, and does not print `done`/`OK`, even when the main work succeeded.
 - `breakglass-otp-probe` raises neither break-glass alert. After it, confirm the user is disabled:
-  `aws cognito-idp admin-get-user --user-pool-id us-west-1_bCcFvbSOS --username admin@adventure.asia --profile aa365-admin --region us-west-1 --query Enabled`
+  `aws cognito-idp admin-get-user --user-pool-id "$(terraform -chdir=accounts/aa365 output -raw identity_workforce_pool_id)" --username admin@adventure.asia --profile aa365-admin --region us-west-1 --query Enabled`
   (AdminGetUser counts as one MAU; the tool itself uses ListUsers).
 - If `breakglass-init` fails after the new password is set but before the secret is written, it warns
   `break-glass credentials NOT stored`: the previous password is already invalid, so re-run `breakglass-init`.

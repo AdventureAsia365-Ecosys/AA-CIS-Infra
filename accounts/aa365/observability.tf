@@ -1,10 +1,10 @@
 # =============================================================================
 # S102 Phase 3a — Observability/governance gaps found in the Phase 1 audit on
-# account 005097885195: 0 SNS topics, 0 AWS Budgets, 0 CloudTrail trails.
+# account acc2: 0 SNS topics, 0 AWS Budgets, 0 CloudTrail trails.
 # AA-284 (alerting) + AA-287 (budgets) + AA-286 (CloudTrail).
 #
 # AA-61 originally created aa-cis-dev-acp-alerts + a DLQ-depth alarm on
-# account 1 (867490540162, decommissioned). That resource is gone with the
+# account 1 (acc1, decommissioned). That resource is gone with the
 # account — this is a fresh build on account 2, not an import/fix.
 #
 # NOTIFICATIONS: state alarms e-mail on ALARM and OK, event alarms on ALARM only (S263 alert diet, AA-1025;

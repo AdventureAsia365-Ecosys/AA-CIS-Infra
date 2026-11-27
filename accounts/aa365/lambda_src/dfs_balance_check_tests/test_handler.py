@@ -26,7 +26,7 @@ os.environ.pop("ADMIN_SECRET", None)
 
 import handler as h  # noqa: E402
 
-SECRET_ARN = "arn:aws:secretsmanager:us-west-1:005097885195:secret:aa-cis/dev/admin-secret-abc123"
+SECRET_ARN = "arn:aws:secretsmanager:us-west-1:111122223333:secret:aa-cis/dev/admin-secret-abc123"
 RECONCILE = "/admin/job-runner/staff-reconcile/schedule"
 RETENTION = "/admin/job-runner/retention/schedule"
 PHOTO_SYNC = "/admin/photos/sync/schedule"  # AA-844

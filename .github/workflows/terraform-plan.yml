@@ -88,9 +88,23 @@ jobs:
             exit 1
           fi
           J="$RUNNER_TEMP/tfplan.json"
-          trap 'rm -f "$J" tfplan' EXIT
+          trap 'rm -f "$J"' EXIT
           terraform-bin show -json tfplan > "$J"
           python3 -B "$GITHUB_WORKSPACE/tools/terraform/tag_guard.py" "$J" --summary "$GITHUB_STEP_SUMMARY"
+
+      # AA-1185 (S295 Well-Architected review, free): IAM Access Analyzer ValidatePolicy on every IAM policy document the
+      # plan creates or changes (identity policies, trust policies, bucket / topic / key / secret policies). ERROR and
+      # SECURITY_WARNING fail this required check unless tools/terraform/iam_policy_validate_allow.json lists them with a
+      # reason. Same plan JSON handling as the tag guard (RUNNER_TEMP, never printed, deleted after); the tool prints
+      # addresses and masked finding text only. Runs even when the tag guard failed, and deletes the saved plan last.
+      - name: IAM policy validation
+        if: ${{ !cancelled() }}
+        run: |
+          umask 077
+          J="$RUNNER_TEMP/tfplan-iam.json"
+          trap 'rm -f "$J" tfplan' EXIT
+          terraform-bin show -json tfplan > "$J"
+          python3 -B "$GITHUB_WORKSPACE/tools/terraform/iam_policy_validate.py" "$J" --summary "$GITHUB_STEP_SUMMARY"
 
   # AA-1004: the management account root (accounts/management/README.md §11). Runs only when the PR touches that
   # root, this workflow or the report tool. Not a required check (the ruleset names "Terraform Plan (dev)" only).

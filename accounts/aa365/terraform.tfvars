@@ -1,5 +1,5 @@
 # =============================================================================
-# AA-246 Track B — account 005097885195 (aa365), us-west-1
+# AA-246 Track B — account acc2 (aa365), us-west-1
 # db_password is NOT set here — supply via TF_VAR_db_password before plan/apply.
 # Values marked REPLACE_ME are placeholders: enough for `terraform plan` to
 # succeed (plain string interpolation, no data-source validation), but MUST
@@ -21,7 +21,7 @@ db_subnet_cidrs      = ["10.2.20.0/24", "10.2.21.0/24"]
 db_username = "aa_cis_admin"
 # db_password — export TF_VAR_db_password before running plan/apply
 
-# ALB HTTPS + API Gateway custom domain (issued in account 005097885195)
+# ALB HTTPS + API Gateway custom domain (issued in account acc2)
 acm_certificate_arn = "arn:aws:acm:us-west-1:005097885195:certificate/257ca800-d552-4db7-8ad0-b6ddb72fbed0"
 domain_name         = "api-cis-aa365.lumiguides.it.com"
 
@@ -30,7 +30,7 @@ task_memory           = 1024
 service_desired_count = 1
 
 # Secrets NOT covered by modules/secrets data sources — create manually in
-# account 005097885195 first, then replace with the real ARNs.
+# account acc2 first, then replace with the real ARNs.
 # (secret_rds_arn / secret_dataforseo_arn are wired via module.secrets outputs
 # instead — those two secrets MUST exist under names "aa-cis/dev/rds" and
 # "aa-cis/dev/dataforseo" before `terraform plan` will succeed at all.)
@@ -88,6 +88,13 @@ crm_web_sentry_enabled = true
 # AA-828 (S238): CIS spend budget alert e-mails (job ops_alert_email, SES) go to this inbox on Dev.
 cis_ops_alert_email = "nghieppham@adventure.asia"
 
+# AA-1185 (S295 audit SA-38): DMARC aggregate reports (rua) of the mail domain go to the same watched ops inbox
+# (ses.tf local.ses_dmarc). The policy stays p=none until 2-4 weeks of reports show every sender aligned. The inbox is
+# outside lumiguides.it.com, so receivers send reports only when its domain authorizes them: the TXT record
+# lumiguides.it.com._report._dmarc.<inbox domain> = "v=DMARC1" (RFC 7489 section 7.1; that DNS zone is not in this
+# Terraform, a one-time hand step in the PR live steps).
+ses_dmarc_rua_email = "nghieppham@adventure.asia"
+
 # AA-908 (S250): the shared Cognito web ACL with the rate rules on the WORKFORCE, EXTERNAL and PARTNER pools
 # (about $9/month: $5 ACL + 4 rules; Nghiep's go in the S250 pre-approval).
 identity_waf_enabled = true
@@ -129,9 +136,13 @@ org_access_adopt_existing_role = false
 
 # AA-1060 (test_wp_edge.tf, modules/environment test_wp.tf): the WordPress test site sidecar on the Booking admin task.
 # Step 1: container in the task definition, target group, ALB rules, DNS record, security group port.
-# Step 2 (on since the Booking admin runs a revision with the container): the service registers it in the target group.
-test_wp_enabled          = true
-test_wp_service_attached = true
+# Step 2 (after a Booking admin deploy has put a revision with the container on the service): the service registers
+# it in the target group.
+# AA-1185 (S295 security audit, tech lead decision Q10): OFF outside an E2E test window. A window turns step 1 on,
+# deploys the Booking admin, turns step 2 on, and both go back to false when the checks are done (runbook: Infra
+# docs/runbooks/test-wp-window.md). Off, no WordPress image runs, so the nightly Image Scan has nothing to report on it.
+test_wp_enabled          = false
+test_wp_service_attached = false
 
 # AA-1092 (S278 audit M24, pre-PII): the shared REGIONAL web ACL (modules/waf) on the CIS and Booking REST API stages,
 # where WAF sees the real client IP: per-IP RateLimit1000 for api-cis / api-booking (NAT egress scoped out), the API

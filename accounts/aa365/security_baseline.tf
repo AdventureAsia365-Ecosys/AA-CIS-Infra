@@ -260,10 +260,12 @@ resource "aws_iam_role_policy" "sec_forwarder" {
 # forward) and every root event. The state with all management events is needed for root read-only calls.
 # AA-1022 (S263): plus the Identity Center administrator sessions (AssumeRoleWithSAML on an alerted AWSReservedSSO_*
 # role, a read-only event recorded in us-east-1), matched in us-west-1 by security_sso_signin.tf.
+# AA-1185 (S296): plus the AWS Health events of us-east-1 (global services and the CloudFront certificates), matched in
+# us-west-1 by security_account_defaults.tf sec_aws_health.
 resource "aws_cloudwatch_event_rule" "sec_global_forward" {
   provider    = aws.us_east_1
   name        = "${local.sec_prefix}-global-forward"
-  description = "Forward IAM write calls, root activity and Identity Center admin sessions (us-east-1) to ${var.aws_region}. AA-873, AA-1022."
+  description = "Forward IAM write calls, root activity, Identity Center admin sessions and AWS Health events (us-east-1) to ${var.aws_region}. AA-873, AA-1022, AA-1185."
   state       = "ENABLED_WITH_ALL_CLOUDTRAIL_MANAGEMENT_EVENTS"
   event_pattern = jsonencode({
     "$or" = [
@@ -277,6 +279,7 @@ resource "aws_cloudwatch_event_rule" "sec_global_forward" {
           requestParameters = { roleArn = [for p in values(local.sec_sso_admin_role_arn_patterns) : { wildcard = p }] }
         }
       },
+      { source = ["aws.health"], "detail-type" = ["AWS Health Event"] },
     ]
   })
   tags = local.sec_tags

@@ -30,12 +30,13 @@ through exec is still possible — that is what exec is for.
 ## WSL setup (once)
 
 Get the role ARN from the Terraform output `agent_session_role_arn`
-(`arn:aws:iam::005097885195:role/aa-cis-dev-agent-session`). Add to `~/.aws/config`, reusing the
+(`arn:aws:iam::{acc2}:role/aa-cis-dev-agent-session`; `{acc2}` stands for the acc2 account ID, which this public page
+does not print: `aws sts get-caller-identity --profile aa365-admin --query Account --output text`). Add to `~/.aws/config`, reusing the
 same source credentials and MFA device as `aa365-admin`:
 
 ```ini
 [profile aa365-agent]
-role_arn       = arn:aws:iam::005097885195:role/aa-cis-dev-agent-session
+role_arn       = arn:aws:iam::{acc2}:role/aa-cis-dev-agent-session
 source_profile = <same source_profile as aa365-admin>
 mfa_serial     = <same mfa_serial as aa365-admin>
 region         = us-west-1
@@ -58,7 +59,7 @@ Then run one ECS exec script end to end (upload → presign → execute-command 
 
 ## Caller must be allowed to assume the role (one-time, Nghiệp applies)
 
-The role trusts `arn:aws:iam::005097885195:root` + MFA. With a `:root` trust principal, AWS also
+The role trusts `arn:aws:iam::{acc2}:root` + MFA. With a `:root` trust principal, AWS also
 requires the **caller's own identity policy** to grant `sts:AssumeRole` on the role ARN — a `:root`
 trust alone is not sufficient (verified S226/S227: assume from `user/nghiep-admin` returned
 `AccessDenied`; `nghiep-admin` has only AWS-managed ReadOnly policies, none grant `sts:AssumeRole`).
@@ -75,7 +76,7 @@ aws iam put-user-policy --user-name nghiep-admin --policy-name assume-agent-sess
 Verify (should now succeed instead of AccessDenied):
 
 ```bash
-aws sts assume-role --role-arn arn:aws:iam::005097885195:role/aa-cis-dev-agent-session --role-session-name probe --profile aa365-admin --region us-west-1
+aws sts assume-role --role-arn arn:aws:iam::{acc2}:role/aa-cis-dev-agent-session --role-session-name probe --profile aa365-admin --region us-west-1
 ```
 
 After that, the agent `~/.aws/config` profile `aa365-agent` (above) works and AA-730 can be verified

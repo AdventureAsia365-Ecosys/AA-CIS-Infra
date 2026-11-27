@@ -3,7 +3,7 @@
 # inline policy (hand-created for AA-296, never Terraform-tracked — confirmed by
 # repo-wide grep before writing this file) was imported into state (the import
 # block was removed in S243 once the address was in state), then a second
-# statement granted AssumeRole into acc3's AA3-Bedrock-Invoker (786888028788).
+# statement granted AssumeRole into acc3's AA3-Bedrock-Invoker (acc3).
 #
 # AA-998 (S255): acc1 left the ecosystem. Its statement
 # "AssumeSatelliteBedrockInvoker" (acc1 AA-Bedrock-Invoker) is removed; acc3 is

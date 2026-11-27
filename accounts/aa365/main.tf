@@ -1,5 +1,5 @@
 # =============================================================================
-# AA-246 Track B — AA-CIS root module for account 005097885195 (aa365)
+# AA-246 Track B — AA-CIS root module for account acc2 (aa365)
 # Mirrors the architecture of the account-1 root module (../../main.tf) but
 # wires ARNs through module outputs instead of literal account-1 ARNs.
 # Scope (confirmed): VPC, RDS, ECS, ALB, S3, Secrets, API Gateway, WAF,

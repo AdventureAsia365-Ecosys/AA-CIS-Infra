@@ -6,8 +6,9 @@ AA-Ecosys session logs, not here.
 **Read [`CONTEXT.md`](../CONTEXT.md) before any change** — layout, accounts, every module, OIDC roles,
 how a change is applied and the boundaries ("apps own code, Infra owns resources"). The ecosystem view
 is `AA-Ecosys/docs/ecosystem-architecture.md`; data rules are `AA-Ecosys/docs/architecture/data-standards/`.
-This repo is **public** for now (root ADR 0014 amendment), like the app repos. Account IDs and resource
-names are accepted here, but never write step-by-step privilege paths, which principal can read which
+This repo is **public** for now (root ADR 0014 amendment), like the app repos. Resource names are accepted
+here; account IDs and ARNs with an account are not in pages (docs-lint fails them since AA-1185: write `{acc2}` or
+the account label), and never write step-by-step privilege paths, which principal can read which
 secret, or a statement that a protection is missing: put one line pointing to the Linear issue and keep
 the detail in Linear or a private root audit.
 
@@ -24,11 +25,12 @@ the detail in Linear or a private root audit.
 
 | Account | ID | Region | Profile | Holds |
 |---|---|---|---|---|
-| acc2 | 005097885195 | us-west-1 | `aa365-admin` | all app infrastructure (only account with infra) |
-| acc3 | 786888028788 | us-west-1 | `nghiep_aa365` | Bedrock satellite (the only one) |
-| acc1 | 867490540162 | us-west-1 | `pqnghiep-admin` | retired (AA-998): resources destroyed 28/10/2026, root folder removed |
+| acc2 | `{acc2}` | us-west-1 | `aa365-admin` | all app infrastructure (only account with infra) |
+| acc3 | `{acc3}` | us-west-1 | `nghiep_aa365` | Bedrock satellite (the only one) |
+| acc1 | `{acc1}` | us-west-1 | `pqnghiep-admin` | retired (AA-998): resources destroyed 28/10/2026, root folder removed |
 
-Always check first: `aws sts get-caller-identity --profile aa365-admin --region us-west-1`.
+The IDs are in the private account map (agent memory `aws-account-map.md`); `aws sts get-caller-identity` prints the
+one a profile reaches. Always check first: `aws sts get-caller-identity --profile aa365-admin --region us-west-1`.
 
 ## Live state (pointers, not numbers — checked 19/10/2026)
 
