@@ -90,7 +90,7 @@ jobs:
       # them). The agent files under .claude/ only warn: the tech lead rewrites them (agents do not edit them).
       - name: Literal resource IDs (pages; everything but load balancer ids fails)
         if: ${{ !cancelled() }}
-        run: python tools/docs/check_docs_text.py resource-ids --mode warn --block vpc,apigw,arn,account,user-pool $(git ls-files '*.md' ':!:.claude/**')
+        run: python tools/docs/check_docs_text.py resource-ids --mode warn --block vpc,apigw,arn,account,user-pool,mail $(git ls-files '*.md' ':!:.claude/**')
 
       - name: Literal resource IDs (agent files, warn-only)
         if: ${{ !cancelled() }}
