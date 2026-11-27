@@ -47,12 +47,16 @@ resource "aws_security_group" "cis_api" {
     security_groups = [module.vpc.sg_alb_id]
   }
 
-  egress {
-    description = "All outbound (NAT: AWS APIs, Bedrock, third-party APIs; RDS, Redis, EFS)"
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+  # AA-1185: outbound rules from app_egress.tf (sg_egress_narrowed = false is the rollback).
+  dynamic "egress" {
+    for_each = local.app_egress.cis_api
+    content {
+      description = egress.value.description
+      from_port   = egress.value.from_port
+      to_port     = egress.value.to_port
+      protocol    = egress.value.protocol
+      cidr_blocks = egress.value.cidr_blocks
+    }
   }
 
   tags = merge(local.common_tags, { Name = "${local.name_prefix}-sg-cis-api", Component = "api" })
@@ -64,12 +68,16 @@ resource "aws_security_group" "cis_worker" {
   description = "CIS job worker service, no ingress (ADR 0004b)"
   vpc_id      = module.vpc.vpc_id
 
-  egress {
-    description = "All outbound (NAT: AWS APIs, Bedrock, third-party APIs; RDS, Redis, EFS)"
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+  # AA-1185: outbound rules from app_egress.tf (sg_egress_narrowed = false is the rollback).
+  dynamic "egress" {
+    for_each = local.app_egress.cis_worker
+    content {
+      description = egress.value.description
+      from_port   = egress.value.from_port
+      to_port     = egress.value.to_port
+      protocol    = egress.value.protocol
+      cidr_blocks = egress.value.cidr_blocks
+    }
   }
 
   tags = merge(local.common_tags, { Name = "${local.name_prefix}-sg-cis-worker", Component = "worker" })
@@ -89,12 +97,16 @@ resource "aws_security_group" "booking_api" {
     security_groups = [module.vpc.sg_alb_id]
   }
 
-  egress {
-    description = "All outbound (NAT: AWS APIs, SES; RDS)"
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+  # AA-1185: outbound rules from app_egress.tf (sg_egress_narrowed = false is the rollback).
+  dynamic "egress" {
+    for_each = local.app_egress.booking_api
+    content {
+      description = egress.value.description
+      from_port   = egress.value.from_port
+      to_port     = egress.value.to_port
+      protocol    = egress.value.protocol
+      cidr_blocks = egress.value.cidr_blocks
+    }
   }
 
   tags = merge(local.bk_tags, { Name = "${local.name_prefix}-sg-booking-api" })
@@ -114,12 +126,16 @@ resource "aws_security_group" "crm_api" {
     security_groups = [module.vpc.sg_alb_id]
   }
 
-  egress {
-    description = "All outbound (NAT: AWS APIs, Cognito JWKS, Sentry; RDS)"
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+  # AA-1185: outbound rules from app_egress.tf (sg_egress_narrowed = false is the rollback).
+  dynamic "egress" {
+    for_each = local.app_egress.crm_api
+    content {
+      description = egress.value.description
+      from_port   = egress.value.from_port
+      to_port     = egress.value.to_port
+      protocol    = egress.value.protocol
+      cidr_blocks = egress.value.cidr_blocks
+    }
   }
 
   tags = merge(local.crm_app_tags, { Name = "${local.name_prefix}-sg-crm-api" })
@@ -141,12 +157,16 @@ resource "aws_security_group" "crm_web" {
     security_groups = [module.vpc.sg_alb_id]
   }
 
-  egress {
-    description = "All outbound (NAT: Cognito token endpoint, the partner host for the CRM API)"
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+  # AA-1185: outbound rules from app_egress.tf (sg_egress_narrowed = false is the rollback).
+  dynamic "egress" {
+    for_each = local.app_egress.crm_web
+    content {
+      description = egress.value.description
+      from_port   = egress.value.from_port
+      to_port     = egress.value.to_port
+      protocol    = egress.value.protocol
+      cidr_blocks = egress.value.cidr_blocks
+    }
   }
 
   tags = merge(local.crm_web_tags, { Name = "${local.name_prefix}-sg-crm-web" })
@@ -185,12 +205,16 @@ resource "aws_security_group" "staff_web" {
     }
   }
 
-  egress {
-    description = "All outbound (NAT: Cognito token endpoint, the CIS and Booking API hosts)"
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+  # AA-1185: outbound rules from app_egress.tf (sg_egress_narrowed = false is the rollback).
+  dynamic "egress" {
+    for_each = local.app_egress.staff_web
+    content {
+      description = egress.value.description
+      from_port   = egress.value.from_port
+      to_port     = egress.value.to_port
+      protocol    = egress.value.protocol
+      cidr_blocks = egress.value.cidr_blocks
+    }
   }
 
   tags = merge(local.staff_web_tags, { Name = "${local.name_prefix}-sg-staff-web" })
@@ -210,12 +234,16 @@ resource "aws_security_group" "tripplanner_web" {
     security_groups = [module.vpc.sg_alb_id]
   }
 
-  egress {
-    description = "All outbound (NAT: the TripPlanner HTTP API host, Cognito, the photo CDN)"
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+  # AA-1185: outbound rules from app_egress.tf (sg_egress_narrowed = false is the rollback).
+  dynamic "egress" {
+    for_each = local.app_egress.tripplanner_web
+    content {
+      description = egress.value.description
+      from_port   = egress.value.from_port
+      to_port     = egress.value.to_port
+      protocol    = egress.value.protocol
+      cidr_blocks = egress.value.cidr_blocks
+    }
   }
 
   tags = merge(local.tp_tags, { Component = "web", Name = "${local.name_prefix}-sg-tp-web" })
@@ -227,12 +255,16 @@ resource "aws_security_group" "tp_lambda" {
   description = "TripPlanner browse and assembly Lambdas, no ingress (ADR 0004b)"
   vpc_id      = module.vpc.vpc_id
 
-  egress {
-    description = "All outbound (NAT: AWS APIs, Bedrock, Mapbox; RDS)"
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+  # AA-1185: outbound rules from app_egress.tf (sg_egress_narrowed = false is the rollback).
+  dynamic "egress" {
+    for_each = local.app_egress.tp_lambda
+    content {
+      description = egress.value.description
+      from_port   = egress.value.from_port
+      to_port     = egress.value.to_port
+      protocol    = egress.value.protocol
+      cidr_blocks = egress.value.cidr_blocks
+    }
   }
 
   tags = merge(local.tp_tags, { Name = "${local.name_prefix}-sg-tp-lambda" })
@@ -244,12 +276,16 @@ resource "aws_security_group" "db_migrate" {
   description = "DB Migrate, Schema Dump and isolation probe one-off tasks, no ingress (ADR 0004b)"
   vpc_id      = module.vpc.vpc_id
 
-  egress {
-    description = "All outbound (NAT: Secrets Manager, S3 presigned URLs; RDS)"
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+  # AA-1185: outbound rules from app_egress.tf (sg_egress_narrowed = false is the rollback).
+  dynamic "egress" {
+    for_each = local.app_egress.db_migrate
+    content {
+      description = egress.value.description
+      from_port   = egress.value.from_port
+      to_port     = egress.value.to_port
+      protocol    = egress.value.protocol
+      cidr_blocks = egress.value.cidr_blocks
+    }
   }
 
   tags = merge(local.shared_tags, { Name = "${local.name_prefix}-sg-db-migrate", Component = "db" })
@@ -261,12 +297,16 @@ resource "aws_security_group" "ops_lambda" {
   description = "Ops Lambdas (dfs-balance check), no ingress, no data-store access (ADR 0004b)"
   vpc_id      = module.vpc.vpc_id
 
-  egress {
-    description = "All outbound (NAT: CIS API, DataForSEO, AWS APIs)"
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+  # AA-1185: outbound rules from app_egress.tf (sg_egress_narrowed = false is the rollback).
+  dynamic "egress" {
+    for_each = local.app_egress.ops_lambda
+    content {
+      description = egress.value.description
+      from_port   = egress.value.from_port
+      to_port     = egress.value.to_port
+      protocol    = egress.value.protocol
+      cidr_blocks = egress.value.cidr_blocks
+    }
   }
 
   tags = merge(local.common_tags, { Name = "${local.name_prefix}-sg-ops-lambda", Component = "jobs" })
