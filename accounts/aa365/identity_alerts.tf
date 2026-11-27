@@ -385,15 +385,19 @@ resource "aws_cloudwatch_event_target" "identity_workforce_admincreateuser_passw
 
 # ── 5. Admin group membership and re-enabled staff users (AA-1185) ───────────
 # S295 security audit SA-53: only AdminCreateUser with a password alerted (section 4). Adding a user to an
-# administrator group of the WORKFORCE pool, or enabling a disabled staff user, gave no signal. This rule e-mails on:
-#   a. AdminAddUserToGroup into one of local.id_admin_groups (CloudTrail logs groupName in clear; the username is
-#      HIDDEN_DUE_TO_SECURITY_REASONS, so look the change up with ListUsersInGroup);
-#   b. AdminEnableUser on the pool (any user: a disabled account coming back is worth a look).
+# administrator group of the WORKFORCE pool, or enabling a staff user, gave no signal. Two rules, two severities:
+#   a. PAGE: AdminAddUserToGroup into one of local.id_admin_groups (CloudTrail logs groupName in clear; the username
+#      is HIDDEN_DUE_TO_SECURITY_REASONS, so look the change up with ListUsersInGroup). Admin rights granted: a person
+#      checks it now. CloudTrail records the call even when it changes nothing, so a CIS Staff "Sync" of a user who
+#      already is an administrator re-sends the add and pages too (rare: three admin groups, a handful of members).
+#   b. TICKET: AdminEnableUser on the pool. The CIS Staff page sends it on routine actions, also on an enabled user
+#      (api/services/staff_directory.py: every "Reset" and "Sync", and every create or re-link of an existing user),
+#      so it is a working-hours record, never a page.
 # Legitimate grants (the CIS Staff page, workforce_bootstrap.py) alert too: the e-mail is the record that someone
 # checks the change against the access register (root ISMS-09). Denied attempts match too (no errorCode filter).
-# Write management events: state ENABLED is enough. Rule name inside rule/aa-identity-* (topic policy statement
-# AllowIdentityEventBridgeRules, CI apply grant EventBridgeIdentityRuleManage): no new grant.
-# Cost: $0/month (a few events a month).
+# Write management events: state ENABLED is enough. Rule names inside rule/aa-identity-* (topic policies
+# AllowIdentityEventBridgeRules and AllowPageEventBridgeRules, CI apply grant EventBridgeIdentityRuleManage): no new
+# grant. Cost: $0/month (a few events a month).
 locals {
   # The groups whose members administer an app (identity.tf local.id_staff_groups). The index lookups fail the plan
   # if a group is renamed there without this list.
@@ -402,24 +406,16 @@ locals {
 
 resource "aws_cloudwatch_event_rule" "identity_workforce_admin_membership" {
   name        = "${local.id_prefix}-workforce-admin-membership"
-  description = "WORKFORCE user added to an admin group (cis-admin, booking-admin, crm-platform-admin) or a staff user enabled (CloudTrail). AA-1185.${local.runbook_suffix.incident}"
+  description = "WORKFORCE user added to an admin group (cis-admin, booking-admin, crm-platform-admin) (CloudTrail; a CIS Sync of an existing admin re-sends the add). AA-1185.${local.runbook_suffix.incident}"
   state       = "ENABLED"
 
   event_pattern = jsonencode({
     source        = ["aws.cognito-idp"]
     "detail-type" = ["AWS API Call via CloudTrail"]
     detail = {
-      eventSource = ["cognito-idp.amazonaws.com"]
-      "$or" = [
-        {
-          eventName         = ["AdminAddUserToGroup"]
-          requestParameters = { userPoolId = [aws_cognito_user_pool.workforce.id], groupName = local.id_admin_groups }
-        },
-        {
-          eventName         = ["AdminEnableUser"]
-          requestParameters = { userPoolId = [aws_cognito_user_pool.workforce.id] }
-        },
-      ]
+      eventSource       = ["cognito-idp.amazonaws.com"]
+      eventName         = ["AdminAddUserToGroup"]
+      requestParameters = { userPoolId = [aws_cognito_user_pool.workforce.id], groupName = local.id_admin_groups }
     }
   })
 
@@ -433,13 +429,46 @@ resource "aws_cloudwatch_event_target" "identity_workforce_admin_membership" {
 
   input_transformer {
     input_paths = {
-      event     = "$.detail.eventName"
       group     = "$.detail.requestParameters.groupName"
       principal = "$.detail.userIdentity.arn"
       ip        = "$.detail.sourceIPAddress"
       time      = "$.detail.eventTime"
       error     = "$.detail.errorCode"
     }
-    input_template = "\"[aa-identity] WORKFORCE pool ${aws_cognito_user_pool.workforce.id}: <event> (group: <group>) by <principal> from <ip> at <time> (errorCode: <error>). Check the change against the access register: ListUsersInGroup for the group, or the user enabled at that time. Not planned: remove the user from the group (or disable it again) and sign it out everywhere.${local.runbook_suffix.incident}\""
+    input_template = "\"[aa-identity] WORKFORCE pool ${aws_cognito_user_pool.workforce.id}: AdminAddUserToGroup (group: <group>) by <principal> from <ip> at <time> (errorCode: <error>). Check the change against the access register: ListUsersInGroup for the group (a CIS Sync of a user who already is an administrator re-sends the add). Not planned: remove the user from the group and sign it out everywhere.${local.runbook_suffix.incident}\""
+  }
+}
+
+resource "aws_cloudwatch_event_rule" "identity_workforce_enable_user" {
+  name        = "${local.id_prefix}-workforce-enable-user"
+  description = "WORKFORCE staff user enabled (CloudTrail AdminEnableUser; the CIS Staff page also sends it on Reset and Sync of an enabled user). AA-1185.${local.runbook_suffix.incident}"
+  state       = "ENABLED"
+
+  event_pattern = jsonencode({
+    source        = ["aws.cognito-idp"]
+    "detail-type" = ["AWS API Call via CloudTrail"]
+    detail = {
+      eventSource       = ["cognito-idp.amazonaws.com"]
+      eventName         = ["AdminEnableUser"]
+      requestParameters = { userPoolId = [aws_cognito_user_pool.workforce.id] }
+    }
+  })
+
+  tags = merge(local.id_tags, { Issue = "AA-1185" }, local.alert_tags.ticket_locked) # ticket: routine staff-page call, a record only
+}
+
+resource "aws_cloudwatch_event_target" "identity_workforce_enable_user" {
+  rule      = aws_cloudwatch_event_rule.identity_workforce_enable_user.name
+  target_id = "alerts-sns"
+  arn       = aws_sns_topic.alerts.arn
+
+  input_transformer {
+    input_paths = {
+      principal = "$.detail.userIdentity.arn"
+      ip        = "$.detail.sourceIPAddress"
+      time      = "$.detail.eventTime"
+      error     = "$.detail.errorCode"
+    }
+    input_template = "\"[aa-identity] WORKFORCE pool ${aws_cognito_user_pool.workforce.id}: AdminEnableUser by <principal> from <ip> at <time> (errorCode: <error>). Routine on a CIS Staff Reset or Sync. A user disabled on purpose that comes back without a planned action: disable it again and sign it out everywhere.${local.runbook_suffix.incident}\""
   }
 }

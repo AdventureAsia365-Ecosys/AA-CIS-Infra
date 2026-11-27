@@ -291,9 +291,12 @@ def test_site_is_off_by_default_outside_test_windows_aa1185():
     assert re.search(r"^test_wp_enabled\s*=\s*false\s*$", tfvars, re.M)
     assert re.search(r"^test_wp_service_attached\s*=\s*false\s*$", tfvars, re.M)
     assert (ROOT / "docs" / "runbooks" / "test-wp-window.md").is_file()
-    # No exception entry is left for an image that does not run.
+    # The WordPress container keeps running until the next Booking admin deploy after the apply, so its exception
+    # stays until then (removed with the root register row once describe-tasks shows one container, before the
+    # expiry). No other entry, and no later expiry, may ride on the test site.
     ignore = (ROOT / ".trivyignore").read_text(encoding="utf-8")
-    assert not [ln for ln in ignore.splitlines() if ln.strip() and not ln.lstrip().startswith("#")]
+    entries = [ln.strip() for ln in ignore.splitlines() if ln.strip() and not ln.lstrip().startswith("#")]
+    assert set(entries) <= {"CVE-2026-124851 exp:2026-12-02"}, entries
 
 
 def test_script_never_puts_the_application_password_in_the_log_or_on_a_curl_command_line():

@@ -8,4 +8,8 @@
 #   # <reason: why it is safe for now, and what removes it>
 #   CVE-YYYY-NNNNN exp:YYYY-MM-DD
 
-# (no entries: AA-1185 turned the WordPress test sidecar off outside test windows, S296)
+# S294: libzstd1 in the WordPress test sidecar (wordpress:7.1.5-php8.4-apache, digest of 24/11, built before the Debian
+# fix 1.5.7+dfsg-1+deb13u1; no rebuilt digest upstream on 25/11). Test site only, no customer data. Remove when
+# test_wp_image moves to a digest with the fixed package, or (AA-1185, test site off) once the Infra apply and the next
+# Booking admin deploy leave the Booking admin task with one container (describe-tasks), together with the root row.
+CVE-2026-124851 exp:2026-12-02
