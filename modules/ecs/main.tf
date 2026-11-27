@@ -3,8 +3,34 @@
 # Cluster + IAM + ECR + Task Definition + Service + Auto Scaling
 # ============================================================
 
+data "aws_caller_identity" "current" {}
+
 locals {
   name_prefix = "${var.project}-${var.environment}"
+
+  # AA-1182: what the task role's S3, Secrets Manager and Bedrock statements name (ecs_task_policy). The account comes
+  # from the caller identity, so no new account ID is written here.
+  task_account_id = data.aws_caller_identity.current.account_id
+  cis_rw_buckets  = [var.bronze_bucket_name, var.gold_bucket_name]
+  cis_runtime_secret_arns = concat(
+    [for n in var.runtime_secret_names : "arn:aws:secretsmanager:${var.aws_region}:${local.task_account_id}:secret:${var.project}/${var.environment}/${n}-??????"],
+    [
+      # The LLM gateway's vendor keys (AA-CIS-App shared/llm_client/connections.py SECRET_NAME_RE aa-llm/<env>/<name>).
+      "arn:aws:secretsmanager:${var.aws_region}:${local.task_account_id}:secret:aa-llm/${var.environment}/*",
+      # Tenant channel credentials (api/routers/v1_integrations.py, v1_publish.py; written by the statements below).
+      "arn:aws:secretsmanager:${var.aws_region}:${local.task_account_id}:secret:acp/cms/*",
+      "arn:aws:secretsmanager:${var.aws_region}:${local.task_account_id}:secret:acp/social/*",
+    ],
+  )
+  # A cross-region profile (us. / global.) authorizes InvokeModel on the foundation model in the member region that
+  # serves the call, and a global profile also on the region-less foundation-model ARN: "*" in the region matches
+  # both (same list-every-form rule as modules/environment tripplanner.tf tp_embed_model_arns).
+  cis_bedrock_invoke_arns = flatten([
+    for p in var.bedrock_invoke_providers : [
+      "arn:aws:bedrock:*::foundation-model/${p}.*",
+      "arn:aws:bedrock:*:${local.task_account_id}:inference-profile/*.${p}.*",
+    ]
+  ])
 
   # AA-993 G1: the test-only job kind noop_sleep (AA-CIS-App services/jobs/noop_sleep_job.py, deploy-gate exempt) for
   # the worker-drain live proof. Registered only when JOB_TEST_KINDS=1; Dev only, on api AND worker (the verify's
@@ -300,16 +326,42 @@ resource "aws_iam_role_policy" "ecs_task_policy" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = concat([
+      # AA-1182 (S296, least privilege for the task role; background in Linear): the first statement of this policy
+      # used to grant S3, Secrets Manager reads, SQS, CloudWatch Logs writes and Bedrock invoke on "*". It is split by
+      # what the code calls (inventory with the code path per grant: docs/implementation-notes/AA-1182.md):
+      #   - S3: the CIS bronze and gold buckets only (photos, uploads, docs/learn/ERD reads, retention archive, eval
+      #     fixtures, tenant backups); the Booking supply-media read is its own statement; the compliance evidence read
+      #     lives in accounts/aa365/compliance_evidence.tf.
+      #   - Secrets: the names in var.runtime_secret_names, the LLM gateway's aa-llm/<env>/* and the tenant channel
+      #     credentials acp/cms/* + acp/social/* (written by the two statements after this group).
+      #   - Bedrock: the providers in var.bedrock_invoke_providers on this account.
+      #   - SQS and CloudWatch Logs writes are gone: no ECS code path sends or receives SQS messages (the DLQ classifier
+      #     is a Lambda), the awslogs driver writes with the execution role and ECS Exec session logs have their own
+      #     policy (ecs_task_exec_logging).
+      # The explicit Denies below stay as they are (S18/S19 master / migrator DSNs, other owners' prefixes).
       {
-        Effect = "Allow"
-        Action = [
-          "s3:GetObject", "s3:PutObject", "s3:ListBucket",
-          "secretsmanager:GetSecretValue",
-          "sqs:SendMessage", "sqs:ReceiveMessage", "sqs:DeleteMessage",
-          "logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents",
-          "bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"
-        ]
-        Resource = "*"
+        Sid      = "CisBucketObjectReadWrite"
+        Effect   = "Allow"
+        Action   = ["s3:GetObject", "s3:PutObject"]
+        Resource = [for b in local.cis_rw_buckets : "arn:aws:s3:::${b}/*"]
+      },
+      {
+        Sid      = "CisBucketList"
+        Effect   = "Allow"
+        Action   = ["s3:ListBucket"]
+        Resource = [for b in local.cis_rw_buckets : "arn:aws:s3:::${b}"]
+      },
+      {
+        Sid      = "ReadCisRuntimeSecrets"
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = local.cis_runtime_secret_arns
+      },
+      {
+        Sid      = "BedrockInvokeOwnAccountModels"
+        Effect   = "Allow"
+        Action   = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"]
+        Resource = local.cis_bedrock_invoke_arns
       },
       # S263 (AA-1025): the AA-380 PutMetricData grant on namespace "acp" is gone; its only emitter
       # (AA-CIS-App services/acp_produce/metrics.py) had no caller and was deleted.
@@ -468,6 +520,17 @@ resource "aws_iam_role_policy" "ecs_task_policy" {
           Effect   = "Allow"
           Action   = ["cloudfront:CreateInvalidation"]
           Resource = var.photos_cdn_distribution_arn
+        }
+      ],
+      # AA-1182: CIS reads Booking's supplier photos to build its WebP copies (AA-CIS-App services/supply_content/
+      # photos.py). The Booking bucket policy grants the same read and denies every CIS write (booking_media.tf); this
+      # names the read on the identity side now that the S3 grant is no longer "*".
+      var.booking_supply_media_bucket_name == "" ? [] : [
+        {
+          Sid      = "ReadBookingSupplyMedia"
+          Effect   = "Allow"
+          Action   = ["s3:GetObject"]
+          Resource = "arn:aws:s3:::${var.booking_supply_media_bucket_name}/*"
         }
     ])
   })

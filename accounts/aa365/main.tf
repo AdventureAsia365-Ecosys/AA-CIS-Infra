@@ -255,6 +255,10 @@ module "ecs" {
   secret_jwt_arn        = var.secret_jwt_arn
   secret_dataforseo_arn = module.secrets.dataforseo_secret_arn
   bronze_bucket_name    = module.s3.bronze_bucket_name
+  # AA-1182: the task role's S3 object grant is the bronze and gold buckets only, plus a read of Booking's supplier
+  # photos; secrets and Bedrock providers keep the module defaults (inventory: docs/implementation-notes/AA-1182.md).
+  gold_bucket_name                 = module.s3.gold_bucket_name
+  booking_supply_media_bucket_name = module.environment.booking_supply_media_bucket
 
   step_functions_arn = local.sfn_pipeline_arn
   # AA-1096 L6: SF_BATCH_THRESHOLD (15) is gone, no app reads it.

@@ -85,6 +85,16 @@ variable "cis_task_role_arn" {
   type        = string
 }
 
+variable "lambda_artifacts_writer_role_arns" {
+  description = "AA-1182: roles besides the TripPlanner app deploy role that may write or delete objects in the TripPlanner Lambda artifacts bucket (the CI apply role, which puts the placeholder zips, and the MFA admin role). Every other principal is denied writes by the bucket policy (tripplanner.tf)."
+  type        = list(string)
+
+  validation {
+    condition     = length(var.lambda_artifacts_writer_role_arns) > 0 && alltrue([for a in var.lambda_artifacts_writer_role_arns : can(regex("^arn:aws:iam::[0-9]{12}:role/", a))])
+    error_message = "lambda_artifacts_writer_role_arns must be IAM role ARNs, at least one."
+  }
+}
+
 variable "vpc_link_id" {
   description = "API Gateway VPC link to the internal NLB (module.alb.vpc_link_id)."
   type        = string

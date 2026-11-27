@@ -74,18 +74,24 @@ module "environment" {
   ecs_cluster_name               = module.ecs.cluster_name
   ecs_exec_session_log_group_arn = module.ecs.exec_session_log_group_arn
   cis_task_role_arn              = module.ecs.task_role_arn
-  vpc_link_id                    = module.alb.vpc_link_id
-  nlb_dns_name                   = module.alb.nlb_dns_name
-  bronze_bucket_arn              = module.s3.bronze_bucket_arn
-  gold_bucket_arn                = module.s3.gold_bucket_arn
-  gold_bucket_name               = module.s3.gold_bucket_name
-  booking_listener_rule_gate     = aws_lb_listener_rule.booking.arn
-  booking_security_group_id      = aws_security_group.booking_api.id
-  ses_from_address               = var.ses_from_address
-  ses_configuration_set_name     = aws_sesv2_configuration_set.stream["transactional"].configuration_set_name
-  m2m_pool_endpoint              = aws_cognito_user_pool.m2m.endpoint
-  m2m_crm_client_id              = aws_cognito_user_pool_client.m2m_crm.id
-  alerts_topic_arn               = aws_sns_topic.alerts.arn
+  # AA-1182: the writers of the TripPlanner Lambda artifacts bucket besides the app deploy role. Built from the role names
+  # (cicd_split.tf, admin_role.tf), not their resources, so the bucket policy does not wait on the CI roles.
+  lambda_artifacts_writer_role_arns = [
+    "arn:aws:iam::${var.account_id}:role/${local.tf_apply_role_name}",
+    "arn:aws:iam::${var.account_id}:role/${var.identity_breakglass_admin_role_name}",
+  ]
+  vpc_link_id                = module.alb.vpc_link_id
+  nlb_dns_name               = module.alb.nlb_dns_name
+  bronze_bucket_arn          = module.s3.bronze_bucket_arn
+  gold_bucket_arn            = module.s3.gold_bucket_arn
+  gold_bucket_name           = module.s3.gold_bucket_name
+  booking_listener_rule_gate = aws_lb_listener_rule.booking.arn
+  booking_security_group_id  = aws_security_group.booking_api.id
+  ses_from_address           = var.ses_from_address
+  ses_configuration_set_name = aws_sesv2_configuration_set.stream["transactional"].configuration_set_name
+  m2m_pool_endpoint          = aws_cognito_user_pool.m2m.endpoint
+  m2m_crm_client_id          = aws_cognito_user_pool_client.m2m_crm.id
+  alerts_topic_arn           = aws_sns_topic.alerts.arn
 
   # Slice 2 (CRM) platform inputs: generic shared objects, the CRM security groups, the CRM edge (crm_edge.tf,
   # crm_agency_edge.tf, crm_client_edge.tf, alb_rules.tf) and the identity pools / clients the CRM tasks read.
