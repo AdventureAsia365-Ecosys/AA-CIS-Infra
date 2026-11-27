@@ -335,3 +335,74 @@ resource "aws_cloudwatch_event_target" "sec_root_forward_usw2" {
   arn       = "arn:aws:events:${var.aws_region}:${var.account_id}:event-bus/default"
   role_arn  = aws_iam_role.sec_forwarder.arn
 }
+
+# ── 5. ACM certificate expiry (AA-1183 part 1, S296) ────────────────────────
+# ACM renews its own DNS-validated certificates about 60 days before expiry. It sends an "ACM Certificate Approaching
+# Expiration" event (daily, from 30 days before expiry for a public certificate) only when that has not happened, a
+# "Renewal Action Required" event when a renewal attempt failed, and an "Expired" event when it is too late. Every
+# Dev hostname depends on one: the API custom domains and the ALB listener in this region, the CloudFront and Cognito
+# custom domains in us-east-1, whose events stay on that region's bus: a us-east-1 rule forwards them here through the
+# existing forwarder role (it may already PutEvents on this region's default bus) and one rule here alerts for both.
+# Approaching-expiration events alert only on the days of var.acm_expiry_alert_days (default 30, 14, 7, 3, 1), not
+# every day; the other two event types always alert. Names use the aa-sec-* prefix, so the CI apply grant
+# (cicd_sec.tf, rule/aa-sec-* in every region) and the alerts topic policy (AllowSecurityEventBridgeRules) already
+# admit them: no IAM change, no bootstrap apply. Severity ticket: about a month of lead time, handled in working hours.
+# Cost: 0 USD/month (AWS service events are free; a forwarded event is a custom event at 1 USD per million, a handful
+# a year; SNS e-mail stays in the free tier).
+# Live proof: python3 tools/terraform/sec_alert_check.py (cases acm.*) runs test-event-pattern with sample ACM events
+# on both live rules (this region and us-east-1), and list-targets-by-rule shows the alerts topic here and this
+# region's default bus (forwarder role) in us-east-1. A caller cannot PutEvents with the reserved source aws.acm, so
+# an end-to-end e-mail needs a real ACM event.
+locals {
+  acm_expiry_pattern = jsonencode({
+    source = ["aws.acm"]
+    "$or" = [
+      {
+        "detail-type" = ["ACM Certificate Approaching Expiration"]
+        detail        = { DaysToExpiry = [for d in var.acm_expiry_alert_days : { numeric = ["=", d] }] }
+      },
+      { "detail-type" = ["ACM Certificate Renewal Action Required", "ACM Certificate Expired"] },
+    ]
+  })
+}
+
+resource "aws_cloudwatch_event_rule" "sec_acm_expiry" {
+  name          = "${local.sec_prefix}-acm-expiry"
+  description   = "ACM certificate not renewed, renewal action required or expired (this region, or forwarded from us-east-1). AA-1183.${local.runbook_suffix.cert_expiry}"
+  event_pattern = local.acm_expiry_pattern
+  tags          = merge(local.sec_tags, { Issue = "AA-1183" }, local.alert_tags.ticket) # AA-1171: ticket, about 30 days of lead time
+}
+
+resource "aws_cloudwatch_event_target" "sec_acm_expiry" {
+  rule      = aws_cloudwatch_event_rule.sec_acm_expiry.name
+  target_id = "alerts-sns"
+  arn       = aws_sns_topic.alerts.arn
+
+  # Scalars only. DaysToExpiry is absent from an Expired event (the placeholder is then empty).
+  input_transformer {
+    input_paths = {
+      type   = "$.detail-type"
+      name   = "$.detail.CommonName"
+      days   = "$.detail.DaysToExpiry"
+      region = "$.region"
+      cert   = "$.resources[0]"
+    }
+    input_template = "\"[aa-sec] acm_expiry: <type> for <name> in <region> (days to expiry: <days>, certificate <cert>). ACM did not renew it: check its DNS validation record (AA-1183).${local.runbook_suffix.cert_expiry}\""
+  }
+}
+
+resource "aws_cloudwatch_event_rule" "sec_acm_expiry_forward" {
+  provider      = aws.us_east_1
+  name          = "${local.sec_prefix}-acm-expiry-forward"
+  description   = "Forward ACM certificate expiry events of us-east-1 (CloudFront, Cognito custom domains) to ${var.aws_region}. AA-1183."
+  event_pattern = local.acm_expiry_pattern
+  tags          = merge(local.sec_tags, { Issue = "AA-1183" })
+}
+
+resource "aws_cloudwatch_event_target" "sec_acm_expiry_forward" {
+  provider  = aws.us_east_1
+  rule      = aws_cloudwatch_event_rule.sec_acm_expiry_forward.name
+  target_id = "${replace(var.aws_region, "-", "")}-default-bus"
+  arn       = "arn:aws:events:${var.aws_region}:${var.account_id}:event-bus/default"
+  role_arn  = aws_iam_role.sec_forwarder.arn
+}

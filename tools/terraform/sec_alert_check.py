@@ -10,8 +10,8 @@ Run (MFA profile, single-line AWS CLI underneath):
   python3 tools/terraform/sec_alert_check.py --skip-after-s256     # before the S256 iam_change widening is applied
 
 Rules checked (aa-sec-<env>-*): security-group-change, iam-change, root-activity, cloudtrail-tamper,
-access-analyzer-finding, AA-1022 sso-admin-signin-* (security_sso_signin.tf) (all in --region) and global-forward
-(us-east-1). Exit 1 if any check is wrong. --skip-sso skips the AA-1022 checks (before that change is applied).
+access-analyzer-finding, AA-1022 sso-admin-signin-* (security_sso_signin.tf), AA-1183 acm-expiry (all in --region)
+and global-forward, acm-expiry-forward (us-east-1). Exit 1 if any check is wrong. --skip-sso skips the AA-1022 checks (before that change is applied).
 
 AA-873 (S263) admin session digest (security_sso_session_digest.tf), both optional:
   --digest                      read-only: the Lambda is Active with its settings, the hourly schedule is ENABLED and
@@ -91,6 +91,42 @@ def finding_event(account: str, region: str, status: str) -> dict:
                                     "resourceType": "AWS::IAM::Role", "isPublic": False,
                                     "resource": f"arn:aws:iam::{account}:role/aa-sec-alert-test"},
     }
+
+
+def acm_event(account: str, region: str, detail_type: str, days: int | None) -> dict:
+    """An ACM certificate event as ACM sends it to EventBridge (AA-1183); an Expired event carries no DaysToExpiry."""
+    detail = {"CommonName": "aa-live-check.example.com"}
+    if days is not None:
+        detail["DaysToExpiry"] = days
+    return {
+        "version": "0", "id": "aa1183-live-check", "detail-type": detail_type, "source": "aws.acm",
+        "account": account, "time": "2026-11-27T00:00:00Z", "region": region,
+        "resources": [f"arn:aws:acm:{region}:{account}:certificate/00000000-0000-0000-0000-000000000000"],
+        "detail": detail,
+    }
+
+
+# AA-1183: the default of var.acm_expiry_alert_days (accounts/aa365/variables.tf); a test keeps the two equal.
+ACM_ALERT_DAYS = (30, 14, 7, 3, 1)
+
+
+def acm_cases(account: str, region: str, env: str) -> list:
+    """AA-1183 ACM expiry rule (this region) and its us-east-1 forward: same pattern, same outcomes."""
+    out = []
+    for rule, where in ((f"aa-sec-{env}-acm-expiry", region), (f"aa-sec-{env}-acm-expiry-forward", EAST)):
+        tag = "acm" if where == region else "acm-forward"
+        for d in ACM_ALERT_DAYS:
+            out.append((f"{tag}.approaching.{d}", rule, where,
+                        acm_event(account, where, "ACM Certificate Approaching Expiration", d), True))
+        for d in (29, 2):
+            out.append((f"{tag}.approaching.{d}", rule, where,
+                        acm_event(account, where, "ACM Certificate Approaching Expiration", d), False))
+        out.append((f"{tag}.renewal-action-required", rule, where,
+                    acm_event(account, where, "ACM Certificate Renewal Action Required", 15), True))
+        out.append((f"{tag}.expired", rule, where, acm_event(account, where, "ACM Certificate Expired", None), True))
+        out.append((f"{tag}.available", rule, where,
+                    acm_event(account, where, "ACM Certificate Available", 395), False))
+    return out
 
 
 def cases(account: str, region: str, env: str) -> list:
@@ -174,6 +210,7 @@ def cases(account: str, region: str, env: str) -> list:
     out.append(("forward.sso-admin", fwd, EAST, saml_event(account, EAST, admin_role), True))
     out.append(("forward.sso-aa-admin", fwd, EAST, saml_event(account, EAST, aa_role), True))
     out.append(("forward.sso-developer", fwd, EAST, saml_event(account, EAST, dev_role), False))
+    out.extend(acm_cases(account, region, env))
     return out
 
 
