@@ -334,30 +334,9 @@ resource "aws_security_group" "alb" {
   })
 }
 
-# ECS / Lambda
-resource "aws_security_group" "app" {
-  name        = "${local.name_prefix}-sg-app"
-  description = "App tier security group (ECS, Lambda)"
-  vpc_id      = aws_vpc.main.id
-
-  ingress {
-    from_port       = 0
-    to_port         = 0
-    protocol        = "-1"
-    security_groups = [aws_security_group.alb.id]
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = merge(var.tags, {
-    Name = "${local.name_prefix}-sg-app"
-  })
-}
+# The shared app tier group (aa-cis-dev-sg-app) is gone (AA-1185, S296): every caller has its own group since ADR
+# 0004b (X1 S13/S14, accounts/aa365/app_security_groups.tf); the last two network interfaces that still named it
+# belonged to the deleted Lambda aa-cis-dev-ingestion and were deleted by hand before this apply.
 
 # RDS
 resource "aws_security_group" "rds" {
@@ -365,8 +344,8 @@ resource "aws_security_group" "rds" {
   description = "RDS security group"
   vpc_id      = aws_vpc.main.id
 
-  # ADR 0004b (X1 S11): one source group per DB caller, from var.rds_ingress_sg_ids (null = the shared
-  # app group only, as before). Inline block = authoritative (no separate ingress-rule resources).
+  # ADR 0004b (X1 S11): one source group per DB caller, from var.rds_ingress_sg_ids (required since the shared
+  # app group was removed, AA-1185). Inline block = authoritative (no separate ingress-rule resources).
   # Provider behaviour (hashicorp/aws 5.100.0, vpc_security_group.go updateSecurityGroupRules, checked
   # S242): old and new inline rules are expanded to one rule per source before the set difference, so
   # growing this list only authorizes the new sources (no revoke of the app group, no gap) and shrinking
@@ -375,7 +354,7 @@ resource "aws_security_group" "rds" {
     from_port       = 5432
     to_port         = 5432
     protocol        = "tcp"
-    security_groups = var.rds_ingress_sg_ids != null ? var.rds_ingress_sg_ids : [aws_security_group.app.id]
+    security_groups = var.rds_ingress_sg_ids
   }
 
   tags = merge(var.tags, {
