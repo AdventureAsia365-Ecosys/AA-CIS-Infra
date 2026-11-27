@@ -17,8 +17,8 @@ the image the CIS api service runs now (roles, secret, logs, cpu/memory unchange
 api service's subnets with the security group `aa-cis-dev-sg-db-migrate`, container `migrate`, log stream
 `migrate/migrate/<task id>`; the last step deregisters the revision (`if: always()`).
 
-Two more DB Migrate modes (X1 S12): **`set-password`** (input `role`: `cis_app` or `db_migrator`,
-`owners.yaml` `password_roles`) sets the role's password from the DSN Nghiệp wrote in its secret: the
+Two more DB Migrate modes (X1 S12): **`set-password`** (input `role`: `cis_app`, `crm_app`, `db_migrator`
+or, since AA-1182, `tripplanner`; `owners.yaml` `password_roles`) sets the role's password from the DSN Nghiệp wrote in its secret: the
 task reads the secret itself, sends only a SCRAM-SHA-256 verifier, test-connects and marks the role
 `x1:password-set …` (plan XD2; nothing secret is logged). **`run-script`** (input `script`) runs a reviewed
 `db/scripts/<name>.py` as the master after the apply idle check: `db/scripts/README.md`.
