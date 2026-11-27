@@ -15,8 +15,12 @@ set, every row clearly synthetic (name prefix `SYNTHETIC S248`, written by two i
 - the commercial row of ONE catalog tour (`booking.trip_plans`, sellable, default channel b2b): the first
   `catalog.v_tour` row by `source_id` that has no trip plan yet, so no real commercial row is ever touched; a later
   run reuses the plan it created;
-- the plan's components (day 1: the room type and the service), the same rows `PUT .../components` writes, and the
-  plan's `updated_at` touched as the API does;
+- the plan's components (the room type on every night of the tour, days 1 .. duration - 1, and the service on day 1),
+  the same rows `PUT .../components` writes, and the plan's `updated_at` touched as the API does. A room on every night
+  is what the Booking can-operate check of a tailor-made B2B quote asks (AA-Booking `app/catalog/operability.py` rule
+  N1, AA-1149 B13): a plan with a hotel on day 1 only is refused 422 `invalid` for any tour longer than two days
+  (AA-1196: since AA-Booking #304 of 23/11 the CRM E2E AA line read "failed"). An earlier seed with the day-1 rows
+  only gets the missing nights added, nothing deleted;
 - two departures with 2 seats each (14 and 21 days ahead, or the next free 7-day offsets), `auto_confirm`, the rows the
   staff `POST .../departures` writes: the B2B departures route is read-only for the partner and the staff route needs
   a Cognito staff token, so the seed writes them;
@@ -57,7 +61,7 @@ import json
 import uuid
 from datetime import timedelta
 
-READ_ONLY = False
+READ_ONLY = True
 ACTION = "seed"  # "seed" or "cleanup"
 
 SCRIPT_NAME = "aa973_b2b_seed"
@@ -93,7 +97,7 @@ MIN_COVER_DAYS = 60    # an existing one is reused only while it covers today ..
 DEPARTURE_OFFSETS = (14, 21, 28, 35, 42, 49, 56)  # days ahead; all inside MIN_COVER_DAYS
 DEPARTURES_WANTED = 2
 DEPARTURE_CAPACITY = 2
-COMPONENT_DAY = 1
+COMPONENT_DAY = 1  # the service's day, and the first room night
 PLAN_NOTES = f"{TAG} seed (AA-973): Dev-only plan for the booking.b2b.v1 live check."
 
 CATALOG_ROLES = ("booking", "tripplanner")
@@ -351,6 +355,22 @@ def usable_contract(k: dict, today) -> bool:
             and k["valid_to"] >= today + timedelta(days=MIN_COVER_DAYS) and k["rates"] == 2)
 
 
+def room_nights(duration_days) -> int:
+    """The nights that need a room: 1 .. duration - 1 (AA-Booking operability N1; plan_span: days = the catalog length,
+    at least 1). A one-day or unknown length still gets the day-1 room, as the seed always had."""
+    try:
+        days = int(duration_days or 1)
+    except (TypeError, ValueError):
+        days = 1
+    return max(days - 1, 1)
+
+
+def wanted_components(room: str, service: str, duration_days) -> set:
+    """The seed plan's components: the room type on every night, the service on day 1."""
+    rooms = {(day, room, None) for day in range(COMPONENT_DAY, COMPONENT_DAY + room_nights(duration_days))}
+    return rooms | {(COMPONENT_DAY, None, service)}
+
+
 def seed_plan_row(state: dict, catalog: dict):
     """The seed plan to keep using: the first one whose tour is still in the catalog."""
     return next((p for p in state["plans"] if p["source_id"] in catalog["have"]), None)
@@ -436,13 +456,17 @@ def plan_seed(state: dict, catalog: dict, today, new_id=new_uuid) -> tuple:
         new_plan = False
     pid, touch = plan["id"], False
 
-    wanted = {(COMPONENT_DAY, room, None), (COMPONENT_DAY, None, service)}
+    tour = catalog["have"].get(plan["source_id"]) or (catalog["pick"] if new_plan else None) or {}
+    wanted = wanted_components(room, service, tour.get("duration_days"))
     have = {(c["day_no"], c["room_type_id"], c["service_id"]) for c in current}
     if have != wanted:
-        if current:
+        add = wanted
+        if have <= wanted:
+            add = wanted - have  # an earlier seed (day 1 only): add the missing nights, keep what is there
+        else:
             steps.append(Step("delete", "trip_plan_components", pid, DELETE_COMPONENTS_SQL, (pid,),
                               new=new_plan, rows=len(current)))
-        for day, room_id, service_id in sorted(wanted, key=lambda w: (w[0], w[1] or "", w[2] or "")):
+        for day, room_id, service_id in sorted(add, key=lambda w: (w[0], w[1] or "", w[2] or "")):
             steps.append(Step("insert", "trip_plan_components", pid, INSERT_COMPONENT_SQL,
                               (pid, day, room_id, service_id, MAKER), new=new_plan, day_no=day,
                               target="room_type" if room_id else "service"))

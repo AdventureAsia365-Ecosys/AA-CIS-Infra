@@ -170,6 +170,30 @@ class SeedPlanTest(unittest.TestCase):
                                         ("insert", "trip_plan_components"), ("touch", "trip_plans")])
         self.assertEqual({s.args[1:4] for s in steps[1:3]}, {(1, "rt1", None), (1, None, "sv1")})
 
+    def test_a_six_day_tour_gets_a_room_on_every_night(self):
+        # AA-1196: Booking's can-operate check (operability N1) refuses a tailor-made quote of a tour with a night
+        # without a room: a 6-day tour needs rooms on days 1..5.
+        six = {**CATALOG, "pick": {**CATALOG["pick"], "duration_days": 6}}
+        steps, _ = script.plan_seed(empty_state(), six, TODAY, ids())
+        comps = [s.args[1:4] for s in steps if s.table == "trip_plan_components"]
+        room = next(s.ident for s in steps if s.table == "hotel_room_types")
+        service = next(s.ident for s in steps if s.table == "services")
+        self.assertEqual(sorted(comps, key=lambda c: (c[0], c[1] or "", c[2] or "")),
+                         [(1, None, service), (1, room, None), (2, room, None), (3, room, None), (4, room, None),
+                          (5, room, None)])
+
+    def test_an_earlier_day_one_seed_gets_only_the_missing_nights(self):
+        six = {**CATALOG, "have": {"tour-b": {**CATALOG["pick"], "duration_days": 6}}}
+        steps, _ = script.plan_seed(complete_state(), six, TODAY, ids())
+        self.assertEqual(verbs(steps), [("insert", "trip_plan_components")] * 4 + [("touch", "trip_plans")])
+        self.assertEqual([s.args[1:4] for s in steps[:4]], [(d, "rt1", None) for d in (2, 3, 4, 5)])
+        done = complete_state(components={"p1": complete_state()["components"]["p1"] + [
+            {"day_no": d, "room_type_id": "rt1", "service_id": None} for d in (2, 3, 4, 5)]})
+        self.assertEqual(script.plan_seed(done, six, TODAY, ids())[0], [])
+
+    def test_room_nights(self):
+        self.assertEqual([script.room_nights(d) for d in (None, 0, 1, 2, 6, "8", "x")], [1, 1, 1, 1, 5, 7, 1])
+
     def test_after_cleanup_the_seed_reactivates_and_sells_again(self):
         retired = {"status": "inactive"}
         state = complete_state(
