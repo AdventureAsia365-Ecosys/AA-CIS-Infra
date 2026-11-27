@@ -22,6 +22,8 @@ import sec_alert_check as chk  # noqa: E402
 
 ARCHIVE = (AA365 / "security_access_analyzer_archive.tf").read_text(encoding="utf-8")
 BASELINE = (AA365 / "security_baseline.tf").read_text(encoding="utf-8")
+# AA-1185: the AWS Health rule lives with the account defaults; the live check covers it too.
+ACCOUNT_DEFAULTS = (AA365 / "security_account_defaults.tf").read_text(encoding="utf-8")
 TFVARS = (AA365 / "terraform.tfvars").read_text(encoding="utf-8")
 OIDC_REF = "aws_iam_openid_connect_provider.github_actions.arn"
 # AA-1004 P0: modules/environment (the environment stack, instantiated by accounts/aa365) holds app roles too; there
@@ -133,7 +135,8 @@ class IamChangeRuleTest(unittest.TestCase):
                 continue  # AA-1022 for_each rules of security_sso_signin.tf: test_aa1022_hardening.py
             with self.subTest(rule=rule):
                 # Any alignment terraform fmt picks (AA-1183 rules align on event_pattern).
-                self.assertRegex(BASELINE, rf'\n  name +\= "\$\{{local\.sec_prefix\}}-{re.escape(suffix)}"\n')
+                self.assertRegex(BASELINE + ACCOUNT_DEFAULTS,
+                                 rf'\n  name +\= "\$\{{local\.sec_prefix\}}-{re.escape(suffix)}"\n')
 
 
 if __name__ == "__main__":

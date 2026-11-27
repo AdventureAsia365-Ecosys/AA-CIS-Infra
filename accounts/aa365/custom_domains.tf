@@ -1,8 +1,9 @@
 # =============================================================================
 # AA-818 (S237, decision D5) — custom domains for AA-Booking and TripPlanner on lumiguides.it.com.
 #
-# Today AA-Booking is served on 9z3xnalp59.execute-api.../dev and TripPlanner on
-# 9vqkfbukvh.execute-api... + aa-tripplanner.vercel.app. ADR 0004 O2 fixed api-booking.; ADR 0006
+# Before AA-818 AA-Booking was served on its default execute-api .../dev URL and TripPlanner on its default
+# execute-api URL + aa-tripplanner.vercel.app; AA-1185 switched those default endpoints off (custom_domains_variables.tf
+# api_default_endpoints_disabled), so the hosts below are the only way in. ADR 0004 O2 fixed api-booking.; ADR 0006
 # decision 10 fixed auth. (EXTERNAL) and staff-auth. (WORKFORCE) for the Cognito custom domains.
 #
 # Two stages, because the zone (dns.tf, AA-811) is not served until Nghiep switches the

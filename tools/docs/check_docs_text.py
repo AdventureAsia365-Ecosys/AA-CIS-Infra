@@ -10,9 +10,9 @@ resource-ids    Literal AWS resource IDs in prose: sg-/subnet-/vpc-/... IDs, sta
                 12-digit account IDs, ARNs with an account, Cognito user-pool IDs, API Gateway
                 hostnames (docs/STYLE.md, "Resource IDs"). Scope: docs/** minus journals,
                 templates excepted, the onboarding account map and generated pages.
-                --mode warn (root and Infra, private) or --mode error (public repos).
-                --block vpc,apigw keeps those kinds failing in warn mode (Infra: no VPC
-                resource ID or API Gateway host in any page; ARNs and account IDs warn).
+                --mode error on the docs pages of every repo (all public, AA-1185); --mode warn
+                for agent files (.claude, skills) that only their owner rewrites.
+                --block KINDS keeps those kinds failing in warn mode.
                 Kinds: vpc, elb (a load balancer or target group id, app/<name>/<16 hex>;
                 AA-1118, S282 audit R26), arn, user-pool, apigw, account, mail (an e-mail address outside the
                 company and test domains, AA-1185).

@@ -85,16 +85,18 @@ jobs:
         if: ${{ !cancelled() }}
         run: python tools/docs/check_docs_text.py aws-multiline --all
 
-      # AA-1185 (S295 audit SA-40): the repo is public, so account IDs, ARNs with an account and user-pool IDs fail too
-      # in every page (write `{acc2}` or the account label); only load balancer ids still warn (the generator masks
-      # them). The agent files under .claude/ only warn: the tech lead rewrites them (agents do not edit them).
-      - name: Literal resource IDs (pages; everything but load balancer ids fails)
+      # AA-1185 (S295 audit SA-40; S296 error mode, as the root docs-lint): the repo is public, so every kind fails in
+      # every page (journals, the onboarding account map and generated pages excepted, tools/docs/docslib.py): account
+      # IDs, ARNs with an account, VPC and load balancer ids, API Gateway hosts, user-pool IDs and outside e-mail
+      # addresses. Write `{acc2}`, the account label, the resource name or a Terraform output. The agent files under
+      # .claude/ only warn: the tech lead rewrites them (agents do not edit them).
+      - name: Literal resource IDs (pages, error mode)
         if: ${{ !cancelled() }}
-        run: python tools/docs/check_docs_text.py resource-ids --mode warn --block vpc,apigw,arn,account,user-pool,mail $(git ls-files '*.md' ':!:.claude/**')
+        run: python tools/docs/check_docs_text.py resource-ids --mode error $(git ls-files '*.md' ':!:.claude/**')
 
       - name: Literal resource IDs (agent files, warn-only)
         if: ${{ !cancelled() }}
-        run: python tools/docs/check_docs_text.py resource-ids --scope .claude --mode warn --block vpc,apigw
+        run: python tools/docs/check_docs_text.py resource-ids --scope .claude --mode warn
 
       # The checkout has no .terraform or node_modules folders, so the glob only sees tracked pages.
       - name: Internal links (offline)

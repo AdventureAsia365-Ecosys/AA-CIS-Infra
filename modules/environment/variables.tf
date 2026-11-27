@@ -154,3 +154,8 @@ variable "alerts_topic_arn" {
   description = "Account alerts SNS topic (observability.tf aws_sns_topic.alerts); the in-app checks publish to it."
   type        = string
 }
+
+variable "execute_api_endpoint_disabled" {
+  description = "AA-1185: switch off the default execute-api endpoints of the Booking REST API and the TripPlanner HTTP API (accounts/aa365 api_default_endpoints_disabled, only while their custom domains exist). Clients use api-booking.<zone> and api-tripplanner.<zone>."
+  type        = bool
+}

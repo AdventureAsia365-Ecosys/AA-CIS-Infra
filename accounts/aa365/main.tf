@@ -410,6 +410,8 @@ module "api_gateway" {
   acm_cert_arn_us_east1    = var.acm_certificate_arn
   domain_name              = var.domain_name
   enable_execution_logging = true # AA-272 diagnostic only
+  # AA-1185: the default execute-api endpoint is off; clients use api-cis.<zone> (and the second CIS host).
+  disable_execute_api_endpoint = var.api_default_endpoints_disabled
 
   # AA-876 — throttling without the WAF (deferred per S241). Sized from 14 days of execution logs (21/10/2026):
   # busiest second per method — /content 100, other /auth 20, the two login routes 6. Stage default 50/100 per

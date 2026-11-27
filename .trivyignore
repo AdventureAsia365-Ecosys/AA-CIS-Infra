@@ -1,15 +1,12 @@
-# Trivy findings accepted for now in images this repo owns (third-party images pinned by digest in Terraform, e.g. the
-# WordPress test sidecar). The nightly Image Scan (running images) accepts a finding only with a row in the root
-# exception register docs/security/vuln-exceptions.toml (repo AA-CIS-Infra, source trivy); this file mirrors those rows
-# with the same expiry so the monthly triage can cross-check them (root SEC-03). The nightly gate never reads this file:
+# Trivy findings accepted for now in images this repo owns (third-party images pinned by digest in Terraform). The
+# nightly Image Scan (running images) accepts a finding only with a row in the root exception register
+# docs/security/vuln-exceptions.toml (repo AA-CIS-Infra, source trivy); this file mirrors those rows with the same
+# expiry so the monthly triage can cross-check them (root SEC-03). The nightly gate never reads this file:
 # tools/security/image_scan.py passes an empty --ignorefile to every Trivy call, since an entry here has no repo scope
 # and would hide the CVE in every running image, not only the ones this repo owns. Format:
 #
 #   # <reason: why it is safe for now, and what removes it>
 #   CVE-YYYY-NNNNN exp:YYYY-MM-DD
-
-# S294: libzstd1 in the WordPress test sidecar (wordpress:7.1.5-php8.4-apache, digest of 24/11, built before the Debian
-# fix 1.5.7+dfsg-1+deb13u1; no rebuilt digest upstream on 25/11). Test site only, no customer data. Remove when
-# test_wp_image moves to a digest with the fixed package, or (AA-1185, test site off) once the Infra apply and the next
-# Booking admin deploy leave the Booking admin task with one container (describe-tasks), together with the root row.
-CVE-2026-124851 exp:2026-12-02
+#
+# No entry today. AA-1185 (S296): the WordPress test sidecar no longer runs (the Booking admin task has one container
+# since the S295 sweep), so its libzstd1 exception and the matching root register row were removed.

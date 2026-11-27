@@ -94,3 +94,8 @@ variable "content_throttle_burst_limit" {
   type        = number
   default     = null
 }
+
+variable "disable_execute_api_endpoint" {
+  description = "AA-1185: switch off the default execute-api endpoint of this REST API (clients use the custom domain only). Part of the deployment trigger hash: the setting takes effect only when the stage is updated."
+  type        = bool
+}

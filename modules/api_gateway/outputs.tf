@@ -4,7 +4,7 @@ output "api_gateway_id" {
 }
 
 output "api_gateway_url" {
-  description = "Invoke URL of the deployed stage"
+  description = "Default execute-api URL of the deployed stage. AA-1185: answers 403 while disable_execute_api_endpoint is set; clients use the custom domain."
   value       = "https://${aws_api_gateway_rest_api.this.id}.execute-api.${var.aws_region}.amazonaws.com/${var.environment}"
 }
 
