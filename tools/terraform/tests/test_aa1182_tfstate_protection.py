@@ -7,8 +7,10 @@ and the narrowed CIS ECS task role.
    never a Terraform resource (it holds this root's state), and every managed piece is prevent_destroy.
 2. modules/environment/tripplanner.tf: the artifacts bucket is TLS only and only its deployers write code there.
 3. modules/ecs/main.tf: no Allow on "*" for S3, Secrets Manager reads, SQS, CloudWatch Logs writes or Bedrock invoke;
-   the S3 grant names the bronze and gold buckets only; the runtime secret list never names the master or migrator
-   DSN; the S18/S19 Deny statement is untouched.
+   the named grants sit in a customer managed policy (the role's inline policies share one 10,240-character limit and
+   were already near it), so the role keeps exactly its eleven inline policies and the managed policy stays inside a
+   size budget; the S3 grant is the bronze bucket plus the gold tenant backup prefix; the runtime secret list never
+   names the master or migrator DSN; the S18/S19 Deny statement is untouched.
 
 Run: python3 -m pytest -q tools/terraform/tests/test_aa1182_tfstate_protection.py
 """
@@ -27,6 +29,7 @@ ROOT_MAIN = (AA365 / "main.tf").read_text(encoding="utf-8")
 TP_TF = (ROOT / "modules" / "environment" / "tripplanner.tf").read_text(encoding="utf-8")
 ECS_MAIN = (ROOT / "modules" / "ecs" / "main.tf").read_text(encoding="utf-8")
 ECS_VARS = (ROOT / "modules" / "ecs" / "variables.tf").read_text(encoding="utf-8")
+MGMT_README = (ROOT / "accounts" / "management" / "README.md").read_text(encoding="utf-8")
 
 
 def _policy_document(text: str, name: str) -> str:
@@ -120,6 +123,19 @@ class StateBucketPolicyTest(unittest.TestCase):
         var_block = _block_after(TFSTATE, TFSTATE.index('variable "tfstate_admin_sso_permission_sets"'))
         self.assertNotIn("AdministratorAccess", _list_after(var_block, "default"))
 
+    def test_org_break_glass_role_is_an_admin_once_enabled(self):
+        # After the move the company admin enters through OrganizationAccountAccessRole (org_access.tf); without it
+        # that path could neither read state nor repair this policy. Gated so a reseller-owned role of that name is
+        # never trusted before the move.
+        admin = TFSTATE[TFSTATE.index("tfstate_admin_principal_arns = concat("):]
+        admin = admin[: admin.index("\n  )") + 4]
+        self.assertIn(
+            'var.org_access_role_enabled ? ["arn:aws:iam::${var.account_id}:role/${var.org_access_role_name}"] : []',
+            admin,
+        )
+        # Only an admin may write this policy, so the local apply that creates the role also updates it.
+        self.assertIn("-target=aws_s3_bucket_policy.tfstate", MGMT_README)
+
     def test_versioning_and_public_access_block_are_imported_not_created(self):
         for res in ("aws_s3_bucket_versioning", "aws_s3_bucket_public_access_block"):
             with self.subTest(resource=res):
@@ -162,10 +178,58 @@ class ArtifactsBucketPolicyTest(unittest.TestCase):
         self.assertIn("var.identity_breakglass_admin_role_name", writers)
 
 
+TASK_ROLE_INLINE_POLICIES = {
+    # modules/ecs/main.tf
+    "ecs_task_policy", "ecs_task_exec_logging", "ecs_task_tripplanner_custom_domain", "ecs_task_infra_status_readonly",
+    # accounts/aa365
+    "cis_ecs_task_workforce_directory", "cis_ecs_task_ses_send", "cis_ecs_task_partner_pool_read",
+    "ecs_read_compliance_evidence", "ecs_assume_bedrock_invoker", "cis_ecs_task_alert_recipients",
+    "ecs_assume_cost_explorer_reader",
+}
+
+# Offline render of the eleven inline policies on main 27/11/2026 (lane notes, docs/implementation-notes/AA-1182.md):
+# about 9.8k of the 10,240 characters IAM allows for all inline policies of a role together, once the old "*" statement
+# is gone. Placeholder values below have the live lengths (12-digit account, real bucket and secret name shapes).
+MANAGED_POLICY_LIMIT = 6144
+MANAGED_POLICY_BUDGET = 4500  # leaves room for about fifteen more secret names or providers before the limit
+
+
+def _render_data_access_policy() -> str:
+    """Minified JSON of ecs_task_data_access with the module defaults and live-length placeholders."""
+    import json
+
+    account, region = "123456789012", "us-west-1"
+    names = re.findall(r'"([a-z0-9-]+)",\s*#', _block_after(ECS_VARS, ECS_VARS.index('variable "runtime_secret_names"')))
+    prov_block = _block_after(ECS_VARS, ECS_VARS.index('variable "bedrock_invoke_providers"'))
+    providers = re.findall(r'"([a-z0-9-]+)"', _list_after(prov_block, "default"))
+    sm = f"arn:aws:secretsmanager:{region}:{account}:secret:"
+    bronze, gold = f"aa-cis-bronze-{account}", f"aa-cis-gold-{account}"
+    supply = f"aa-booking-dev-supply-media-{account}"
+    statements = [
+        {"Sid": "CisBronzeObjectReadWrite", "Effect": "Allow", "Action": ["s3:PutObject", "s3:GetObject"],
+         "Resource": f"arn:aws:s3:::{bronze}/*"},
+        {"Sid": "CisGoldTenantBackupReadWrite", "Effect": "Allow", "Action": ["s3:PutObject", "s3:GetObject"],
+         "Resource": f"arn:aws:s3:::{gold}/exports/tenants/*"},
+        {"Sid": "CisBucketList", "Effect": "Allow", "Action": "s3:ListBucket",
+         "Resource": [f"arn:aws:s3:::{bronze}", f"arn:aws:s3:::{gold}"]},
+        {"Sid": "ReadCisRuntimeSecrets", "Effect": "Allow", "Action": "secretsmanager:GetSecretValue",
+         "Resource": [f"{sm}aa-cis/dev/{n}-??????" for n in names]
+         + [f"{sm}aa-llm/dev/*", f"{sm}acp/cms/*", f"{sm}acp/social/*"]},
+        {"Sid": "BedrockInvokeOwnAccountModels", "Effect": "Allow",
+         "Action": ["bedrock:InvokeModelWithResponseStream", "bedrock:InvokeModel"],
+         "Resource": [a for p in providers for a in (f"arn:aws:bedrock:*::foundation-model/{p}.*",
+                                                    f"arn:aws:bedrock:*:{account}:inference-profile/*.{p}.*")]},
+        {"Sid": "ReadBookingSupplyMedia", "Effect": "Allow", "Action": "s3:GetObject",
+         "Resource": f"arn:aws:s3:::{supply}/*"},
+    ]
+    return json.dumps({"Version": "2012-10-17", "Statement": statements}, separators=(",", ":"))
+
+
 class CisTaskRoleNarrowTest(unittest.TestCase):
     def setUp(self):
         start = ECS_MAIN.index('resource "aws_iam_role_policy" "ecs_task_policy"')
         self.policy = _block_after(ECS_MAIN, start)
+        self.managed = _policy_document(ECS_MAIN, "ecs_task_data_access")
 
     def _allow_statements(self):
         """(actions text, resource text) of every Allow object in the policy's jsonencode body."""
@@ -182,21 +246,66 @@ class CisTaskRoleNarrowTest(unittest.TestCase):
                 for action in risky:
                     with self.subTest(block=block[:60], action=action):
                         self.assertNotIn(f'"{action}', block)
+        self.assertNotRegex(self.managed, r'resources\s*=\s*\["\*"\]')
 
     def test_sqs_and_log_writes_are_gone(self):
         self.assertNotIn('"sqs:', self.policy)
         self.assertNotIn('"logs:CreateLogGroup"', self.policy)
         self.assertNotIn('"logs:PutLogEvents"', self.policy)
 
-    def test_s3_grant_is_bronze_and_gold_only(self):
-        self.assertRegex(ECS_MAIN, r"cis_rw_buckets\s*=\s*\[var\.bronze_bucket_name, var\.gold_bucket_name\]")
-        for sid in ("CisBucketObjectReadWrite", "CisBucketList"):
+    def test_named_grants_are_a_managed_policy_attached_before_the_narrowing(self):
+        self.assertRegex(ECS_MAIN, r'resource "aws_iam_policy" "ecs_task_data_access"')
+        attach = _block_after(ECS_MAIN, ECS_MAIN.index('resource "aws_iam_role_policy_attachment" "ecs_task_data_access"'))
+        self.assertIn("aws_iam_role.ecs_task.name", attach)
+        self.assertIn("aws_iam_policy.ecs_task_data_access.arn", attach)
+        # The inline policy narrows only once the attachment exists (a CI apply before the bootstrap apply fails on
+        # CreatePolicy and leaves the old grants in place).
+        self.assertRegex(self.policy, r"depends_on\s*=\s*\[aws_iam_role_policy_attachment\.ecs_task_data_access\]")
+        for sid in ("CisBronzeObjectReadWrite", "ReadCisRuntimeSecrets", "BedrockInvokeOwnAccountModels"):
             with self.subTest(sid=sid):
-                self.assertIn("local.cis_rw_buckets", _statement(self.policy, sid))
+                self.assertNotIn(f'"{sid}"', self.policy)
+
+    def test_task_role_keeps_its_eleven_inline_policies(self):
+        # Every inline policy of a role shares one 10,240-character limit and these eleven already render to about
+        # 9.8k: a new grant for the CIS task role goes into ecs_task_data_access (or another managed policy), never
+        # into a new inline policy. A plan does not check the limit; PutRolePolicy fails at apply.
+        found = set()
+        for path in [ROOT / "modules" / "ecs" / "main.tf", *sorted(AA365.glob("*.tf"))]:
+            text = path.read_text(encoding="utf-8")
+            for m in re.finditer(r'resource "aws_iam_role_policy" "([^"]+)"', text):
+                block = _block_after(text, m.start())
+                if re.search(r"role\s*=\s*(aws_iam_role\.ecs_task\.(id|name)|module\.ecs\.task_role_name)\b", block):
+                    found.add(m.group(1))
+        self.assertEqual(found, TASK_ROLE_INLINE_POLICIES)
+
+    def test_managed_policy_stays_inside_its_size_budget(self):
+        size = len(_render_data_access_policy())
+        self.assertLess(MANAGED_POLICY_BUDGET, MANAGED_POLICY_LIMIT)
+        self.assertLessEqual(size, MANAGED_POLICY_BUDGET, f"ecs_task_data_access renders to about {size} characters")
+
+    def test_render_covers_every_statement(self):
+        rendered = _render_data_access_policy()
+        for sid in re.findall(r'sid\s*=\s*"([A-Za-z]+)"', self.managed):
+            with self.subTest(sid=sid):
+                self.assertIn(f'"Sid":"{sid}"', rendered)
+
+    def test_s3_grant_is_bronze_and_the_gold_backup_prefix_only(self):
+        bronze = _statement(self.managed, "CisBronzeObjectReadWrite")
+        self.assertIn('"arn:aws:s3:::${var.bronze_bucket_name}/*"', bronze)
+        gold = _statement(self.managed, "CisGoldTenantBackupReadWrite")
+        self.assertIn('"arn:aws:s3:::${var.gold_bucket_name}/${local.cis_gold_backup_prefix}*"', gold)
+        self.assertRegex(ECS_MAIN, r'cis_gold_backup_prefix\s*=\s*"exports/tenants/"')
+        self.assertNotIn('"arn:aws:s3:::${var.gold_bucket_name}/*"', ECS_MAIN)
+        listing = _statement(self.managed, "CisBucketList")
+        self.assertIn('"s3:ListBucket"', listing)
+        self.assertEqual(sorted(re.findall(r'"arn:aws:s3:::([^"]+)"', listing)),
+                         ["${var.bronze_bucket_name}", "${var.gold_bucket_name}"])
+        supply = _statement(self.managed, "ReadBookingSupplyMedia")
+        self.assertIn('actions   = ["s3:GetObject"]', supply)
         self.assertIn("gold_bucket_name                 = module.s3.gold_bucket_name", ROOT_MAIN)
 
     def test_secret_reads_are_named(self):
-        stmt = _statement(self.policy, "ReadCisRuntimeSecrets")
+        stmt = _statement(self.managed, "ReadCisRuntimeSecrets")
         self.assertIn("local.cis_runtime_secret_arns", stmt)
         var_block = _block_after(ECS_VARS, ECS_VARS.index('variable "runtime_secret_names"'))
         names = re.findall(r'"([a-z0-9-]+)",\s*#', var_block)
@@ -212,7 +321,7 @@ class CisTaskRoleNarrowTest(unittest.TestCase):
                 self.assertIn(want, arns)
 
     def test_bedrock_invoke_is_per_provider(self):
-        stmt = _statement(self.policy, "BedrockInvokeOwnAccountModels")
+        stmt = _statement(self.managed, "BedrockInvokeOwnAccountModels")
         self.assertIn("local.cis_bedrock_invoke_arns", stmt)
         self.assertIn('"arn:aws:bedrock:*::foundation-model/${p}.*"', ECS_MAIN)
         self.assertIn("inference-profile/*.${p}.*", ECS_MAIN)

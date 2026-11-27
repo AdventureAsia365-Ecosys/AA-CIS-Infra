@@ -384,11 +384,12 @@ variable "photos_cdn_distribution_arn" {
   default     = ""
 }
 
-# ── AA-1182 (S296, S295 security audit SA-05 + SA-66): the task role's S3, Secrets Manager and Bedrock grants name what
-# the CIS code calls instead of "*". Each list below is the inventory in docs/implementation-notes/AA-1182.md (code path
-# per entry); a new bucket, secret or Bedrock provider the CIS code starts to use needs a line here first.
+# ── AA-1182 (S296, S295 security audit SA-05 + SA-66): the task role's S3, Secrets Manager and Bedrock grants
+# (ecs_task_data_access, a customer managed policy) name what the CIS code calls instead of "*". Each list below is the
+# inventory in docs/implementation-notes/AA-1182.md (code path per entry); a new bucket, secret or Bedrock provider the
+# CIS code starts to use needs a line here first, applied locally with the MFA admin profile (bootstrap object).
 variable "gold_bucket_name" {
-  description = "AA-1182: the CIS gold bucket (modules/s3), read and written by the tenant backup store (AA-CIS-App services/tenant_backup/store.py). The task role's S3 object grant covers exactly the bronze and this bucket."
+  description = "AA-1182: the CIS gold bucket (modules/s3). The task role reads and writes only its tenant backup prefix exports/tenants/ (AA-CIS-App services/tenant_backup/store.py) and may list it; published-tour and webhook objects stay out of reach."
   type        = string
 }
 

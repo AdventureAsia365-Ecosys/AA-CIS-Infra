@@ -8,10 +8,9 @@ data "aws_caller_identity" "current" {}
 locals {
   name_prefix = "${var.project}-${var.environment}"
 
-  # AA-1182: what the task role's S3, Secrets Manager and Bedrock statements name (ecs_task_policy). The account comes
+  # AA-1182: what the task role's Secrets Manager and Bedrock grants name (ecs_task_data_access). The account comes
   # from the caller identity, so no new account ID is written here.
   task_account_id = data.aws_caller_identity.current.account_id
-  cis_rw_buckets  = [var.bronze_bucket_name, var.gold_bucket_name]
   cis_runtime_secret_arns = concat(
     [for n in var.runtime_secret_names : "arn:aws:secretsmanager:${var.aws_region}:${local.task_account_id}:secret:${var.project}/${var.environment}/${n}-??????"],
     [
@@ -327,42 +326,13 @@ resource "aws_iam_role_policy" "ecs_task_policy" {
     Version = "2012-10-17"
     Statement = concat([
       # AA-1182 (S296, least privilege for the task role; background in Linear): the first statement of this policy
-      # used to grant S3, Secrets Manager reads, SQS, CloudWatch Logs writes and Bedrock invoke on "*". It is split by
-      # what the code calls (inventory with the code path per grant: docs/implementation-notes/AA-1182.md):
-      #   - S3: the CIS bronze and gold buckets only (photos, uploads, docs/learn/ERD reads, retention archive, eval
-      #     fixtures, tenant backups); the Booking supply-media read is its own statement; the compliance evidence read
-      #     lives in accounts/aa365/compliance_evidence.tf.
-      #   - Secrets: the names in var.runtime_secret_names, the LLM gateway's aa-llm/<env>/* and the tenant channel
-      #     credentials acp/cms/* + acp/social/* (written by the two statements after this group).
-      #   - Bedrock: the providers in var.bedrock_invoke_providers on this account.
-      #   - SQS and CloudWatch Logs writes are gone: no ECS code path sends or receives SQS messages (the DLQ classifier
-      #     is a Lambda), the awslogs driver writes with the execution role and ECS Exec session logs have their own
-      #     policy (ecs_task_exec_logging).
-      # The explicit Denies below stay as they are (S18/S19 master / migrator DSNs, other owners' prefixes).
-      {
-        Sid      = "CisBucketObjectReadWrite"
-        Effect   = "Allow"
-        Action   = ["s3:GetObject", "s3:PutObject"]
-        Resource = [for b in local.cis_rw_buckets : "arn:aws:s3:::${b}/*"]
-      },
-      {
-        Sid      = "CisBucketList"
-        Effect   = "Allow"
-        Action   = ["s3:ListBucket"]
-        Resource = [for b in local.cis_rw_buckets : "arn:aws:s3:::${b}"]
-      },
-      {
-        Sid      = "ReadCisRuntimeSecrets"
-        Effect   = "Allow"
-        Action   = ["secretsmanager:GetSecretValue"]
-        Resource = local.cis_runtime_secret_arns
-      },
-      {
-        Sid      = "BedrockInvokeOwnAccountModels"
-        Effect   = "Allow"
-        Action   = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"]
-        Resource = local.cis_bedrock_invoke_arns
-      },
+      # used to grant S3, Secrets Manager reads, SQS, CloudWatch Logs writes and Bedrock invoke on "*". The named grants
+      # that replace it live in the customer managed policy ecs_task_data_access below, not here: all inline policies
+      # of a role share one 10,240-character limit, and this role's eleven inline policies already render to about
+      # 9.8k without that statement. SQS and CloudWatch Logs writes are gone (no ECS code path uses them; the awslogs
+      # driver writes with the execution role, ECS Exec session logs have their own policy, ecs_task_exec_logging).
+      # The explicit Denies below stay as they are and still win over the managed policy's Allows (S18/S19 master /
+      # migrator DSNs, other owners' prefixes).
       # S263 (AA-1025): the AA-380 PutMetricData grant on namespace "acp" is gone; its only emitter
       # (AA-CIS-App services/acp_produce/metrics.py) had no caller and was deleted.
       # AA-459 — the first runtime-WRITE Secrets Manager use in this codebase (every prior
@@ -521,19 +491,99 @@ resource "aws_iam_role_policy" "ecs_task_policy" {
           Action   = ["cloudfront:CreateInvalidation"]
           Resource = var.photos_cdn_distribution_arn
         }
-      ],
-      # AA-1182: CIS reads Booking's supplier photos to build its WebP copies (AA-CIS-App services/supply_content/
-      # photos.py). The Booking bucket policy grants the same read and denies every CIS write (booking_media.tf); this
-      # names the read on the identity side now that the S3 grant is no longer "*".
-      var.booking_supply_media_bucket_name == "" ? [] : [
-        {
-          Sid      = "ReadBookingSupplyMedia"
-          Effect   = "Allow"
-          Action   = ["s3:GetObject"]
-          Resource = "arn:aws:s3:::${var.booking_supply_media_bucket_name}/*"
-        }
     ])
   })
+
+  # AA-1182: narrow only after the named grants are attached. If the managed policy cannot be created (CI apply before
+  # the bootstrap apply: the apply role has no iam:CreatePolicy), the attachment fails and this policy keeps its old
+  # body, so the CIS tasks never run without their S3, Secrets Manager and Bedrock grants.
+  depends_on = [aws_iam_role_policy_attachment.ecs_task_data_access]
+}
+
+# ── AA-1182 (S296, S295 security audit SA-05 + SA-66): the CIS task role's data grants, named ─────────────────────────
+# What the CIS code calls instead of the old S3 / GetSecretValue / Bedrock invoke on "*" (inventory with the code path
+# per grant: docs/implementation-notes/AA-1182.md):
+#   - S3: the bronze bucket (photos, uploads, docs/learn/ERD reads, retention archive, eval fixtures, batch inputs) and,
+#     in the gold bucket, only the tenant backup prefix exports/tenants/ (AA-CIS-App services/tenant_backup/store.py,
+#     catalogue.object_prefix); the gold bucket's published-tour and webhook objects are out of reach. ListBucket on
+#     gold has no s3:prefix condition on purpose: S3 answers a GET/HEAD of a missing key with 404 only when the caller
+#     may list the bucket, and that check carries no prefix, so a condition would turn the restore drill's
+#     "object_missing" answer into AccessDenied. A listing returns key names only;
+#   - the Booking supply-media read (AA-CIS-App services/supply_content/photos.py; the Booking bucket policy grants the
+#     same read and denies every CIS write, booking_media.tf);
+#   - Secrets: the names in var.runtime_secret_names, the LLM gateway's aa-llm/<env>/* and the tenant channel
+#     credentials acp/cms/* + acp/social/* (written by ecs_task_policy);
+#   - Bedrock: the providers in var.bedrock_invoke_providers on this account.
+# The compliance evidence read lives in accounts/aa365/compliance_evidence.tf.
+#
+# Why a customer managed policy (6,144 characters of its own) and not inline statements: the eleven inline policies of
+# this role share one 10,240-character limit and render to about 9.8k without these grants (offline render 27/11/2026,
+# lane notes); these grants (about 2.3k) would fail PutRolePolicy with LimitExceeded at apply, which a plan does not
+# check. Guard: tools/terraform/tests/test_aa1182_tfstate_protection.py (no new inline policy on this role, policy size
+# budget).
+#
+# BOOTSTRAP OBJECT: the CI apply role has no iam:CreatePolicy / CreatePolicyVersion (cicd_crm.tf, cicd_sec.tf), so the
+# policy is created, and later changed, by a local apply with the MFA admin profile (aa365-admin) from an up-to-date
+# main checkout of accounts/aa365, BEFORE the CI apply of the change:
+#   terraform plan / apply -target=module.ecs.aws_iam_policy.ecs_task_data_access
+# The CI apply then attaches it (the task role carries the workload boundary, so AttachRolePolicy is allowed) and only
+# after that narrows ecs_task_policy (depends_on above). Cost: 0 USD (IAM).
+locals {
+  cis_gold_backup_prefix = "exports/tenants/"
+}
+
+data "aws_iam_policy_document" "ecs_task_data_access" {
+  statement {
+    sid       = "CisBronzeObjectReadWrite"
+    actions   = ["s3:GetObject", "s3:PutObject"]
+    resources = ["arn:aws:s3:::${var.bronze_bucket_name}/*"]
+  }
+
+  statement {
+    sid       = "CisGoldTenantBackupReadWrite"
+    actions   = ["s3:GetObject", "s3:PutObject"]
+    resources = ["arn:aws:s3:::${var.gold_bucket_name}/${local.cis_gold_backup_prefix}*"]
+  }
+
+  statement {
+    sid       = "CisBucketList"
+    actions   = ["s3:ListBucket"]
+    resources = ["arn:aws:s3:::${var.bronze_bucket_name}", "arn:aws:s3:::${var.gold_bucket_name}"]
+  }
+
+  statement {
+    sid       = "ReadCisRuntimeSecrets"
+    actions   = ["secretsmanager:GetSecretValue"]
+    resources = local.cis_runtime_secret_arns
+  }
+
+  statement {
+    sid       = "BedrockInvokeOwnAccountModels"
+    actions   = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"]
+    resources = local.cis_bedrock_invoke_arns
+  }
+
+  dynamic "statement" {
+    for_each = var.booking_supply_media_bucket_name == "" ? [] : [var.booking_supply_media_bucket_name]
+    content {
+      sid       = "ReadBookingSupplyMedia"
+      actions   = ["s3:GetObject"]
+      resources = ["arn:aws:s3:::${statement.value}/*"]
+    }
+  }
+}
+
+resource "aws_iam_policy" "ecs_task_data_access" {
+  name        = "${local.name_prefix}-ecs-task-data-access"
+  description = "AA-1182: named S3, Secrets Manager and Bedrock grants of the CIS ECS task role. Local MFA apply only."
+  policy      = data.aws_iam_policy_document.ecs_task_data_access.json
+
+  tags = merge(var.tags, { Component = "security" }) # S271 tagging standard (FIN-03)
+}
+
+resource "aws_iam_role_policy_attachment" "ecs_task_data_access" {
+  role       = aws_iam_role.ecs_task.name
+  policy_arn = aws_iam_policy.ecs_task_data_access.arn
 }
 
 # AA-1090 R8 — the agency-domain job of the TripPlanner web (AA-CIS-App services/tenant_account/tp_edge.py). Least
