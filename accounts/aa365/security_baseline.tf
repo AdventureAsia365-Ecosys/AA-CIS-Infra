@@ -338,7 +338,7 @@ resource "aws_cloudwatch_event_target" "sec_root_forward_usw2" {
 
 # ── 5. ACM certificate expiry (AA-1183 part 1, S296) ────────────────────────
 # ACM renews its own DNS-validated certificates about 60 days before expiry. It sends an "ACM Certificate Approaching
-# Expiration" event (daily, from 30 days before expiry for a public certificate) only when that has not happened, a
+# Expiration" event (daily, from 45 days before expiry by default) only when that has not happened, a
 # "Renewal Action Required" event when a renewal attempt failed, and an "Expired" event when it is too late. Every
 # Dev hostname depends on one: the API custom domains and the ALB listener in this region, the CloudFront and Cognito
 # custom domains in us-east-1, whose events stay on that region's bus: a us-east-1 rule forwards them here through the

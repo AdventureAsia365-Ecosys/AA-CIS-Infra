@@ -335,15 +335,15 @@ variable "tf_apply_require_boundary_on_role_policy_writes" {
 }
 
 # AA-1183 (S296): the days before expiry on which an "ACM Certificate Approaching Expiration" event alerts
-# (security_baseline.tf section 5). ACM emits the event daily from 30 days before expiry for a public certificate, so
-# a day above 30 never matches. Infra setting (Terraform variable), not an app admin setting: see the PR follow-up.
+# (security_baseline.tf section 5). ACM emits the event daily from 45 days before expiry by default (account setting
+# DaysBeforeExpiry, 1-45), so a day above 45 never matches. Infra setting (Terraform variable), not an app admin setting: see the PR follow-up.
 variable "acm_expiry_alert_days" {
   description = "Days before an ACM certificate expires on which the approaching-expiration event alerts (AA-1183)."
   type        = list(number)
   default     = [30, 14, 7, 3, 1]
 
   validation {
-    condition     = length(var.acm_expiry_alert_days) > 0 && alltrue([for d in var.acm_expiry_alert_days : d >= 1 && d <= 30 && floor(d) == d])
-    error_message = "acm_expiry_alert_days must list whole days between 1 and 30 (ACM emits the event from 30 days before expiry)."
+    condition     = length(var.acm_expiry_alert_days) > 0 && alltrue([for d in var.acm_expiry_alert_days : d >= 1 && d <= 45 && floor(d) == d])
+    error_message = "acm_expiry_alert_days must list whole days between 1 and 45 (ACM emits the event from 45 days before expiry by default)."
   }
 }

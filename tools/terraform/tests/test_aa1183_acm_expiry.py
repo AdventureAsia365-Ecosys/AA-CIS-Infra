@@ -131,7 +131,7 @@ class PatternTest(unittest.TestCase):
         self.assertEqual(tuple(_default_days()), chk.ACM_ALERT_DAYS)
         block = VARS.split('variable "acm_expiry_alert_days" {', 1)[1].split("\n}\n", 1)[0]
         self.assertIn("type        = list(number)", block)
-        self.assertIn("d >= 1 && d <= 30", block)
+        self.assertIn("d >= 1 && d <= 45", block)
 
     def test_live_check_cases_match_the_pattern(self):
         pattern = _pattern()
