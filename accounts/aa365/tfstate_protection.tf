@@ -9,12 +9,14 @@
 #       DenyInsecureTransport               every request without TLS, from anyone;
 #       DenyStateAccessOutsideTerraform     every S3 action but the bucket configuration reads, unless the caller is
 #                                           the CI plan role, the CI apply role or the MFA admin role (or the
-#                                           Identity Center permission sets in var.tfstate_admin_sso_permission_sets);
+#                                           Identity Center permission sets in var.tfstate_admin_sso_permission_sets,
+#                                           or the organization break-glass role once org_access.tf is on);
 #                                           S3 native locking (use_lockfile) writes <key>.tflock in this bucket, so the
 #                                           lock is covered by the same statement;
 #       DenyPlanRoleWritesExceptLockfile    the plan role (assumed from any PR branch) writes and deletes only *.tflock;
 #       DenyHistoryAndConfigChangesOutsideAdmin
-#                                           only the MFA admin (or the listed permission sets) deletes an object
+#                                           only the MFA admin (or the listed permission sets, or the organization
+#                                           break-glass role) deletes an object
 #                                           version or changes the bucket's policy, versioning, public access,
 #                                           encryption, lifecycle or replication. The CI apply role can therefore
 #                                           create this policy (first apply) but not change it afterwards: a later
@@ -48,11 +50,18 @@ locals {
   tfstate_bucket     = "aa-cis-tfstate-${var.account_id}"
   tfstate_bucket_arn = "arn:aws:s3:::${local.tfstate_bucket}"
 
-  # Who counts as the MFA admin here: the tech lead's MFA role (admin_role.tf) and the company Identity Center
-  # permission sets. The path of an Identity Center role is aws-reserved/sso.amazonaws.com/[<region>/].
+  # Who counts as the MFA admin here: the tech lead's MFA role (admin_role.tf), the company Identity Center
+  # permission sets (the path of an Identity Center role is aws-reserved/sso.amazonaws.com/[<region>/]) and, once
+  # org_access.tf is on, the organization's break-glass role (OrganizationAccountAccessRole): after the move the
+  # company admin reaches this account through that role (Identity Center AA-Admin in the management account ->
+  # aa-org-member-access -> this role), not through an AWSReservedSSO role here. Gated on org_access_role_enabled so
+  # a role a reseller may own under that name today is never trusted. The ARN is built from the name (no graph edge
+  # to the role). Enabling it changes this bucket policy, which only an admin may write: the management README §6
+  # step 2 local MFA apply targets aws_s3_bucket_policy.tfstate together with the role.
   tfstate_admin_principal_arns = concat(
     [aws_iam_role.admin.arn],
     [for p in var.tfstate_admin_sso_permission_sets : "arn:aws:iam::${var.account_id}:role/aws-reserved/sso.amazonaws.com/*AWSReservedSSO_${p}_*"],
+    var.org_access_role_enabled ? ["arn:aws:iam::${var.account_id}:role/${var.org_access_role_name}"] : [],
   )
 
   # Terraform itself: the CI plan role (PR plans, drift, docs-gen, CRM key policy diff) and the CI apply role.

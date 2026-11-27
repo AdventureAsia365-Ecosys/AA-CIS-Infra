@@ -239,8 +239,10 @@ first leaves the reseller's organization, then accepts our invitation.
    until this apply, so CI applies never try to create the role (the CI apply role may not write it). The repo secret
    `MGMT_ORG_ID` must exist before the flip PR below (GitHub passes a missing secret as an empty string, which fails
    the variable validation once the role is enabled). Apply with `-var org_access_role_enabled=true` and the targets
-   `-target=aws_iam_role.org_access -target=aws_iam_role_policy.org_access_guard -target=aws_iam_role_policy_attachments_exclusive.org_access -target=aws_iam_role_policies_exclusive.org_access`.
-   Expected: 4 to add (or 1 import plus in-place changes when adopting), 0 to destroy. **Right after**, merge the
+   `-target=aws_iam_role.org_access -target=aws_iam_role_policy.org_access_guard -target=aws_iam_role_policy_attachments_exclusive.org_access -target=aws_iam_role_policies_exclusive.org_access -target=aws_s3_bucket_policy.tfstate`.
+   Expected: 4 to add (or 1 import plus in-place changes when adopting) and 1 in-place change (the Terraform state
+   bucket policy now lets the role read and repair state, `tfstate_protection.tf`; a CI apply may not write that
+   policy), 0 to destroy. **Right after**, merge the
    one-line PR setting `org_access_role_enabled = true` in `accounts/aa365/terraform.tfvars`: until it merges, every
    CI plan of `accounts/aa365` (PR plans, applies, drift) wants to destroy the role and `prevent_destroy` fails it, so
    keep that window to minutes and dispatch no aa365 apply in it. After the merge, a CI plan of `accounts/aa365` shows
