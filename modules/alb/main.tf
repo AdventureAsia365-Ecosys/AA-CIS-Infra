@@ -17,7 +17,13 @@ resource "aws_lb" "main" {
   security_groups = concat([var.sg_alb_id], aws_security_group.alb_from_nlb[*].id)
   subnets         = var.public_subnet_ids
 
-  enable_deletion_protection = false
+  # AA-1185 (S295 audit SA-57): a stray destroy or console click cannot delete the shared ALB; a deliberate removal
+  # turns this off in its own apply first. Header fields whose names are not RFC 7230 tokens of letters, digits and
+  # hyphens (underscores included) are dropped before the targets see them: no app or edge sends such a header (the
+  # CloudFront origin headers are X-AA-Origin and x-aa-tp-site; checked 27/11/2026), and it closes header smuggling
+  # through names a proxy and the app read differently.
+  enable_deletion_protection = true
+  drop_invalid_header_fields = true
 
   # AA-465 (26/08/2026): the request path is API Gateway -> VPC Link -> NLB -> this ALB -> ECS.
   # AA-465 raised the API Gateway integration timeout 29000ms -> 90000ms, but this ALB's

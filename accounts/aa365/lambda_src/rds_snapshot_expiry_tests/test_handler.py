@@ -37,7 +37,7 @@ def snap(ident, *, age=None, created=None, tags=None, instance="aa-cis-dev-db", 
         "SnapshotType": stype,
         "Status": status,
         "InstanceCreateTime": instance_created,
-        "DBSnapshotArn": f"arn:aws:rds:us-west-1:005097885195:snapshot:{ident}",
+        "DBSnapshotArn": f"arn:aws:rds:us-west-1:111122223333:snapshot:{ident}",
         "TagList": [{"Key": k, "Value": v} for k, v in (tags or {}).items()],
     }
 
@@ -259,7 +259,7 @@ ENV = {
     "RETAIN_DAYS": "30",
     "MAX_DELETES_PER_RUN": "3",
     "INSTANCE_ALLOWLIST": "aa-cis-dev-db",
-    "ALERT_TOPIC_ARN": "arn:aws:sns:us-west-1:005097885195:aa-cis-dev-acp-alerts",
+    "ALERT_TOPIC_ARN": "arn:aws:sns:us-west-1:111122223333:aa-cis-dev-acp-alerts",
     "ENV_NAME": "dev",
 }
 

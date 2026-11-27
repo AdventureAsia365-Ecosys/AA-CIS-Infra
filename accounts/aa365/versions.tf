@@ -1,6 +1,6 @@
 # =============================================================================
-# AA-246 Track B — account 005097885195 (aa365-admin), us-west-1
-# Separate root config + separate state, does NOT touch account 867490540162.
+# AA-246 Track B — account acc2 (aa365-admin), us-west-1
+# Separate root config + separate state, does NOT touch account acc1.
 # =============================================================================
 
 terraform {

@@ -170,7 +170,9 @@ def test_alb_blocks_sign_in_paths_above_the_forward_rule():
     assert 'type = "fixed-response"' in block and 'status_code  = "403"' in block
     assert "values = [local.test_wp_host]" in block and "values = local.test_wp_blocked_paths" in block
     paths = re.findall(r'"([^"]+)"', EDGE[EDGE.index("test_wp_blocked_paths") :].split("]")[0])
-    assert set(paths) == {"/wp-login.php", "/wp-admin", "/wp-admin/*", "/xmlrpc.php"}
+    # AA-1185 (SA-28): every value is a prefix pattern; an exact "/xmlrpc.php" let "/xmlrpc.php/" reach PHP.
+    assert set(paths) == {"/wp-login.php*", "/wp-admin*", "/xmlrpc.php*"}
+    assert all(p.endswith("*") for p in paths)
     assert len(paths) <= 4, "an ALB rule takes at most 5 condition values (1 host + 4 paths)"
 
     fwd = _code(_resource(RULES, "aws_lb_listener_rule", "test_wp"))
@@ -257,6 +259,44 @@ def test_script_hardening():
     assert 'got="$("${algo}sum" "$dest.part" | cut -d\' \' -f1)"' in SCRIPT
     assert 'fetch "$TEST_WP_SQLITE_PLUGIN_URL" "$plugin_zip" sha256 "$TEST_WP_SQLITE_PLUGIN_SHA256"' in SCRIPT
     assert 'fetch "$TEST_WP_CLI_URL" "$TOOLS_DIR/wp-cli.phar" sha512 "$TEST_WP_CLI_SHA512"' in SCRIPT
+
+
+def test_script_hardening_aa1185():
+    """S295 audit SA-28: no XML-RPC methods or pingback header, no anonymous user list, headers on every answer."""
+    for needle in (
+        "add_filter( 'xmlrpc_methods', '__return_empty_array' );",
+        "unset( $headers['X-Pingback'] );",
+        "'rest_endpoints'",
+        "if ( ! is_user_logged_in() ) {",
+        "unset( $endpoints['/wp/v2/users'], $endpoints['/wp/v2/users/(?P<id>[\\\\d]+)'] );",
+        "isset( $_GET['author'] ) && ! is_user_logged_in()",
+        'rm -f "$WP_DIR/readme.html"',
+        "TraceEnable Off",
+        'Header always set X-Content-Type-Options "nosniff"',
+        'Header always set X-Frame-Options "DENY"',
+        'Header always set Strict-Transport-Security',
+        "a2enmod -q headers",
+    ):
+        assert needle in SCRIPT, needle
+    # /wp/v2/users/me (the CIS connection test, signed in) must stay reachable: nothing removes it.
+    assert "users/me'" not in SCRIPT.split("'rest_endpoints'")[1].split("add_action")[0]
+    # The headers conf is written before apache starts, and mod_headers is enabled in the foreground part.
+    fg = SCRIPT[SCRIPT.index("# ---- 1. Foreground") :]
+    assert fg.index("a2enmod -q headers") < fg.index("exec docker-entrypoint.sh apache2-foreground")
+
+
+def test_site_is_off_by_default_outside_test_windows_aa1185():
+    """Tech lead decision Q10 (S295): both switches false in the live tfvars; a test window turns them on."""
+    tfvars = (AA365 / "terraform.tfvars").read_text(encoding="utf-8")
+    assert re.search(r"^test_wp_enabled\s*=\s*false\s*$", tfvars, re.M)
+    assert re.search(r"^test_wp_service_attached\s*=\s*false\s*$", tfvars, re.M)
+    assert (ROOT / "docs" / "runbooks" / "test-wp-window.md").is_file()
+    # The WordPress container keeps running until the next Booking admin deploy after the apply, so its exception
+    # stays until then (removed with the root register row once describe-tasks shows one container, before the
+    # expiry). No other entry, and no later expiry, may ride on the test site.
+    ignore = (ROOT / ".trivyignore").read_text(encoding="utf-8")
+    entries = [ln.strip() for ln in ignore.splitlines() if ln.strip() and not ln.lstrip().startswith("#")]
+    assert set(entries) <= {"CVE-2026-124851 exp:2026-12-02"}, entries
 
 
 def test_script_never_puts_the_application_password_in_the_log_or_on_a_curl_command_line():

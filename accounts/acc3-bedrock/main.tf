@@ -1,5 +1,5 @@
 # =============================================================================
-# AA-397 — new AA3-Bedrock-Invoker role on account 3 (786888028788).
+# AA-397 — new AA3-Bedrock-Invoker role on account 3 (acc3).
 # NOT an import. It was built to mirror the former acc1 invoker role (root
 # removed with acc1, AA-998) so the two accounts were swappable for the client
 # (shared/llm_client/bedrock_satellite.py in AA-CIS-App). Since AA-998 (S255)

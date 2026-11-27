@@ -14,7 +14,8 @@ resource-ids    Literal AWS resource IDs in prose: sg-/subnet-/vpc-/... IDs, sta
                 --block vpc,apigw keeps those kinds failing in warn mode (Infra: no VPC
                 resource ID or API Gateway host in any page; ARNs and account IDs warn).
                 Kinds: vpc, elb (a load balancer or target group id, app/<name>/<16 hex>;
-                AA-1118, S282 audit R26), arn, user-pool, apigw, account.
+                AA-1118, S282 audit R26), arn, user-pool, apigw, account, mail (an e-mail address outside the
+                company and test domains, AA-1185).
 
 retired-phrases  A phrase that describes something retired as if it were live, or a fact that is no
                 longer true (AA-1134, the S283 docs audit, AA-1118): "acc3 only" LLM serving, Bedrock
@@ -159,6 +160,12 @@ RESOURCE_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     # Standalone only: a bucket name that embeds the account ID by convention
     # (aa-cis-bronze-<account>) is allowed by the style guide, so a leading '-' or word char skips it.
     ("12-digit account ID", re.compile(r"(?<![\w./:-])\d{12}(?![\w-])")),
+    # AA-1185 (S295 audit SA-40): an e-mail address outside the company and test domains (a personal mailbox such as
+    # an AWS root address, or a vendor's staff address). Only common real TLDs, so code like `@router.get` passes.
+    ("Outside e-mail address", re.compile(
+        r"(?<![\w.%+-])[A-Za-z0-9._%+-]+@(?!(?:[A-Za-z0-9-]+\.)*(?:adventure\.asia|lumiguides\.it\.com|"
+        r"example\.(?:com|org|net)|anthropic\.com|users\.noreply\.github\.com)(?![\w.-]))"
+        r"(?:[A-Za-z0-9-]+\.)+(?:com|net|org|asia|io|vn|sg|co|uk|me|ai)(?![\w-])", re.I)),
 ]
 KIND_KEYS = {
     "VPC resource ID": "vpc",
@@ -167,6 +174,7 @@ KIND_KEYS = {
     "Cognito user-pool ID": "user-pool",
     "API Gateway host": "apigw",
     "12-digit account ID": "account",
+    "Outside e-mail address": "mail",
 }
 
 
@@ -205,10 +213,12 @@ def check_resource_ids(root: Path, files: list[str]) -> list[Finding]:
             for label, pattern in RESOURCE_PATTERNS:
                 m = pattern.search(line)
                 if m:
+                    hint = ("write the role instead (the reseller's account manager, the acc2 root mailbox)"
+                            if KIND_KEYS[label] == "mail" else
+                            "use the resource name, a Terraform output or a link to the account map in docs/onboarding.md")
                     findings.append(Finding(
                         relpath, n, "Literal resource ID",
-                        f"{label} '{m.group(0)}' in prose; use the resource name, a Terraform output "
-                        "or a link to the account map in docs/onboarding.md.",
+                        f"{label} '{m.group(0)}' in prose; {hint}.",
                         kind=KIND_KEYS[label],
                     ))
                     break

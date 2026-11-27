@@ -53,7 +53,8 @@ resource "aws_lb" "vpc_link_nlb" {
   security_groups    = [aws_security_group.nlb.id]
   subnets            = var.private_subnet_ids
 
-  enable_deletion_protection = false
+  # AA-1185 (S295 audit SA-57): same as the ALB (main.tf): a deliberate removal turns this off in its own apply first.
+  enable_deletion_protection = true
 
   # AA-272 cutover attempt #3: the SG's ingress rule below only allows
   # 10.2.0.0/16 (this VPC's own CIDR, correct for the NLB's own health

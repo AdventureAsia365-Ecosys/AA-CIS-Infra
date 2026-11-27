@@ -556,7 +556,7 @@ run_check() {
       step "$c" "front-matter" py:jsonschema,py:yaml "$PYQ tools/docs/check_frontmatter.py"
       step "$c" "ADR index" "" "$PYQ tools/docs/check_adr_index.py docs/adr"
       step "$c" "single-line AWS CLI" "" "$PYQ tools/docs/check_docs_text.py aws-multiline --all"
-      step "$c" "resource IDs" "" "$PYQ tools/docs/check_docs_text.py resource-ids --all --mode warn --block vpc,apigw"
+      step "$c" "resource IDs" "" "$PYQ tools/docs/check_docs_text.py resource-ids --mode warn --block vpc,apigw,arn,account,user-pool,mail $(git ls-files '*.md' ':!:.claude/**' | tr '\n' ' ')"
       step "$c" "internal links (lychee, offline)" bin:lychee "lychee --config tools/docs/lychee.toml './**/*.md'" ;;
     identity-triggers)
       step "$c" "trigger tests" py:pytest "cd accounts/aa365 && $PYQ -m pytest -p no:cacheprovider -q lambda_src/identity_triggers_tests"

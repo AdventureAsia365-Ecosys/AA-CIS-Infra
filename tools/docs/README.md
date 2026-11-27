@@ -34,7 +34,7 @@ for f in docslib.py check_docs_text.py check_adr_index.py check_frontmatter.py t
 | Front-matter of `CONTEXT.md` and `docs/**` against the schema, unique IDs | `python3 tools/docs/check_frontmatter.py` | error |
 | ADR status lines and the index `docs/adr/README.md` | `python3 tools/docs/check_adr_index.py docs/adr` | error |
 | No `aws ...` command continued with a backslash, in any tracked Markdown file | `python3 tools/docs/check_docs_text.py aws-multiline --all` | error |
-| Literal resource IDs in Markdown | `python3 tools/docs/check_docs_text.py resource-ids --all --mode warn --block vpc,apigw` | error for VPC resource IDs (`sg-`, `subnet-`, `vpc-`, ...) and API Gateway hosts; warning for account IDs, ARNs and user-pool IDs |
+| Literal resource IDs in Markdown | `python3 tools/docs/check_docs_text.py resource-ids --mode warn --block vpc,apigw,arn,account,user-pool,mail $(git ls-files '*.md' ':!:.claude/**')` | error for VPC resource IDs (`sg-`, `subnet-`, `vpc-`, ...), API Gateway hosts, account IDs, ARNs with an account, user-pool IDs and e-mail addresses outside the company and test domains (AA-1185); warning for load balancer ids. The agent files under `.claude/` run separately and only warn |
 | Internal links, offline | `lychee --config tools/docs/lychee.toml $(git ls-files '*.md')` | error |
 | Freshness report (weekly, artifact `docs-freshness`) | `python3 tools/docs/check_frontmatter.py --freshness-report .freshness.md` | warning |
 
@@ -58,6 +58,7 @@ python3 -m unittest discover -s tools/docs -p 'test_*.py'
 python3 tools/docs/check_frontmatter.py
 python3 tools/docs/check_adr_index.py docs/adr
 python3 tools/docs/check_docs_text.py aws-multiline --all
-python3 tools/docs/check_docs_text.py resource-ids --all --mode warn --block vpc,apigw
+python3 tools/docs/check_docs_text.py resource-ids --mode warn --block vpc,apigw,arn,account,user-pool,mail $(git ls-files '*.md' ':!:.claude/**')
+python3 tools/docs/check_docs_text.py resource-ids --scope .claude --mode warn --block vpc,apigw
 lychee --config tools/docs/lychee.toml $(git ls-files '*.md')
 ```

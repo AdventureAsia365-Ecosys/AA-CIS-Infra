@@ -41,8 +41,8 @@
 # ANY of its target groups: the Booking admin would restart with it. The site itself is checked live
 # (https://test-wp.<zone>/wp-json/ 200, the live steps of the PR).
 #
-# Security: no browser sign-in (the ALB answers 403 on /wp-login.php, /wp-admin and /xmlrpc.php, and the mu-plugin
-# refuses login_init), DISALLOW_FILE_MODS (no plugin or theme install, no update), both users get random passwords
+# Security: no browser sign-in (the ALB answers 403 on /wp-login.php*, /wp-admin* and /xmlrpc.php*, and the mu-plugin
+# refuses login_init; AA-1185 adds: no XML-RPC method, no anonymous user list or ?author= lookup, security headers), DISALLOW_FILE_MODS (no plugin or theme install, no update), both users get random passwords
 # nobody knows at every start, the publishing user is an editor (posts only), noindex (blog_public 0 + X-Robots-Tag).
 # The secret is unset before apache starts, so PHP never sees it.
 #
@@ -88,7 +88,11 @@ locals {
   # task at the next Booking admin deploy (the deploy copies the family's latest revision).
   # S294: the same digest went red on 25/11 on CVE-2026-124851 (libzstd1, fixed in Debian 1.5.7+dfsg-1+deb13u1 after
   # this image was built on 24/11; no rebuilt digest of the tag upstream yet). Accepted until 02/12 in the root
-  # exception register and .trivyignore: move this pin to the first rebuilt digest, then drop both entries.
+  # exception register and .trivyignore.
+  # AA-1185 (S296, 27/11): still no rebuilt digest upstream (7.1.5-php8.4-apache, php8.5-apache and latest were all
+  # built on 24/11). The site is now off outside E2E test windows (tech lead decision Q10, terraform.tfvars), so no
+  # WordPress image runs and both exception entries are gone. A test window first moves this pin to a digest the
+  # Image Scan passes (runbook docs/runbooks/test-wp-window.md step 1).
   test_wp_image = "public.ecr.aws/docker/library/wordpress@sha256:98a3fba3639b89fe1ade0cf6d37e61bc8934de872cf26d9dc5286962b554e3d1"
 
   # Fetched by start.sh at every start, checksums verified before use (sha256 of the release zip on wordpress.org;

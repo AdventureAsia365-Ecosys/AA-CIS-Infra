@@ -102,6 +102,21 @@ class ResourceIdTest(TempRepo):
         self.assertEqual(self.ids(f"pool {POOL}"), [POOL])
         self.assertEqual(self.ids(f"https://{APIGW}us-west-1.amazonaws.com"), [APIGW])
 
+    def test_outside_mail_addresses_are_a_blockable_kind(self) -> None:
+        # AA-1185 (S295 audit SA-40): a personal mailbox or a vendor's staff address; company and test domains pass,
+        # and so does code that only looks like an address (a decorator, a version pin).
+        personal = "someone.root" + "@" + "gmail.com"
+        vendor = "first.last" + "@" + "reseller-example.com.sg"
+        self.assertEqual(self.ids(f"Root mail {personal}."), [personal])
+        self.assertEqual(self.ids(f"Ask {vendor}"), [vendor])
+        for ok in ("ops@adventure.asia", "no-reply@lumiguides.it.com", "e2e@e2e-mail.lumiguides.it.com",
+                   "x@example.com", "noreply@anthropic.com", "n@router.get", "aa729@1.4.0", "eslint@8.57.1"):
+            self.assertEqual(self.ids(ok), [], ok)
+        self.write("docs/ops/mail.md", f"{personal}\n")
+        args = ["resource-ids", "docs/ops/mail.md", "--mode", "warn", "--root", str(self.root)]
+        self.assertEqual(self.run_quiet(check_docs_text.main, args), 0)
+        self.assertEqual(self.run_quiet(check_docs_text.main, args + ["--block", "mail"]), 1)
+
     def test_load_balancer_ids_are_a_blockable_kind(self) -> None:
         # AA-1118 (S282 R26): the 16-hex id after app/<name>/ or targetgroup/<name>/ is an identifier; {masked} passes.
         lb = "app/aa-test-alb/" + "0123456789abcdef"
