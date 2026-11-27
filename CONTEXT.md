@@ -303,7 +303,10 @@ accounts/
                                    change (not by the CI apply role), root activity (all management events); a us-east-1
                                    rule forwards IAM write calls and root events (global services) to the us-west-1
                                    default bus through role aa-sec-<env>-events-forwarder. Topic policy statement
-                                   AllowSecurityEventBridgeRules (identity_alerts.tf). 0 USD/month)
+                                   AllowSecurityEventBridgeRules (identity_alerts.tf). AA-1183 (S296): rule
+                                   aa-sec-<env>-acm-expiry (ACM approaching expiration on var.acm_expiry_alert_days,
+                                   renewal action required, expired; ticket) + aa-sec-<env>-acm-expiry-forward in
+                                   us-east-1 through the same forwarder role. 0 USD/month)
     security_cloudtrail.tf        (AA-873 PR 2, S255: KMS key alias/aa-cis-<env>-cloudtrail (rotation, App=shared,
                                    CloudTrail GenerateDataKey for this trail only, no account-wide decrypt), trail
                                    bucket versioning + Object Lock GOVERNANCE 365 days on the existing bucket (no

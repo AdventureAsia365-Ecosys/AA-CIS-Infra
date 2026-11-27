@@ -132,7 +132,8 @@ class IamChangeRuleTest(unittest.TestCase):
             if suffix.startswith("sso-admin-signin-"):
                 continue  # AA-1022 for_each rules of security_sso_signin.tf: test_aa1022_hardening.py
             with self.subTest(rule=rule):
-                self.assertIn(f'name        = "${{local.sec_prefix}}-{suffix}"', BASELINE)
+                # Any alignment terraform fmt picks (AA-1183 rules align on event_pattern).
+                self.assertRegex(BASELINE, rf'\n  name +\= "\$\{{local\.sec_prefix\}}-{re.escape(suffix)}"\n')
 
 
 if __name__ == "__main__":
