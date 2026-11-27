@@ -225,8 +225,9 @@ tests.
 `aa973_b2b_seed.py` (AA-973, S248, Dev only; merged `READ_ONLY = True` = DRY RUN): synthetic supply for the
 booking.b2b.v1 live check — two inactive seed staff rows (contract maker / checker), a `SYNTHETIC S248` supplier,
 hotel, room type and activity service, a USD contract (draft by the maker, published by the checker) with one rate per
-item, the commercial row of one catalog tour with no plan yet (first `catalog.v_tour` row by `source_id`), its day-1
-components and two 2-seat departures. Writes as `bk_owner` in one transaction; reads `catalog.v_tour` as `booking`, else
+item, the commercial row of one catalog tour with no plan yet (first `catalog.v_tour` row by `source_id`), its
+components (the room type on every night of the tour and the service on day 1, so the Booking can-operate check of a
+tailor-made B2B quote passes, AA-1196) and two 2-seat departures. Writes as `bk_owner` in one transaction; reads `catalog.v_tour` as `booking`, else
 `tripplanner`. Idempotent (`SCRIPT summary steps=0` on a re-run). Reports whether the synthetic partner (tenant
 `…c972`), an approved `b2b` rule and the B2B settings are in place (`SCRIPT readiness`, `SCRIPT verdict ready=…`) and
 prints the ids the live check needs (`SCRIPT verify …`). Apply = one-line PR `READ_ONLY = False`; cleanup = one-line PR
