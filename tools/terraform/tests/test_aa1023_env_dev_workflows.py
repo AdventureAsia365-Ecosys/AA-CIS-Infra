@@ -18,7 +18,7 @@ APPLY_ROLE_JOBS = {
     "db-freshness-probe.yml": None,
     "db-isolation-probe.yml": None,
     "db-migrate.yml": None,
-    "db-schema-dump.yml": None,
+    "db-schema-dump.yml": {"dump"},   # its publish job runs in `ci-bot` (AA-1183: the CI bot key, no AWS)
     "db-tour-liveness-gate.yml": None,
     "terraform-apply.yml": {"terraform-apply", "idle-gate-check"},
 }

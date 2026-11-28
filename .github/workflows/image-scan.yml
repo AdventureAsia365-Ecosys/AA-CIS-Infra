@@ -69,7 +69,6 @@ jobs:
     env:
       AWS_REGION: us-west-1
       ROOT_REPO: AdventureAsia365-Ecosys/AA-Ecosys
-      HAS_CI_BOT_APP: ${{ vars.AA_CI_BOT_APP_ID != '' && secrets.AA_CI_BOT_PRIVATE_KEY != '' }}
       OFFLINE: ${{ github.event_name == 'workflow_dispatch' && inputs.offline && 'true' || 'false' }}
       TOOL: tools/security/image_scan.py
     steps:
@@ -87,24 +86,13 @@ jobs:
         with:
           tool: trivy
 
-      # AA-901: read-only App token for the root checkout (the triage rule and the exception register).
-      - name: Mint the aa-ecosys-ci-bot token (root repo, contents read)
-        id: root-read-token
-        if: env.HAS_CI_BOT_APP == 'true'
-        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
-        with:
-          app-id: ${{ vars.AA_CI_BOT_APP_ID }}
-          private-key: ${{ secrets.AA_CI_BOT_PRIVATE_KEY }}
-          owner: AdventureAsia365-Ecosys
-          repositories: AA-Ecosys
-          permission-contents: read
-
+      # The root repo is public: this job's own token reads it (AA-1183: no App key in a job that holds AWS credentials).
       - name: Check out the triage rule and the exception register (root master)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ env.ROOT_REPO }}
           ref: master
-          token: ${{ steps.root-read-token.outputs.token || github.token }}
+          token: ${{ github.token }}
           path: root
           fetch-depth: 1
           persist-credentials: false
