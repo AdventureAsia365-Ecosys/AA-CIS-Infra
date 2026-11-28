@@ -39,6 +39,9 @@
 #      run the same targeted apply again: the detach has finished by then. Then the same targeted plan: No changes.
 # AA-1185 (S296): the EBS account defaults and the NAT patch association (security_account_defaults.tf). Same bootstrap:
 #   terraform plan / apply -target=aws_iam_policy.tf_apply_sec   (local, MFA admin profile, before the CI apply)
+# AA-1110 (S297): the chatbot grants of the Slack chat alert channel (chat_alerts.tf). Same bootstrap, any time before
+# the PR that sets chat_alerts_enabled = true (while it is false nothing calls chatbot):
+#   terraform plan / apply -target=aws_iam_policy.tf_apply_sec   (local, MFA admin profile)
 # Cost: 0 USD (IAM).
 # =============================================================================
 
@@ -249,6 +252,29 @@ data "aws_iam_policy_document" "tf_apply_sec" {
     sid       = "SsmAssociationList"
     actions   = ["ssm:ListAssociations"]
     resources = ["*"]
+  }
+
+  # AA-1110 (S297): the Slack chat alert channel of chat_alerts.tf (Amazon Q Developer in chat applications, API prefix
+  # chatbot). Create, Describe and ListTagsForResource take no resource ARN (Service Authorization Reference, AWS
+  # Chatbot); update, delete and tags only on this stack's configurations. iam:PassRole of the channel role (an
+  # aa-*-dev-* name) is already in IAMRoleManageStack (cicd_split.tf). No workspace authorisation verbs: authorising
+  # or removing a Slack workspace stays a console step of a person.
+  statement {
+    sid = "ChatAlertsConfigCreate"
+    actions = [
+      "chatbot:CreateSlackChannelConfiguration", "chatbot:DescribeSlackChannelConfigurations",
+      "chatbot:ListTagsForResource",
+    ]
+    resources = ["*"]
+  }
+
+  statement {
+    sid = "ChatAlertsConfigManage"
+    actions = [
+      "chatbot:UpdateSlackChannelConfiguration", "chatbot:DeleteSlackChannelConfiguration", "chatbot:TagResource",
+      "chatbot:UntagResource",
+    ]
+    resources = ["arn:aws:chatbot::${var.account_id}:chat-configuration/slack-channel/aa-ecosys-*"]
   }
 }
 

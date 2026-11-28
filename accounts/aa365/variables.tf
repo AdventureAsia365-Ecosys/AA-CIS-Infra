@@ -178,6 +178,51 @@ variable "alert_email_secondary" {
   }
 }
 
+# AA-1110 (S297): the chat alert channel (chat_alerts.tf, Amazon Q Developer in chat applications -> Slack). A switch and
+# two recipient IDs, not thresholds. The switch is set in terraform.tfvars by a reviewed PR; the IDs come from the repo
+# secrets CHAT_ALERTS_SLACK_TEAM_ID / CHAT_ALERTS_SLACK_CHANNEL_ID (TF_VAR_* in the three Terraform workflows), never a
+# committed file (public repo). Unset secrets = "" (the plan fails if the switch is on without them).
+variable "chat_alerts_enabled" {
+  description = "Create the Slack chat alert channel (AA-1110). false (default) = nothing is created. Needs the Slack workspace authorised once in the console and both chat_alerts_slack_* values set."
+  type        = bool
+  default     = false
+}
+
+variable "chat_alerts_slack_team_id" {
+  description = "Slack workspace ID authorised in Amazon Q Developer in chat applications (AA-1110). From the repo secret CHAT_ALERTS_SLACK_TEAM_ID; never committed."
+  type        = string
+  default     = ""
+  sensitive   = true
+
+  validation {
+    condition     = !var.chat_alerts_enabled || can(regex("^T[A-Z0-9]{6,}$", var.chat_alerts_slack_team_id))
+    error_message = "chat_alerts_enabled = true needs chat_alerts_slack_team_id: the Slack workspace ID (starts with T), from the repo secret CHAT_ALERTS_SLACK_TEAM_ID."
+  }
+}
+
+variable "chat_alerts_slack_channel_id" {
+  description = "Slack channel ID that receives the alarms (AA-1110). From the repo secret CHAT_ALERTS_SLACK_CHANNEL_ID; never committed."
+  type        = string
+  default     = ""
+  sensitive   = true
+
+  validation {
+    condition     = !var.chat_alerts_enabled || can(regex("^[CG][A-Z0-9]{6,}$", var.chat_alerts_slack_channel_id))
+    error_message = "chat_alerts_enabled = true needs chat_alerts_slack_channel_id: the Slack channel ID (starts with C or G), from the repo secret CHAT_ALERTS_SLACK_CHANNEL_ID."
+  }
+}
+
+variable "chat_alerts_topic" {
+  description = "Which alerts the Slack channel gets (AA-1110): \"all\" = the alerts topic (every alarm), \"page\" = the page topic (urgent ones only)."
+  type        = string
+  default     = "all"
+
+  validation {
+    condition     = contains(["all", "page"], var.chat_alerts_topic)
+    error_message = "chat_alerts_topic must be \"all\" or \"page\"."
+  }
+}
+
 # AA-896 (S255): monthly USD limit of the whole-account budget (aws_budgets_budget.total_monthly,
 # observability.tf). It also covers untagged spend (~50 USD/month: CloudWatch, public IPv4, some
 # secrets), which no per-App budget sees. 250 (AA-287) -> 300: the run-rate 20-27/10/2026 is ~8.6

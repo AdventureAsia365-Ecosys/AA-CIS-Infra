@@ -618,6 +618,11 @@ accounts/
     (crm_membership_alarms.tf, crm_support_alarms.tf, crm_ops_release_alarms.tf, tenant_pool_alarms.tf: deleted by the
      S263 alert diet, AA-1025; those log events are in-app checks of AA-Partner and AA-CIS-App now)
     alert_recipients.tf           (AA-913: the CIS admin manages the e-mail subscriptions of the alerts topic)
+    chat_alerts.tf                (AA-1110, S297: Slack chat alert channel through Amazon Q Developer in chat
+                                   applications, OFF by var.chat_alerts_enabled; workspace / channel IDs from repo
+                                   secrets; notification-only role + CloudWatchReadOnlyAccess guardrail; us-west-2
+                                   provider (no chatbot API in us-west-1); 0 USD. Turn-on steps: root
+                                   docs/ops/runbooks/chat-alert-channel.md)
     alarm_runbooks.tf             (AA-893: a runbook link at the end of every alarm description)
     agent_session.tf              (AA-730: the narrow role agent shells assume, profile aa365-agent)
     security_access_analyzer_archive.tf (AA-873: archive rules for the triaged Access Analyzer findings)
