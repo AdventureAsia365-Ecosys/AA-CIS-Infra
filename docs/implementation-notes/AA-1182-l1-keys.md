@@ -64,6 +64,7 @@ ceremony runbook and the secrets register rows are in the root repo (same lane).
 | `db/scripts/aa1182_master_switch_check.py`, `s249_drill_*.py` | new check script; drill scripts read the managed secret first |
 | `tools/identity/client_secret_rotate.py` (+ README) | new rotation tool |
 | `tools/identity/{staff_web_secret,crm_dev_identity,workforce_bootstrap}.py` | stored copy when Describe returns none |
+| `tools/identity/tripplanner_web_secret.py` (+ README) | `--rotate-session` for key ceremony group 5 (the tool kept the session key on every run) |
 | tests | `tools/terraform/tests/test_aa1182_rds_managed_master.py`, `db/tests/test_aa1182_master_switch_check.py`, `tools/identity/tests/test_client_secret_rotate.py`, runner and registry tests, three workflow wiring tests |
 | `CONTEXT.md`, `README.md`, `db/README.md`, `db/scripts/README.md`, two workflow header comments | the managed master |
 
