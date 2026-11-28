@@ -63,7 +63,9 @@ migrator_member_of: [bk_owner, catalog_owner, cis_app, cis_owner, crm_owner, pg_
 # (modules/environment/crm_data.tf) that Nghiệp fills in the Console before set-password.
 # tripplanner (AA-1182, S296): the TripPlanner Lambdas' login, so its password can be rotated the same way (the migrator
 # task already reads tripplanner/dev/database-url for the isolation probe; db_migrator.tf db_migrate_task_secret_arns).
-password_roles: {cis_app: aa-cis/dev/rds-cis-app, crm_app: crm/dev/database-url, db_migrator: aa-cis/dev/db-migrator, tripplanner: tripplanner/dev/database-url}
+# aa_app_user and booking (AA-1182, S297): the key ceremony rotates every app login, so the tenant pool login and the
+# Booking runtime join too; both DSN secrets are probe login secrets the migrator task already reads.
+password_roles: {aa_app_user: aa-cis/dev/rds-app-user, booking: booking/dev/database-url, cis_app: aa-cis/dev/rds-cis-app, crm_app: crm/dev/database-url, db_migrator: aa-cis/dev/db-migrator, tripplanner: tripplanner/dev/database-url}
 
 # AA-993 M2a (root ADR 0017 d3, design Q17): tables an expand migration file must not name (only a non-unique
 # CREATE INDEX CONCURRENTLY may, and it waits for an open rerun wave). Running code reads them with SELECT * /

@@ -118,7 +118,7 @@ class ModeParsingTest(unittest.TestCase):
 
     def test_refused_values(self):
         for value in ("", "Apply", "apply ", "set-password", "set-password:", "set-password:aa_cis_admin",
-                      "set-password:booking", "set-password:cis_app:x", "set-password: cis_app",
+                      "set-password:bk_owner", "set-password:cis_app:x", "set-password: cis_app",
                       "run-script", "run-script:", "run-script:db/scripts/../run_migration.py",
                       "run-script:db/scripts/x.sql", "run-script:db/migrations/cis/240_x.sql",
                       "run-script:db/scripts/sub/x.py", "run-script:/db/scripts/x.py", "run-script:db/scripts/X.py",

@@ -43,6 +43,10 @@ ceremony runbook and the secrets register rows are in the root repo (same lane).
   kept id is the newest and the Secrets Manager secret changed after it was created. The refill tools
   (`staff_web_secret.py`, `crm_dev_identity.py`, `workforce_bootstrap.py`) now use the stored copy when Describe
   returns no secret instead of failing (crm `web-secret --rotate-session` keeps working after a rotation).
+- **`booking` and `aa_app_user` join DB Migrate `set-password`.** The key ceremony (group 1) rotates every app
+  login; S296 left these two out because their DSNs never sat in state. Both DSN secrets are isolation-probe login
+  secrets the migrator task already reads, so no IAM change; the runner allowlist, `owners.yaml` `password_roles` and
+  the workflow role regex move together (registry test).
 - **`db/scripts/aa1182_master_switch_check.py`:** read-only evidence after the apply: managed secret status, and that
   the legacy DSN no longer logs in (issue Done-when 1: "a login with the old password fails").
 
@@ -55,7 +59,8 @@ ceremony runbook and the secrets register rows are in the root repo (same lane).
 | `accounts/aa365/db_migrator.tf` | task role reads the managed secret (+ legacy by pattern), new statement `DescribeMasterInstance` |
 | `modules/secrets/main.tf`, `outputs.tf` | the `rds` data source and `rds_secret_arn` output removed |
 | `.github/workflows/terraform-{plan,apply,drift}.yml` | no `TF_VAR_db_password` |
-| `db/run_migration.py`, `db/owners.yaml` | managed-first master login, `managed_master_dsn`, `_get_secret` resolves `rds-managed:<instance>` |
+| `db/run_migration.py`, `db/owners.yaml` | managed-first master login, `managed_master_dsn`, `_get_secret` resolves `rds-managed:<instance>`; `booking` + `aa_app_user` in `password_roles` |
+| `.github/workflows/db-migrate.yml` | set-password role regex and texts |
 | `db/scripts/aa1182_master_switch_check.py`, `s249_drill_*.py` | new check script; drill scripts read the managed secret first |
 | `tools/identity/client_secret_rotate.py` (+ README) | new rotation tool |
 | `tools/identity/{staff_web_secret,crm_dev_identity,workforce_bootstrap}.py` | stored copy when Describe returns none |

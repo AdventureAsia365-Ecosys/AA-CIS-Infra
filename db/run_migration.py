@@ -19,7 +19,8 @@ migrator task role only and never injected. It logs `master login: …` either w
 
 Modes (MIGRATION_MODE): check, apply (below), and two X1 S12 modes whose argument is folded into the
 same value, so no new environment variable reaches the task:
-  set-password:<role>   role in ROLE_DSN_IDS (owners.yaml password_roles: cis_app, crm_app, db_migrator, tripplanner). Plan
+  set-password:<role>   role in ROLE_DSN_IDS (owners.yaml password_roles: aa_app_user, booking, cis_app, crm_app,
+                        db_migrator, tripplanner). Plan
                         XD2: reads the role's DSN secret in the task (boto3), checks the DSN user is the
                         role and the password is >= 32 printable ASCII characters, computes a
                         SCRAM-SHA-256 verifier locally (RFC 5802/7677, 4096 iterations, random 16-byte
@@ -263,7 +264,9 @@ ROLES_DIR = "roles"               # Infra-native files, key rl-NNN
 # this marker; lint refuses it, so a baseline copied into db/migrations/ can never be checked or applied.
 BASELINE_MARKER = "aa-853-replay-baseline"
 # owners.yaml password_roles: LOGIN roles whose password mode=set-password sets from their DSN secret (XD2).
-ROLE_DSN_IDS = {"cis_app": "aa-cis/dev/rds-cis-app", "crm_app": "crm/dev/database-url",
+ROLE_DSN_IDS = {"aa_app_user": "aa-cis/dev/rds-app-user",          # AA-1182 S297: the tenant pool login
+                "booking": "booking/dev/database-url",              # AA-1182 S297: the Booking runtime login
+                "cis_app": "aa-cis/dev/rds-cis-app", "crm_app": "crm/dev/database-url",
                 "db_migrator": "aa-cis/dev/db-migrator",
                 "tripplanner": "tripplanner/dev/database-url"}  # AA-1182: the TripPlanner Lambdas' login
 

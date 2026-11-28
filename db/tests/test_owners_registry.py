@@ -295,6 +295,12 @@ class MirrorsAgreeTest(unittest.TestCase):
         self.assertEqual(roles["tripplanner"], OWNERS["tripplanner"]["runtime_secrets"]["tripplanner"])
         migrator_tf = (ROOT / "accounts" / "aa365" / "db_migrator.tf").read_text(encoding="utf-8")
         self.assertIn("module.environment.tripplanner_db_secret_arn", migrator_tf)
+        # AA-1182 (S297, key ceremony group 1): the tenant pool and Booking logins rotate the same way; their DSN
+        # secrets are the probe's login secrets, already readable by the migrator task.
+        self.assertEqual(roles["aa_app_user"], OWNERS["cis"]["runtime_secrets"]["aa_app_user"])
+        self.assertEqual(roles["booking"], OWNERS["booking"]["runtime_secrets"]["booking"])
+        self.assertIn("module.environment.booking_database_url_secret_arn", migrator_tf)
+        self.assertIn("rds-app-user-??????", migrator_tf)
         self.assertIn(REGISTRY["migrator_role"], roles)
         self.assertNotIn(REGISTRY["master_role"], roles)
         self.assertEqual(rm.PW_SET_MARKER, probe.PASSWORD_MARKER)
