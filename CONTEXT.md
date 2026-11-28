@@ -398,7 +398,12 @@ accounts/
                                    aa-cis-<env>-compliance-evidence (SecurityAudit + ViewOnlyAccess + a few reads,
                                    List/Get/Put on evidence/ only, explicit deny of every tamper action; trust = the
                                    immutable subject + ref + job_workflow_ref of the root "Compliance evidence" workflow
-                                   on master and this repo's "Compliance AWS" workflow on main). The CIS task role
+                                   on master and this repo's "Compliance AWS" workflow on main; AA-1183: also the root
+                                   "Secret rotation" workflow on master, with exactly the 13 metadata reads of
+                                   rotation_check.py and an explicit deny of every secret-value read, including
+                                   the Cognito DescribeUserPoolClient / DescribeIdentityProvider calls that
+                                   SecurityAudit grants; the two Prowler checks built on DescribeUserPoolClient are
+                                   excluded and pinned in Terraform instead). The CIS task role
                                    reads evidence/ (ecs_read_compliance_evidence). Layout and writer:
                                    tools/compliance/seal.py; reader: AA-CIS-App api/services/compliance_store.py.
                                    < $0.05/month)
@@ -952,7 +957,8 @@ makes CI Terraform Plan fail with 403.
   (`aa-crm-dev-app-deploy`, AA-Partner, AA-933), plus `crm_scrub.tf` (`aa-crm-dev-scrub-corpus`, AA-Partner
   "Scrub corpus" workflow, environment `scrub-corpus`, AA-938), `docs_reader.tf` (`aa-cis-dev-docs-sync`, the root repo's
   "Docs sync" workflow on `master`, AA-898), `compliance_evidence.tf` (`aa-cis-dev-compliance-evidence`, the root
-  "Compliance evidence" and this repo's "Compliance AWS" workflows, each pinned by `job_workflow_ref`, AA-1173) and `image_scan.tf` (`aa-cis-dev-image-scan-upload`, this repo's "Image
+  "Compliance evidence" and "Secret rotation" and this repo's "Compliance AWS" workflows, each pinned by
+  `job_workflow_ref`, AA-1173 / AA-1183) and `image_scan.tf` (`aa-cis-dev-image-scan-upload`, this repo's "Image
   Scan" workflow on `main`: PutObject on one summary key only, AA-1164; its reads use the plan role). Each app repo
   and each job type gets its **own** role. The old shared `aa-cis-dev-role` is retired (AA-806
   step 3); the apply boundary denies every write on that name so it cannot come back.
