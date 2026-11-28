@@ -39,6 +39,7 @@
 #      run the same targeted apply again: the detach has finished by then. Then the same targeted plan: No changes.
 # AA-1185 (S296): the EBS account defaults and the NAT patch association (security_account_defaults.tf). Same bootstrap:
 #   terraform plan / apply -target=aws_iam_policy.tf_apply_sec   (local, MFA admin profile, before the CI apply)
+# AA-1185 (S297): the NAT swap document and association (NatSwapDocument, aa-ecosys-* documents). Same bootstrap again.
 # AA-1110 (S297): the chatbot grants of the Slack chat alert channel (chat_alerts.tf). Same bootstrap, any time before
 # the PR that sets chat_alerts_enabled = true (while it is false nothing calls chatbot):
 #   terraform plan / apply -target=aws_iam_policy.tf_apply_sec   (local, MFA admin profile)
@@ -233,8 +234,8 @@ data "aws_iam_policy_document" "tf_apply_sec" {
     resources = ["*"]
   }
 
-  # AA-1185: the NAT patch association (security_account_defaults.tf). Only the AWS-RunPatchBaseline document, on
-  # instances of this account; ListAssociations takes no resource.
+  # AA-1185: the NAT patch and swap associations (security_account_defaults.tf). Only the AWS-RunPatchBaseline
+  # document and this account's aa-ecosys-* documents, on instances of this account; ListAssociations takes no resource.
   statement {
     sid = "NatPatchAssociation"
     actions = [
@@ -243,9 +244,21 @@ data "aws_iam_policy_document" "tf_apply_sec" {
     ]
     resources = [
       "arn:aws:ssm:${var.aws_region}::document/AWS-RunPatchBaseline",
+      "arn:aws:ssm:${var.aws_region}:${var.account_id}:document/aa-ecosys-*",
       "arn:aws:ssm:${var.aws_region}:${var.account_id}:association/*",
       "arn:aws:ec2:${var.aws_region}:${var.account_id}:instance/*",
     ]
+  }
+
+  # AA-1185 (S297): the NAT swap Command document (security_account_defaults.tf section 5). Manage documents named
+  # aa-ecosys-* only; no ssm:SendCommand (a document runs only through the association, on the NAT instance).
+  statement {
+    sid = "NatSwapDocument"
+    actions = [
+      "ssm:CreateDocument", "ssm:UpdateDocument", "ssm:UpdateDocumentDefaultVersion", "ssm:DeleteDocument",
+      "ssm:DescribeDocument", "ssm:GetDocument", "ssm:DescribeDocumentPermission", "ssm:ListDocumentVersions",
+    ]
+    resources = ["arn:aws:ssm:${var.aws_region}:${var.account_id}:document/aa-ecosys-*"]
   }
 
   statement {
