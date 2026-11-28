@@ -6,7 +6,7 @@ run-name: DB Migrate ${{ inputs.mode }} ${{ inputs.migration }}${{ inputs.role }
 # RDS is VPC-private, so the SQL runs in a one-off ECS Fargate task of the migrator task definition
 # (X1 S12, accounts/aa365/db_migrator.tf: family aa-cis-dev-db-migrate, container migrate, own roles,
 # DATABASE_URL = the db_migrator login since X1 S22, the master before; roles/ files, set-password and
-# run-script read the master DSN in the task, db/owners.yaml master_secret): .github/scripts/migrator-task.sh registers a revision with the image the CIS
+# run-script read the master login in the task: the RDS-managed secret, db/owners.yaml master_db_instance, AA-1182): .github/scripts/migrator-task.sh registers a revision with the image the CIS
 # api service runs now, the task runs in the api service's subnets with the security group
 # aa-cis-dev-sg-db-migrate, and the revision is deregistered at the end. The runner script and the
 # SQL reach the task through short-lived presigned S3 URLs; the task's exit code is the job result

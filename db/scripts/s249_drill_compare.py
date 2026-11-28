@@ -15,10 +15,23 @@ SCHEMA = "drill_s249"
 TABLE = "drill_s249.restore_rehearsal"
 
 
-def _master_dsn():
+def _master_login():
+    """(user, password) of the RDS master. AA-1182: the RDS-managed master secret of aa-cis-dev-db first (JSON), the
+    legacy DSN secret aa-cis/dev/rds until it is deleted. A PITR copy keeps the master password of its restore time:
+    if the managed secret rotated since, reset the copy's master password before the drill (restore runbook)."""
+    import json
+    from urllib.parse import unquote, urlsplit
+
     import boto3
-    return boto3.client("secretsmanager", region_name="us-west-1").get_secret_value(
-        SecretId="aa-cis/dev/rds")["SecretString"]
+    sm = boto3.client("secretsmanager", region_name="us-west-1")
+    inst = boto3.client("rds", region_name="us-west-1").describe_db_instances(
+        DBInstanceIdentifier="aa-cis-dev-db")["DBInstances"][0]
+    arn = (inst.get("MasterUserSecret") or {}).get("SecretArn")
+    if arn:
+        data = json.loads(sm.get_secret_value(SecretId=arn)["SecretString"])
+        return data["username"], data["password"]
+    u = urlsplit(sm.get_secret_value(SecretId="aa-cis/dev/rds")["SecretString"])
+    return unquote(u.username), unquote(u.password)
 
 
 def _drill_host():
@@ -34,12 +47,9 @@ def _drill_host():
 
 async def _connect_drill():
     import asyncpg
-    from urllib.parse import urlsplit
-    u = urlsplit(_master_dsn())
-    from urllib.parse import unquote
-    return await asyncpg.connect(host=_drill_host(), port=u.port or 5432, user=unquote(u.username),
-                                 password=unquote(u.password), database=u.path.lstrip("/"), ssl="require",
-                                 timeout=30)
+    user, password = _master_login()
+    return await asyncpg.connect(host=_drill_host(), port=5432, user=user, password=password, database="aa_cis_dev",
+                                 ssl="require", timeout=30)
 
 SQL = ("SELECT n.nspname s, c.relname t FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
        "WHERE c.relkind IN ('r', 'p') AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast') "

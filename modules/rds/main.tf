@@ -130,7 +130,12 @@ resource "aws_db_instance" "main" {
 
   db_name  = var.db_name
   username = var.db_username
-  password = var.db_password
+  # AA-1182 (S297): RDS manages the master password in Secrets Manager (secret rds!db-<id>, JSON {username, password},
+  # aws/secretsmanager key). Turning it on is an in-place ModifyDBInstance that RDS applies at once whatever
+  # apply_immediately says, with no reboot and no downtime; RDS sets a new random master password at that moment, so
+  # the old one stops working. No password argument and no TF_VAR_db_password from here on. Rotation schedule: the
+  # aws_secretsmanager_secret_rotation below (the RDS default is every 7 days).
+  manage_master_user_password = true
 
   db_subnet_group_name   = var.db_subnet_group_name
   vpc_security_group_ids = [var.sg_rds_id]
@@ -170,13 +175,26 @@ resource "aws_db_instance" "main" {
     Name = "${local.name_prefix}-db"
   })
 
-  # AA-267: RDS password rotated outside Terraform in the past (proven via
-  # direct connect + Secrets Manager cross-check, S93 07/07/2026). TF_VAR
-  # value is correct; state itself is stale. Ignore drift instead of
-  # re-applying a password value on every plan.
+  # AA-267 / AA-1182: the state still holds the long-dead password of the pre-S93 era (never valid since S93; RDS owns
+  # the password now). Keeping password ignored means the switch to manage_master_user_password plans without a
+  # password diff (an update would otherwise send an empty MasterUserPassword next to ManageMasterUserPassword).
   lifecycle {
     ignore_changes = [password]
   }
 
   depends_on = [aws_cloudwatch_log_group.postgresql]
+}
+
+# AA-1182 (S297): the RDS-managed master secret rotates every var.master_password_rotation_days (180, tech lead S295)
+# instead of the RDS default of 7 days. RDS owns the secret and its rotation function; Secrets Manager only takes the
+# schedule (no rotation_lambda_arn for a managed secret). rotate_immediately = false: enabling the management already
+# set a fresh password, so no second rotation right after the apply. Each RDS rotation changes the password without a
+# restart; readers fetch the secret per run (DB Migrate) and no app logs in as the master.
+resource "aws_secretsmanager_secret_rotation" "master" {
+  secret_id          = aws_db_instance.main.master_user_secret[0].secret_arn
+  rotate_immediately = false
+
+  rotation_rules {
+    automatically_after_days = var.master_password_rotation_days
+  }
 }

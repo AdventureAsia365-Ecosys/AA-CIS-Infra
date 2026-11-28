@@ -155,6 +155,83 @@ class DsnLoginTest(unittest.TestCase):
                 self.assertNotIn("SECRET", str(cm.exception))
 
 
+class ManagedMasterDsnTest(unittest.TestCase):
+    """AA-1182: the DSN built from the RDS-managed master secret JSON and the task's own DSN."""
+
+    TASK = "postgresql://db_migrator:task-pw@db.example:5432/aa_cis_dev?sslmode=require"
+
+    def test_credentials_replace_the_task_login_and_keep_its_target(self):
+        pw = "a b/c@d:e%f?g#h"
+        dsn = rm.managed_master_dsn(json.dumps({"username": "aa_cis_admin", "password": pw}), self.TASK)
+        self.assertEqual(rm.dsn_login(dsn).user, "aa_cis_admin")
+        self.assertEqual(rm.dsn_login(dsn).password, pw)
+        self.assertEqual(rm.dsn_target(dsn), rm.dsn_target(self.TASK))
+        self.assertTrue(dsn.endswith("@db.example:5432/aa_cis_dev?sslmode=require"))
+        self.assertNotIn("task-pw", dsn)
+
+    def test_refusals_never_echo_a_value(self):
+        for raw, task, needle in (
+            ("not-json-SECRETVALUE", self.TASK, "not JSON"),
+            (json.dumps(["SECRETVALUE"]), self.TASK, "lacks username or password"),
+            (json.dumps({"username": "aa_cis_admin", "password": ""}), self.TASK, "lacks username or password"),
+            (json.dumps({"username": "aa_cis_admin", "password": "SECRETVALUE"}), "mysql://h/db", "postgresql://"),
+            (json.dumps({"username": "aa_cis_admin", "password": "SECRETVALUE"}), "postgresql:///db", "with a host"),
+        ):
+            with self.subTest(needle=needle, task=task):
+                with self.assertRaises(ValueError) as ctx:
+                    rm.managed_master_dsn(raw, task)
+                self.assertIn(needle, str(ctx.exception))
+                self.assertNotIn("SECRETVALUE", str(ctx.exception))
+                self.assertNotIn("task-pw", str(ctx.exception))
+
+
+class GetSecretManagedIdTest(unittest.TestCase):
+    """AA-1182: _get_secret resolves "rds-managed:<instance>" through DescribeDBInstances (fake boto3, no AWS)."""
+
+    def run_get(self, instances, secret_id):
+        calls = []
+
+        class Rds:
+            def describe_db_instances(self, DBInstanceIdentifier):  # noqa: N803 — boto3 names
+                calls.append(("rds", DBInstanceIdentifier))
+                return {"DBInstances": instances}
+
+        class Sm:
+            def get_secret_value(self, SecretId):  # noqa: N803
+                calls.append(("sm", SecretId))
+                return {"SecretString": "value-of-" + SecretId}
+
+        class Boto3:
+            @staticmethod
+            def client(name, region_name):
+                self.assertEqual(region_name, rm.SECRETS_REGION)
+                return {"rds": Rds(), "secretsmanager": Sm()}[name]
+
+        saved = sys.modules.get("boto3")
+        sys.modules["boto3"] = Boto3
+        try:
+            return rm._get_secret(secret_id), calls
+        finally:
+            if saved is None:
+                sys.modules.pop("boto3", None)
+            else:
+                sys.modules["boto3"] = saved
+
+    def test_managed_id_reads_the_instance_secret(self):
+        arn = "arn:aws:secretsmanager:us-west-1:000000000000:secret:rds!db-0000-AbCdEf"
+        value, calls = self.run_get([{"MasterUserSecret": {"SecretArn": arn}}], rm.MASTER_MANAGED_ID)
+        self.assertEqual(value, "value-of-" + arn)
+        self.assertEqual(calls, [("rds", "aa-cis-dev-db"), ("sm", arn)])
+
+    def test_unmanaged_instance_raises_lookup_error(self):
+        with self.assertRaises(LookupError):
+            self.run_get([{}], rm.MASTER_MANAGED_ID)
+
+    def test_plain_ids_go_straight_to_secrets_manager(self):
+        value, calls = self.run_get([], rm.MASTER_DSN_ID)
+        self.assertEqual((value, calls), ("value-of-aa-cis/dev/rds", [("sm", "aa-cis/dev/rds")]))
+
+
 class PwConn:
     """Master connection for set-password: records statements, optionally fails on one."""
 
@@ -202,13 +279,13 @@ class PgError(Exception):
 class SetPasswordTest(unittest.TestCase):
     def run_sp(self, secret=CIS_APP_DSN, role="cis_app", master=None, test=None, test_error=None,
                migrator=None, master_secret=MASTER_DSN, master_error=None, migrator_error=None,
-               migrator_dsn=MIGRATOR_DSN):
+               migrator_dsn=MIGRATOR_DSN, managed=None, managed_error=None):
         """migrator (X1 S22): the task's DATABASE_URL is MIGRATOR_DSN and logs in as this connection; the master
         DSN is then read from rm.MASTER_DSN_ID (master_secret: its value or an exception to raise)."""
         self.master = master or PwConn()
         self.test = test or TestConn()
         self.migrator = migrator
-        self.connects, self.secret_reads, self.connect_kw = [], [], []
+        self.connects, self.secret_reads, self.connect_kw, self.managed_reads = [], [], [], []
 
         async def connect(dsn, settings, **kw):
             self.connects.append((dsn, settings))
@@ -221,11 +298,20 @@ class SetPasswordTest(unittest.TestCase):
                 if master_error:
                     raise master_error
                 return self.master
+            if dsn.startswith("postgresql://aa_cis_admin:"):    # AA-1182: the DSN built from the managed secret
+                if managed_error:
+                    raise managed_error
+                return self.master
             if test_error:
                 raise test_error
             return self.test
 
         def get_secret(sid):
+            if sid == rm.MASTER_MANAGED_ID:     # AA-1182: no managed secret unless the test gives one
+                self.managed_reads.append(sid)
+                if managed is None:
+                    raise LookupError("the instance has no RDS-managed master secret")
+                return managed
             self.secret_reads.append(sid)
             value = master_secret if sid == rm.MASTER_DSN_ID else secret
             if isinstance(value, Exception):
@@ -319,7 +405,7 @@ class SetPasswordTest(unittest.TestCase):
         self.assertEqual(self.connect_kw, [{"ssl": "require"}, {"ssl": "require"}])
         self.assertEqual((self.migrator.executed, self.migrator.closed), ([], False))
         self.assertIn("MIGRATE master login: set-password needs the RDS master aa_cis_admin and the task logs in as "
-                      "db_migrator: reading the master DSN in the task from aa-cis/dev/rds (X1 S22)\n", self.out)
+                      "db_migrator: reading the RDS-managed master secret of aa-cis-dev-db in the task (AA-1182)\n", self.out)
         alter, comment = self.master.executed
         self.assertTrue(alter.startswith('ALTER ROLE "cis_app" PASSWORD \'SCRAM-SHA-256$'))
         self.assertIn(rm.PW_SET_MARKER, comment)
@@ -346,7 +432,7 @@ class SetPasswordTest(unittest.TestCase):
                                      migrator_error=PgError("53300", "too many connections for role")), 0, self.out)
         self.assertEqual([d for d, _ in self.connects], ["postgresql://x", MASTER_DSN, CIS_APP_DSN])
         self.assertIn("MIGRATE master login: the task's DATABASE_URL did not log in (PgError 53300)\n", self.out)
-        self.assertIn("the task logs in as nobody (its login failed): reading the master DSN", self.out)
+        self.assertIn("the task logs in as nobody (its login failed): reading the RDS-managed master secret", self.out)
         self.assertIn("MIGRATE master login: aa_cis_admin (in-task DSN from aa-cis/dev/rds)\n", self.out)
 
     def test_s22_master_unavailable_changes_nothing(self):
@@ -376,6 +462,59 @@ class SetPasswordTest(unittest.TestCase):
                       self.out)
         self.assertNotIn("password authentication failed", self.out)
         self.assertNoSecret(escaped)
+
+    # ── AA-1182 (S297): the RDS-managed master secret first, the legacy DSN secret as fallback ──
+    MANAGED_PW = "Mg/d@ged%pw:with#odd?chars!0123456"          # invented; RDS passwords may hold these
+    MANAGED = json.dumps({"username": "aa_cis_admin", "password": MANAGED_PW})
+
+    def test_managed_master_secret_is_used_and_the_legacy_one_never_read(self):
+        self.assertEqual(self.run_sp(migrator=PwConn(login="db_migrator"), managed=self.MANAGED), 0, self.out)
+        self.assertEqual(self.managed_reads, [rm.MASTER_MANAGED_ID])
+        self.assertEqual(self.secret_reads, ["aa-cis/dev/rds-cis-app"])            # legacy master never read
+        master_dsn = self.connects[0][0]
+        self.assertEqual(rm.dsn_login(master_dsn).user, "aa_cis_admin")
+        self.assertEqual(rm.dsn_login(master_dsn).password, self.MANAGED_PW)       # percent-encoded round trip
+        self.assertEqual(rm.dsn_target(master_dsn), ("db.example", 5432, "aa_cis_dev"))
+        self.assertEqual(self.connect_kw[0], {"ssl": "require"})
+        self.assertIn("MIGRATE master login: aa_cis_admin (in-task RDS-managed secret of aa-cis-dev-db)\n", self.out)
+        self.assertNotIn("legacy fallback", self.out)
+        self.assertTrue(self.master.executed[0].startswith('ALTER ROLE "cis_app" PASSWORD'))
+        self.assertNoSecret(self.MANAGED_PW, master_dsn, "master-not-used")
+
+    def test_managed_login_failure_falls_back_to_the_legacy_dsn(self):
+        code = self.run_sp(migrator=PwConn(login="db_migrator"), managed=self.MANAGED,
+                           managed_error=PgError("28P01", "password authentication failed " + self.MANAGED_PW))
+        self.assertEqual(code, 0, self.out)
+        self.assertEqual(self.secret_reads, ["aa-cis/dev/rds", "aa-cis/dev/rds-cis-app"])
+        self.assertIn("MIGRATE master login: master login with the RDS-managed secret of aa-cis-dev-db failed "
+                      "(PgError 28P01): reading the master DSN in the task from aa-cis/dev/rds (legacy fallback)\n",
+                      self.out)
+        self.assertIn("MIGRATE master login: aa_cis_admin (in-task DSN from aa-cis/dev/rds)\n", self.out)
+        self.assertNoSecret(self.MANAGED_PW)
+
+    def test_unusable_or_missing_managed_secret_falls_back(self):
+        for name, managed, line in (
+            ("not json", "plain-text", "RDS-managed master secret of aa-cis-dev-db unusable (the RDS-managed master "
+                                       "secret is not JSON)"),
+            ("no password", json.dumps({"username": "aa_cis_admin"}), "lacks username or password"),
+            ("not managed yet", None, "RDS-managed master secret of aa-cis-dev-db unavailable (LookupError)"),
+        ):
+            with self.subTest(name):
+                self.assertEqual(self.run_sp(migrator=PwConn(login="db_migrator"), managed=managed), 0, self.out)
+                self.assertIn(line, self.out)
+                self.assertIn("(legacy fallback)", self.out)
+                self.assertEqual(self.secret_reads[0], "aa-cis/dev/rds")
+
+    def test_no_master_at_all_changes_nothing(self):
+        class ClientError(Exception):
+            response = {"Error": {"Code": "ResourceNotFoundException"}}
+        code = self.run_sp(migrator=PwConn(login="db_migrator"), managed=self.MANAGED,
+                           managed_error=PgError("28P01", "password authentication failed"),
+                           master_secret=ClientError("gone"))
+        self.assertEqual(code, 8)
+        self.assertIn("master DSN secret aa-cis/dev/rds unreadable (ClientError ResourceNotFoundException)", self.out)
+        self.assertEqual(self.master.executed, [])
+        self.assertNoSecret(self.MANAGED_PW)
 
     def test_target_must_equal_the_master_connection(self):
         pw = PASSWORD
@@ -442,6 +581,8 @@ class RunScriptTest(unittest.TestCase):
             return master if dsn == MASTER_DSN else self.conn
 
         def get_secret(sid):
+            if sid == rm.MASTER_MANAGED_ID:     # AA-1182: no managed secret in these tests (legacy fallback)
+                raise LookupError("the instance has no RDS-managed master secret")
             self.secret_reads.append(sid)
             if master is None:
                 raise LookupError("no such secret in this test")

@@ -31,9 +31,13 @@ environments: [dev]
 # mode=set-password (ALTER ROLE … PASSWORD needs CREATEROLE) / run-script; otherwise break-glass only from X1 S22
 # (DM-8.9). Owns the public extensions (vector, pg_stat_statements) and the public.* leftovers.
 master_role: aa_cis_admin
-# Where the master DSN lives. From X1 S22 the migrator task definition injects db_migrator's DSN (migrator_secret)
-# as DATABASE_URL, and the runner reads this secret itself, in the task (migrator task role only), for the three
-# master uses above and nothing else. Mirrored by db/run_migration.py MASTER_DSN_ID.
+# Where the master login lives. From X1 S22 the migrator task definition injects db_migrator's DSN (migrator_secret)
+# as DATABASE_URL, and the runner reads the master login itself, in the task (migrator task role only), for the three
+# master uses above and nothing else. AA-1182 (S297): RDS manages the master password of master_db_instance
+# (manage_master_user_password, 180-day rotation, modules/rds); the runner reads that instance's MasterUserSecret
+# first (JSON {username, password}, host from DATABASE_URL). master_secret is the legacy DSN secret, read only as a
+# fallback until the orchestrator deletes it. Mirrored by db/run_migration.py MASTER_DB_INSTANCE / MASTER_DSN_ID.
+master_db_instance: aa-cis-dev-db
 master_secret: aa-cis/dev/rds
 
 # DB Migrate / DB Schema Dump / DB Isolation Probe login from X1 S22 (rl-002, X1 S20, creates it, NOCREATEROLE):

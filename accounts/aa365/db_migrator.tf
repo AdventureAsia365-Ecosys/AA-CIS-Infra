@@ -20,8 +20,10 @@
 # X1 S22 (AA-860): the container's DATABASE_URL is db_migrator's DSN (aa-cis/dev/db-migrator, LOGIN, NOCREATEROLE,
 # member of every owner role, catalog_owner, cis_app and pg_read_all_stats; rl-002). DB Migrate runs each owner-dir
 # file as the live owner of its anchor schema (XD8), DB Schema Dump and the isolation probe's catalog cells read as
-# db_migrator. The master (aa-cis/dev/rds) is no longer injected: db/run_migration.py reads it in the task, with
-# the task role below, only for roles/ files, mode=set-password and mode=run-script (db/owners.yaml master_secret).
+# db_migrator. The master is no longer injected: db/run_migration.py reads it in the task, with the task role below,
+# only for roles/ files, mode=set-password and mode=run-script. AA-1182 (S297): first the RDS-managed master secret of
+# the instance (DescribeDBInstances -> MasterUserSecret, JSON {username, password}; db/owners.yaml master_db_instance),
+# then, until the orchestrator deletes it, the old hand-kept DSN secret aa-cis/dev/rds (db/owners.yaml master_secret).
 #
 # Roles: names inside aa-*-dev-* and the workload boundary, so the CI apply role may create and pass
 # them (cicd_split.tf DenyCreateRoleWithoutWorkloadBoundary, tf_managed_role_arns). No Bedrock, no
@@ -49,8 +51,12 @@ locals {
   # login for roles/ files, set-password and run-script; the probe's CIS-runtime cell if the api ever
   # ran on it again), the tenant pool, the two X1 logins (probe logins, set-password), and the Booking /
   # TripPlanner runtime logins (probe logins).
+  # AA-1182 (S297): the master is the RDS-managed secret (module.rds.master_user_secret_arn); the old DSN secret
+  # aa-cis/<env>/rds stays readable by its ARN pattern only (no data source), so the orchestrator can delete it after
+  # the switch is verified without breaking a plan. Drop the pattern line in the clean-up PR.
   db_migrate_task_secret_arns = [
-    module.secrets.rds_secret_arn,
+    module.rds.master_user_secret_arn,
+    "${local.secret_arn_prefix}${var.project}/${var.environment}/rds-??????",
     "${local.secret_arn_prefix}${var.project}/${var.environment}/rds-app-user-??????",
     aws_secretsmanager_secret.rds_cis_app.arn,
     aws_secretsmanager_secret.db_migrator.arn,
@@ -178,6 +184,14 @@ resource "aws_iam_role_policy" "db_migrate_task" {
         Effect   = "Allow"
         Action   = ["secretsmanager:GetSecretValue"]
         Resource = local.db_migrate_task_secret_arns
+      },
+      {
+        # AA-1182: the runner finds the RDS-managed master secret through the instance (MasterUserSecret.SecretArn),
+        # so no secret name or ARN has to reach the task (its definition carries no plain environment).
+        Sid      = "DescribeMasterInstance"
+        Effect   = "Allow"
+        Action   = ["rds:DescribeDBInstances"]
+        Resource = module.rds.db_arn
       },
       {
         Sid      = "PutSchemaDump"
