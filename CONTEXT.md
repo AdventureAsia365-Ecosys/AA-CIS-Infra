@@ -142,6 +142,9 @@ accounts/
                                    legacy shared CI role aa-cis-dev-role retired in AA-806 step 3)
     cicd_split.tf                 (AA-806: aa-cis-dev-app-deploy, aa-cis-infra-tf-plan/-apply,
                                    permissions boundaries; bootstrap, applied by a human)
+    cicd_deploy_alerts.tf         (AA-1193: sns:Publish on the alerts topic for the three API deploy roles
+                                   (CIS, Booking, CRM): their deploy-dev.yml alerts after a rollback on a red
+                                   post-deploy verify; the CIS one is bootstrap, applied by a human with -target)
     cicd_db_auto_apply.tf         (AA-993 I1, root ADR 0017 d6: aa-cis-infra-db-auto-apply, trusted only for
                                    environment:dev-db-auto + ref main; RunTask/Register/Deregister of the migrator
                                    family, PassRole on the two migrator roles, S3 prefix db-auto-apply/, log read.
