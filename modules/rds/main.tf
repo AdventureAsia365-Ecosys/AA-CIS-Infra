@@ -190,7 +190,13 @@ resource "aws_db_instance" "main" {
 # schedule (no rotation_lambda_arn for a managed secret). rotate_immediately = false: enabling the management already
 # set a fresh password, so no second rotation right after the apply. Each RDS rotation changes the password without a
 # restart; readers fetch the secret per run (DB Migrate) and no app logs in as the master.
+# Two applies (review S297): provider 6.69.1 does not mark master_user_secret unknown when
+# manage_master_user_password flips, so during the first plan it is still the empty list of the state and a [0] index
+# fails the plan ("Invalid index"). count = length(...) is 0 in the apply that turns management on, and 1 from the
+# next plan on, which then creates this schedule (the RDS default of 7 days is active in between).
 resource "aws_secretsmanager_secret_rotation" "master" {
+  count = length(aws_db_instance.main.master_user_secret)
+
   secret_id          = aws_db_instance.main.master_user_secret[0].secret_arn
   rotate_immediately = false
 

@@ -8,6 +8,11 @@
 3. The old master DSN secret is not a data source any more, so deleting it can never break a plan.
 4. The instance itself is never replaced by this change: identifier, engine, storage encryption, deletion protection and
    the final snapshot stay as they are.
+5. Review S297: no [0] index on master_user_secret outside a count gate. Provider 6.69.1 keeps the empty list of the
+   state in the plan that turns management on, so a bare [0] fails that plan ("Invalid index"; reproduced offline
+   with the pinned provider and a crafted state). The rotation is count-gated (created by the second apply), the
+   output is a splat, and the migrator task role reads the managed secret from the first apply on through a
+   plan-time grant (rds!db-* + the instance tag), the exact ARN joining through compact() from the second apply on.
 
 Run: python3 -m pytest -q tools/terraform/tests/test_aa1182_rds_managed_master.py
 """
@@ -24,6 +29,7 @@ RDS_OUT = (ROOT / "modules" / "rds" / "outputs.tf").read_text(encoding="utf-8")
 SECRETS_MAIN = (ROOT / "modules" / "secrets" / "main.tf").read_text(encoding="utf-8")
 SECRETS_OUT = (ROOT / "modules" / "secrets" / "outputs.tf").read_text(encoding="utf-8")
 AA365 = ROOT / "accounts" / "aa365"
+MIGRATOR = (AA365 / "db_migrator.tf").read_text(encoding="utf-8")
 WORKFLOWS = ROOT / ".github" / "workflows"
 
 
@@ -55,6 +61,7 @@ class ManagedMasterPasswordTest(unittest.TestCase):
 
     def test_managed_secret_rotates_every_180_days_without_an_extra_rotation(self):
         rotation = _code(_resource(RDS_MAIN, "aws_secretsmanager_secret_rotation", "master"))
+        self.assertIn("count = length(aws_db_instance.main.master_user_secret)", rotation)
         self.assertIn("secret_id          = aws_db_instance.main.master_user_secret[0].secret_arn", rotation)
         self.assertIn("rotate_immediately = false", rotation)
         self.assertNotIn("rotation_lambda_arn", rotation)              # RDS owns the rotation of a managed secret
@@ -63,7 +70,26 @@ class ManagedMasterPasswordTest(unittest.TestCase):
         self.assertRegex(var, r"default\s*=\s*180\b")
         self.assertIn("validation", var)
         self.assertIn('output "master_user_secret_arn"', RDS_OUT)
-        self.assertIn("aws_db_instance.main.master_user_secret[0].secret_arn", RDS_OUT)
+        self.assertIn("one(aws_db_instance.main.master_user_secret[*].secret_arn)", RDS_OUT)
+
+    def test_no_bare_index_on_the_managed_secret_outside_the_count_gate(self):
+        """The first plan sees master_user_secret = [] (provider 6.69.1): a [0] outside the gated rotation fails it."""
+        self.assertNotIn("master_user_secret[0]", _code(RDS_OUT))
+        rotation = _resource(RDS_MAIN, "aws_secretsmanager_secret_rotation", "master")
+        outside = _code(RDS_MAIN.replace(rotation, ""))
+        self.assertNotIn("master_user_secret[0]", outside)
+        for path in sorted(AA365.glob("*.tf")):
+            with self.subTest(path=path.name):
+                self.assertNotIn("master_user_secret[0]", _code(path.read_text(encoding="utf-8")))
+
+    def test_migrator_reads_the_managed_secret_from_the_first_apply_on(self):
+        code = _code(MIGRATOR)
+        self.assertIn("db_migrate_task_secret_arns = compact([", code)   # the exact ARN is null in the first apply
+        grant = code.split('Sid      = "ReadManagedMasterSecret"', 1)[1].split('Sid      = ', 1)[0]
+        self.assertIn('Action   = ["secretsmanager:GetSecretValue"]', grant)
+        self.assertIn('Resource = "${local.secret_arn_prefix}rds!db-*"', grant)
+        self.assertIn('StringEquals = { "secretsmanager:ResourceTag/aws:rds:primaryDBInstanceArn" = module.rds.db_arn }',
+                      grant)
 
     def test_no_password_variable_anywhere(self):
         self.assertNotIn('variable "db_password"', RDS_VARS)

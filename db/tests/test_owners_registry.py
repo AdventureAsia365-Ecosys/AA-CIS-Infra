@@ -265,7 +265,7 @@ class MirrorsAgreeTest(unittest.TestCase):
         execution = tf.split('Sid      = "InjectMigratorDsn"', 1)[1].split("}", 1)[0]
         self.assertIn("Resource = [aws_secretsmanager_secret.db_migrator.arn]", execution)
         self.assertNotIn("rds_secret_arn", execution)
-        task_secrets = tf.split("db_migrate_task_secret_arns = [", 1)[1].split("]", 1)[0]
+        task_secrets = tf.split("db_migrate_task_secret_arns = compact([", 1)[1].split("])", 1)[0]
         # AA-1182: the in-task master read is the RDS-managed secret, found through the instance; the legacy DSN
         # secret only by ARN pattern (no data source, so deleting it never breaks a plan).
         self.assertIn("module.rds.master_user_secret_arn", task_secrets)
@@ -274,6 +274,9 @@ class MirrorsAgreeTest(unittest.TestCase):
         describe = tf.split('Sid      = "DescribeMasterInstance"', 1)[1].split("}", 1)[0]
         self.assertIn('Action   = ["rds:DescribeDBInstances"]', describe)
         self.assertIn("Resource = module.rds.db_arn", describe)
+        # Review S297: the managed secret is readable from the first apply on (plan-time grant by name + instance tag).
+        managed = tf.split('Sid      = "ReadManagedMasterSecret"', 1)[1].split("Sid      =", 1)[0]
+        self.assertIn('"secretsmanager:ResourceTag/aws:rds:primaryDBInstanceArn" = module.rds.db_arn', managed)
         rds_module = (ROOT / "modules" / "rds" / "main.tf").read_text(encoding="utf-8")
         self.assertIn('identifier        = "${local.name_prefix}-db"', rds_module)   # = master_db_instance on dev
         self.assertIn("aws_secretsmanager_secret.db_migrator.arn", task_secrets)  # set-password db_migrator
