@@ -34,16 +34,15 @@ name: Docs Gen (generated infra docs)
 #    named; any other id renders as {aws-account}.
 # Triggers: nightly, manual, and Terraform Apply (its separate docs-gen-dispatch job, the only job there
 # with `actions: write`) after every apply that changed something.
-# Root repo access (AA-901, root ADR 0011): short-lived installation tokens of the GitHub App aa-ecosys-ci-bot,
-# scoped to AdventureAsia365-Ecosys/AA-Ecosys only and revoked when the job ends. Two tokens, least privilege:
-#   - a Contents READ token for the root checkout (persist-credentials: false), minted before the AWS steps
-#     because the render step checks runbook links against that checkout;
-#   - a Contents + Pull requests WRITE token minted right before the final push / gh step, after every AWS and
-#     Terraform step, and used only there; no other step can read it from disk.
-# Secrets and variables (repo level): AWS_ROLE_ARN (the plan role, as in terraform-plan.yml; this job has no
-# environment, so the dev environment's apply-role value does not apply), TF_STATE_BUCKET, the variable
-# AA_CI_BOT_APP_ID and the secret AA_CI_BOT_PRIVATE_KEY (repo level: this private repo on GitHub Free has no
-# environment branch rule, so the job's main-only guard is what keeps the key off other refs).
+# Two jobs (AA-1183): `render` (the plan role over OIDC, no GitHub environment, so its subject stays
+# `ref:refs/heads/main`) renders the pages into the artifact docs-gen-<run id>; `publish` runs in the environment
+# `ci-bot` (deployment branches: main only; it holds AA_CI_BOT_PRIVATE_KEY) and holds no AWS credential.
+# Root repo access: the root repo is public, so `render` checks it out with the job's own GITHUB_TOKEN (read). Only
+# `publish` mints an aa-ecosys-ci-bot installation token (AA-901, root ADR 0011): Contents + Pull requests WRITE on
+# AdventureAsia365-Ecosys/AA-Ecosys only, revoked when the job ends, used only for the final push / gh step.
+# Secrets and variables: AWS_ROLE_ARN (repo level, the plan role, as in terraform-plan.yml), TF_STATE_BUCKET, the repo
+# variable AA_CI_BOT_APP_ID and the `ci-bot` environment secret AA_CI_BOT_PRIVATE_KEY (one copy per repo, root
+# tools/security/ci_bot_key_consolidate.sh; it was repo level before, readable by a workflow on any branch).
 # Cost: $0 AWS (state read from S3, a few GET requests); GitHub Actions about 1 minute a night.
 on:
   workflow_dispatch:
@@ -76,15 +75,13 @@ jobs:
     # No environment: the OIDC sub is `ref:refs/heads/main`, trusted only by the read-only plan role.
     if: github.ref == 'refs/heads/main'
     timeout-minutes: 15
+    outputs:
+      rendered: ${{ steps.artifact.outcome == 'success' }}
     env:
       AWS_REGION: us-west-1
       ROOT_REPO: AdventureAsia365-Ecosys/AA-Ecosys
       ROOT_BRANCH: master
-      PR_BRANCH: bot/generated-infra-docs
-      GEN_PATH: docs/generated
       REASON: ${{ github.event_name == 'schedule' && 'nightly' || inputs.reason || 'manual' }}
-      PUBLISH: ${{ github.event_name == 'workflow_dispatch' && inputs.publish && 'true' || 'false' }}
-      HAS_CI_BOT_APP: ${{ vars.AA_CI_BOT_APP_ID != '' && secrets.AA_CI_BOT_PRIVATE_KEY != '' }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -98,29 +95,17 @@ jobs:
       - name: Unit tests (generator)
         run: python -m unittest discover -s tools/docs/tests
 
-      # AA-901: read-only App token for the root checkout (the job runs on main only, see `if:` above).
-      - name: Mint the aa-ecosys-ci-bot token (root repo, contents read)
-        id: root-read-token
-        if: env.HAS_CI_BOT_APP == 'true'
-        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
-        with:
-          app-id: ${{ vars.AA_CI_BOT_APP_ID }}
-          private-key: ${{ secrets.AA_CI_BOT_PRIVATE_KEY }}
-          owner: AdventureAsia365-Ecosys
-          repositories: AA-Ecosys
-          permission-contents: read
-
+      # The root repo is public: this job's own token reads it (no App key in a job that holds AWS credentials).
       - name: Check out the root repo
-        if: env.HAS_CI_BOT_APP == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ env.ROOT_REPO }}
           ref: ${{ env.ROOT_BRANCH }}
-          token: ${{ steps.root-read-token.outputs.token }}
+          token: ${{ github.token }}
           path: root
           fetch-depth: 1
-          # No token in root/.git/config while terraform init / show run provider binaries; only the final
-          # push step gets a (separate, write) token, passed in the push URL and never stored.
+          # No token in root/.git/config while terraform init / show run provider binaries; only the publish
+          # job's push gets a (separate, write) token, passed in the push URL and never stored.
           persist-credentials: false
 
       - name: Configure AWS credentials (OIDC, read-only plan role)
@@ -197,13 +182,74 @@ jobs:
           echo "- \`env-config.md\`: $(grep -c '^| ' generated/env-config.md) table rows" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Keep the rendered pages as an artifact
+        id: artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: docs-gen-${{ github.run_id }}
           path: generated/
           retention-days: 14
 
-      # AA-901: the write token is minted only here, after every AWS / Terraform step.
+      - name: Fail on missing or broken runbook links
+        if: always()
+        run: |
+          if [ -s problems.txt ]; then
+            while IFS= read -r line; do echo "::error title=alarm runbook::$line"; done < problems.txt
+            exit 1
+          fi
+          echo "every alarm links to an existing runbook in the root repo"
+
+      - name: Fail when the env config register could not be rendered
+        if: always() && steps.envcfg.outcome == 'failure'
+        run: |
+          echo "::error title=env-config::the env config register step failed (see its log); the other pages were still published"
+          exit 1
+
+  # AA-1183: the only job that holds the aa-ecosys-ci-bot key (environment ci-bot, main only); no AWS credential here.
+  publish:
+    name: Root PR (generated infra docs)
+    needs: render
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.render.outputs.rendered == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Holds AA_CI_BOT_PRIVATE_KEY; deployment branches limited to main (root tools/security/ci_bot_key_consolidate.sh).
+    environment: ci-bot
+    permissions:
+      contents: read
+    env:
+      ROOT_REPO: AdventureAsia365-Ecosys/AA-Ecosys
+      ROOT_BRANCH: master
+      PR_BRANCH: bot/generated-infra-docs
+      GEN_PATH: docs/generated
+      REASON: ${{ github.event_name == 'schedule' && 'nightly' || inputs.reason || 'manual' }}
+      PUBLISH: ${{ github.event_name == 'workflow_dispatch' && inputs.publish && 'true' || 'false' }}
+      HAS_CI_BOT_APP: ${{ vars.AA_CI_BOT_APP_ID != '' && secrets.AA_CI_BOT_PRIVATE_KEY != '' }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Fetch the rendered pages of this run
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: docs-gen-${{ github.run_id }}
+          path: generated
+
+      - name: Check out the root repo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.ROOT_REPO }}
+          ref: ${{ env.ROOT_BRANCH }}
+          token: ${{ github.token }}
+          path: root
+          fetch-depth: 1
+          persist-credentials: false   # the push below passes the write token in its URL, never stored
+
+      # AA-901: the write token is minted only here, in a job with no AWS credential.
       - name: Mint the aa-ecosys-ci-bot token (root repo, contents + pull requests write)
         id: root-write-token
         if: env.HAS_CI_BOT_APP == 'true'
@@ -266,18 +312,3 @@ jobs:
               --title "docs: regenerate infra docs (alarms, network, inventory, IAM, env config)" --body-file ../pr-body.md)
             echo "- opened root PR $URL" >> "$GITHUB_STEP_SUMMARY"
           fi
-
-      - name: Fail on missing or broken runbook links
-        if: always()
-        run: |
-          if [ -s problems.txt ]; then
-            while IFS= read -r line; do echo "::error title=alarm runbook::$line"; done < problems.txt
-            exit 1
-          fi
-          echo "every alarm links to an existing runbook in the root repo"
-
-      - name: Fail when the env config register could not be rendered
-        if: always() && steps.envcfg.outcome == 'failure'
-        run: |
-          echo "::error title=env-config::the env config register step failed (see its log); the other pages were still published"
-          exit 1

@@ -50,9 +50,9 @@ name: DB Schema Dump (shared RDS)
 # Root repo access (AA-901, root ADR 0011): a short-lived installation token of the GitHub App aa-ecosys-ci-bot,
 # minted right before the root checkout (after every AWS step that produces the dump) for AdventureAsia365-Ecosys/AA-Ecosys
 # only, Contents write + Pull requests write; revoked when the job ends. Needs the repo variable AA_CI_BOT_APP_ID and
-# the repo secret AA_CI_BOT_PRIVATE_KEY (repo level: this private repo on GitHub Free has no environment branch rule,
-# so the job's main-only guard is what keeps the key off other refs). Without them the dump and the artifact still
-# run and the publish step fails with a clear error.
+# the secret AA_CI_BOT_PRIVATE_KEY of the environment ci-bot (deployment branches: main only; AA-1183, root
+# tools/security/ci_bot_key_consolidate.sh), which only the publish job names. Without them the dump and the artifact
+# still run and the publish step fails with a clear error.
 on:
   workflow_dispatch:
     inputs:
@@ -349,6 +349,9 @@ jobs:
     if: always() && github.ref == 'refs/heads/main' && needs.dump.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # AA-1183: holds AA_CI_BOT_PRIVATE_KEY; deployment branches limited to main (root
+    # tools/security/ci_bot_key_consolidate.sh). The dump job keeps environment dev (its OIDC subject).
+    environment: ci-bot
     permissions:
       contents: read
     env:

@@ -541,8 +541,8 @@ runs it after the root PR step and writes the report to the step summary. A sche
 yet" and passes; drift fails the step only when the design page says `enforce=true`. Local run:
 `python3 db/check_erd_drift.py /tmp/erd.json ../../docs/architecture/erd/design` (from the workspace checkout).
 
-The workflow needs the GitHub App `aa-ecosys-ci-bot`: repo variable `AA_CI_BOT_APP_ID` and repo secret
-`AA_CI_BOT_PRIVATE_KEY` (see its header).
+The workflow needs the GitHub App `aa-ecosys-ci-bot`: repo variable `AA_CI_BOT_APP_ID` and the secret
+`AA_CI_BOT_PRIVATE_KEY` of the environment `ci-bot` (main only; see its header).
 
 ## Isolation probe (X1 plan S2, U-16)
 **DB Isolation Probe** (`.github/workflows/db-isolation-probe.yml`, nightly 04:13 UTC, manual, and
