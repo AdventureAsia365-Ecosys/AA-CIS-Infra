@@ -77,21 +77,35 @@ class FakeSm:
         ResourceNotFoundException = _NotFound
 
     def __init__(self, values: dict[str, str | None], changed: datetime = T0, corrupt_reads: int = 0,
-                 fail_puts: int = 0) -> None:
+                 fail_puts: int = 0, fail_reads_after_put: int = 0, fail_stage_moves: int = 0) -> None:
         self.values = dict(values)
         self.changed = {k: changed for k in values}
+        # Versions per secret: {version id: body}, and which one holds AWSCURRENT (None for an empty shell).
+        self.versions = {k: ({"v0": v} if v is not None else {}) for k, v in values.items()}
+        self.current = {k: ("v0" if v is not None else None) for k, v in values.items()}
         self.puts: list[tuple[str, dict]] = []
+        self.stage_moves: list[tuple[str, str, str]] = []
         self.corrupt_reads = corrupt_reads  # reads after a put that return a stale value (hash check must catch it)
         self.fail_puts = fail_puts
+        self.fail_reads_after_put = fail_reads_after_put  # read-backs right after a put that raise (throttling)
+        self.just_put = False
+        self.fail_stage_moves = fail_stage_moves
 
     def describe_secret(self, SecretId):  # noqa: N803 — boto3 names
         if SecretId not in self.values:
             raise _NotFound(SecretId)
-        return {"Name": SecretId, "LastChangedDate": self.changed[SecretId]}
+        cur = self.current[SecretId]
+        return {"Name": SecretId, "LastChangedDate": self.changed[SecretId],
+                "VersionIdsToStages": {v: (["AWSCURRENT"] if v == cur else []) for v in self.versions[SecretId]}}
 
     def get_secret_value(self, SecretId):  # noqa: N803
         if self.values.get(SecretId) is None:
             raise _NotFound(SecretId)
+        if self.just_put and self.fail_reads_after_put:
+            self.just_put = False
+            self.fail_reads_after_put -= 1
+            raise RuntimeError("simulated read failure")
+        self.just_put = False
         if self.puts and self.corrupt_reads:
             self.corrupt_reads -= 1
             return {"SecretString": json.dumps({**json.loads(self.values[SecretId]), "client_secret": "stale"})}
@@ -104,7 +118,21 @@ class FakeSm:
         self.values[SecretId] = SecretString
         self.changed[SecretId] = T0 + timedelta(days=2)
         self.puts.append((SecretId, json.loads(SecretString)))
-        return {"VersionId": f"v{len(self.puts)}"}
+        version_id = f"v{len(self.puts)}"
+        self.versions[SecretId][version_id] = SecretString
+        self.current[SecretId] = version_id
+        self.just_put = True
+        return {"VersionId": version_id}
+
+    def update_secret_version_stage(self, SecretId, VersionStage, MoveToVersionId, RemoveFromVersionId):  # noqa: N803
+        assert VersionStage == "AWSCURRENT" and RemoveFromVersionId == self.current[SecretId]
+        if self.fail_stage_moves:
+            self.fail_stage_moves -= 1
+            raise RuntimeError("simulated stage move failure")
+        self.stage_moves.append((SecretId, MoveToVersionId, RemoveFromVersionId))
+        self.current[SecretId] = MoveToVersionId
+        self.values[SecretId] = self.versions[SecretId][MoveToVersionId]
+        return {}
 
 
 M2M_SECRET = "aa-crm/dev/m2m-booking-client"
@@ -195,7 +223,58 @@ def test_store_failure_deletes_the_new_secret_again(capsys):
     assert idp.deleted == ["sec-new-1"]
     assert [s[0] for s in idp.secrets["id-crm-m2m"]] == ["sec-old"]
     assert "storing the new value failed (RuntimeError)" in err and "deleted again" in err
+    assert "AWSCURRENT moved back" not in err and sm.stage_moves == []   # no put landed: nothing to move back
     assert json.loads(sm.values[M2M_SECRET])["client_secret"] == OLD_VALUE
+
+
+def test_put_succeeds_but_the_read_back_fails_restores_the_old_version_first(capsys):
+    """Review S297: the put landed, the read-back raised twice. The stored value must go back to the old version
+    BEFORE the new Cognito secret is deleted, or the next task start reads a dead value."""
+    idp = FakeIdp({"id-crm-m2m": [("sec-old", T0)]})
+    sm = FakeSm({M2M_SECRET: M2M_BODY}, fail_reads_after_put=2)
+    rc, lines, err = _run(["add", "--client", "crm-m2m", "--apply"], idp, sm, capsys)
+    assert rc == 1 and lines == []
+    assert len(sm.puts) == 2 and sm.stage_moves == [(M2M_SECRET, "v0", "v2")]
+    assert sm.current[M2M_SECRET] == "v0"
+    assert json.loads(sm.values[M2M_SECRET])["client_secret"] == OLD_VALUE
+    assert idp.deleted == ["sec-new-1"]
+    assert "AWSCURRENT moved back" in err and "deleted again" in err
+
+
+def test_a_failed_restore_keeps_the_new_cognito_secret(capsys):
+    idp = FakeIdp({"id-crm-m2m": [("sec-old", T0)]})
+    sm = FakeSm({M2M_SECRET: M2M_BODY}, fail_reads_after_put=2, fail_stage_moves=1)
+    rc, _, err = _run(["add", "--client", "crm-m2m", "--apply"], idp, sm, capsys)
+    assert rc == 1
+    assert idp.deleted == []                       # the stored value still matches a live Cognito secret
+    assert [s[0] for s in idp.secrets["id-crm-m2m"]] == ["sec-old", "sec-new-1"]
+    assert "was KEPT" in err and "update-secret-version-stage" in err and "--move-to-version-id v0" in err
+
+
+def test_another_writer_after_our_put_keeps_the_new_cognito_secret(capsys):
+    """AWSCURRENT is a version this run did not write (a concurrent writer of the shared secret): no stage move,
+    no delete."""
+    idp = FakeIdp({"id-crm-m2m": [("sec-old", T0)]})
+    sm = FakeSm({M2M_SECRET: M2M_BODY}, fail_reads_after_put=2)
+    real_put = sm.put_secret_value
+
+    def put_then_other_writer(**kw):
+        resp = real_put(**kw)
+        sm.versions[M2M_SECRET]["v-other"] = sm.values[M2M_SECRET]
+        sm.current[M2M_SECRET] = "v-other"
+        return resp
+
+    sm.put_secret_value = put_then_other_writer
+    rc, _, err = _run(["add", "--client", "crm-m2m", "--apply"], idp, sm, capsys)
+    assert rc == 1 and sm.stage_moves == [] and idp.deleted == []
+    assert "was KEPT" in err and "not one this run wrote" in err
+
+
+def test_a_shell_without_an_earlier_version_keeps_the_new_cognito_secret(capsys):
+    idp = FakeIdp({"id-cis-admin": [("sec-old", T0)]})
+    sm = FakeSm({"aa-cis/dev/admin-web": None}, fail_reads_after_put=2)
+    rc, _, err = _run(["add", "--client", "cis-admin", "--apply"], idp, sm, capsys)
+    assert rc == 1 and idp.deleted == [] and "no earlier version" in err
 
 
 def test_retire_deletes_the_old_secret_after_the_stored_write(capsys):

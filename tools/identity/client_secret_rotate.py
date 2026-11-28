@@ -16,9 +16,13 @@ Subcommands (each takes --client <name>, see CLIENTS; status also works without 
   add    --client C [--apply] Two-secret overlap, step 1. Refused when the client already has 2 secrets (the
                               Cognito limit: retire one first). Adds a secret, merges the value into its key of the
                               Secrets Manager secret (every other key kept), reads it back and compares SHA-256
-                              hashes. If the write or the check fails twice, the secret just added is deleted again
-                              (the apps keep the old one) and the command exits 1. Prints the new secret id and the
-                              restart command(s) of the services that read the key.
+                              hashes. If the write or the check fails twice, the Secrets Manager secret is moved
+                              back to the version that was current before (AWSCURRENT), and only then is the secret
+                              just added deleted again (the apps keep the old one); the command exits 1. If that
+                              restore cannot be done safely (no earlier version, another writer changed the secret,
+                              or the stage move fails) the new Cognito secret is KEPT and the manual steps are
+                              printed, so the stored value never points at a deleted secret. Prints the new secret id
+                              and the restart command(s) of the services that read the key.
   retire --client C --keep ID [--apply]
                               Two-secret overlap, step 2, after the restart and a sign-in / M2M check. Deletes
                               every secret of the client except ID. Refused unless ID is the client's newest secret
@@ -183,14 +187,49 @@ def _last_changed(sm: Any, name: str) -> Any:
     return sm.describe_secret(SecretId=name).get("LastChangedDate")
 
 
-def store_value(sm: Any, name: str, key: str, value: str) -> str:
-    """Merge key=value into the secret and check the stored copy by hash. Returns the new version id."""
+def current_version_id(sm: Any, name: str) -> str | None:
+    """The version id that holds the AWSCURRENT stage, None for a shell that never had a value."""
+    stages = sm.describe_secret(SecretId=name).get("VersionIdsToStages") or {}
+    for version_id, labels in stages.items():
+        if "AWSCURRENT" in (labels or []):
+            return version_id
+    return None
+
+
+def store_value(sm: Any, name: str, key: str, value: str, written: list[str] | None = None) -> str:
+    """Merge key=value into the secret and check the stored copy by hash. Returns the new version id. The id of a put
+    that succeeded is appended to written before the check, so a caller can undo it when the check fails."""
     current = _current_secret(sm, name)
     resp = sm.put_secret_value(SecretId=name, SecretString=json.dumps({**current, key: value}))
+    if written is not None:
+        written.append(resp.get("VersionId", ""))
     stored = _current_secret(sm, name).get(key)
     if not isinstance(stored, str) or _sha256(stored) != _sha256(value):
         raise ToolError(f"{name}: the stored {key} does not match the new value (hash check)")
     return resp.get("VersionId", "")
+
+
+def restore_previous_version(sm: Any, name: str, previous: str | None, written: list[str]) -> str:
+    """Undo the puts of an abandoned add. Returns "unchanged" (no put of ours is current: nothing to undo) or
+    "restored" (AWSCURRENT moved back to previous). Raises ToolError when the undo is not safe: no earlier version
+    to go back to, AWSCURRENT is a version this run did not write (a put that succeeded after a client-side error,
+    or another writer of the shared secret), or the stage move fails."""
+    now = current_version_id(sm, name)
+    if now == previous:
+        return "unchanged"
+    if previous is None:
+        raise ToolError("the secret had no earlier version to move back to")
+    if now not in [v for v in written if v]:
+        raise ToolError(f"AWSCURRENT is version {now}, not one this run wrote (another writer, or a put that "
+                        "succeeded after a client-side error)")
+    try:
+        sm.update_secret_version_stage(SecretId=name, VersionStage="AWSCURRENT", MoveToVersionId=previous,
+                                       RemoveFromVersionId=now)
+    except Exception as exc:  # noqa: BLE001
+        raise ToolError(f"moving AWSCURRENT back failed ({_aws_err(exc)})") from None
+    if current_version_id(sm, name) != previous:
+        raise ToolError("AWSCURRENT did not move back")
+    return "restored"
 
 
 # ── commands ─────────────────────────────────────────────────────────────────
@@ -223,6 +262,29 @@ def status(idp: Any, sm: Any, name: str, env: str) -> dict[str, Any]:
     return row
 
 
+def _abandon_add(idp: Any, sm: Any, names: dict[str, Any], pool_id: str, client_id: str, new_id: str,
+                 previous: str | None, written: list[str], name: str) -> str:
+    """Undo an add whose stored copy could not be verified. The Cognito secret is deleted only once Secrets Manager
+    no longer serves its value (AWSCURRENT unchanged or moved back); otherwise it is kept, because the next task
+    start of a reading service would load a value Cognito no longer accepts."""
+    try:
+        state = restore_previous_version(sm, names["secret"], previous, written)
+    except ToolError as exc:
+        return (f"the new Cognito secret {new_id} was KEPT because the stored value could not be put back ({exc}); "
+                f"run status --client {name}: if the key holds the new value, restart and retire as usual; "
+                f"otherwise move AWSCURRENT back by hand (aws secretsmanager update-secret-version-stage "
+                f"--secret-id {names['secret']} --version-stage AWSCURRENT --move-to-version-id {previous} "
+                f"--remove-from-version-id <current>) and then delete {new_id} "
+                f"(aws cognito-idp delete-user-pool-client-secret)")
+    done = "AWSCURRENT moved back to the earlier version, " if state == "restored" else ""
+    try:
+        idp.delete_user_pool_client_secret(UserPoolId=pool_id, ClientId=client_id, ClientSecretId=new_id)
+        return f"{done}the secret just added was deleted again; the apps keep the old one"
+    except Exception as exc:  # noqa: BLE001
+        return (f"{done}deleting the secret just added failed too ({_aws_err(exc)}): delete {new_id} by hand "
+                f"(aws cognito-idp delete-user-pool-client-secret), the apps still use the old one")
+
+
 def add(idp: Any, sm: Any, name: str, env: str, *, apply: bool, profile: str, region: str) -> dict[str, Any]:
     names, pool_id, client_id = _resolve(idp, name, env)
     if not _secret_exists(sm, names["secret"]):
@@ -237,28 +299,25 @@ def add(idp: Any, sm: Any, name: str, env: str, *, apply: bool, profile: str, re
     if not apply:
         row["action"] = "would_add"
         return row
+    # The version the apps read today: an abandoned add moves AWSCURRENT back here before deleting the new secret.
+    previous = current_version_id(sm, names["secret"])
     resp = idp.add_user_pool_client_secret(UserPoolId=pool_id, ClientId=client_id)
     desc = resp.get("ClientSecretDescriptor") or {}
     new_id, value = desc.get("ClientSecretId"), desc.get("ClientSecretValue")
     if not new_id or not value:
         raise ToolError(f"{names['client']}: the add response carried no secret id or value; check "
                         f"status --client {name} (a secret may have been added without a stored value)")
-    version_id, failure = "", ""
+    version_id, failure, written = "", "", []
     for _ in range(WRITE_ATTEMPTS):
         try:
-            version_id = store_value(sm, names["secret"], names["key"], value)
+            version_id = store_value(sm, names["secret"], names["key"], value, written)
             failure = ""
             break
         except Exception as exc:  # noqa: BLE001 — class + code only, a message could echo a request body
             failure = str(exc) if isinstance(exc, ToolError) else _aws_err(exc)
     del value
     if failure:
-        try:
-            idp.delete_user_pool_client_secret(UserPoolId=pool_id, ClientId=client_id, ClientSecretId=new_id)
-            undo = "the secret just added was deleted again; the apps keep the old one"
-        except Exception as exc:  # noqa: BLE001
-            undo = (f"deleting the secret just added failed too ({_aws_err(exc)}): delete {new_id} by hand "
-                    f"(aws cognito-idp delete-user-pool-client-secret), the apps still use the old one")
+        undo = _abandon_add(idp, sm, names, pool_id, client_id, new_id, previous, written, name)
         raise ToolError(f"{names['secret']}: storing the new value failed ({failure}); {undo}")
     row.update(action="added", new_secret_id=new_id, version_id=version_id, stored="hash-verified",
                secrets_after=len(before) + 1,

@@ -39,7 +39,7 @@ ceremony runbook and the secrets register rows are in the root repo (same lane).
 - **Client secret rotation: `tools/identity/client_secret_rotate.py`.** Lesson S296: the new value exists only in the
   `AddUserPoolClientSecret` response; Describe returns none once a client has rotated secrets. The tool writes the add
   response straight into the client's Secrets Manager key, checks the stored copy by SHA-256, retries once and
-  otherwise deletes the secret it just added (the apps keep the old one). `retire` deletes the old secret only when the
+  otherwise moves AWSCURRENT back to the version current before the add (VersionId recorded first) and only then deletes the Cognito secret it just added (the apps keep the old one); if that move is not safe it keeps the Cognito secret and prints the manual steps (review S297: a put that landed before a failed read-back must not leave a dead value stored). `retire` deletes the old secret only when the
   kept id is the newest and the Secrets Manager secret changed after it was created. The refill tools
   (`staff_web_secret.py`, `crm_dev_identity.py`, `workforce_bootstrap.py`) now use the stored copy when Describe
   returns no secret instead of failing (crm `web-secret --rotate-session` keeps working after a rotation).

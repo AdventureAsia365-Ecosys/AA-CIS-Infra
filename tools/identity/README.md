@@ -199,8 +199,11 @@ Cognito returns a new client secret value **once**, in the `AddUserPoolClientSec
 rotated secrets, `DescribeUserPoolClient` returns no `ClientSecret` (the CLI prints `None` with `--output text`), so
 "add, then read it back with Describe" loses the value (S296 incident on the CRM M2M client). This tool takes the
 value from the add response, merges it into the client's Secrets Manager key in the same step (memory only, never
-printed), reads it back and compares SHA-256 hashes. If the write or the check fails twice, it deletes the secret it
-just added (the apps keep the old one) and exits 1.
+printed), reads it back and compares SHA-256 hashes. If the write or the check fails twice, it first moves the Secrets
+Manager secret back to the version that was AWSCURRENT before the add (a put may have landed even though the read-back
+failed), then deletes the secret it just added (the apps keep the old one) and exits 1. When that move is not safe
+(no earlier version, a version it did not write is current, or the move fails) it KEEPS the new Cognito secret and
+prints the manual steps instead, so the stored value never points at a deleted secret.
 
 Clients (`CLIENTS` in the tool): `crm-m2m`, `partner-web`, `cis-admin`, `breakglass`, `booking-staff`, `crm-staff`,
 `academy-web`, each with its secret, key and the ECS service(s) that read it at task start.
