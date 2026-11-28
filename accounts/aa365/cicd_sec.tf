@@ -276,6 +276,21 @@ data "aws_iam_policy_document" "tf_apply_sec" {
     ]
     resources = ["arn:aws:chatbot::${var.account_id}:chat-configuration/slack-channel/aa-ecosys-*"]
   }
+
+  # AA-1110 (S297 review): the first channel configuration in the account creates the service-linked role
+  # AWSServiceRoleForAWSChatbot, and the caller (this apply role) must be allowed to create it (Amazon Q Developer in
+  # chat applications admin guide, "Using service-linked roles"). Only that one service; the tf_apply boundary does not
+  # cover iam:CreateServiceLinkedRole. No-op when the role already exists.
+  statement {
+    sid       = "ChatAlertsServiceLinkedRole"
+    actions   = ["iam:CreateServiceLinkedRole"]
+    resources = ["arn:aws:iam::${var.account_id}:role/aws-service-role/management.chatbot.amazonaws.com/*"]
+    condition {
+      test     = "StringEquals"
+      variable = "iam:AWSServiceName"
+      values   = ["management.chatbot.amazonaws.com"]
+    }
+  }
 }
 
 resource "aws_iam_policy" "tf_apply_sec" {

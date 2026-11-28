@@ -58,3 +58,16 @@ fallback. The person-facing steps live in the root repo (`docs/ops/runbooks/chat
 - A local plan needs `TF_VAR_chat_alerts_slack_team_id` / `_channel_id` exported once the switch is on.
 - The plan role reads the configuration through the AWS managed ReadOnlyAccess; check that the first PR plan after
   the flip refreshes it without AccessDenied.
+
+## Review fixes (S297, independent review)
+
+- **Service-linked role grant.** The first `CreateSlackChannelConfiguration` in the account creates the service-linked
+  role `AWSServiceRoleForAWSChatbot` with the caller's rights (Amazon Q Developer in chat applications admin guide,
+  "Using service-linked roles"), and the caller is the CI apply role. Added `ChatAlertsServiceLinkedRole` to
+  `tf_apply_sec`: `iam:CreateServiceLinkedRole` on `role/aws-service-role/management.chatbot.amazonaws.com/*` with
+  `iam:AWSServiceName = management.chatbot.amazonaws.com`. A no-op when the role already exists (nobody could check
+  live from the lane: the subagent hook blocks `aws iam`). The tf_apply boundary does not list
+  `iam:CreateServiceLinkedRole`, so nothing denies it. Kept as its own statement rather than adding the service to
+  `local.sec_slr_services`, so the security block keeps its "only those two services" meaning. Asserted in the test.
+- Size: the new statement adds 277 characters (minified JSON), so the rendered `aa-cis-infra-tf-apply-sec` grows from
+  4,873 to about 5,150 of the 6,144-character managed policy limit.

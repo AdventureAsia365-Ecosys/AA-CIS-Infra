@@ -175,6 +175,18 @@ class ApplyRoleGrantTest(unittest.TestCase):
         )
         self.assertNotIn('"*"', stmt)
 
+    def test_service_linked_role_for_chatbot_only(self):
+        # The first CreateSlackChannelConfiguration creates AWSServiceRoleForAWSChatbot with the caller's rights.
+        stmt = _statement(SEC, "ChatAlertsServiceLinkedRole")
+        self.assertIn('actions   = ["iam:CreateServiceLinkedRole"]', stmt)
+        self.assertIn(
+            'resources = ["arn:aws:iam::${var.account_id}:role/aws-service-role/management.chatbot.amazonaws.com/*"]',
+            stmt,
+        )
+        self.assertIn('variable = "iam:AWSServiceName"', stmt)
+        self.assertIn('values   = ["management.chatbot.amazonaws.com"]', stmt)
+        self.assertNotIn('"*"', stmt)
+
     def test_no_workspace_authorisation_verbs(self):
         for verb in ("RedeemSlackOauthCode", "GetSlackOauthParameters", "DeleteSlackWorkspaceAuthorization", "chatbot:*"):
             self.assertNotIn(verb, SEC)
