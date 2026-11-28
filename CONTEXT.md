@@ -142,6 +142,9 @@ accounts/
                                    legacy shared CI role aa-cis-dev-role retired in AA-806 step 3)
     cicd_split.tf                 (AA-806: aa-cis-dev-app-deploy, aa-cis-infra-tf-plan/-apply,
                                    permissions boundaries; bootstrap, applied by a human)
+    cicd_deploy_alerts.tf         (AA-1193: sns:Publish on the alerts topic for the three API deploy roles
+                                   (CIS, Booking, CRM): their deploy-dev.yml alerts after a rollback on a red
+                                   post-deploy verify; the CIS one is bootstrap, applied by a human with -target)
     cicd_db_auto_apply.tf         (AA-993 I1, root ADR 0017 d6: aa-cis-infra-db-auto-apply, trusted only for
                                    environment:dev-db-auto + ref main; RunTask/Register/Deregister of the migrator
                                    family, PassRole on the two migrator roles, S3 prefix db-auto-apply/, log read.
@@ -395,7 +398,12 @@ accounts/
                                    aa-cis-<env>-compliance-evidence (SecurityAudit + ViewOnlyAccess + a few reads,
                                    List/Get/Put on evidence/ only, explicit deny of every tamper action; trust = the
                                    immutable subject + ref + job_workflow_ref of the root "Compliance evidence" workflow
-                                   on master and this repo's "Compliance AWS" workflow on main). The CIS task role
+                                   on master and this repo's "Compliance AWS" workflow on main; AA-1183: also the root
+                                   "Secret rotation" workflow on master, with exactly the 13 metadata reads of
+                                   rotation_check.py and an explicit deny of every secret-value read, including
+                                   the Cognito DescribeUserPoolClient / DescribeIdentityProvider calls that
+                                   SecurityAudit grants; the two Prowler checks built on DescribeUserPoolClient are
+                                   excluded and pinned in Terraform instead). The CIS task role
                                    reads evidence/ (ecs_read_compliance_evidence). Layout and writer:
                                    tools/compliance/seal.py; reader: AA-CIS-App api/services/compliance_store.py.
                                    < $0.05/month)
@@ -618,6 +626,11 @@ accounts/
     (crm_membership_alarms.tf, crm_support_alarms.tf, crm_ops_release_alarms.tf, tenant_pool_alarms.tf: deleted by the
      S263 alert diet, AA-1025; those log events are in-app checks of AA-Partner and AA-CIS-App now)
     alert_recipients.tf           (AA-913: the CIS admin manages the e-mail subscriptions of the alerts topic)
+    chat_alerts.tf                (AA-1110, S297: Slack chat alert channel through Amazon Q Developer in chat
+                                   applications, OFF by var.chat_alerts_enabled; workspace / channel IDs from repo
+                                   secrets; notification-only role + CloudWatchReadOnlyAccess guardrail; us-west-2
+                                   provider (no chatbot API in us-west-1); 0 USD. Turn-on steps: root
+                                   docs/ops/runbooks/chat-alert-channel.md)
     alarm_runbooks.tf             (AA-893: a runbook link at the end of every alarm description)
     agent_session.tf              (AA-730: the narrow role agent shells assume, profile aa365-agent)
     security_access_analyzer_archive.tf (AA-873: archive rules for the triaged Access Analyzer findings)
@@ -731,6 +744,9 @@ weekly export and Gate C veto window fired into a bus with no rule and were remo
 `modules/vpc` (AA-1022): besides the NAT default route, the private route table carries the route of the S3 gateway
 endpoint `aa-cis-<env>-vpce-s3` (free; same-region S3, ECR layers included, no longer goes through the NAT instance;
 default endpoint policy, bucket policies unchanged). The db route table stays without any route out of the VPC.
+The NAT instance is patched in place every Sunday (AA-1185, `security_account_defaults.tf` sections 4 and 5): a swap
+association (`aa-ecosys-<env>-nat-swap`, persistent 1 GB swapfile, 20:45 UTC), then `AWS-RunPatchBaseline` (21:00 UTC,
+reboot only if needed, 3,600 s step timeout); runbook `docs/runbooks/nat-instance-patching.md`.
 `observability_ecosys.tf` (S235 Phase 0) covers what is not CIS: NAT status check (+ AA-1022 the
 `StatusCheckFailed_System` alarm with the EC2 recover action), Booking target
 health / CPU / REST 5XX, TripPlanner Lambda errors + sustained throttles (AA-833: > 5 in 2 of 3
@@ -941,7 +957,8 @@ makes CI Terraform Plan fail with 403.
   (`aa-crm-dev-app-deploy`, AA-Partner, AA-933), plus `crm_scrub.tf` (`aa-crm-dev-scrub-corpus`, AA-Partner
   "Scrub corpus" workflow, environment `scrub-corpus`, AA-938), `docs_reader.tf` (`aa-cis-dev-docs-sync`, the root repo's
   "Docs sync" workflow on `master`, AA-898), `compliance_evidence.tf` (`aa-cis-dev-compliance-evidence`, the root
-  "Compliance evidence" and this repo's "Compliance AWS" workflows, each pinned by `job_workflow_ref`, AA-1173) and `image_scan.tf` (`aa-cis-dev-image-scan-upload`, this repo's "Image
+  "Compliance evidence" and "Secret rotation" and this repo's "Compliance AWS" workflows, each pinned by
+  `job_workflow_ref`, AA-1173 / AA-1183) and `image_scan.tf` (`aa-cis-dev-image-scan-upload`, this repo's "Image
   Scan" workflow on `main`: PutObject on one summary key only, AA-1164; its reads use the plan role). Each app repo
   and each job type gets its **own** role. The old shared `aa-cis-dev-role` is retired (AA-806
   step 3); the apply boundary denies every write on that name so it cannot come back.
@@ -1192,7 +1209,9 @@ makes CI Terraform Plan fail with 403.
   `AA-Ecosys/docs/database/schema-ownership.md`. DB Migrate, the dump and the isolation probe run from the
   migrator task definition (`accounts/aa365/db_migrator.tf`) and log in as **`db_migrator`** since X1 S22
   (AA-860); the RDS master is break-glass plus three automated uses (`roles/` files, `set-password`,
-  `run-script`), whose DSN the runner reads in the task (`db/README.md`, `db/owners.yaml` `master_secret`).
+  `run-script`), whose login the runner reads in the task: since AA-1182 the RDS-managed master secret
+  (`modules/rds` `manage_master_user_password`, 180-day rotation; `db/owners.yaml` `master_db_instance`), the old DSN
+  secret `master_secret` only as a fallback until it is deleted (`db/README.md`).
   A run-script never reads row-level personal data (AA-969, root ADR 0019 d16): the runner hands `main(conn)` a
   guarded connection that plans every statement first and refuses one that would return a `pii:` tagged column of a
   tenant table (counts and `IS NULL` tests only) or copy one into an untagged table, and logs a failed statement's

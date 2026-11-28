@@ -96,9 +96,11 @@ migration in its owner repo, not a script.
 Exit codes of the task: 0 ok · 2 sha256 mismatch · 7 busy · 8 not the master · 10 bad path or shape ·
 13 the script raised or returned non-zero.
 
-**After X1 S22** the task's `DATABASE_URL` becomes `db_migrator`; run-script (like set-password) then
-needs the runner to open its own master connection from `aa-cis/dev/rds` (plan S22 runner change). Until
-that change lands both modes exit 8 under the `db_migrator` login.
+**After X1 S22** the task's `DATABASE_URL` is `db_migrator`'s; run-script (like set-password) opens its own master
+connection in the task: since AA-1182 from the RDS-managed master secret of `aa-cis-dev-db`, with the old DSN secret
+`aa-cis/dev/rds` as the fallback until it is deleted. A script that needs the master credentials itself (a restore
+drill connecting to a PITR copy, `s249_drill_*.py`) reads the managed secret the same way; a PITR copy keeps the master
+password of its restore time.
 
 `x1_connection_snapshot.py` (X1 S15, AA-860, read-only): one snapshot of client sessions per role /
 `application_name` / state, each login role's `rolconnlimit` and `max_connections`, for the `cis_app` limit

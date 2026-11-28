@@ -4,6 +4,7 @@
   "services": [
     "apigateway.amazonaws.com",
     "bedrock.amazonaws.com",
+    "chatbot.amazonaws.com",
     "ec2.amazonaws.com",
     "ecs-tasks.amazonaws.com",
     "events.amazonaws.com",

@@ -46,9 +46,16 @@ variable "db_username" {
   type = string
 }
 
-variable "db_password" {
-  type      = string
-  sensitive = true
+# AA-1182 (S297): no db_password variable. RDS manages the master password (manage_master_user_password).
+variable "master_password_rotation_days" {
+  type        = number
+  description = "Days between rotations of the RDS-managed master secret (AA-1182; tech lead S295: 180, the RDS default is 7)."
+  default     = 180
+
+  validation {
+    condition     = var.master_password_rotation_days >= 1 && var.master_password_rotation_days <= 365
+    error_message = "master_password_rotation_days must be 1 to 365 (Secrets Manager rotation rule limits)."
+  }
 }
 
 variable "db_subnet_group_name" {

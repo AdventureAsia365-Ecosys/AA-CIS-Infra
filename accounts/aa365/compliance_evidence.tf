@@ -31,7 +31,8 @@
 # identities only.
 #
 # Role aa-cis-<env>-compliance-evidence (Q6): SecurityAudit + ViewOnlyAccess (AWS managed, read-only; no s3:GetObject
-# on other buckets, no log events, no Lambda environment), a small read addition for Prowler and the nightly checks
+# on other buckets, no log events; known leftover: Lambda environment values stay readable through lambda:ListFunctions /
+# GetFunctionConfiguration, which Prowler's secrets-in-variables check needs), a small read addition for Prowler and the nightly checks
 # (below, without the data reads Prowler's own extra policy asks for: lambda:GetFunction, logs:FilterLogEvents,
 # ssm:GetDocument, glue:SearchTables, securityhub:BatchImportFindings), List/Get/Put on evidence/ of this bucket only,
 # and an explicit deny of every delete and lock change. Trust: GitHub OIDC, one statement per workflow, each pinned on
@@ -43,6 +44,19 @@
 # skip the upload with a notice. The role carries the workload boundary (no IAM writes, no guarded secret values).
 #
 # CIS reader: the CIS task role gets ListBucket on evidence/ and GetObject on evidence/* of this bucket (read only).
+#
+# AA-1183 part 2 (S297): the same role runs the weekly secret rotation check (root .github/workflows/secret-rotation.yml,
+# tools/security/rotation_check.py) through a third trust statement pinned on that workflow file on master. The tool
+# makes 13 metadata calls only (`rotation_check.py iam-actions` prints them; its tests pin the list); they are granted
+# explicitly in RotationCheckMetadata, so the check does not depend on what SecurityAudit / ViewOnlyAccess happen to
+# contain. None returns a secret value. The managed policies would grant some (SecurityAudit has cognito-idp:Describe*:
+# DescribeUserPoolClient returns the app client secret, DescribeIdentityProvider the external IdP client secret), so the
+# role is denied every secret-value read explicitly (DenySecretValueReads: secretsmanager:GetSecretValue /
+# BatchGetSecretValue, both Cognito calls, acm:ExportCertificate, kms:Decrypt); ListUserPoolClientSecrets never returns
+# a value. The two Prowler checks that need DescribeUserPoolClient are excluded in compliance-aws.yml (they would report
+# a false FAIL per client); tools/terraform/tests/test_aa1183_rotation_metadata.py pins the same two client settings on
+# every aws_cognito_user_pool_client instead. Writes nothing in AWS (issues go to GitHub with the run's own token).
+# Cost: 0 USD (a few hundred free read calls a week).
 #
 # Cost (us-west-1, D-19; estimates): storage a few MB a year (daily bundles of a few kB, weekly Prowler JSON of a few MB)
 # < 0.01 USD/month; PUT ~10 a day + manifests ~= 400/month < 0.01 USD; GET/LIST from the CIS page (cached 5 min per
@@ -69,8 +83,28 @@ locals {
   # The exact workflow file (on the default branch) each trust statement accepts, besides the immutable subject
   # (org id / repo id, same form as local.oidc_sub_cis_infra in cicd_split.tf and local.docs_sync_oidc_sub in
   # docs_reader.tf) and the ref.
-  compliance_evidence_root_workflow  = "AdventureAsia365-Ecosys/AA-Ecosys/.github/workflows/compliance-evidence.yml@refs/heads/master"
-  compliance_evidence_infra_workflow = "AdventureAsia365-Ecosys/AA-CIS-Infra/.github/workflows/compliance-aws.yml@refs/heads/main"
+  compliance_evidence_root_workflow     = "AdventureAsia365-Ecosys/AA-Ecosys/.github/workflows/compliance-evidence.yml@refs/heads/master"
+  compliance_evidence_infra_workflow    = "AdventureAsia365-Ecosys/AA-CIS-Infra/.github/workflows/compliance-aws.yml@refs/heads/main"
+  compliance_evidence_rotation_workflow = "AdventureAsia365-Ecosys/AA-Ecosys/.github/workflows/secret-rotation.yml@refs/heads/master"
+
+  # AA-1183 part 2: exactly the calls of the root rotation check (tools/security/rotation_check.py AWS_CALLS). Metadata
+  # only; change it together with that list (both repos pin it in a test).
+  compliance_evidence_rotation_read = [
+    "acm:DescribeCertificate", "acm:ListCertificates",
+    "cognito-idp:ListUserPoolClientSecrets", "cognito-idp:ListUserPoolClients", "cognito-idp:ListUserPools",
+    "iam:ListAccessKeys", "iam:ListUsers",
+    "kms:DescribeKey", "kms:GetKeyRotationStatus", "kms:ListAliases",
+    "rds:DescribeDBInstances",
+    "secretsmanager:ListSecretVersionIds", "secretsmanager:ListSecrets",
+  ]
+  # Calls that return a secret value or key material: never this role's, whatever a managed policy grows into.
+  # SecurityAudit grants cognito-idp:Describe*, which includes the two Cognito calls (app client secret, external IdP
+  # client secret); the deny wins over that grant.
+  compliance_evidence_secret_value_reads = [
+    "secretsmanager:GetSecretValue", "secretsmanager:BatchGetSecretValue",
+    "cognito-idp:DescribeUserPoolClient", "cognito-idp:DescribeIdentityProvider",
+    "acm:ExportCertificate", "kms:Decrypt",
+  ]
 
   # Read-only additions for Prowler and the nightly checks that SecurityAudit / ViewOnlyAccess do not cover. No data
   # reads (object bodies, log events, function code or environment, parameter documents, table contents).
@@ -273,7 +307,7 @@ resource "aws_s3_bucket_policy" "compliance_evidence" {
 # ── Collector role ────────────────────────────────────────────────────────────────────────────────────────────────────
 resource "aws_iam_role" "compliance_evidence" {
   name                 = local.compliance_evidence_role
-  description          = "AA-1173: compliance collectors (root compliance-evidence.yml, Infra compliance-aws.yml on the default branch) read the account and write write-once evidence"
+  description          = "AA-1173: compliance collectors (root compliance-evidence.yml, Infra compliance-aws.yml on the default branch) read the account and write write-once evidence; AA-1183: root secret-rotation.yml reads secret metadata"
   permissions_boundary = aws_iam_policy.workload_boundary.arn
   max_session_duration = 3600
 
@@ -308,6 +342,22 @@ resource "aws_iam_role" "compliance_evidence" {
           }
         }
       },
+      {
+        # AA-1183 part 2: the weekly secret rotation check (its check job has no environment, so the subject is the
+        # master ref, as for compliance-evidence.yml).
+        Sid       = "GitHubOidcRootRotation"
+        Effect    = "Allow"
+        Principal = { Federated = aws_iam_openid_connect_provider.github_actions.arn }
+        Action    = "sts:AssumeRoleWithWebIdentity"
+        Condition = {
+          StringEquals = {
+            "token.actions.githubusercontent.com:aud"              = "sts.amazonaws.com"
+            "token.actions.githubusercontent.com:sub"              = local.docs_sync_oidc_sub
+            "token.actions.githubusercontent.com:ref"              = "refs/heads/master"
+            "token.actions.githubusercontent.com:job_workflow_ref" = local.compliance_evidence_rotation_workflow
+          }
+        }
+      },
     ]
   })
 
@@ -337,6 +387,20 @@ resource "aws_iam_role_policy" "compliance_evidence" {
         Sid      = "ReadExtraForProwlerAndChecks"
         Effect   = "Allow"
         Action   = local.compliance_evidence_read_extra
+        Resource = "*"
+      },
+      {
+        # AA-1183 part 2: the metadata calls of the root rotation check (names, dates, rotation and renewal status).
+        Sid      = "RotationCheckMetadata"
+        Effect   = "Allow"
+        Action   = local.compliance_evidence_rotation_read
+        Resource = "*"
+      },
+      {
+        # AA-1183 part 2: never a secret value or key material, whatever SecurityAudit / ViewOnlyAccess grow into.
+        Sid      = "DenySecretValueReads"
+        Effect   = "Deny"
+        Action   = local.compliance_evidence_secret_value_reads
         Resource = "*"
       },
       {

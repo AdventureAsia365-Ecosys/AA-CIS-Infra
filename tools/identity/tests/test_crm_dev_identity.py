@@ -734,3 +734,35 @@ def test_web_mapbox_token_reads_stdin_and_refuses_a_secret_token(capsys, monkeyp
     assert "never a secret sk. token" in capsys.readouterr().err
     assert run(["web-mapbox-token", "--mapbox-token", "", "--apply"], sm=sm) == 0
     assert lines(capsys)[0]["map"] == "off"
+
+
+class RotatedIdp(FakeWorkforceIdp):
+    """AA-1182 (lesson S296): after a rotation DescribeUserPoolClient returns no ClientSecret at all."""
+
+    def describe_user_pool_client(self, **kw):
+        super().describe_user_pool_client(**kw)
+        return {"UserPoolClient": {"ClientName": "rotated"}}
+
+
+def test_rotated_clients_keep_the_stored_copy_and_session_rotation_still_works(capsys):
+    stored = {"cognito_client_secret": "-".join(["rotated", "partner", "value"]), "session_secret": "a" * 40,
+              "staff_cognito_client_secret": "-".join(["rotated", "staff", "value"]), "staff_session_secret": "b" * 40}
+    sm = FakeSm({"crm/dev/web": json.dumps(stored)})
+    idp = RotatedIdp()
+    assert run(["web-secret", "--apply"], idp, sm) == 0
+    assert lines(capsys)[0]["action"] == "unchanged" and sm.writes == []
+    assert run(["web-secret", "--apply", "--rotate-session"], idp, sm) == 0
+    capsys.readouterr()
+    value = json.loads(sm.values["crm/dev/web"])
+    assert value["cognito_client_secret"] == stored["cognito_client_secret"]  # never None, never lost
+    assert value["session_secret"] != stored["session_secret"]
+    assert run(["staff-web-secret", "--apply"], idp, sm) == 0
+    assert lines(capsys)[0]["action"] == "unchanged"
+
+
+def test_rotated_client_without_a_stored_copy_is_refused(capsys):
+    sm = FakeSm({"crm/dev/web": json.dumps({"session_secret": "a" * 40})})
+    assert run(["web-secret", "--apply"], RotatedIdp(), sm) == 1
+    err = capsys.readouterr().err
+    assert "returns no secret" in err and "client_secret_rotate.py add" in err
+    assert sm.writes == []

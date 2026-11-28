@@ -6,7 +6,7 @@ run-name: DB Migrate ${{ inputs.mode }} ${{ inputs.migration }}${{ inputs.role }
 # RDS is VPC-private, so the SQL runs in a one-off ECS Fargate task of the migrator task definition
 # (X1 S12, accounts/aa365/db_migrator.tf: family aa-cis-dev-db-migrate, container migrate, own roles,
 # DATABASE_URL = the db_migrator login since X1 S22, the master before; roles/ files, set-password and
-# run-script read the master DSN in the task, db/owners.yaml master_secret): .github/scripts/migrator-task.sh registers a revision with the image the CIS
+# run-script read the master login in the task: the RDS-managed secret, db/owners.yaml master_db_instance, AA-1182): .github/scripts/migrator-task.sh registers a revision with the image the CIS
 # api service runs now, the task runs in the api service's subnets with the security group
 # aa-cis-dev-sg-db-migrate, and the revision is deregistered at the end. The runner script and the
 # SQL reach the task through short-lived presigned S3 URLs; the task's exit code is the job result
@@ -39,7 +39,7 @@ run-name: DB Migrate ${{ inputs.mode }} ${{ inputs.migration }}${{ inputs.role }
 # or the check after COMMIT found something that ran at COMMIT (committed: clean up by hand).
 #
 # Two more modes (X1 S12), folded into the value of the task's existing MIGRATION_MODE variable:
-#   set-password (input role, allowlist db/owners.yaml password_roles: cis_app, crm_app, db_migrator, tripplanner) — the task
+#   set-password (input role, allowlist db/owners.yaml password_roles: aa_app_user, booking, cis_app, crm_app, db_migrator, tripplanner) — the task
 #     reads the role's DSN secret itself, sends only a SCRAM-SHA-256 verifier (ALTER ROLE as the master),
 #     test-connects with the DSN, prints current_user + rolconnlimit and marks the role
 #     (COMMENT ON ROLE … 'x1:password-set …'). No secret reaches the runner or the log (plan XD2).
@@ -80,7 +80,7 @@ on:
         options: [check, apply, set-password, run-script]
         default: check
       role:
-        description: "set-password only: cis_app, crm_app, db_migrator or tripplanner (db/owners.yaml password_roles)"
+        description: "set-password only: aa_app_user, booking, cis_app, crm_app, db_migrator or tripplanner (db/owners.yaml password_roles)"
         required: false
         type: string
         default: ""
@@ -244,8 +244,8 @@ jobs:
             set-password)
               # Allowlist = db/owners.yaml password_roles (db/tests/test_owners_registry.py keeps them equal);
               # the runner checks it again in the task.
-              if ! [[ "$MIGRATION" =~ ^(cis_app|crm_app|db_migrator|tripplanner)$ ]]; then
-                echo "::error::role must be cis_app, crm_app, db_migrator or tripplanner (db/owners.yaml password_roles)"; exit 1
+              if ! [[ "$MIGRATION" =~ ^(aa_app_user|booking|cis_app|crm_app|db_migrator|tripplanner)$ ]]; then
+                echo "::error::role must be aa_app_user, booking, cis_app, crm_app, db_migrator or tripplanner (db/owners.yaml password_roles)"; exit 1
               fi
               echo "### set-password \`$MIGRATION\` ($ENVIRONMENT)" >> "$GITHUB_STEP_SUMMARY"
               echo "- environment: $ENVIRONMENT" >> "$GITHUB_STEP_SUMMARY"

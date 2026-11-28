@@ -31,9 +31,13 @@ environments: [dev]
 # mode=set-password (ALTER ROLE … PASSWORD needs CREATEROLE) / run-script; otherwise break-glass only from X1 S22
 # (DM-8.9). Owns the public extensions (vector, pg_stat_statements) and the public.* leftovers.
 master_role: aa_cis_admin
-# Where the master DSN lives. From X1 S22 the migrator task definition injects db_migrator's DSN (migrator_secret)
-# as DATABASE_URL, and the runner reads this secret itself, in the task (migrator task role only), for the three
-# master uses above and nothing else. Mirrored by db/run_migration.py MASTER_DSN_ID.
+# Where the master login lives. From X1 S22 the migrator task definition injects db_migrator's DSN (migrator_secret)
+# as DATABASE_URL, and the runner reads the master login itself, in the task (migrator task role only), for the three
+# master uses above and nothing else. AA-1182 (S297): RDS manages the master password of master_db_instance
+# (manage_master_user_password, 180-day rotation, modules/rds); the runner reads that instance's MasterUserSecret
+# first (JSON {username, password}, host from DATABASE_URL). master_secret is the legacy DSN secret, read only as a
+# fallback until the orchestrator deletes it. Mirrored by db/run_migration.py MASTER_DB_INSTANCE / MASTER_DSN_ID.
+master_db_instance: aa-cis-dev-db
 master_secret: aa-cis/dev/rds
 
 # DB Migrate / DB Schema Dump / DB Isolation Probe login from X1 S22 (rl-002, X1 S20, creates it, NOCREATEROLE):
@@ -59,7 +63,9 @@ migrator_member_of: [bk_owner, catalog_owner, cis_app, cis_owner, crm_owner, pg_
 # (modules/environment/crm_data.tf) that Nghiệp fills in the Console before set-password.
 # tripplanner (AA-1182, S296): the TripPlanner Lambdas' login, so its password can be rotated the same way (the migrator
 # task already reads tripplanner/dev/database-url for the isolation probe; db_migrator.tf db_migrate_task_secret_arns).
-password_roles: {cis_app: aa-cis/dev/rds-cis-app, crm_app: crm/dev/database-url, db_migrator: aa-cis/dev/db-migrator, tripplanner: tripplanner/dev/database-url}
+# aa_app_user and booking (AA-1182, S297): the key ceremony rotates every app login, so the tenant pool login and the
+# Booking runtime join too; both DSN secrets are probe login secrets the migrator task already reads.
+password_roles: {aa_app_user: aa-cis/dev/rds-app-user, booking: booking/dev/database-url, cis_app: aa-cis/dev/rds-cis-app, crm_app: crm/dev/database-url, db_migrator: aa-cis/dev/db-migrator, tripplanner: tripplanner/dev/database-url}
 
 # AA-993 M2a (root ADR 0017 d3, design Q17): tables an expand migration file must not name (only a non-unique
 # CREATE INDEX CONCURRENTLY may, and it waits for an open rerun wave). Running code reads them with SELECT * /

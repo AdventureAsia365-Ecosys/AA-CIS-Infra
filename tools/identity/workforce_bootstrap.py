@@ -346,11 +346,32 @@ def find_client_id(idp, pool_id: str, client_name: str) -> str:
         kwargs["NextToken"] = token
 
 
-def client_secret_of(idp, pool_id: str, client_id: str, out: Output) -> str:
-    desc = idp.describe_user_pool_client(UserPoolId=pool_id, ClientId=client_id)
-    secret = (desc.get("UserPoolClient") or {}).get("ClientSecret")
+def client_secret_of(idp, pool_id: str, client_id: str, out: Output, sm=None, env: str = DEFAULT_ENV) -> str:
+    """The client's secret from DescribeUserPoolClient. AA-1182 (lesson S296): once a client has rotated secrets
+    Describe returns no value, so the copy client_secret_rotate.py stored from the add response is read instead
+    (Secrets Manager secret + key of that client, client_secret_rotate.CLIENTS)."""
+    desc = (idp.describe_user_pool_client(UserPoolId=pool_id, ClientId=client_id).get("UserPoolClient") or {})
+    secret = desc.get("ClientSecret")
+    if not secret and sm is not None:
+        from client_secret_rotate import stored_location  # noqa: PLC0415 — sibling tool, same folder
+
+        where = stored_location(desc.get("ClientName") or "", env)
+        if where is not None:
+            try:
+                raw = sm.get_secret_value(SecretId=where[0]).get("SecretString") or ""
+            except sm.exceptions.ResourceNotFoundException:
+                raw = ""
+            try:
+                value = json.loads(raw).get(where[1])
+            except (ValueError, AttributeError):
+                value = None
+            if isinstance(value, str) and value:
+                secret = value
+                out.register(secret)
+                out.info(f"client: {desc.get('ClientName')} secret read from {where[0]} (rotated client)")
     if not secret:
-        raise ToolError(f"client {client_id} has no secret (expected a confidential client)")
+        raise ToolError(f"client {client_id} has no secret readable here (a public client, or a rotated one "
+                        "without a stored copy: client_secret_rotate.py add stores it)")
     out.register(secret)
     return secret
 
@@ -611,7 +632,7 @@ def cmd_breakglass_init(ctx: Ctx, email: str) -> int:
     failures: list[str] = []
     try:
         add_to_groups(ctx.idp, ctx.pool_id, username, BREAKGLASS_GROUPS, ctx.out)
-        client_secret = client_secret_of(ctx.idp, ctx.pool_id, client_id, ctx.out)
+        client_secret = client_secret_of(ctx.idp, ctx.pool_id, client_id, ctx.out, ctx.sm, ctx.env)
         ctx.idp.admin_enable_user(UserPoolId=ctx.pool_id, Username=username)
         ctx.out.info("user: enabled for enrolment")
         if existing is not None:
@@ -698,7 +719,7 @@ def cmd_breakglass_verify(ctx: Ctx, email: str) -> int:
     signed_in = None
     failures: list[str] = []
     try:
-        client_secret = client_secret_of(ctx.idp, ctx.pool_id, client_id, ctx.out)
+        client_secret = client_secret_of(ctx.idp, ctx.pool_id, client_id, ctx.out, ctx.sm, ctx.env)
         ctx.idp.admin_enable_user(UserPoolId=ctx.pool_id, Username=username)
         ctx.out.info("user: enabled for the test")
         signed_in = sign_in(
@@ -730,7 +751,7 @@ def _staff_client(ctx: Ctx, client: str) -> tuple[str, str]:
     name = f"aa-workforce-{ctx.env}-{client}"
     client_id = find_client_id(ctx.idp, ctx.pool_id, name)
     ctx.out.info(f"client: {name} = {client_id}")
-    return client_id, client_secret_of(ctx.idp, ctx.pool_id, client_id, ctx.out)
+    return client_id, client_secret_of(ctx.idp, ctx.pool_id, client_id, ctx.out, ctx.sm, ctx.env)
 
 
 def _staff_user(ctx: Ctx, email: str, breakglass_email: str) -> str:
@@ -953,7 +974,8 @@ def cmd_breakglass_otp_probe(ctx: Ctx, email: str) -> int:
     if user is None:
         raise ToolError(f"no WORKFORCE user with email {email}; nothing was changed")
     enabled_at_start = bool(user.get("Enabled"))
-    secrets_by_client = {cid: client_secret_of(ctx.idp, ctx.pool_id, cid, log) for _, cid in clients}
+    secrets_by_client = {cid: client_secret_of(ctx.idp, ctx.pool_id, cid, log, ctx.sm, ctx.env)
+                         for _, cid in clients}
     username = email
     report: dict = {
         "probe": "breakglass-otp-probe",
@@ -1109,7 +1131,7 @@ def cmd_exchange_code(ctx: Ctx, callback_url: str, state_dir: Path) -> int:
         raise ToolError("callback URL has no code")
     path.unlink()  # single use, whatever happens next
     client_id = pending["client_id"]
-    client_secret = client_secret_of(ctx.idp, ctx.pool_id, client_id, ctx.out)
+    client_secret = client_secret_of(ctx.idp, ctx.pool_id, client_id, ctx.out, ctx.sm, ctx.env)
     domain = pending.get("domain", DEFAULT_HOSTED_DOMAIN).rstrip("/")
     post = ctx.http_post or _default_http_post
     resp = post(f"{domain}/oauth2/token", {

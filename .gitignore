@@ -40,7 +40,7 @@ Thumbs.db
 **/terraform.tfvars
 !*.tfvars.example
 # Exception: the live root's tfvars is tracked on purpose. It holds only non-secret config; the
-# secret-shaped variables are REPLACE_ME placeholders and db_password comes from TF_VAR_db_password.
+# secret-shaped variables are REPLACE_ME placeholders (no db_password since AA-1182: RDS manages it).
 # The Secret Scan PR check (.github/workflows/secret-scan.yml) fails if a real value lands there.
 !accounts/aa365/terraform.tfvars
 

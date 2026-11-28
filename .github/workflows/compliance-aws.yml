@@ -221,6 +221,9 @@ jobs:
 
       # Every byte Prowler prints goes to run.log (its failing findings would otherwise reach this public log). Exit
       # code 3 = the scan finished with failing findings (a result, not an error).
+      # The role is denied cognito-idp:DescribeUserPoolClient (it returns the app client secret; AA-1183), so the two
+      # Prowler checks built on it would report a false FAIL per client: they are excluded, and a Terraform test pins
+      # the same two settings on every user pool client (tools/terraform/tests/test_aa1183_rotation_metadata.py).
       - name: Scan (output to files only)
         if: env.HAS_AWS == 'true'
         run: |
@@ -232,7 +235,9 @@ jobs:
           docker run --rm -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_SESSION_TOKEN -e AWS_REGION \
             -v "$OUT/raw:/home/prowler/output" "$PROWLER_IMAGE" aws --output-formats json-ocsf \
             --output-directory /home/prowler/output --output-filename prowler --no-banner \
-            --filter-region us-west-1 us-east-1 > "$OUT/run.log" 2>&1 || rc=$?
+            --filter-region us-west-1 us-east-1 \
+            --excluded-check cognito_user_pool_client_prevent_user_existence_errors \
+            cognito_user_pool_client_token_revocation_enabled > "$OUT/run.log" 2>&1 || rc=$?
           echo "prowler exit code $rc"
           if [ "$rc" != 0 ] && [ "$rc" != 3 ]; then echo "::warning::Prowler ended with code $rc (see the sealed run log)"; fi
           echo "PROWLER_RC=$rc" >> "$GITHUB_ENV"

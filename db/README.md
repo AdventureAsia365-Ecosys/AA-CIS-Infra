@@ -6,10 +6,15 @@ definition** `aa-cis-dev-db-migrate` (X1 S12; `accounts/aa365/db_migrator.tf`), 
 `run_migration.py` and the SQL via presigned S3 URLs and runs it with the task's own `DATABASE_URL`:
 **`db_migrator`** since X1 S22 (`aa-cis/dev/db-migrator`; the master DSN before). `db_migrator` runs every
 owner-dir file as the live owner of its anchor schema (`cis_owner`, `bk_owner`, `tp_owner`, `crm_owner`). The RDS master
-is kept for three things only, and the runner reads its DSN itself, in the task, from `aa-cis/dev/rds`
-(`owners.yaml` `master_secret`; the migrator **task** role may read it, the execution role no longer injects
-it): `roles/` files (role bootstrap, extensions, undo files), `mode=set-password` (`ALTER ROLE … PASSWORD`
-needs CREATEROLE) and `mode=run-script`. Those runs log `master login: in-task DSN from aa-cis/dev/rds`.
+is kept for three things only, and the runner reads its login itself, in the task (the migrator **task** role may
+read it, the execution role never injects it): `roles/` files (role bootstrap, extensions, undo files),
+`mode=set-password` (`ALTER ROLE … PASSWORD` needs CREATEROLE) and `mode=run-script`. AA-1182 (S297): RDS manages the
+master password (`modules/rds` `manage_master_user_password`, rotated every 180 days), so the runner first reads the
+RDS-managed secret of `aa-cis-dev-db` (`owners.yaml` `master_db_instance`: DescribeDBInstances → `MasterUserSecret`,
+JSON `{username, password}`; host, port and database come from the task's `DATABASE_URL`) and logs
+`master login: in-task RDS-managed secret of aa-cis-dev-db`. Until the orchestrator deletes it, the old DSN secret
+`aa-cis/dev/rds` (`owners.yaml` `master_secret`) is the fallback (`... (legacy fallback)`, then
+`master login: in-task DSN from aa-cis/dev/rds`).
 
 Migrator task (DB Migrate, DB Schema Dump, DB Isolation Probe, DB Tour Liveness Gate, DB Freshness Probe): `.github/scripts/migrator-task.sh prepare`
 registers a revision of the family copied from its latest ACTIVE revision with only the image replaced by
@@ -18,7 +23,7 @@ api service's subnets with the security group `aa-cis-dev-sg-db-migrate`, contai
 `migrate/migrate/<task id>`; the last step deregisters the revision (`if: always()`).
 
 Two more DB Migrate modes (X1 S12): **`set-password`** (input `role`: `cis_app`, `crm_app`, `db_migrator`
-or, since AA-1182, `tripplanner`; `owners.yaml` `password_roles`) sets the role's password from the DSN Nghiệp wrote in its secret: the
+or, since AA-1182, `tripplanner`, `booking` and `aa_app_user`; `owners.yaml` `password_roles`) sets the role's password from the DSN Nghiệp wrote in its secret: the
 task reads the secret itself, sends only a SCRAM-SHA-256 verifier, test-connects and marks the role
 `x1:password-set …` (plan XD2; nothing secret is logged). **`run-script`** (input `script`) runs a reviewed
 `db/scripts/<name>.py` as the master after the apply idle check: `db/scripts/README.md`.
@@ -389,8 +394,8 @@ Before each file (check and apply) the task reads the **live owner of the dir's 
   there → exit 9 with "ownership check after COMMIT" (the file is committed and registered; clean up by
   hand). With the settle step nothing of the file is left to run at COMMIT; this is the backstop.
 - `roles/` files run only when the login role is the master (`master_role`), else exit 8. Since X1 S22
-  the task's login is `db_migrator`, so the runner opens the master session from `master_secret` first
-  (unreadable, empty or failing secret → exit 8, nothing ran).
+  the task's login is `db_migrator`, so the runner opens the master session from the RDS-managed secret of
+  `master_db_instance` first, then the legacy `master_secret` (both unusable → exit 8, nothing ran).
 - The idle check and the `shared.schema_versions` reads run as the login role.
 
 So the very next file after an ownership transfer runs as the new owner, with no runner change and

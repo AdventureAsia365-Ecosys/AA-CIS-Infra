@@ -182,7 +182,9 @@ class RegistryShapeTest(unittest.TestCase):
 class MirrorsAgreeTest(unittest.TestCase):
     def test_run_migration_constants(self):
         self.assertEqual(rm.MASTER_ROLE, REGISTRY["master_role"])
-        self.assertEqual(rm.MASTER_DSN_ID, REGISTRY["master_secret"])          # X1 S22 in-task master DSN
+        self.assertEqual(rm.MASTER_DSN_ID, REGISTRY["master_secret"])          # X1 S22 in-task master DSN (legacy)
+        self.assertEqual(rm.MASTER_DB_INSTANCE, REGISTRY["master_db_instance"])  # AA-1182 RDS-managed master
+        self.assertEqual(rm.MASTER_MANAGED_ID, f"rds-managed:{REGISTRY['master_db_instance']}")
         self.assertEqual(rm.ROLES_DIR, "roles")
         self.assertEqual(set(rm.OWNER_DIRS), set(SCHEMA_OWNERS))
         for name, o in SCHEMA_OWNERS.items():
@@ -263,8 +265,20 @@ class MirrorsAgreeTest(unittest.TestCase):
         execution = tf.split('Sid      = "InjectMigratorDsn"', 1)[1].split("}", 1)[0]
         self.assertIn("Resource = [aws_secretsmanager_secret.db_migrator.arn]", execution)
         self.assertNotIn("rds_secret_arn", execution)
-        task_secrets = tf.split("db_migrate_task_secret_arns = [", 1)[1].split("]", 1)[0]
-        self.assertIn("module.secrets.rds_secret_arn", task_secrets)            # the in-task master read
+        task_secrets = tf.split("db_migrate_task_secret_arns = compact([", 1)[1].split("])", 1)[0]
+        # AA-1182: the in-task master read is the RDS-managed secret, found through the instance; the legacy DSN
+        # secret only by ARN pattern (no data source, so deleting it never breaks a plan).
+        self.assertIn("module.rds.master_user_secret_arn", task_secrets)
+        self.assertIn('"${local.secret_arn_prefix}${var.project}/${var.environment}/rds-??????"', task_secrets)
+        self.assertNotIn("rds_secret_arn", tf)
+        describe = tf.split('Sid      = "DescribeMasterInstance"', 1)[1].split("}", 1)[0]
+        self.assertIn('Action   = ["rds:DescribeDBInstances"]', describe)
+        self.assertIn("Resource = module.rds.db_arn", describe)
+        # Review S297: the managed secret is readable from the first apply on (plan-time grant by name + instance tag).
+        managed = tf.split('Sid      = "ReadManagedMasterSecret"', 1)[1].split("Sid      =", 1)[0]
+        self.assertIn('"secretsmanager:ResourceTag/aws:rds:primaryDBInstanceArn" = module.rds.db_arn', managed)
+        rds_module = (ROOT / "modules" / "rds" / "main.tf").read_text(encoding="utf-8")
+        self.assertIn('identifier        = "${local.name_prefix}-db"', rds_module)   # = master_db_instance on dev
         self.assertIn("aws_secretsmanager_secret.db_migrator.arn", task_secrets)  # set-password db_migrator
         # The isolation probe never logs in as the master: its catalog login is the task's DATABASE_URL
         # (db_migrator), every isolation cell uses a runtime role's own secret.
@@ -284,6 +298,12 @@ class MirrorsAgreeTest(unittest.TestCase):
         self.assertEqual(roles["tripplanner"], OWNERS["tripplanner"]["runtime_secrets"]["tripplanner"])
         migrator_tf = (ROOT / "accounts" / "aa365" / "db_migrator.tf").read_text(encoding="utf-8")
         self.assertIn("module.environment.tripplanner_db_secret_arn", migrator_tf)
+        # AA-1182 (S297, key ceremony group 1): the tenant pool and Booking logins rotate the same way; their DSN
+        # secrets are the probe's login secrets, already readable by the migrator task.
+        self.assertEqual(roles["aa_app_user"], OWNERS["cis"]["runtime_secrets"]["aa_app_user"])
+        self.assertEqual(roles["booking"], OWNERS["booking"]["runtime_secrets"]["booking"])
+        self.assertIn("module.environment.booking_database_url_secret_arn", migrator_tf)
+        self.assertIn("rds-app-user-??????", migrator_tf)
         self.assertIn(REGISTRY["migrator_role"], roles)
         self.assertNotIn(REGISTRY["master_role"], roles)
         self.assertEqual(rm.PW_SET_MARKER, probe.PASSWORD_MARKER)

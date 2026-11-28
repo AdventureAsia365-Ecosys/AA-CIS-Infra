@@ -56,6 +56,5 @@ removed {
 #   name = "${local.secret_prefix}/langfuse"
 # }
 
-data "aws_secretsmanager_secret" "rds" {
-  name = "${local.secret_prefix}/rds"
-}
+# AA-1182 (S297): the old master DSN secret ${local.secret_prefix}/rds is no longer looked up (RDS manages the master
+# password; DB Migrate reads the RDS-managed secret first and the old name only by ARN pattern until it is deleted).

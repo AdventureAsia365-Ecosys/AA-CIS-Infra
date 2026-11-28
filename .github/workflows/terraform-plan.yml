@@ -64,7 +64,6 @@ jobs:
 
       - name: Terraform Plan
         env:
-          TF_VAR_db_password: ${{ secrets.TF_VAR_DB_PASSWORD }}
           # AA-1004 (accounts/aa365/org_access.tf): the management account and organization IDs of the organization
           # admin role's trust. Secrets, so GitHub masks them in this public log; never repo variables.
           TF_VAR_org_management_account_id: ${{ secrets.MGMT_ACCOUNT_ID }}
@@ -73,6 +72,9 @@ jobs:
           TF_VAR_bedrock_acct_payer_id: ${{ secrets.BEDROCK_ACCT_PAYER_ID }}
           # AA-1110 (accounts/aa365/observability.tf): the second alert recipient's inbox, never committed (public repo).
           TF_VAR_alert_email_secondary: ${{ secrets.ALERT_EMAIL_SECONDARY }}
+          # AA-1110 (accounts/aa365/chat_alerts.tf): the Slack workspace and channel of the chat alert channel, never committed.
+          TF_VAR_chat_alerts_slack_team_id: ${{ secrets.CHAT_ALERTS_SLACK_TEAM_ID }}
+          TF_VAR_chat_alerts_slack_channel_id: ${{ secrets.CHAT_ALERTS_SLACK_CHANNEL_ID }}
         run: terraform plan -lock-timeout=20m -out=tfplan
 
       # S271: tagging standard (root docs/architecture/tagging-standard.md, FIN-03). Fails this required check when a

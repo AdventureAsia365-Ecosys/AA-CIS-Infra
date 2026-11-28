@@ -145,4 +145,16 @@ def test_public_client_is_refused(capsys):
     idp = FakeIdp({**CLIENT_SECRETS, "aa-workforce-dev-booking-staff": ""})
     rc, _ = _run(["--apply", "--only", "booking"], FakeSm(SHELLS), idp=idp)
     assert rc == 1
-    assert "confidential client" in capsys.readouterr().err
+    assert "returns no secret" in capsys.readouterr().err
+
+
+def test_rotated_client_keeps_the_stored_value(capsys):
+    """AA-1182 (lesson S296): once a client has rotated secrets Describe returns none; the copy that
+    client_secret_rotate.py stored from the add response is kept, never replaced by None."""
+    stored = {"booking_staff_client_secret": "-".join(["rotated", "booking", "value"])}
+    idp = FakeIdp({**CLIENT_SECRETS, "aa-workforce-dev-booking-staff": ""})
+    sm = FakeSm({**SHELLS, "booking/dev/admin-web": json.dumps(stored)})
+    rc, lines = _run(["--apply", "--only", "booking"], sm, idp=idp, capsys=capsys)
+    assert rc == 0
+    assert lines[0]["action"] == "unchanged"
+    assert sm.puts == []
