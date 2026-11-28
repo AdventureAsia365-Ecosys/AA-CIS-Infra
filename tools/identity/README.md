@@ -232,7 +232,8 @@ writes nothing.
 
 Order: Terraform apply (creates the shell) -> this tool `--apply` -> the first AA-TripPlanner-Web Deploy Web Dev ->
 scale `aa-tripplanner-<env>-web` to 1. After a rotation of the CIS purge key: run it again, then force a new
-deployment of the service.
+deployment of the service. `--rotate-session` (AA-1182, key ceremony) replaces the session key, which signs every
+traveller out; then force a new deployment.
 
 ```bash
 python3 tools/identity/tripplanner_web_secret.py                       # dry run: which keys would change
