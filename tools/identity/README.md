@@ -24,6 +24,24 @@ It reuses the AWS CLI assume-role cache, so one MFA prompt covers both the tool 
 | `$PY $T authorize-url` | Spike: prints the managed-login authorize URL for `cis-admin` with `http://localhost:3000/api/auth/callback/cognito`, PKCE S256. The verifier and state go to `.tmp-session/identity-spike/pkce-pending.json` (mode 0600). | A3 |
 | `$PY $T exchange-code` | Spike: paste the callback URL from the browser (prompted, so it stays out of shell history). The tool checks the state and the redirect URI, exchanges the code with the client secret (read with DescribeUserPoolClient, kept in memory), prints the non-secret claims of the access and ID tokens, then revokes the refresh token. The pending file is deleted. | A3 |
 
+## Pilot day: `e2e_identity_fence.py` (AA-1054)
+
+`e2e_identity_fence.py` lists the Dev-only E2E staff users of the WORKFORCE pool (root ADR 0006a A10 ... A10h: every
+`E2E_*_EMAIL` constant of `accounts/aa365/lambda_src/identity_triggers/workforce.py`, read with `ast`, plus any other
+pool user of the E2E mailbox domain as `unmapped`) with their exception code, a masked label, `in_pool`, `enabled` and
+the Cognito status. It never prints an e-mail address or a Cognito username. It reads the pool with ListUsers only.
+
+| Command | What it does |
+|---|---|
+| `$PY tools/identity/e2e_identity_fence.py` | DRY RUN (the default): the listing, nothing changed. Exit 0. |
+| `$PY tools/identity/e2e_identity_fence.py --json` | The same listing as one JSON document on stdout. |
+| `$PY tools/identity/e2e_identity_fence.py --apply` | **Pilot day only** (tech lead decision S295 sec-Q11): AdminDisableUser + AdminUserGlobalSignOut for every enabled E2E user, then the listing again (read-back). Exit 0 only when every E2E user in the pool reads `enabled: false`; 1 when one stays enabled. Never deletes a user, never touches another address. |
+
+A new `E2E_*_EMAIL` constant in the trigger without a code in `CODES` stops the tool before any AWS call (exit 2) and
+fails `tools/identity/tests/test_e2e_identity_fence.py`. The order of the pilot day (the CIS pilot fence setting first,
+then this tool) is in the root runbook `docs/ops/runbooks/pilot-agency-onboarding.md`, section "Pilot day". Undo, only
+if the pilot is called off: `aws cognito-idp admin-enable-user` per user, by hand.
+
 ## What to expect
 
 - Break-glass sign-in (init and verify) fires the alarm `aa-identity-dev-breakglass-token-issued`
