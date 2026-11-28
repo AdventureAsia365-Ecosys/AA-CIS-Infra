@@ -18,8 +18,8 @@ fallback. The person-facing steps live in the root repo (`docs/ops/runbooks/chat
   switch that is on while an ID is empty or malformed, so a half setup fails at plan.
 - **Notification-only role + read-only guardrail.** Role `aa-ecosys-dev-chat-alerts` trusts `chatbot.amazonaws.com`,
   carries the workload boundary (required for every role the apply role creates) and reads CloudWatch only (the
-  console template "Notification permissions"). Guardrail `CloudWatchReadOnlyAccess`: without an explicit guardrail
-  nothing caps what a channel member can run; no `AmazonQDeveloperAccess`, so no Amazon Q chat in the channel.
+  console template "Notification permissions"). Guardrail `CloudWatchReadOnlyAccess`, set explicitly (never the service
+  default), caps what a channel member can run; no `AmazonQDeveloperAccess`, so no Amazon Q chat in the channel.
   `user_authorization_required = false` (one channel role).
 - **Region us-west-2** through the existing `aws.us_west_2` provider: the chatbot API runs only in us-east-2, us-west-2,
   ap-southeast-1 and eu-west-1 (AWS CLI reference "chatbot").

@@ -33,7 +33,7 @@
 # Describe / Get / List, for the alarm graph in the message), with the workload boundary like every role the apply role
 # creates (cicd_split.tf DenyCreateRoleWithoutWorkloadBoundary). The channel guardrail is the AWS managed
 # CloudWatchReadOnlyAccess, so nobody in the channel can run a write command or an Amazon Q chat through it even if the
-# role were widened; without an explicit guardrail the service applies none. User roles are off (one channel role).
+# role were widened; it is set explicitly, never left to the service default. User roles are off (one channel role).
 # Logging NONE: no log group in us-east-1 without retention; set "ERROR" in a PR while troubleshooting, then back.
 #
 # REGION: the chatbot API runs in us-east-2, us-west-2, ap-southeast-1 and eu-west-1 only (AWS CLI reference
