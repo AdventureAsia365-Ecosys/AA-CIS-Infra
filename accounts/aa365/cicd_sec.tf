@@ -40,6 +40,9 @@
 # AA-1185 (S296): the EBS account defaults and the NAT patch association (security_account_defaults.tf). Same bootstrap:
 #   terraform plan / apply -target=aws_iam_policy.tf_apply_sec   (local, MFA admin profile, before the CI apply)
 # AA-1185 (S297): the NAT swap document and association (NatSwapDocument, aa-ecosys-* documents). Same bootstrap again.
+# AA-1110 (S297): the chatbot grants of the Slack chat alert channel (chat_alerts.tf). Same bootstrap, any time before
+# the PR that sets chat_alerts_enabled = true (while it is false nothing calls chatbot):
+#   terraform plan / apply -target=aws_iam_policy.tf_apply_sec   (local, MFA admin profile)
 # Cost: 0 USD (IAM).
 # =============================================================================
 
@@ -262,6 +265,44 @@ data "aws_iam_policy_document" "tf_apply_sec" {
     sid       = "SsmAssociationList"
     actions   = ["ssm:ListAssociations"]
     resources = ["*"]
+  }
+
+  # AA-1110 (S297): the Slack chat alert channel of chat_alerts.tf (Amazon Q Developer in chat applications, API prefix
+  # chatbot). Create, Describe and ListTagsForResource take no resource ARN (Service Authorization Reference, AWS
+  # Chatbot); update, delete and tags only on this stack's configurations. iam:PassRole of the channel role (an
+  # aa-*-dev-* name) is already in IAMRoleManageStack (cicd_split.tf). No workspace authorisation verbs: authorising
+  # or removing a Slack workspace stays a console step of a person.
+  statement {
+    sid = "ChatAlertsConfigCreate"
+    actions = [
+      "chatbot:CreateSlackChannelConfiguration", "chatbot:DescribeSlackChannelConfigurations",
+      "chatbot:ListTagsForResource",
+    ]
+    resources = ["*"]
+  }
+
+  statement {
+    sid = "ChatAlertsConfigManage"
+    actions = [
+      "chatbot:UpdateSlackChannelConfiguration", "chatbot:DeleteSlackChannelConfiguration", "chatbot:TagResource",
+      "chatbot:UntagResource",
+    ]
+    resources = ["arn:aws:chatbot::${var.account_id}:chat-configuration/slack-channel/aa-ecosys-*"]
+  }
+
+  # AA-1110 (S297 review): the first channel configuration in the account creates the service-linked role
+  # AWSServiceRoleForAWSChatbot, and the caller (this apply role) must be allowed to create it (Amazon Q Developer in
+  # chat applications admin guide, "Using service-linked roles"). Only that one service; the tf_apply boundary does not
+  # cover iam:CreateServiceLinkedRole. No-op when the role already exists.
+  statement {
+    sid       = "ChatAlertsServiceLinkedRole"
+    actions   = ["iam:CreateServiceLinkedRole"]
+    resources = ["arn:aws:iam::${var.account_id}:role/aws-service-role/management.chatbot.amazonaws.com/*"]
+    condition {
+      test     = "StringEquals"
+      variable = "iam:AWSServiceName"
+      values   = ["management.chatbot.amazonaws.com"]
+    }
   }
 }
 
