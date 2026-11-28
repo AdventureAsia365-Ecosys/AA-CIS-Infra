@@ -88,8 +88,9 @@ def test_role_is_bounded_read_only_and_write_once():
     for cond in (":aud", ":sub", ":ref", ":job_workflow_ref"):
         assert f'"token.actions.githubusercontent.com{cond}"' in role
     assert "StringLike" not in role, "the trust is exact, never a wildcard"
-    assert role.count('"token.actions.githubusercontent.com:job_workflow_ref"') == 2
-    assert role.count("Statement") == 1 and role.count("Sid       =") == 2
+    # AA-1183 part 2 added the third statement (root secret-rotation.yml; test_aa1183_rotation_metadata.py).
+    assert role.count('"token.actions.githubusercontent.com:job_workflow_ref"') == 3
+    assert role.count("Statement") == 1 and role.count("Sid       =") == 3
     assert "= local.compliance_evidence_root_workflow" in role and "= local.compliance_evidence_infra_workflow" in role
     assert '"refs/heads/master"' in role and '"${local.oidc_sub_cis_infra}:ref:refs/heads/main"' in role
     assert 'compliance-evidence.yml@refs/heads/master"' in CODE

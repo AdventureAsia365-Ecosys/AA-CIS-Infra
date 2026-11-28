@@ -44,6 +44,15 @@
 #
 # CIS reader: the CIS task role gets ListBucket on evidence/ and GetObject on evidence/* of this bucket (read only).
 #
+# AA-1183 part 2 (S297): the same role runs the weekly secret rotation check (root .github/workflows/secret-rotation.yml,
+# tools/security/rotation_check.py) through a third trust statement pinned on that workflow file on master. The tool
+# makes 13 metadata calls only (`rotation_check.py iam-actions` prints them; its tests pin the list); they are granted
+# explicitly in RotationCheckMetadata, so the check does not depend on what SecurityAudit / ViewOnlyAccess happen to
+# contain. None returns a secret value: no secretsmanager:GetSecretValue, no cognito-idp:DescribeUserPoolClient (it
+# returns the client secret; ListUserPoolClientSecrets never does), no acm:ExportCertificate, no kms:Decrypt; the role
+# is also denied the secret-value reads explicitly (DenySecretValueReads). Writes nothing in AWS (issues go to GitHub
+# with the run's own token). Cost: 0 USD (a few hundred free read calls a week).
+#
 # Cost (us-west-1, D-19; estimates): storage a few MB a year (daily bundles of a few kB, weekly Prowler JSON of a few MB)
 # < 0.01 USD/month; PUT ~10 a day + manifests ~= 400/month < 0.01 USD; GET/LIST from the CIS page (cached 5 min per
 # process) a few thousand a month < 0.01 USD. Object Lock and versioning have no fee. IAM 0 USD. Total < 0.05 USD/month.
@@ -69,8 +78,24 @@ locals {
   # The exact workflow file (on the default branch) each trust statement accepts, besides the immutable subject
   # (org id / repo id, same form as local.oidc_sub_cis_infra in cicd_split.tf and local.docs_sync_oidc_sub in
   # docs_reader.tf) and the ref.
-  compliance_evidence_root_workflow  = "AdventureAsia365-Ecosys/AA-Ecosys/.github/workflows/compliance-evidence.yml@refs/heads/master"
-  compliance_evidence_infra_workflow = "AdventureAsia365-Ecosys/AA-CIS-Infra/.github/workflows/compliance-aws.yml@refs/heads/main"
+  compliance_evidence_root_workflow     = "AdventureAsia365-Ecosys/AA-Ecosys/.github/workflows/compliance-evidence.yml@refs/heads/master"
+  compliance_evidence_infra_workflow    = "AdventureAsia365-Ecosys/AA-CIS-Infra/.github/workflows/compliance-aws.yml@refs/heads/main"
+  compliance_evidence_rotation_workflow = "AdventureAsia365-Ecosys/AA-Ecosys/.github/workflows/secret-rotation.yml@refs/heads/master"
+
+  # AA-1183 part 2: exactly the calls of the root rotation check (tools/security/rotation_check.py AWS_CALLS). Metadata
+  # only; change it together with that list (both repos pin it in a test).
+  compliance_evidence_rotation_read = [
+    "acm:DescribeCertificate", "acm:ListCertificates",
+    "cognito-idp:ListUserPoolClientSecrets", "cognito-idp:ListUserPoolClients", "cognito-idp:ListUserPools",
+    "iam:ListAccessKeys", "iam:ListUsers",
+    "kms:DescribeKey", "kms:GetKeyRotationStatus", "kms:ListAliases",
+    "rds:DescribeDBInstances",
+    "secretsmanager:ListSecretVersionIds", "secretsmanager:ListSecrets",
+  ]
+  # Calls that return a secret value or key material: never this role's, whatever a managed policy grows into.
+  compliance_evidence_secret_value_reads = [
+    "secretsmanager:GetSecretValue", "secretsmanager:BatchGetSecretValue", "acm:ExportCertificate", "kms:Decrypt",
+  ]
 
   # Read-only additions for Prowler and the nightly checks that SecurityAudit / ViewOnlyAccess do not cover. No data
   # reads (object bodies, log events, function code or environment, parameter documents, table contents).
@@ -273,7 +298,7 @@ resource "aws_s3_bucket_policy" "compliance_evidence" {
 # ── Collector role ────────────────────────────────────────────────────────────────────────────────────────────────────
 resource "aws_iam_role" "compliance_evidence" {
   name                 = local.compliance_evidence_role
-  description          = "AA-1173: compliance collectors (root compliance-evidence.yml, Infra compliance-aws.yml on the default branch) read the account and write write-once evidence"
+  description          = "AA-1173: compliance collectors (root compliance-evidence.yml, Infra compliance-aws.yml on the default branch) read the account and write write-once evidence; AA-1183: root secret-rotation.yml reads secret metadata"
   permissions_boundary = aws_iam_policy.workload_boundary.arn
   max_session_duration = 3600
 
@@ -308,6 +333,22 @@ resource "aws_iam_role" "compliance_evidence" {
           }
         }
       },
+      {
+        # AA-1183 part 2: the weekly secret rotation check (its check job has no environment, so the subject is the
+        # master ref, as for compliance-evidence.yml).
+        Sid       = "GitHubOidcRootRotation"
+        Effect    = "Allow"
+        Principal = { Federated = aws_iam_openid_connect_provider.github_actions.arn }
+        Action    = "sts:AssumeRoleWithWebIdentity"
+        Condition = {
+          StringEquals = {
+            "token.actions.githubusercontent.com:aud"              = "sts.amazonaws.com"
+            "token.actions.githubusercontent.com:sub"              = local.docs_sync_oidc_sub
+            "token.actions.githubusercontent.com:ref"              = "refs/heads/master"
+            "token.actions.githubusercontent.com:job_workflow_ref" = local.compliance_evidence_rotation_workflow
+          }
+        }
+      },
     ]
   })
 
@@ -337,6 +378,20 @@ resource "aws_iam_role_policy" "compliance_evidence" {
         Sid      = "ReadExtraForProwlerAndChecks"
         Effect   = "Allow"
         Action   = local.compliance_evidence_read_extra
+        Resource = "*"
+      },
+      {
+        # AA-1183 part 2: the metadata calls of the root rotation check (names, dates, rotation and renewal status).
+        Sid      = "RotationCheckMetadata"
+        Effect   = "Allow"
+        Action   = local.compliance_evidence_rotation_read
+        Resource = "*"
+      },
+      {
+        # AA-1183 part 2: never a secret value or key material, whatever SecurityAudit / ViewOnlyAccess grow into.
+        Sid      = "DenySecretValueReads"
+        Effect   = "Deny"
+        Action   = local.compliance_evidence_secret_value_reads
         Resource = "*"
       },
       {
