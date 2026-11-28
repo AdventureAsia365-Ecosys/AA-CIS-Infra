@@ -142,6 +142,9 @@ accounts/
                                    legacy shared CI role aa-cis-dev-role retired in AA-806 step 3)
     cicd_split.tf                 (AA-806: aa-cis-dev-app-deploy, aa-cis-infra-tf-plan/-apply,
                                    permissions boundaries; bootstrap, applied by a human)
+    cicd_deploy_alerts.tf         (AA-1193: sns:Publish on the alerts topic for the three API deploy roles
+                                   (CIS, Booking, CRM): their deploy-dev.yml alerts after a rollback on a red
+                                   post-deploy verify; the CIS one is bootstrap, applied by a human with -target)
     cicd_db_auto_apply.tf         (AA-993 I1, root ADR 0017 d6: aa-cis-infra-db-auto-apply, trusted only for
                                    environment:dev-db-auto + ref main; RunTask/Register/Deregister of the migrator
                                    family, PassRole on the two migrator roles, S3 prefix db-auto-apply/, log read.
@@ -618,6 +621,11 @@ accounts/
     (crm_membership_alarms.tf, crm_support_alarms.tf, crm_ops_release_alarms.tf, tenant_pool_alarms.tf: deleted by the
      S263 alert diet, AA-1025; those log events are in-app checks of AA-Partner and AA-CIS-App now)
     alert_recipients.tf           (AA-913: the CIS admin manages the e-mail subscriptions of the alerts topic)
+    chat_alerts.tf                (AA-1110, S297: Slack chat alert channel through Amazon Q Developer in chat
+                                   applications, OFF by var.chat_alerts_enabled; workspace / channel IDs from repo
+                                   secrets; notification-only role + CloudWatchReadOnlyAccess guardrail; us-west-2
+                                   provider (no chatbot API in us-west-1); 0 USD. Turn-on steps: root
+                                   docs/ops/runbooks/chat-alert-channel.md)
     alarm_runbooks.tf             (AA-893: a runbook link at the end of every alarm description)
     agent_session.tf              (AA-730: the narrow role agent shells assume, profile aa365-agent)
     security_access_analyzer_archive.tf (AA-873: archive rules for the triaged Access Analyzer findings)
@@ -731,6 +739,9 @@ weekly export and Gate C veto window fired into a bus with no rule and were remo
 `modules/vpc` (AA-1022): besides the NAT default route, the private route table carries the route of the S3 gateway
 endpoint `aa-cis-<env>-vpce-s3` (free; same-region S3, ECR layers included, no longer goes through the NAT instance;
 default endpoint policy, bucket policies unchanged). The db route table stays without any route out of the VPC.
+The NAT instance is patched in place every Sunday (AA-1185, `security_account_defaults.tf` sections 4 and 5): a swap
+association (`aa-ecosys-<env>-nat-swap`, persistent 1 GB swapfile, 20:45 UTC), then `AWS-RunPatchBaseline` (21:00 UTC,
+reboot only if needed, 3,600 s step timeout); runbook `docs/runbooks/nat-instance-patching.md`.
 `observability_ecosys.tf` (S235 Phase 0) covers what is not CIS: NAT status check (+ AA-1022 the
 `StatusCheckFailed_System` alarm with the EC2 recover action), Booking target
 health / CPU / REST 5XX, TripPlanner Lambda errors + sustained throttles (AA-833: > 5 in 2 of 3
