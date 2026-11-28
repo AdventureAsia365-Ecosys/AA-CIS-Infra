@@ -67,11 +67,8 @@ variable "db_username" {
   default     = "aa_cis_admin"
 }
 
-variable "db_password" {
-  description = "RDS master password — supply via TF_VAR_db_password, never in tfvars"
-  type        = string
-  sensitive   = true
-}
+# AA-1182 (S297): no db_password variable. RDS manages the master password in Secrets Manager (modules/rds); the
+# GitHub copy TF_VAR_DB_PASSWORD is no longer read by any workflow.
 
 variable "rds_apply_immediately" {
   description = "AA-824: false (default) defers the RDS class change + parameter group reboot to the maintenance window. Pass -var=rds_apply_immediately=true only in a window where shared.job and booking.job are idle."

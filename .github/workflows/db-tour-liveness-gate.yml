@@ -6,8 +6,8 @@ name: DB Tour Liveness Gate (shared RDS)
 # Mechanism = DB Migrate mode=run-script, unchanged: a one-off ECS Fargate task of the migrator task definition
 # (.github/scripts/migrator-task.sh registers a revision with the CIS api service's current image and the last step
 # deregisters it; api subnets, security group aa-cis-dev-sg-db-migrate) runs db/run_migration.py with
-# MIGRATION_MODE=run-script:db/scripts/s248_tour_deletion_probe.py. The runner reads the RDS master DSN in the task
-# (db/owners.yaml master_secret), checks the sha256, and runs the script READ_ONLY (default_transaction_read_only=on;
+# MIGRATION_MODE=run-script:db/scripts/s248_tour_deletion_probe.py. The runner reads the RDS master login in the task
+# (the RDS-managed secret of db/owners.yaml master_db_instance, AA-1182), checks the sha256, and runs the script READ_ONLY (default_transaction_read_only=on;
 # the job-table idle check only reports). The probe prints ids, keys, statuses and counts only.
 # db/tour_liveness_gate.py then reads the task log: red when the task failed, the run was not READ_ONLY, the probe
 # printed no verdict, `SCRIPT verdict violations>0` or `errors>0` (errors include the visibility floor and a missing

@@ -24,6 +24,8 @@ the version id. Other keys already in the secret are kept. A re-run with nothing
 Run it AFTER the Terraform apply that creates the shell and BEFORE the first task starts (a task whose secret lacks a
 mapped key fails to start): apply -> this tool --apply -> the first deploy (AA-TripPlanner-Web Deploy Web Dev) ->
 scale aa-tripplanner-<env>-web to 1. After a rotation of the revalidate key, run it again and force a new deployment.
+--rotate-session (AA-1182, key ceremony) replaces session_secret, which signs every traveller out; then force a new
+deployment of aa-tripplanner-<env>-web.
 
 Account guard: refuses to run unless the credentials are for --expect-account.
 """
@@ -97,9 +99,10 @@ def revalidate_key(sm: Any, name: str) -> str:
     return value
 
 
-def wanted_values(current: dict[str, Any], revalidate: str, sentry_dsn: str | None) -> dict[str, str]:
+def wanted_values(current: dict[str, Any], revalidate: str, sentry_dsn: str | None,
+                  rotate_session: bool = False) -> dict[str, str]:
     session = current.get("session_secret")
-    if not isinstance(session, str) or len(session) < MIN_SESSION_SECRET:
+    if rotate_session or not isinstance(session, str) or len(session) < MIN_SESSION_SECRET:
         session = secrets.token_urlsafe(48)
     if sentry_dsn is not None:
         dsn = sentry_dsn.strip()
@@ -110,12 +113,12 @@ def wanted_values(current: dict[str, Any], revalidate: str, sentry_dsn: str | No
     return {"session_secret": session, "catalog_revalidate_secret": revalidate, "sentry_dsn": dsn}
 
 
-def write_entry(sm: Any, env: str, sentry_dsn: str | None, *, apply: bool) -> dict[str, Any]:
+def write_entry(sm: Any, env: str, sentry_dsn: str | None, *, apply: bool, rotate_session: bool = False) -> dict[str, Any]:
     name = WEB_ENTRY.format(env=env)
     if not _secret_exists(sm, name):
         raise ToolError(f"{name} does not exist: apply AA-CIS-Infra modules/environment/tripplanner_web.tf first (the shell)")
     current = _current_secret(sm, name)
-    wanted = wanted_values(current, revalidate_key(sm, REVALIDATE_ENTRY.format(env=env)), sentry_dsn)
+    wanted = wanted_values(current, revalidate_key(sm, REVALIDATE_ENTRY.format(env=env)), sentry_dsn, rotate_session)
     changed = sorted(k for k in KEYS if current.get(k) != wanted[k])
     result: dict[str, Any] = {"secret": name, "changed": changed, "sentry": "on" if wanted["sentry_dsn"] else "off"}
     if not changed:
@@ -137,6 +140,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--expect-account", default=DEFAULT_ACCOUNT, help="refuse to run in any other account")
     p.add_argument("--env", default=DEFAULT_ENV)
     p.add_argument("--sentry-dsn", default=None, help="the TripPlanner web Sentry DSN; '' switches Sentry off; omit to keep")
+    # AA-1182 (key ceremony group 5): a new session key signs every traveller out.
+    p.add_argument("--rotate-session", action="store_true", help="replace session_secret (signs every traveller out)")
     p.add_argument("--apply", action="store_true")
     return p
 
@@ -154,7 +159,7 @@ def main(argv: list[str] | None = None, clients: tuple[Any, Any] | None = None) 
         account = sts.get_caller_identity()["Account"]
         if args.expect_account and account != args.expect_account:
             raise ToolError(f"refused: credentials are for account {account}, expected {args.expect_account}")
-        out(write_entry(sm, args.env, args.sentry_dsn, apply=args.apply))
+        out(write_entry(sm, args.env, args.sentry_dsn, apply=args.apply, rotate_session=args.rotate_session))
         return 0
     except ToolError as exc:
         print(f"error: {exc}", file=sys.stderr)

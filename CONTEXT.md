@@ -1209,7 +1209,9 @@ makes CI Terraform Plan fail with 403.
   `AA-Ecosys/docs/database/schema-ownership.md`. DB Migrate, the dump and the isolation probe run from the
   migrator task definition (`accounts/aa365/db_migrator.tf`) and log in as **`db_migrator`** since X1 S22
   (AA-860); the RDS master is break-glass plus three automated uses (`roles/` files, `set-password`,
-  `run-script`), whose DSN the runner reads in the task (`db/README.md`, `db/owners.yaml` `master_secret`).
+  `run-script`), whose login the runner reads in the task: since AA-1182 the RDS-managed master secret
+  (`modules/rds` `manage_master_user_password`, 180-day rotation; `db/owners.yaml` `master_db_instance`), the old DSN
+  secret `master_secret` only as a fallback until it is deleted (`db/README.md`).
   A run-script never reads row-level personal data (AA-969, root ADR 0019 d16): the runner hands `main(conn)` a
   guarded connection that plans every statement first and refuses one that would return a `pii:` tagged column of a
   tenant table (counts and `IS NULL` tests only) or copy one into an untagged table, and logs a failed statement's

@@ -89,6 +89,21 @@ def test_rerun_keeps_the_session_key_and_other_keys(capsys):
     assert sm2.puts == [(WEB, {**current, "catalog_revalidate_secret": rotated})]
 
 
+def test_rotate_session_replaces_only_the_session_key(capsys):
+    """AA-1182 (key ceremony group 5): --rotate-session gives a new session key; every other key stays."""
+    current = {"session_secret": "s" * 40, "catalog_revalidate_secret": REVALIDATE, "sentry_dsn": DSN, "kept": "k"}
+    sm = FakeSm({WEB: json.dumps(current), PURGE: REVALIDATE})
+    rc, lines = _run(["--rotate-session"], sm, capsys)
+    assert rc == 0 and lines[0]["action"] == "would_write" and lines[0]["changed"] == ["session_secret"]
+    assert sm.puts == []
+    rc, lines = _run(["--rotate-session", "--apply"], sm, capsys)
+    assert rc == 0 and lines[0]["action"] == "written"
+    (name, written), = sm.puts
+    assert name == WEB and {k: v for k, v in written.items() if k != "session_secret"} == \
+        {k: v for k, v in current.items() if k != "session_secret"}
+    assert written["session_secret"] != current["session_secret"] and len(written["session_secret"]) >= 32
+
+
 def test_a_short_session_key_is_replaced_and_an_empty_dsn_switches_sentry_off(capsys):
     current = {"session_secret": "short", "catalog_revalidate_secret": REVALIDATE, "sentry_dsn": DSN}
     sm = FakeSm({WEB: json.dumps(current), PURGE: REVALIDATE})

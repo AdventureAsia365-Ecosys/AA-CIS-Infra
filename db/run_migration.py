@@ -11,13 +11,16 @@ cis/, booking/, tripplanner/ files — db_migrator from S22 (the RDS master befo
 to the live owner (below). Three things still need the RDS master: roles/ files (roles, extensions,
 undo files), mode=set-password (ALTER ROLE … PASSWORD needs CREATEROLE; db_migrator is NOCREATEROLE)
 and mode=run-script (master-level scripts since X1 S19). For those the runner uses DATABASE_URL when
-it already logs in as the master (before S22), and otherwise reads the master DSN itself, in the
-task, from MASTER_DSN_ID (aa-cis/dev/rds: readable by the migrator task role only, never injected
-since S22) and connects with ssl=require. It logs `master login: …` either way and never prints the DSN.
+it already logs in as the master (before S22), and otherwise reads the master login itself, in the
+task, and connects with ssl=require: AA-1182 (S297) first the RDS-managed master secret of MASTER_DB_INSTANCE
+(MasterUserSecret, JSON {username, password}; host, port and database from the task's DATABASE_URL), then,
+until the orchestrator deletes it, the old DSN secret MASTER_DSN_ID (aa-cis/dev/rds). Both are readable by the
+migrator task role only and never injected. It logs `master login: …` either way and never prints a DSN.
 
 Modes (MIGRATION_MODE): check, apply (below), and two X1 S12 modes whose argument is folded into the
 same value, so no new environment variable reaches the task:
-  set-password:<role>   role in ROLE_DSN_IDS (owners.yaml password_roles: cis_app, crm_app, db_migrator, tripplanner). Plan
+  set-password:<role>   role in ROLE_DSN_IDS (owners.yaml password_roles: aa_app_user, booking, cis_app, crm_app,
+                        db_migrator, tripplanner). Plan
                         XD2: reads the role's DSN secret in the task (boto3), checks the DSN user is the
                         role and the password is >= 32 printable ASCII characters, computes a
                         SCRAM-SHA-256 verifier locally (RFC 5802/7677, 4096 iterations, random 16-byte
@@ -122,8 +125,8 @@ allowlists, MIGRATION_FILE not the script, script without async def main(conn)) 
 before any change (role missing or NOLOGIN, secret unreadable/empty/not a DSN of that role, weak password) ·
 12 set-password: password set but the test login failed (role not marked) · 13 run-script raised or
 returned non-zero · 8 also covers set-password / run-script under a login other than the master, and (X1 S22)
-a roles/ file, set-password or run-script whose in-task master DSN (MASTER_DSN_ID) is unreadable, empty or
-fails to log in, or logs in as someone other than the master.
+a roles/ file, set-password or run-script whose in-task master login (RDS-managed secret, then MASTER_DSN_ID) is
+unreadable, empty or fails to log in, or logs in as someone other than the master.
 Exit codes: 0 ok · 2 sha256 mismatch · 3 file ran but did not register · 4 lint error ·
 5 destructive apply without a snapshot · 6 PostgreSQL error (lock/statement timeout included) ·
 7 apply (or idle-gate) refused: a job table is busy or a rerun wave is open · 8 role refused (roles/ under a
@@ -251,12 +254,19 @@ MASTER_ROLE = "aa_cis_admin"      # RDS master: runs roles/ files, set-password,
 # owners.yaml master_secret: the master DSN the runner reads in the task (migrator task role) when DATABASE_URL is
 # not the master (X1 S22: db_migrator), for roles/ files, set-password and run-script only.
 MASTER_DSN_ID = "aa-cis/dev/rds"
+# owners.yaml master_db_instance (AA-1182, S297): RDS manages the master password (manage_master_user_password). The
+# runner reads that instance's MasterUserSecret first; MASTER_DSN_ID above is the legacy fallback until it is deleted.
+# MASTER_MANAGED_ID is not a Secrets Manager id: _get_secret resolves it through DescribeDBInstances.
+MASTER_DB_INSTANCE = "aa-cis-dev-db"
+MASTER_MANAGED_ID = f"rds-managed:{MASTER_DB_INSTANCE}"
 ROLES_DIR = "roles"               # Infra-native files, key rl-NNN
 # AA-853: every db/replay_baseline/ file (lost lineage the drift replay recreates, db/gen_replay_baseline.py) carries
 # this marker; lint refuses it, so a baseline copied into db/migrations/ can never be checked or applied.
 BASELINE_MARKER = "aa-853-replay-baseline"
 # owners.yaml password_roles: LOGIN roles whose password mode=set-password sets from their DSN secret (XD2).
-ROLE_DSN_IDS = {"cis_app": "aa-cis/dev/rds-cis-app", "crm_app": "crm/dev/database-url",
+ROLE_DSN_IDS = {"aa_app_user": "aa-cis/dev/rds-app-user",          # AA-1182 S297: the tenant pool login
+                "booking": "booking/dev/database-url",              # AA-1182 S297: the Booking runtime login
+                "cis_app": "aa-cis/dev/rds-cis-app", "crm_app": "crm/dev/database-url",
                 "db_migrator": "aa-cis/dev/db-migrator",
                 "tripplanner": "tripplanner/dev/database-url"}  # AA-1182: the TripPlanner Lambdas' login
 
@@ -2228,9 +2238,41 @@ def _run_id(env) -> str:
 
 
 def _get_secret(secret_id: str) -> str:
+    """A secret's value. MASTER_MANAGED_ID-style ids ("rds-managed:<instance>") resolve to that instance's RDS-managed
+    master secret (LookupError when the instance does not manage its master password)."""
     import boto3   # only inside the task (the image has it); CI and the lint path never call this
+    if secret_id.startswith("rds-managed:"):
+        instance = secret_id.split(":", 1)[1]
+        found = boto3.client("rds", region_name=SECRETS_REGION).describe_db_instances(
+            DBInstanceIdentifier=instance).get("DBInstances") or [{}]
+        secret_id = (found[0].get("MasterUserSecret") or {}).get("SecretArn") or ""
+        if not secret_id:
+            raise LookupError("the instance has no RDS-managed master secret")
     return boto3.client("secretsmanager", region_name=SECRETS_REGION).get_secret_value(
         SecretId=secret_id).get("SecretString") or ""
+
+
+def managed_master_dsn(secret_json: str, task_dsn: str) -> str:
+    """A URL DSN for the RDS-managed master secret (JSON {username, password}, no host): the credentials go into the
+    task's own DSN (DATABASE_URL: the host, port, database and query that already reach the shared RDS), each
+    percent-encoded. ValueError messages never contain any part of either value."""
+    try:
+        data = json.loads(secret_json)
+    except ValueError:
+        raise ValueError("the RDS-managed master secret is not JSON") from None
+    user = data.get("username") if isinstance(data, dict) else None
+    password = data.get("password") if isinstance(data, dict) else None
+    if not (isinstance(user, str) and user and isinstance(password, str) and password):
+        raise ValueError("the RDS-managed master secret lacks username or password")
+    try:
+        parsed = urllib.parse.urlparse(task_dsn)
+    except ValueError:
+        raise ValueError("the task's DATABASE_URL is not a parseable URL") from None
+    hostspec = parsed.netloc.rpartition("@")[2]
+    if parsed.scheme not in ("postgresql", "postgres") or not hostspec:
+        raise ValueError("the task's DATABASE_URL is not a postgresql:// DSN with a host")
+    auth = f"{urllib.parse.quote(user, safe='')}:{urllib.parse.quote(password, safe='')}"
+    return urllib.parse.urlunparse(parsed._replace(netloc=f"{auth}@{hostspec}"))
 
 
 class MasterUnavailable(Exception):
@@ -2245,11 +2287,31 @@ class MasterLogin:
     how: str            # where it came from, for the log
 
 
+async def _connect_managed_master(task_dsn: str, settings: dict, connect, get_secret):
+    """AA-1182: a session on the RDS-managed master secret, or the reason it is not available (str, never a value)."""
+    try:
+        raw = (get_secret(MASTER_MANAGED_ID) or "").strip()
+    except Exception as e:                      # LookupError (not managed yet) or botocore ClientError: class + code
+        return f"RDS-managed master secret of {MASTER_DB_INSTANCE} unavailable ({_aws_err(e)})"
+    try:
+        master_dsn = managed_master_dsn(raw, task_dsn)
+    except ValueError as e:
+        return f"RDS-managed master secret of {MASTER_DB_INSTANCE} unusable ({e})"
+    try:
+        conn = await connect(master_dsn, settings, ssl="require")   # read by code, never in cleartext
+    except Exception as e:                      # class + SQLSTATE only: the text may echo the DSN
+        state = getattr(e, "sqlstate", "") or ""
+        detail = f"{type(e).__name__} {state}".rstrip()
+        return f"master login with the RDS-managed secret of {MASTER_DB_INSTANCE} failed ({detail})"
+    return MasterLogin(conn, master_dsn, f"in-task RDS-managed secret of {MASTER_DB_INSTANCE}")
+
+
 async def connect_master(env, settings: dict, connect, get_secret, purpose: str) -> MasterLogin:
     """An RDS master session for `purpose` (X1 S22, S242 amendment). The task's DATABASE_URL first: before S22 it
     is the master's and nothing changes. When it logs in as anyone else (db_migrator from S22), that session is
-    closed and the master DSN is read here, in the task, from MASTER_DSN_ID (the migrator task role may read it,
-    the execution role no longer injects it) and used with ssl=require. The caller still checks session_user.
+    closed and the master login is read here, in the task (the migrator task role may read it, the execution role
+    never injects it) and used with ssl=require: AA-1182 the RDS-managed secret of MASTER_DB_INSTANCE first, then the
+    legacy DSN secret MASTER_DSN_ID until it is deleted. The caller still checks session_user.
 
     The master path never depends on the DATABASE_URL login working (review S244): a DATABASE_URL that names
     another user (db_migrator) is not opened at all (no session against its CONNECTION LIMIT 5), and one that
@@ -2277,7 +2339,11 @@ async def connect_master(env, settings: dict, connect, get_secret, purpose: str)
                 return MasterLogin(conn, dsn, "the task's DATABASE_URL")
             await conn.close()
     log(f"master login: {purpose} needs the RDS master {MASTER_ROLE} and the task logs in as {login}: "
-        f"reading the master DSN in the task from {MASTER_DSN_ID} (X1 S22)")
+        f"reading the RDS-managed master secret of {MASTER_DB_INSTANCE} in the task (AA-1182)")
+    managed = await _connect_managed_master(dsn, settings, connect, get_secret)
+    if isinstance(managed, MasterLogin):
+        return managed
+    log(f"master login: {managed}: reading the master DSN in the task from {MASTER_DSN_ID} (legacy fallback)")
     try:
         master_dsn = (get_secret(MASTER_DSN_ID) or "").strip()
     except Exception as e:                      # botocore ClientError: the error code only

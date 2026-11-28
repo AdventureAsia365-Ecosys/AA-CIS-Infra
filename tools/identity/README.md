@@ -182,8 +182,9 @@ and `booking/<env>/admin-web` {`booking_staff_client_secret`}. DRY RUN unless `-
 app; other keys of a secret are kept; a re-run with nothing to change writes nothing.
 
 Order: Terraform apply (creates the shells) -> this tool `--apply` -> the first deploy of each app -> scale each
-app's service (`aa-cis-<env>-admin`, `aa-booking-<env>-admin`) to 1. After a client-secret rotation: run it again,
-then force a new deployment of that app's service.
+app's service (`aa-cis-<env>-admin`, `aa-booking-<env>-admin`) to 1. A client-secret rotation is
+`client_secret_rotate.py` (below), which stores the new value itself; this tool then keeps the stored value (Describe
+returns no secret for a rotated client) and never writes `None`.
 
 ```bash
 python3 tools/identity/staff_web_secret.py            # dry run: which keys would change
@@ -191,6 +192,38 @@ python3 tools/identity/staff_web_secret.py --apply
 ```
 
 Tests: `tools/identity/tests/test_staff_web_secret.py` (fakes, no AWS).
+
+## client_secret_rotate.py — Cognito client secret rotation (AA-1182, key ceremony group 4)
+
+Cognito returns a new client secret value **once**, in the `AddUserPoolClientSecret` response. Once a client has
+rotated secrets, `DescribeUserPoolClient` returns no `ClientSecret` (the CLI prints `None` with `--output text`), so
+"add, then read it back with Describe" loses the value (S296 incident on the CRM M2M client). This tool takes the
+value from the add response, merges it into the client's Secrets Manager key in the same step (memory only, never
+printed), reads it back and compares SHA-256 hashes. If the write or the check fails twice, it first moves the Secrets
+Manager secret back to the version that was AWSCURRENT before the add (a put may have landed even though the read-back
+failed), then deletes the secret it just added (the apps keep the old one) and exits 1. When that move is not safe
+(no earlier version, a version it did not write is current, or the move fails) it KEEPS the new Cognito secret and
+prints the manual steps instead, so the stored value never points at a deleted secret.
+
+Clients (`CLIENTS` in the tool): `crm-m2m`, `partner-web`, `cis-admin`, `breakglass`, `booking-staff`, `crm-staff`,
+`academy-web`, each with its secret, key and the ECS service(s) that read it at task start.
+
+```bash
+python3 tools/identity/client_secret_rotate.py status                                   # ids + dates, never values
+python3 tools/identity/client_secret_rotate.py add --client crm-m2m                     # dry run
+python3 tools/identity/client_secret_rotate.py add --client crm-m2m --apply             # prints the new id + restart command
+python3 tools/identity/client_secret_rotate.py retire --client crm-m2m --keep <new id> --apply
+```
+
+Order per client (two-secret overlap): `add --apply` -> force a new deployment of the printed service(s) and wait
+for it -> check sign-in (staff / agency) or an M2M call (CRM jobs that call Booking / CIS) -> `retire --keep <new id>
+--apply`. `retire` is refused unless the kept id is the newest secret and the Secrets Manager secret changed after it
+was created. `add` is refused while the client already has two secrets. `workforce_bootstrap.py`,
+`staff_web_secret.py` and `crm_dev_identity.py` read the stored copy when Describe returns no secret. To avoid a
+second MFA prompt from boto3, export the CLI credentials and pass `--profile ''` (root `.kiro/steering` pattern).
+
+Tests: `tools/identity/tests/test_client_secret_rotate.py` (fakes plus a botocore Stubber run against the Cognito
+model, no AWS).
 
 ## tripplanner_web_secret.py — TripPlanner frontend on ECS (AA-1038, root ADR 0019 d23)
 
@@ -202,7 +235,8 @@ writes nothing.
 
 Order: Terraform apply (creates the shell) -> this tool `--apply` -> the first AA-TripPlanner-Web Deploy Web Dev ->
 scale `aa-tripplanner-<env>-web` to 1. After a rotation of the CIS purge key: run it again, then force a new
-deployment of the service.
+deployment of the service. `--rotate-session` (AA-1182, key ceremony) replaces the session key, which signs every
+traveller out; then force a new deployment.
 
 ```bash
 python3 tools/identity/tripplanner_web_secret.py                       # dry run: which keys would change

@@ -1024,3 +1024,38 @@ def test_main_still_creates_secretsmanager_client_for_breakglass_verify(monkeypa
     args = wb.build_parser().parse_args(["breakglass-verify"])
     _, sm = wb._aws_clients(args, wb.Output(out=lambda s: None, err=lambda s: None))
     assert sm is not None and _FakeSession.created == ["sts", "cognito-idp", "secretsmanager"]
+
+
+# AA-1182 (lesson S296): once a client has rotated secrets DescribeUserPoolClient returns no ClientSecret; the copy
+# client_secret_rotate.py stored from the add response is read instead, and never printed.
+def test_client_secret_of_reads_the_stored_copy_of_a_rotated_client(stubbed, capsys):
+    idp, idp_stub, sm, sm_stub = stubbed
+    rotated = "-".join(["rotated", "breakglass", "value", "0123456789"])
+    idp_stub.add_response("describe_user_pool_client",
+                          {"UserPoolClient": {"ClientId": BG_CLIENT_ID, "ClientName": "aa-workforce-dev-breakglass"}},
+                          {"UserPoolId": POOL, "ClientId": BG_CLIENT_ID})
+    sm_stub.add_response("get_secret_value",
+                         {"SecretString": json.dumps({"breakglass_client_secret": rotated, "other": "x"})},
+                         {"SecretId": "aa-cis/dev/admin-web"})
+    out = wb.Output()
+    assert wb.client_secret_of(idp, POOL, BG_CLIENT_ID, out, sm, "dev") == rotated
+    out.info(f"echo {rotated}")
+    captured = capsys.readouterr()
+    assert rotated not in captured.out + captured.err  # registered with the redactor
+    idp_stub.assert_no_pending_responses()
+    sm_stub.assert_no_pending_responses()
+
+
+def test_client_secret_of_refuses_a_rotated_client_without_a_stored_copy(stubbed):
+    idp, idp_stub, sm, sm_stub = stubbed
+    idp_stub.add_response("describe_user_pool_client",
+                          {"UserPoolClient": {"ClientId": CIS_CLIENT_ID, "ClientName": "aa-workforce-dev-cis-admin"}},
+                          {"UserPoolId": POOL, "ClientId": CIS_CLIENT_ID})
+    sm_stub.add_response("get_secret_value", {"SecretString": json.dumps({"breakglass_client_secret": "x"})},
+                         {"SecretId": "aa-cis/dev/admin-web"})
+    with pytest.raises(wb.ToolError, match="client_secret_rotate.py add"):
+        wb.client_secret_of(idp, POOL, CIS_CLIENT_ID, wb.Output(), sm, "dev")
+    with pytest.raises(wb.ToolError, match="no secret readable"):
+        idp_stub.add_response("describe_user_pool_client", {"UserPoolClient": {"ClientId": CIS_CLIENT_ID}},
+                              {"UserPoolId": POOL, "ClientId": CIS_CLIENT_ID})
+        wb.client_secret_of(idp, POOL, CIS_CLIENT_ID, wb.Output())

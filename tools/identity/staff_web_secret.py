@@ -10,14 +10,16 @@ clients, so the client secrets never pass through a terminal, a file or Terrafor
   booking/<env>/admin-web   {booking_staff_client_secret}
                             client aa-workforce-<env>-booking-staff
 
-Each client secret is read with DescribeUserPoolClient and kept in memory. Values are never printed: the output is one
+Each client secret is read with DescribeUserPoolClient and kept in memory. Once a client has rotated secrets, Describe
+returns none and the value already stored is kept (AA-1182: client_secret_rotate.py writes a rotated value straight
+from the add response; this tool never rotates). Values are never printed: the output is one
 JSON line per secret with its name, the keys that would change / changed and the version id. Other keys already in a
 secret are kept. A re-run with nothing to change writes nothing.
 
 Run it AFTER the Terraform apply that creates the shells and BEFORE the first task starts (a task whose secret lacks a
 mapped key fails to start): apply -> this tool --apply -> the first deploy of each app -> scale each app's service
-(aa-cis-<env>-admin, aa-booking-<env>-admin) to 1. After a client secret rotation, run it again and force a new
-deployment of that app's service.
+(aa-cis-<env>-admin, aa-booking-<env>-admin) to 1. Client secret rotation: client_secret_rotate.py (it stores the
+value itself), then force a new deployment of that app's service.
 
 Account guard: refuses to run unless the credentials are for --expect-account. The pool and clients are found by NAME
 (aa-workforce-<env>, aa-workforce-<env>-<client>), never by a pasted id.
@@ -85,12 +87,18 @@ def find_client_id(idp: Any, pool_id: str, name: str) -> str:
             raise ToolError(f"app client {name} not found")
 
 
-def client_secret(idp: Any, pool_id: str, client_name: str) -> str:
+def client_secret(idp: Any, pool_id: str, client_name: str, stored: Any = None) -> str:
+    """DescribeUserPoolClient's value, or (AA-1182, lesson S296) the stored copy when Describe returns none, which is
+    the case once the client has rotated secrets. Neither -> refused (never a None written into a secret)."""
     client_id = find_client_id(idp, pool_id, client_name)
     value = idp.describe_user_pool_client(UserPoolId=pool_id, ClientId=client_id)["UserPoolClient"].get("ClientSecret")
-    if not value:
-        raise ToolError(f"{client_name} has no client secret (it must be a confidential client)")
-    return value
+    if value:
+        return value
+    if isinstance(stored, str) and stored:
+        return stored
+    raise ToolError(f"{client_name}: DescribeUserPoolClient returns no secret (a public client, or one whose secret "
+                    "was rotated) and no copy is stored: rotate it with client_secret_rotate.py add, which writes the "
+                    "value from the add response")
 
 
 def _secret_exists(sm: Any, name: str) -> bool:
@@ -119,8 +127,8 @@ def write_entry(
 ) -> dict[str, Any]:
     if not _secret_exists(sm, name):
         raise ToolError(f"{name} does not exist: apply AA-CIS-Infra modules/environment/staff_web.tf first (the shell)")
-    wanted = {key: client_secret(idp, pool_id, f"{pool_name}-{client}") for key, client in keys.items()}
     current = _current_secret(sm, name)
+    wanted = {key: client_secret(idp, pool_id, f"{pool_name}-{client}", current.get(key)) for key, client in keys.items()}
     changed = sorted(k for k, v in wanted.items() if current.get(k) != v)
     result: dict[str, Any] = {"secret": name, "clients": sorted(keys.values()), "changed": changed}
     if not changed:

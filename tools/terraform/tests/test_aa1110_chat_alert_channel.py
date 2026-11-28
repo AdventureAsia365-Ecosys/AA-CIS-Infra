@@ -95,9 +95,10 @@ class SlackIdsTest(unittest.TestCase):
         }
         for name in ("terraform-plan.yml", "terraform-apply.yml", "terraform-drift.yml"):
             envs = _env_values(yaml.safe_load((WORKFLOWS / name).read_text(encoding="utf-8")))
-            with_db = [e for e in envs if "TF_VAR_db_password" in e]
-            self.assertTrue(with_db, name)
-            for env in with_db:
+            # The aa365 plan steps: the ones that also map the e-mail fallback secret (AA-1182 removed db_password).
+            with_aa365 = [e for e in envs if "TF_VAR_alert_email_secondary" in e]
+            self.assertTrue(with_aa365, name)
+            for env in with_aa365:
                 for key, secret in secrets.items():
                     value = str(env.get(key, ""))
                     self.assertIn(secret, value, f"{name}: {key}")

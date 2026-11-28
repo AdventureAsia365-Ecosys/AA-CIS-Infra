@@ -300,14 +300,27 @@ class WebClient:
     client_secret: str
 
 
-def web_client(idp: Any, pool_id: str, client_name: str) -> WebClient:
+def web_client(idp: Any, pool_id: str, client_name: str, sm: Any = None, *, env: str = DEFAULT_ENV) -> WebClient:
+    """AA-1182: after a client secret rotation DescribeUserPoolClient returns no value; the stored copy (written by
+    client_secret_rotate.py from the add response) is used then."""
     client_id = find_client_id(idp, pool_id, client_name)
-    client_secret = idp.describe_user_pool_client(UserPoolId=pool_id, ClientId=client_id)["UserPoolClient"].get(
-        "ClientSecret"
-    )
-    if not client_secret:
-        raise ToolError(f"{client_name} has no client secret (it must be a confidential client)")
-    return WebClient(client_id, client_secret)
+    stored = None
+    if sm is not None:
+        stored = (_current_secret(sm, f"crm/{env}/web") or {}).get("cognito_client_secret")
+    return WebClient(client_id, client_secret_value(idp, pool_id, client_id, client_name, stored))
+
+
+def client_secret_value(idp: Any, pool_id: str, client_id: str, client_name: str, stored: Any) -> str:
+    """The app client's secret: DescribeUserPoolClient's value, or (AA-1182, lesson S296) the stored copy when
+    Describe returns none, which is the case once the client has rotated secrets. Neither -> refused, never None."""
+    value = idp.describe_user_pool_client(UserPoolId=pool_id, ClientId=client_id)["UserPoolClient"].get("ClientSecret")
+    if value:
+        return value
+    if isinstance(stored, str) and stored:
+        return stored
+    raise ToolError(f"{client_name}: DescribeUserPoolClient returns no secret (a public client, or one whose secret "
+                    "was rotated) and no copy is stored: rotate it with client_secret_rotate.py add, which writes "
+                    "the value from the add response")
 
 
 def enrol_partner_user(idp: Any, client: WebClient, email: str, temporary: str) -> tuple[str, str]:
@@ -488,12 +501,8 @@ def web_entry(
     if not _secret_exists(sm, name):
         raise ToolError(f"{name} does not exist: apply AA-CIS-Infra crm_web.tf first (the secret shell)")
     client_id = find_client_id(idp, pool_id, client_name)
-    client_secret = idp.describe_user_pool_client(UserPoolId=pool_id, ClientId=client_id)["UserPoolClient"].get(
-        "ClientSecret"
-    )
-    if not client_secret:
-        raise ToolError(f"{client_name} has no client secret (it must be a confidential client)")
     current = _current_secret(sm, name) or {}
+    client_secret = client_secret_value(idp, pool_id, client_id, client_name, current.get("cognito_client_secret"))
     session = current.get("session_secret")
     changed = []
     if rotate_session or not isinstance(session, str) or len(session) < 32:
@@ -543,12 +552,8 @@ def _workforce_web_keys(
     if not _secret_exists(sm, name):
         raise ToolError(f"{name} does not exist: apply AA-CIS-Infra crm_web.tf first (the secret shell)")
     client_id = find_client_id(idp, workforce_pool_id, client_name)
-    client_secret = idp.describe_user_pool_client(UserPoolId=workforce_pool_id, ClientId=client_id)[
-        "UserPoolClient"
-    ].get("ClientSecret")
-    if not client_secret:
-        raise ToolError(f"{client_name} has no client secret (it must be a confidential client)")
     current = _current_secret(sm, name) or {}
+    client_secret = client_secret_value(idp, workforce_pool_id, client_id, client_name, current.get(client_key))
     session = current.get(session_key)
     others = {current.get(k) for k in SESSION_KEYS if k != session_key}
     changed = []
@@ -811,7 +816,7 @@ def main(argv: list[str] | None = None, clients: tuple[Any, Any, Any] | None = N
                 out(row)
             return 0
         if args.command == "e2e-users":
-            client = web_client(idp, pool_id, client_name) if pool == "partner" and args.apply else None
+            client = web_client(idp, pool_id, client_name, sm, env=args.env) if pool == "partner" and args.apply else None
             rows = e2e_users(
                 idp,
                 sm,

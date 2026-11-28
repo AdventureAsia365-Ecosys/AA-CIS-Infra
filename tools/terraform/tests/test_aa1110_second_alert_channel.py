@@ -90,13 +90,18 @@ def _env_values(node) -> list:
     return out
 
 
+# AA-1182: TF_VAR_db_password is gone (RDS manages the master password). An aa365 plan env is any env block that sets
+# one of the aa365-only variables; every such block must carry each of them (asserted per variable below).
+AA365_PLAN_VARS = {"TF_VAR_org_management_account_id", "TF_VAR_bedrock_acct_payer_id", "TF_VAR_alert_email_secondary"}
+
+
 class WorkflowWiringTest(unittest.TestCase):
     def test_every_aa365_plan_gets_the_recipient_from_the_repo_secret(self):
         for name in ("terraform-plan.yml", "terraform-apply.yml", "terraform-drift.yml"):
             envs = _env_values(yaml.safe_load((WORKFLOWS / name).read_text(encoding="utf-8")))
-            with_db = [e for e in envs if "TF_VAR_db_password" in e]
-            self.assertTrue(with_db, name)
-            for env in with_db:
+            aa365_envs = [e for e in envs if AA365_PLAN_VARS & set(e)]
+            self.assertTrue(aa365_envs, name)
+            for env in aa365_envs:
                 value = str(env.get("TF_VAR_alert_email_secondary", ""))
                 self.assertIn("secrets.ALERT_EMAIL_SECONDARY", value, name)
                 self.assertNotIn("vars.", value, name)

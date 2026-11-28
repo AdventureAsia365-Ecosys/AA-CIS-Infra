@@ -1,6 +1,6 @@
 # =============================================================================
 # AA-246 Track B — account acc2 (aa365), us-west-1
-# db_password is NOT set here — supply via TF_VAR_db_password before plan/apply.
+# No db_password: RDS manages the master password in Secrets Manager (AA-1182, modules/rds).
 # Values marked REPLACE_ME are placeholders: enough for `terraform plan` to
 # succeed (plain string interpolation, no data-source validation), but MUST
 # be replaced with real values before `terraform apply`.
@@ -19,7 +19,6 @@ private_subnet_cidrs = ["10.2.10.0/24", "10.2.11.0/24"]
 db_subnet_cidrs      = ["10.2.20.0/24", "10.2.21.0/24"]
 
 db_username = "aa_cis_admin"
-# db_password — export TF_VAR_db_password before running plan/apply
 
 # ALB HTTPS + API Gateway custom domain (issued in account acc2)
 acm_certificate_arn = "arn:aws:acm:us-west-1:005097885195:certificate/257ca800-d552-4db7-8ad0-b6ddb72fbed0"
@@ -31,9 +30,9 @@ service_desired_count = 1
 
 # Secrets NOT covered by modules/secrets data sources — create manually in
 # account acc2 first, then replace with the real ARNs.
-# (secret_rds_arn / secret_dataforseo_arn are wired via module.secrets outputs
-# instead — those two secrets MUST exist under names "aa-cis/dev/rds" and
-# "aa-cis/dev/dataforseo" before `terraform plan` will succeed at all.)
+# (secret_dataforseo_arn is wired via a module.secrets output instead: the secret
+# "aa-cis/dev/dataforseo" MUST exist before `terraform plan` will succeed at all.
+# AA-1182: the old master DSN secret is no longer looked up.)
 secret_openai_arn = "arn:aws:secretsmanager:us-west-1:005097885195:secret:aa-cis/dev/openai-key-Wcxuae"
 secret_admin_arn  = "arn:aws:secretsmanager:us-west-1:005097885195:secret:aa-cis/dev/admin-secret-gudNmP"
 secret_jwt_arn    = "arn:aws:secretsmanager:us-west-1:005097885195:secret:aa-cis/dev/jwt-secret-KOjq6l"

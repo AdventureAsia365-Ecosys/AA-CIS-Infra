@@ -361,6 +361,8 @@ class RunTaskTest(unittest.TestCase):
             return master if dsn == IN_TASK_MASTER_DSN else conn
 
         def get_secret(sid):
+            if sid == rm.MASTER_MANAGED_ID:     # AA-1182: no managed secret in these tests (legacy fallback)
+                raise LookupError("the instance has no RDS-managed master secret")
             seen["secret_reads"].append(sid)
             if master is None:
                 raise LookupError("no such secret in this test")
@@ -852,7 +854,7 @@ class RoleSwitchTest(unittest.TestCase):
         self.assertEqual(self.seen["secret_reads"], ["aa-cis/dev/rds"])
         self.assertEqual(self.seen["connects"], [("postgresql://x", {}), (IN_TASK_MASTER_DSN, {"ssl": "require"})])
         self.assertIn("MIGRATE master login: a roles/ file needs the RDS master aa_cis_admin and the task logs in "
-                      "as db_migrator: reading the master DSN in the task from aa-cis/dev/rds (X1 S22)\n", log)
+                      "as db_migrator: reading the RDS-managed master secret of aa-cis-dev-db in the task (AA-1182)\n", log)
         self.assertIn("MIGRATE master login: in-task DSN from aa-cis/dev/rds\n", log)
         self.assertIn("MIGRATE ran as: aa_cis_admin — roles/ file, runs as the master", log)
         self.assertNotIn(IN_TASK_MASTER_PW, log)
