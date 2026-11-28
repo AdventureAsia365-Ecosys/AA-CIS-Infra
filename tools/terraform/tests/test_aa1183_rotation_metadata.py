@@ -27,7 +27,17 @@ ROTATION_ACTIONS = [
 ]
 # Calls that return a secret value, a client secret or key material.
 SECRET_READS = ("secretsmanager:GetSecretValue", "secretsmanager:BatchGetSecretValue",
-                "cognito-idp:DescribeUserPoolClient", "acm:ExportCertificate", "kms:Decrypt", "ssm:GetParameter")
+                "cognito-idp:DescribeUserPoolClient", "cognito-idp:DescribeIdentityProvider", "acm:ExportCertificate",
+                "kms:Decrypt", "ssm:GetParameter")
+# The managed SecurityAudit policy grants cognito-idp:Describe*, so these must be DENIED explicitly, not only left out
+# of the local allow lists (S297 review: an allow-list check alone passed while the effective grant still allowed them).
+DENIED_SECRET_READS = ("secretsmanager:GetSecretValue", "secretsmanager:BatchGetSecretValue",
+                       "cognito-idp:DescribeUserPoolClient", "cognito-idp:DescribeIdentityProvider",
+                       "acm:ExportCertificate", "kms:Decrypt")
+AA365 = os.path.join(REPO_ROOT, "accounts", "aa365")
+WORKFLOW = os.path.join(REPO_ROOT, ".github", "workflows", "compliance-aws.yml")
+EXCLUDED_PROWLER_CHECKS = ("cognito_user_pool_client_prevent_user_existence_errors",
+                           "cognito_user_pool_client_token_revocation_enabled")
 
 
 def _block(opener: str, text: str = CODE) -> str:
@@ -72,9 +82,43 @@ def test_policy_grants_the_list_and_denies_secret_values():
     deny = _statement(inline, "DenySecretValueReads")
     assert 'Effect   = "Deny"' in deny and "Action   = local.compliance_evidence_secret_value_reads" in deny
     reads = _block("compliance_evidence_secret_value_reads = [")
-    for action in ("secretsmanager:GetSecretValue", "secretsmanager:BatchGetSecretValue", "acm:ExportCertificate",
-                   "kms:Decrypt"):
-        assert f'"{action}"' in reads
+    for action in DENIED_SECRET_READS:
+        assert f'"{action}"' in reads, action
+
+
+def test_role_keeps_security_audit_so_the_deny_is_needed():
+    # If SecurityAudit is ever dropped the deny is still harmless; while it is attached, the deny above is what keeps
+    # the Cognito secret-returning calls away from the role.
+    assert 'policy_arn = "arn:aws:iam::aws:policy/SecurityAudit"' in CODE
+    deny_names = re.findall(r'"([a-z0-9-]+:[A-Za-z]+)"', _block("compliance_evidence_secret_value_reads = ["))
+    assert {"cognito-idp:DescribeUserPoolClient", "cognito-idp:DescribeIdentityProvider"} <= set(deny_names)
+
+
+def test_prowler_skips_the_checks_that_need_the_denied_call():
+    with open(WORKFLOW, encoding="utf-8") as fh:
+        wf = fh.read()
+    scan = wf[wf.index("- name: Scan (output to files only)"):wf.index("- name: Summarize")]
+    assert "--excluded-check" in scan
+    for check in EXCLUDED_PROWLER_CHECKS:
+        assert check in scan, check
+
+
+def _client_blocks():
+    for name in sorted(os.listdir(AA365)):
+        if not name.endswith(".tf"):
+            continue
+        with open(os.path.join(AA365, name), encoding="utf-8") as fh:
+            text = "\n".join(line for line in fh.read().splitlines() if not line.lstrip().startswith("#"))
+        for m in re.finditer(r'resource "aws_cognito_user_pool_client" "([a-z0-9_]+)" \{', text):
+            yield f"{name}:{m.group(1)}", _block(m.group(0), text)
+
+
+def test_every_user_pool_client_sets_what_the_excluded_prowler_checks_tested():
+    clients = list(_client_blocks())
+    assert len(clients) >= 4, clients
+    for where, block in clients:
+        assert re.search(r"enable_token_revocation\s+=\s+true", block), where
+        assert re.search(r'prevent_user_existence_errors\s+=\s+"ENABLED"', block), where
 
 
 def test_trust_pins_the_rotation_workflow_on_master():

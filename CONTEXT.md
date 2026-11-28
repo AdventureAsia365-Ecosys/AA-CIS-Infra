@@ -397,7 +397,10 @@ accounts/
                                    immutable subject + ref + job_workflow_ref of the root "Compliance evidence" workflow
                                    on master and this repo's "Compliance AWS" workflow on main; AA-1183: also the root
                                    "Secret rotation" workflow on master, with exactly the 13 metadata reads of
-                                   rotation_check.py and a deny of secret-value reads). The CIS task role
+                                   rotation_check.py and an explicit deny of every secret-value read, including
+                                   the Cognito DescribeUserPoolClient / DescribeIdentityProvider calls that
+                                   SecurityAudit grants; the two Prowler checks built on DescribeUserPoolClient are
+                                   excluded and pinned in Terraform instead). The CIS task role
                                    reads evidence/ (ecs_read_compliance_evidence). Layout and writer:
                                    tools/compliance/seal.py; reader: AA-CIS-App api/services/compliance_store.py.
                                    < $0.05/month)

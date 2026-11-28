@@ -31,7 +31,8 @@
 # identities only.
 #
 # Role aa-cis-<env>-compliance-evidence (Q6): SecurityAudit + ViewOnlyAccess (AWS managed, read-only; no s3:GetObject
-# on other buckets, no log events, no Lambda environment), a small read addition for Prowler and the nightly checks
+# on other buckets, no log events; known leftover: Lambda environment values stay readable through lambda:ListFunctions /
+# GetFunctionConfiguration, which Prowler's secrets-in-variables check needs), a small read addition for Prowler and the nightly checks
 # (below, without the data reads Prowler's own extra policy asks for: lambda:GetFunction, logs:FilterLogEvents,
 # ssm:GetDocument, glue:SearchTables, securityhub:BatchImportFindings), List/Get/Put on evidence/ of this bucket only,
 # and an explicit deny of every delete and lock change. Trust: GitHub OIDC, one statement per workflow, each pinned on
@@ -48,10 +49,14 @@
 # tools/security/rotation_check.py) through a third trust statement pinned on that workflow file on master. The tool
 # makes 13 metadata calls only (`rotation_check.py iam-actions` prints them; its tests pin the list); they are granted
 # explicitly in RotationCheckMetadata, so the check does not depend on what SecurityAudit / ViewOnlyAccess happen to
-# contain. None returns a secret value: no secretsmanager:GetSecretValue, no cognito-idp:DescribeUserPoolClient (it
-# returns the client secret; ListUserPoolClientSecrets never does), no acm:ExportCertificate, no kms:Decrypt; the role
-# is also denied the secret-value reads explicitly (DenySecretValueReads). Writes nothing in AWS (issues go to GitHub
-# with the run's own token). Cost: 0 USD (a few hundred free read calls a week).
+# contain. None returns a secret value. The managed policies would grant some (SecurityAudit has cognito-idp:Describe*:
+# DescribeUserPoolClient returns the app client secret, DescribeIdentityProvider the external IdP client secret), so the
+# role is denied every secret-value read explicitly (DenySecretValueReads: secretsmanager:GetSecretValue /
+# BatchGetSecretValue, both Cognito calls, acm:ExportCertificate, kms:Decrypt); ListUserPoolClientSecrets never returns
+# a value. The two Prowler checks that need DescribeUserPoolClient are excluded in compliance-aws.yml (they would report
+# a false FAIL per client); tools/terraform/tests/test_aa1183_rotation_metadata.py pins the same two client settings on
+# every aws_cognito_user_pool_client instead. Writes nothing in AWS (issues go to GitHub with the run's own token).
+# Cost: 0 USD (a few hundred free read calls a week).
 #
 # Cost (us-west-1, D-19; estimates): storage a few MB a year (daily bundles of a few kB, weekly Prowler JSON of a few MB)
 # < 0.01 USD/month; PUT ~10 a day + manifests ~= 400/month < 0.01 USD; GET/LIST from the CIS page (cached 5 min per
@@ -93,8 +98,12 @@ locals {
     "secretsmanager:ListSecretVersionIds", "secretsmanager:ListSecrets",
   ]
   # Calls that return a secret value or key material: never this role's, whatever a managed policy grows into.
+  # SecurityAudit grants cognito-idp:Describe*, which includes the two Cognito calls (app client secret, external IdP
+  # client secret); the deny wins over that grant.
   compliance_evidence_secret_value_reads = [
-    "secretsmanager:GetSecretValue", "secretsmanager:BatchGetSecretValue", "acm:ExportCertificate", "kms:Decrypt",
+    "secretsmanager:GetSecretValue", "secretsmanager:BatchGetSecretValue",
+    "cognito-idp:DescribeUserPoolClient", "cognito-idp:DescribeIdentityProvider",
+    "acm:ExportCertificate", "kms:Decrypt",
   ]
 
   # Read-only additions for Prowler and the nightly checks that SecurityAudit / ViewOnlyAccess do not cover. No data

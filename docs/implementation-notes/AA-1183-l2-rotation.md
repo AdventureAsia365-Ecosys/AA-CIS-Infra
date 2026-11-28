@@ -14,9 +14,17 @@ there). This PR lets the root weekly "Secret rotation" workflow read secret META
   what an AWS managed policy contains or drops (`cognito-idp:ListUserPoolClientSecrets` is recent). The root tool's
   allowlist (`AWS_CALLS`) and this list are pinned by a test in each repo.
 - **Explicit deny of secret-value reads** (`DenySecretValueReads`: `secretsmanager:GetSecretValue`,
-  `BatchGetSecretValue`, `acm:ExportCertificate`, `kms:Decrypt`) on this role. `cognito-idp:DescribeUserPoolClient`
-  (returns the client secret) is not denied because Prowler's Cognito checks use it; it is not granted by the new
-  statement and the tool never calls it.
+  `BatchGetSecretValue`, `cognito-idp:DescribeUserPoolClient`, `cognito-idp:DescribeIdentityProvider`,
+  `acm:ExportCertificate`, `kms:Decrypt`) on this role. Review fix (S297): the first version left the two Cognito
+  calls out because Prowler uses one of them, but the attached SecurityAudit policy grants `cognito-idp:Describe*`,
+  so the role could read app client secrets and the external IdP client secret. Both are now denied.
+- **Prowler keeps an honest result**: Prowler 5.48.0 calls `describe_user_pool_client` only for
+  `cognito_user_pool_client_prevent_user_existence_errors` and `cognito_user_pool_client_token_revocation_enabled`
+  (read from its source). With the call denied, its client objects keep the default values and both checks would
+  report a false FAIL per client, so `compliance-aws.yml` passes `--excluded-check` for the two (Prowler discards
+  unknown names, so a rename later cannot break the scan). The same two settings are pinned on every
+  `aws_cognito_user_pool_client` by `test_every_user_pool_client_sets_what_the_excluded_prowler_checks_tested`.
+  Prowler still logs one AccessDenied line per client in the sealed run log; that is expected.
 
 ## Changed
 
@@ -31,6 +39,10 @@ there). This PR lets the root weekly "Secret rotation" workflow read secret META
   scope (the rotation reads are a subset of what the role already reads).
 
 ## Should know
+
+- Known leftover, not changed here: Lambda environment values stay readable through `lambda:ListFunctions` /
+  `lambda:GetFunctionConfiguration` (managed policies; Prowler's secrets-in-variables check needs them). The header
+  comment now says so instead of "no Lambda environment".
 
 - Apply with Terraform Apply (aa365): an in-place update of the role's trust policy and inline policy, 0 USD.
 - Until it is applied, the root workflow cannot assume the role: its run still checks GitHub and the register dates and
